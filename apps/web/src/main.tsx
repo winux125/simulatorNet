@@ -4,7 +4,9 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./app/App";
 import { ErrorBoundary } from "./app/ErrorBoundary";
-import "./styles.css";
+import "./styles/tokens.css";
+import "./styles/reset.css";
+import "./styles/app.css";
 import { createBrowserSimWorkerClient } from "./worker/create-client";
 
 const root = document.getElementById("root");

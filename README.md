@@ -103,27 +103,69 @@ rebuild. Browser submissions use a separate `LabSubmissionDocument`; hidden
 grading tests/specifications are server-only and never enter the browser lab
 document.
 
-## Milestone 5 (current)
+## Milestone 5
 
-The browser simulator vertical slice is implemented in `apps/web`. It provides
-a dark desktop workspace with a device palette, editable React Flow topology,
-per-device xterm.js CLI, explicit virtual-time controls, filtered event trace,
-and versioned JSON import/export. The built-in lab demonstrates two DHCP clients
-in separate VLANs communicating through router-on-a-stick.
+The browser simulator vertical slice introduced the React Flow topology,
+per-device xterm.js CLI, virtual-time controls, event trace and versioned JSON
+import/export. The main thread owns only React, editor/UI state and plain JSON;
+the module Web Worker remains the sole owner of the simulation engine, device
+instances, CLI sessions, event queue, virtual clock and trace.
 
-The main thread owns only React, editor/UI state and plain JSON snapshots. A
-module Web Worker is the sole owner of `SimulationEngine`, device instances,
-CLI sessions, event queue, virtual clock and trace. `packages/sim-worker`
-defines the discriminated request/response/event protocol, correlation IDs,
-safe serialized errors, request timeouts and termination cleanup.
+## Milestone 6 (current)
 
-To import a lab, choose **Load JSON** and select a schema-v1 `LabDocument`.
-**Save JSON** first requests the current structured configuration from the
-worker, merges editor positions, canonicalizes it and downloads JSON. Topology
-edits remain a draft until **Apply / Rebuild**; rebuilding deliberately resets
-runtime state.
+The vertical slice is now a professional, desktop-first network-lab workspace:
 
-M1 through M5 are complete. The browser remains an untrusted grading
-environment: a separate headless server verifier will rebuild submissions and
-grade them in the next milestone. No backend, authentication, database or
-grading evaluator is part of M5.
+- a compact application bar, mode-aware tool rail and searchable device
+  library surround a canvas that remains the primary surface;
+- the resizable Inspector exposes Overview, Interfaces, Configuration and
+  bounded Runtime views from typed worker snapshots;
+- the resizable bottom dock contains independent Terminal, Events, Packet
+  Trace and Problems views, including persistent tabs for multiple isolated
+  CLI sessions;
+- device, link and empty-canvas context menus expose only working actions;
+- selected devices, link/port labels, topology status, pending edits and worker
+  state are explicit and are not communicated by colour alone.
+
+### Edit and Simulate
+
+**Edit** enables device placement, drag/drop, links, deletion, duplication,
+renaming and auto-arrange. Changes remain a draft and are marked visibly.
+**Apply & Rebuild** serializes the current worker configuration, merges it with
+the edited topology through `lab-format`, then performs the existing safe
+worker rebuild. Moving back to **Simulate** therefore preserves CLI
+configuration while deliberately resetting transient runtime state. Simulate
+enables Run, Step, Pause, Reset, CLI commands and packet operations.
+
+### Topology, terminals and keyboard
+
+Click a device or link to inspect it; right-click a device to open its CLI or
+Inspector. The terminal dock keeps one deterministic worker session per device
+and supports switching, closing, copying and clearing without discarding other
+open sessions. Useful shortcuts include `Ctrl/Cmd+O` for Import, `Ctrl/Cmd+S`
+for Export, `Ctrl/Cmd+Enter` for Run until idle, `Ctrl/Cmd+K` for the command
+palette, `Delete` for the selection, `F` for Fit, `Escape` to clear/close and
+`?` for the shortcut reference. Shortcuts are suppressed while typing in
+inputs or CLI.
+
+The layout targets desktop lab work at 1440×900 and 1280×720 with no page
+scrolling. Below 1000 px, the device library and Inspector become overlay
+drawers; this milestone does not attempt a phone-optimised topology editor.
+
+### M6 build notes
+
+The requested official `frontend-skill` was not present in either the curated
+Codex skill catalog or the available official experimental path, so no
+third-party skill was installed; the redesign follows the milestone design
+specification directly. New runtime dependencies are `lucide-react` and
+`react-resizable-panels`.
+
+Compared with the M5 production build, the eager application JavaScript fell
+from 827.43 kB to 367.30 kB (108.83 kB gzip). Topology (186.83 kB), terminal
+(338.63 kB), terminal-fit (1.20 kB) and bottom-dock (10.25 kB) code now loads in
+separate chunks. CSS changed from 30.91 kB to 49.20 kB (9.53 kB gzip), and the
+worker from 110.26 kB to 112.23 kB.
+
+M1 through M6 are complete. The browser remains an untrusted grading
+environment: a future headless server verifier will rebuild submissions and
+grade them. No backend, authentication, database or grading evaluator is part
+of M6.

@@ -12,6 +12,7 @@ import { L2Switch, Pc, Router, type TraceEntry } from "@sim/sim-core";
 import { SimulationWorkerError, serializeWorkerError } from "./errors";
 import type {
   EngineUiState,
+  DeviceInspection,
   LabUiInterface,
   LabUiNode,
   LabUiSnapshot,
@@ -97,6 +98,8 @@ export class SimulationWorkerRuntime {
         return this.resetRuntime();
       case "GET_SNAPSHOT":
         return this.snapshot();
+      case "GET_DEVICE_INSPECTION":
+        return this.inspectDevice(requireString(request, "deviceId"));
       case "SERIALIZE_LAB":
         return this.serialize();
       default:
@@ -229,6 +232,105 @@ export class SimulationWorkerRuntime {
     };
   }
 
+  private inspectDevice(deviceId: string): DeviceInspection {
+    const built = this.requireBuiltLab();
+    const device = built.getDevice(deviceId);
+    if (!device) throw new SimulationWorkerError("unknown-device", `Unknown device '${deviceId}'`);
+    const base = {
+      deviceId,
+      hostname: device.name,
+      arpEntries: [] as DeviceInspection["arpEntries"],
+      macEntries: [] as DeviceInspection["macEntries"],
+      routes: [] as DeviceInspection["routes"],
+      vlans: [] as DeviceInspection["vlans"],
+    };
+    if (device instanceof Pc) {
+      return {
+        ...base,
+        type: "pc",
+        interfaces: [...device.interfaces.values()].map((iface) => ({
+          id: iface.name,
+          adminUp: iface.adminUp,
+          operationalUp: iface.operationalUp,
+          description: iface.description,
+          mode: "routed" as const,
+          ipAddress: device.ip,
+          prefixLength: prefixLength(device.maskInt),
+        })),
+        arpEntries: [...device.arpTable].map(([ipAddress, macAddress]) => ({ ipAddress, macAddress })),
+        dhcp: {
+          enabled: device.dhcpEnabled,
+          state: device.dhcpState,
+          bound: device.dhcpBound,
+          lease: device.lease ? {
+            ipAddress: device.lease.ip,
+            gateway: device.lease.gateway,
+            serverIp: device.lease.serverIp,
+            leaseSeconds: device.lease.leaseSeconds,
+          } : undefined,
+        },
+      };
+    }
+    if (device instanceof L2Switch) {
+      return {
+        ...base,
+        type: "l2-switch",
+        interfaces: device.portSummaries().map((row) => ({
+          id: row.name,
+          adminUp: row.adminUp,
+          operationalUp: row.operUp,
+          description: row.description,
+          mode: row.mode,
+          vlan: row.mode === "access" ? row.accessVlan : undefined,
+          nativeVlan: row.nativeVlan,
+          allowedVlans: row.allowedVlans,
+        })),
+        macEntries: device.macAddressTable().map((row) => ({
+          vlan: row.vlan,
+          macAddress: row.mac,
+          interfaceId: row.port,
+        })),
+        vlans: device.vlanBrief().map((row) => ({ id: row.id, name: row.name, interfaces: row.ports })),
+      };
+    }
+    if (device instanceof Router) {
+      return {
+        ...base,
+        type: "router",
+        interfaces: device.interfaceSummaries().map((row) => ({
+          id: row.name,
+          adminUp: row.adminUp,
+          operationalUp: row.operUp,
+          description: row.description,
+          mode: "routed" as const,
+          vlan: row.vlan,
+          ipAddress: row.ip,
+          prefixLength: prefixLength(row.maskInt),
+        })),
+        arpEntries: [...device.arpTable].map(([ipAddress, macAddress]) => ({ ipAddress, macAddress })),
+        routes: device.routingTable().map((row) => ({
+          kind: row.kind,
+          network: row.network,
+          prefixLength: prefixLength(row.maskInt),
+          nextHop: row.viaIp,
+          interfaceId: row.egressName,
+        })),
+        dhcp: {
+          pools: device.dhcpPoolConfigurations().map((pool) => ({
+            id: pool.id,
+            network: pool.network,
+            prefixLength: prefixLength(pool.maskInt),
+            gateway: pool.gateway,
+            rangeStart: pool.rangeStart,
+            rangeEnd: pool.rangeEnd,
+            leaseSeconds: pool.leaseSeconds,
+          })),
+        },
+      };
+    }
+    throw new SimulationWorkerError("unsupported-device", `Unsupported device '${deviceId}'`);
+  }
+
   private nodeSnapshot(node: NodeSpec, index: number): LabUiNode {
     const built = this.requireBuiltLab();
     const device = built.getDevice(node.id)!;
@@ -293,6 +395,16 @@ export class SimulationWorkerRuntime {
     if (!this.builtLab) throw new SimulationWorkerError("lab-not-initialized", "Initialize a lab first");
     return this.builtLab;
   }
+}
+
+function prefixLength(mask: number): number {
+  let value = mask >>> 0;
+  let count = 0;
+  while (value !== 0) {
+    count += value & 1;
+    value >>>= 1;
+  }
+  return count;
 }
 
 export function createSimulationWorkerRuntime(emit?: (message: SimWorkerOutboundMessage) => void): SimulationWorkerRuntime {

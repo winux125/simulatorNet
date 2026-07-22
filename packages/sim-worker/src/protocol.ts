@@ -69,6 +69,56 @@ export interface SimulationRunResult {
   snapshot: LabUiSnapshot;
 }
 
+export interface DeviceInspectionInterface {
+  id: string;
+  adminUp: boolean;
+  operationalUp: boolean;
+  description?: string;
+  mode?: "access" | "trunk" | "routed";
+  vlan?: number;
+  nativeVlan?: number;
+  allowedVlans?: number[] | "all";
+  ipAddress?: string;
+  prefixLength?: number;
+}
+
+export interface DeviceInspection {
+  deviceId: string;
+  hostname: string;
+  type: LabUiNode["type"];
+  interfaces: DeviceInspectionInterface[];
+  arpEntries: Array<{ ipAddress: string; macAddress: string }>;
+  macEntries: Array<{ vlan: number; macAddress: string; interfaceId: string }>;
+  routes: Array<{
+    kind: "connected" | "static";
+    network: string;
+    prefixLength: number;
+    nextHop?: string;
+    interfaceId: string;
+  }>;
+  vlans: Array<{ id: number; name: string; interfaces: string[] }>;
+  dhcp?: {
+    enabled?: boolean;
+    state?: string;
+    bound?: boolean;
+    lease?: {
+      ipAddress: string;
+      gateway?: string;
+      serverIp?: string;
+      leaseSeconds?: number;
+    };
+    pools?: Array<{
+      id: string;
+      network: string;
+      prefixLength: number;
+      gateway?: string;
+      rangeStart: string;
+      rangeEnd: string;
+      leaseSeconds: number;
+    }>;
+  };
+}
+
 export type SimWorkerRequest =
   | { type: "INITIALIZE_LAB"; requestId: string; document: LabDocument }
   | { type: "REBUILD_LAB"; requestId: string; document: LabDocument }
@@ -79,12 +129,14 @@ export type SimWorkerRequest =
   | { type: "SET_PAUSED"; requestId: string; paused: boolean }
   | { type: "RESET_RUNTIME"; requestId: string }
   | { type: "GET_SNAPSHOT"; requestId: string }
+  | { type: "GET_DEVICE_INSPECTION"; requestId: string; deviceId: string }
   | { type: "SERIALIZE_LAB"; requestId: string };
 
 export type SimWorkerPayload =
   | LabUiSnapshot
   | CliExecutionResult
   | SimulationRunResult
+  | DeviceInspection
   | LabDocument
   | { closed: boolean }
   | { paused: boolean; snapshot: LabUiSnapshot };
@@ -118,6 +170,7 @@ export interface SimWorkerPayloadByType {
   SET_PAUSED: { paused: boolean; snapshot: LabUiSnapshot };
   RESET_RUNTIME: LabUiSnapshot;
   GET_SNAPSHOT: LabUiSnapshot;
+  GET_DEVICE_INSPECTION: DeviceInspection;
   SERIALIZE_LAB: LabDocument;
 }
 

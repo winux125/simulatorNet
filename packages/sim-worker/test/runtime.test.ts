@@ -180,4 +180,22 @@ describe("SimulationWorkerRuntime", () => {
     const stepped = request(runtime, { type: "ADVANCE_TIME", milliseconds: 1 });
     expect(stepped).toMatchObject({ processedEvents: 0 });
   });
+
+  it("returns bounded plain device inspection data", () => {
+    const { runtime } = initialize();
+    const inspection = request(runtime, {
+      type: "GET_DEVICE_INSPECTION",
+      deviceId: "switch-1",
+    });
+    expect(inspection).toMatchObject({
+      deviceId: "switch-1",
+      hostname: "SW1",
+      type: "l2-switch",
+      vlans: expect.arrayContaining([
+        expect.objectContaining({ id: 10, name: "STUDENTS" }),
+        expect.objectContaining({ id: 20, name: "SERVERS" }),
+      ]),
+    });
+    expect(JSON.parse(JSON.stringify(inspection))).toEqual(inspection);
+  });
 });
