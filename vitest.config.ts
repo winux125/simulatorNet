@@ -10,6 +10,7 @@ export default defineConfig({
     alias: {
       "@sim/contracts": fromRoot("./packages/contracts/src/index.ts"),
       "@sim/sim-core": fromRoot("./packages/sim-core/src/index.ts"),
+      "@sim/cli-engine": fromRoot("./packages/cli-engine/src/index.ts"),
     },
   },
   test: {

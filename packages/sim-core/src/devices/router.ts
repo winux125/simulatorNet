@@ -30,8 +30,32 @@ export interface L3Interface {
   readonly physical: EthernetInterface;
   /** 802.1Q VLAN encapsulation for a subinterface; undefined = untagged port. */
   readonly vlan: number | undefined;
+  /** `encapsulation dot1Q <vlan> native`: this subinterface carries the native
+   * (untagged) VLAN, so its frames ingress/egress without a tag. */
+  native: boolean;
   ip: Ipv4 | undefined;
   maskInt: number;
+}
+
+/** A row of `show ip interface brief` / `show ip route`, for the CLI. */
+export interface RouterInterfaceRow {
+  name: string;
+  ip: Ipv4 | undefined;
+  maskInt: number;
+  vlan: number | undefined;
+  native: boolean;
+  adminUp: boolean;
+  operUp: boolean;
+  description: string | undefined;
+}
+
+export interface RouteRow {
+  kind: "connected" | "static";
+  network: Ipv4;
+  maskInt: number;
+  /** Next-hop IP for a static route; undefined for a connected route. */
+  viaIp: Ipv4 | undefined;
+  egressName: string;
 }
 
 interface StaticRoute {
@@ -90,30 +114,62 @@ export class Router extends Device {
 
   /** Assign an IP/mask directly to a physical port (a routed interface). */
   configureInterface(physicalName: string, config: L3Config): L3Interface {
-    const physical = this.requirePhysical(physicalName);
-    const iface: L3Interface = {
-      name: physicalName,
-      physical,
-      vlan: undefined,
-      ip: config.ip,
-      maskInt: maskToInt(config.mask),
-    };
-    this.l3.set(iface.name, iface);
+    const iface = this.getOrCreateInterface(physicalName);
+    iface.ip = config.ip;
+    iface.maskInt = maskToInt(config.mask);
     return iface;
   }
 
   /** Add a dot1Q subinterface on `physicalName` for `vlan` (router-on-a-stick). */
   addSubinterface(physicalName: string, vlan: number, config: L3Config): L3Interface {
-    const physical = this.requirePhysical(physicalName);
+    const iface = this.getOrCreateSubinterface(physicalName, vlan);
+    iface.ip = config.ip;
+    iface.maskInt = maskToInt(config.mask);
+    return iface;
+  }
+
+  /** `interface <name>`: ensure a routed L3 interface exists on the physical port. */
+  getOrCreateInterface(physicalName: string): L3Interface {
+    const existing = this.l3.get(physicalName);
+    if (existing) return existing;
     const iface: L3Interface = {
-      name: `${physicalName}.${vlan}`,
-      physical,
-      vlan,
-      ip: config.ip,
-      maskInt: maskToInt(config.mask),
+      name: physicalName,
+      physical: this.requirePhysical(physicalName),
+      vlan: undefined,
+      native: false,
+      ip: undefined,
+      maskInt: maskToInt(24),
     };
     this.l3.set(iface.name, iface);
     return iface;
+  }
+
+  /** `encapsulation dot1Q <vlan> [native]`: ensure the subinterface exists. */
+  getOrCreateSubinterface(physicalName: string, vlan: number, native = false): L3Interface {
+    const name = `${physicalName}.${vlan}`;
+    const existing = this.l3.get(name);
+    if (existing) {
+      existing.native = native;
+      return existing;
+    }
+    const iface: L3Interface = {
+      name,
+      physical: this.requirePhysical(physicalName),
+      vlan,
+      native,
+      ip: undefined,
+      maskInt: maskToInt(24),
+    };
+    this.l3.set(name, iface);
+    return iface;
+  }
+
+  /** `ip address <ip> <mask>`: set the address on an existing L3 interface. */
+  setInterfaceIp(name: string, ip: Ipv4, mask: Ipv4 | number): void {
+    const iface = this.l3.get(name);
+    if (!iface) throw new Error(`Router ${this.id} has no L3 interface ${name}`);
+    iface.ip = ip;
+    iface.maskInt = maskToInt(mask);
   }
 
   /** Add a static route: `ip route <network> <mask> <nextHop>`. */
@@ -147,6 +203,48 @@ export class Router extends Device {
     return [...this.l3.values()];
   }
 
+  // --- inspection (public API for the CLI `show` formatters) -------------
+
+  /** `show ip interface brief`: routed ports and subinterfaces with status. */
+  interfaceSummaries(): RouterInterfaceRow[] {
+    return [...this.l3.values()].map((iface) => ({
+      name: iface.name,
+      ip: iface.ip,
+      maskInt: iface.maskInt,
+      vlan: iface.vlan,
+      native: iface.native,
+      adminUp: iface.physical.adminUp,
+      operUp: iface.physical.operationalUp,
+      description: iface.physical.description,
+    }));
+  }
+
+  /** `show ip route`: connected routes followed by static routes. */
+  routingTable(): RouteRow[] {
+    const rows: RouteRow[] = [];
+    for (const iface of this.l3.values()) {
+      if (iface.ip === undefined) continue;
+      rows.push({
+        kind: "connected",
+        network: intToIp((ipToInt(iface.ip) & iface.maskInt) >>> 0),
+        maskInt: iface.maskInt,
+        viaIp: undefined,
+        egressName: iface.name,
+      });
+    }
+    for (const route of this.staticRoutes) {
+      const egress = this.connectedInterfaceFor(route.nextHop);
+      rows.push({
+        kind: "static",
+        network: intToIp(route.network),
+        maskInt: route.maskInt,
+        viaIp: route.nextHop,
+        egressName: egress?.name ?? "",
+      });
+    }
+    return rows;
+  }
+
   // --- receive path ------------------------------------------------------
 
   override onReceive(frame: EthernetFrame, ingress: EthernetInterface): void {
@@ -167,7 +265,13 @@ export class Router extends Device {
 
   private l3ForIngress(ingress: EthernetInterface, vlan: number | undefined): L3Interface | undefined {
     for (const iface of this.l3.values()) {
-      if (iface.physical === ingress && iface.vlan === vlan) return iface;
+      if (iface.physical !== ingress) continue;
+      if (vlan === undefined) {
+        // Untagged: a routed port, or a subinterface flagged as the native VLAN.
+        if (iface.native || (iface.vlan === undefined && !iface.native)) return iface;
+      } else if (iface.vlan === vlan && !iface.native) {
+        return iface;
+      }
     }
     return undefined;
   }
@@ -496,7 +600,8 @@ export class Router extends Device {
       src: iface.physical.mac,
       dst: dstMac,
       etherType,
-      vlan: iface.vlan,
+      // A native subinterface egresses untagged; a tagged subinterface keeps its tag.
+      vlan: iface.native ? undefined : iface.vlan,
       payload,
     };
     iface.physical.transmit(frame);

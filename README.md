@@ -67,5 +67,15 @@ The full CCNA protocol layer in `sim-core`:
 
 Proven by 31 Vitest tests, including a router-on-a-stick determinism golden test.
 
-Next: the Cisco-like **CLI engine** (`packages/cli-engine`), then lab-format,
-then the apps (web / api / verifier).
+## Milestone 3 (current)
+
+A Cisco-like **CLI engine** (`packages/cli-engine`): a mode-aware console
+session (user/privileged EXEC, global/interface/VLAN config) with a lexer,
+pattern parser, per-mode command handlers, table formatters and typed errors.
+The CLI contains no network logic — handlers only call public `sim-core`
+methods (e.g. `switchport access vlan 10` → `switch.setAccessVlan(...)`), so the
+same engine still grades headless. Includes golden transcript tests and an
+end-to-end check that a router-on-a-stick configured entirely from the CLI
+produces a working data plane.
+
+Next: lab-format (load/save), then the apps (web / api / verifier).

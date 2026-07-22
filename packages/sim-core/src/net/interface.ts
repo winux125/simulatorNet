@@ -12,12 +12,28 @@ export class EthernetInterface {
   link: Link | undefined;
   /** Administrative state: `no shutdown` (true) vs `shutdown` (false). */
   adminUp = true;
+  /** Free-text `description` set from the CLI; undefined when unset. */
+  description: string | undefined;
 
   constructor(
     readonly device: Device,
     readonly name: string,
     public mac: Mac,
   ) {}
+
+  /** `shutdown`: administratively disable the port. */
+  shutdown(): void {
+    this.adminUp = false;
+  }
+
+  /** `no shutdown`: administratively enable the port. */
+  noShutdown(): void {
+    this.adminUp = true;
+  }
+
+  setDescription(text: string): void {
+    this.description = text;
+  }
 
   peer(): EthernetInterface | undefined {
     if (!this.link) return undefined;

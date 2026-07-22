@@ -1,0 +1,20 @@
+{
+  "name": "@sim/cli-engine",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cisco-like CLI engine. Parses commands and calls public sim-core methods; no network logic, no DOM, no Node APIs.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@sim/contracts": "workspace:*",
+    "@sim/sim-core": "workspace:*"
+  }
+}

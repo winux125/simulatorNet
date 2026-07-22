@@ -23,6 +23,47 @@ export interface MacTableEntry {
   learnedAt: number;
 }
 
+export interface VlanInfo {
+  id: number;
+  name: string;
+}
+
+/** A row of `show vlan brief`: a VLAN and the access ports assigned to it. */
+export interface VlanBriefRow extends VlanInfo {
+  ports: string[];
+}
+
+/** A row of `show interfaces trunk`. */
+export interface TrunkRow {
+  port: string;
+  nativeVlan: number;
+  /** Allowed VLAN ids, or "all" when every VLAN is permitted. */
+  allowedVlans: number[] | "all";
+}
+
+/** A row of `show mac address-table`. */
+export interface MacAddressRow {
+  vlan: number;
+  mac: Mac;
+  port: string;
+}
+
+/** A row of `show interfaces` / port config, used by the CLI formatters. */
+export interface SwitchPortRow {
+  name: string;
+  mode: SwitchPortMode;
+  accessVlan: number;
+  nativeVlan: number;
+  allowedVlans: number[] | "all";
+  adminUp: boolean;
+  operUp: boolean;
+  description: string | undefined;
+}
+
+function defaultVlanName(id: number): string {
+  return id === DEFAULT_VLAN ? "default" : `VLAN${String(id).padStart(4, "0")}`;
+}
+
 /**
  * A learning L2 Ethernet switch with 802.1Q VLAN support.
  *
@@ -40,13 +81,55 @@ export class L2Switch extends Device {
   /** Forwarding database keyed per VLAN, so one MAC can live in several VLANs. */
   private readonly fdb = new Map<string, MacTableEntry>();
   private readonly portConfig = new Map<string, SwitchPortConfig>();
+  /** The VLAN database (`vlan <id>` / `name <name>`); VLAN 1 always exists. */
+  private readonly vlans = new Map<number, VlanInfo>([[DEFAULT_VLAN, { id: DEFAULT_VLAN, name: "default" }]]);
 
-  /** Configure a port as an access port in `vlan`. */
+  // --- configuration (public API called by the CLI) ----------------------
+
+  /** `vlan <id>`: create the VLAN in the database if absent. */
+  defineVlan(id: number): void {
+    if (!this.vlans.has(id)) this.vlans.set(id, { id, name: defaultVlanName(id) });
+  }
+
+  /** `name <name>` inside `vlan <id>` configuration. */
+  setVlanName(id: number, name: string): void {
+    this.defineVlan(id);
+    this.vlans.get(id)!.name = name;
+  }
+
+  /** `switchport mode access`. */
+  setPortModeAccess(port: string): void {
+    this.ensureConfig(port).mode = "access";
+  }
+
+  /** `switchport mode trunk`. */
+  setPortModeTrunk(port: string): void {
+    this.ensureConfig(port).mode = "trunk";
+  }
+
+  /** `switchport access vlan <id>`. */
+  setAccessVlan(port: string, vlan: number): void {
+    this.defineVlan(vlan);
+    this.ensureConfig(port).accessVlan = vlan;
+  }
+
+  /** `switchport trunk native vlan <id>`. */
+  setTrunkNativeVlan(port: string, vlan: number): void {
+    this.ensureConfig(port).nativeVlan = vlan;
+  }
+
+  /** `switchport trunk allowed vlan <list>`. */
+  setTrunkAllowedVlans(port: string, vlans: Iterable<number>): void {
+    this.ensureConfig(port).allowedVlans = new Set(vlans);
+  }
+
+  /** Convenience: configure an access port in one call. */
   setAccess(port: string, vlan: number): void {
+    this.defineVlan(vlan);
     this.portConfig.set(port, { mode: "access", accessVlan: vlan, nativeVlan: DEFAULT_VLAN });
   }
 
-  /** Configure a port as an 802.1Q trunk. */
+  /** Convenience: configure an 802.1Q trunk in one call. */
   setTrunk(port: string, opts: { nativeVlan?: number; allowedVlans?: Iterable<number> } = {}): void {
     this.portConfig.set(port, {
       mode: "trunk",
@@ -54,6 +137,81 @@ export class L2Switch extends Device {
       nativeVlan: opts.nativeVlan ?? DEFAULT_VLAN,
       allowedVlans: opts.allowedVlans ? new Set(opts.allowedVlans) : undefined,
     });
+  }
+
+  private ensureConfig(port: string): SwitchPortConfig {
+    let cfg = this.portConfig.get(port);
+    if (!cfg) {
+      cfg = { mode: "access", accessVlan: DEFAULT_VLAN, nativeVlan: DEFAULT_VLAN };
+      this.portConfig.set(port, cfg);
+    }
+    return cfg;
+  }
+
+  // --- inspection (public API for the CLI `show` formatters) -------------
+
+  /** `show vlan brief`: every VLAN with its assigned access ports, id-ordered. */
+  vlanBrief(): VlanBriefRow[] {
+    const rows = new Map<number, VlanBriefRow>();
+    for (const info of this.vlans.values()) {
+      rows.set(info.id, { id: info.id, name: info.name, ports: [] });
+    }
+    for (const name of this.interfaces.keys()) {
+      const cfg = this.portConfigOf(name);
+      if (cfg.mode !== "access") continue; // trunk ports are not listed under a VLAN
+      let row = rows.get(cfg.accessVlan);
+      if (!row) {
+        row = { id: cfg.accessVlan, name: defaultVlanName(cfg.accessVlan), ports: [] };
+        rows.set(cfg.accessVlan, row);
+      }
+      row.ports.push(name);
+    }
+    return [...rows.values()].sort((a, b) => a.id - b.id);
+  }
+
+  /** `show interfaces trunk`: the trunk ports and their VLAN scope. */
+  trunkSummary(): TrunkRow[] {
+    const rows: TrunkRow[] = [];
+    for (const name of this.interfaces.keys()) {
+      const cfg = this.portConfigOf(name);
+      if (cfg.mode !== "trunk") continue;
+      rows.push({
+        port: name,
+        nativeVlan: cfg.nativeVlan,
+        allowedVlans: cfg.allowedVlans ? [...cfg.allowedVlans].sort((a, b) => a - b) : "all",
+      });
+    }
+    return rows;
+  }
+
+  /** `show mac address-table`: the learned forwarding entries. */
+  macAddressTable(): MacAddressRow[] {
+    const rows: MacAddressRow[] = [];
+    for (const [key, entry] of this.fdb) {
+      // The composite key is `${vlan} ${mac}` — recover the MAC after the space.
+      const mac = key.slice(key.indexOf(" ") + 1);
+      rows.push({ vlan: entry.vlan, mac, port: entry.port });
+    }
+    return rows.sort((a, b) => a.vlan - b.vlan || a.mac.localeCompare(b.mac));
+  }
+
+  /** Per-port configuration + status, for `show interfaces` and running-config. */
+  portSummaries(): SwitchPortRow[] {
+    const rows: SwitchPortRow[] = [];
+    for (const [name, iface] of this.interfaces) {
+      const cfg = this.portConfigOf(name);
+      rows.push({
+        name,
+        mode: cfg.mode,
+        accessVlan: cfg.accessVlan,
+        nativeVlan: cfg.nativeVlan,
+        allowedVlans: cfg.allowedVlans ? [...cfg.allowedVlans].sort((a, b) => a - b) : "all",
+        adminUp: iface.adminUp,
+        operUp: iface.operationalUp,
+        description: iface.description,
+      });
+    }
+    return rows;
   }
 
   /** The effective config for a port; unconfigured ports are access VLAN 1. */

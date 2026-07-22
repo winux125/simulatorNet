@@ -18,6 +18,15 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@24.13.3)
 
+  packages/cli-engine:
+    dependencies:
+      '@sim/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@sim/sim-core':
+        specifier: workspace:*
+        version: link:../sim-core
+
   packages/contracts:
     dependencies:
       zod:

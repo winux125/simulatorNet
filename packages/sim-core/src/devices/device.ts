@@ -18,6 +18,11 @@ export abstract class Device {
     public name: string,
   ) {}
 
+  /** `hostname <name>`: rename the device (drives the CLI prompt). */
+  rename(name: string): void {
+    this.name = name;
+  }
+
   addInterface(name: string, mac: Mac): EthernetInterface {
     if (this.interfaces.has(name)) {
       throw new Error(`Interface ${name} already exists on ${this.id}`);

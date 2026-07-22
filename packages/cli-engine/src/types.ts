@@ -1,0 +1,44 @@
+import type { Device, SimulationEngine } from "@sim/sim-core";
+import type { Params } from "./parser/matcher";
+import type { CliMode } from "./session/mode";
+
+/** Which device kind a command applies to. */
+export type DeviceFilter = "switch" | "router" | "pc" | "any";
+
+/** The interface-configuration context (`config-if`). */
+export interface InterfaceContext {
+  /** The physical port being configured (e.g. "Gi0/0"). */
+  physical: string;
+  /** True when a subinterface (`Gi0/0.10`) is being configured. */
+  isSubinterface: boolean;
+  /** The typed subinterface label, for messages/prompt (e.g. "Gi0/0.10"). */
+  label: string;
+  /** VLAN set by `encapsulation dot1Q`; undefined until then. */
+  subVlan: number | undefined;
+  /** True once the router subinterface L3 has been created. */
+  subCreated: boolean;
+}
+
+/**
+ * The surface a command handler is given. Implemented by `CliSession`; commands
+ * depend on this interface (not the class) so there is no import cycle.
+ */
+export interface SessionApi {
+  readonly device: Device;
+  readonly engine: SimulationEngine;
+  mode: CliMode;
+  ifaceCtx: InterfaceContext | undefined;
+  vlanId: number | undefined;
+  /** Transition to another mode (clears context as appropriate). */
+  enter(mode: CliMode): void;
+}
+
+export interface CommandSpec {
+  /** Literal + `{hole}` pattern; see `matchPattern`. */
+  pattern: string;
+  /** Modes this command is valid in. */
+  modes: CliMode[];
+  /** Restrict to a device kind; defaults to "any". */
+  device?: DeviceFilter;
+  run(session: SessionApi, params: Params): string | void;
+}
