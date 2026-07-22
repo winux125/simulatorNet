@@ -13,14 +13,19 @@ const ROOT_DESCRIPTIONS: Record<string, string> = {
   help: "Display available commands",
   hostname: "Set device hostname",
   interface: "Select an interface",
+  http: "Send an HTTP request",
   ip: "Configure IP parameters",
   ipconfig: "Display or renew host IPv4 configuration",
   name: "Set VLAN name",
+  nslookup: "Resolve a DNS hostname",
+  ntp: "Query a network time server",
   no: "Negate a command",
   ping: "Send ICMP echo requests",
   show: "Display device information",
   shutdown: "Administratively disable an interface",
   switchport: "Configure Layer 2 interface settings",
+  syslog: "Send a Syslog message",
+  tftp: "Download a file with TFTP",
   vlan: "Configure a VLAN",
 };
 
@@ -28,6 +33,11 @@ const ARGUMENT_HELP: Record<string, string> = {
   ping: "<destination-ip>   IPv4 address to ping",
   interface: "<interface-name>   Interface to configure",
   "ip route": "<network> <mask> <next-hop>   Static route parameters",
+  nslookup: "<hostname> [dns-server]   Resolve an IPv4 A record",
+  "http get": "<url>   HTTP URL with an IPv4 host",
+  "tftp get": "<server-ip> <filename>   Download a file",
+  "ntp query": "<server-ip>   Query virtual server time",
+  "syslog send": "<server-ip> <severity> <message>   Send a structured log message",
 };
 
 function available(session: SessionApi): CommandSpec[] {

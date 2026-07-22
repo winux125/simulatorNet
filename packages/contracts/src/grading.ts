@@ -90,6 +90,72 @@ export const IpRoutingEnabledGradingCheckSchema = CheckIdentitySchema.extend({
   configuration: z.object({ deviceId: z.string().min(1), expected: z.boolean() }),
 });
 
+export const DnsRecordGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("dns-record"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    hostname: z.string().min(1),
+    expectedAddress: Ipv4Schema,
+  }),
+});
+
+export const DnsResolutionGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("dns-resolution"),
+  configuration: z.object({
+    sourceDeviceId: z.string().min(1),
+    hostname: z.string().min(1),
+    dnsServer: Ipv4Schema.optional(),
+    expectedAddress: Ipv4Schema,
+  }),
+});
+
+export const HttpResponseGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("http-response"),
+  configuration: z.object({
+    sourceDeviceId: z.string().min(1),
+    url: z.string().min(1),
+    expectedStatus: z.number().int().min(100).max(599),
+    expectedBody: z.string().optional(),
+  }),
+});
+
+export const TftpFileGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("tftp-file"),
+  configuration: z.object({
+    sourceDeviceId: z.string().min(1),
+    serverIp: Ipv4Schema,
+    filename: z.string().min(1),
+    expectedContent: z.string().optional(),
+  }),
+});
+
+export const NtpResponseGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ntp-response"),
+  configuration: z.object({
+    sourceDeviceId: z.string().min(1),
+    serverIp: Ipv4Schema,
+    expected: z.enum(["success", "failure"]).default("success"),
+  }),
+});
+
+export const SyslogReceivedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("syslog-received"),
+  configuration: z.object({
+    sourceDeviceId: z.string().min(1),
+    serverDeviceId: z.string().min(1),
+    severity: z.enum(["emergency", "alert", "critical", "error", "warning", "notice", "informational", "debug"]),
+    message: z.string().min(1),
+  }),
+});
+
+export const TcpListenerGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("tcp-listener"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    port: z.number().int().min(1).max(65_535),
+  }),
+});
+
 export const GradingCheckSchema = z.discriminatedUnion("type", [
   PingGradingCheckSchema,
   InterfaceStateGradingCheckSchema,
@@ -101,6 +167,13 @@ export const GradingCheckSchema = z.discriminatedUnion("type", [
   CapabilityPresentGradingCheckSchema,
   SviStateGradingCheckSchema,
   IpRoutingEnabledGradingCheckSchema,
+  DnsRecordGradingCheckSchema,
+  DnsResolutionGradingCheckSchema,
+  HttpResponseGradingCheckSchema,
+  TftpFileGradingCheckSchema,
+  NtpResponseGradingCheckSchema,
+  SyslogReceivedGradingCheckSchema,
+  TcpListenerGradingCheckSchema,
 ]);
 export type GradingCheck = z.infer<typeof GradingCheckSchema>;
 

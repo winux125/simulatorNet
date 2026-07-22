@@ -12,7 +12,7 @@ import {
   VerificationResultSchema,
 } from "@sim/contracts/grading";
 import { buildLabFromDocument, parseLabDocument, type BuiltLab } from "@sim/lab-format";
-import { EndHost, ipToInt, Layer3Switch, maskToInt, Router } from "@sim/sim-core";
+import { EndHost, ipToInt, Layer3Switch, maskToInt, normalizeDnsName, Router, TcpState } from "@sim/sim-core";
 import type { SimulationEngine } from "@sim/sim-core";
 import type { ZodIssue } from "zod";
 import { VerificationError, VerificationResourceLimitError } from "./errors";
@@ -282,6 +282,107 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
         expected: check.configuration.expected,
       });
     }
+    case "dns-record": {
+      const server = built.getServer(check.configuration.deviceId);
+      if (!server) return errorResult(check, "Server was not found");
+      let hostname: string;
+      try {
+        hostname = normalizeDnsName(check.configuration.hostname);
+      } catch {
+        return errorResult(check, "DNS hostname is invalid");
+      }
+      const record = server.services.configurations()
+        .filter((service) => service.type === "dns")
+        .flatMap((service) => service.records)
+        .find((candidate) => candidate.name === hostname);
+      const passed = record?.address === check.configuration.expectedAddress;
+      return result(check, passed, `${hostname} ${passed ? "maps" : "does not map"} to ${check.configuration.expectedAddress}`, {
+        hostname,
+        actualAddress: record?.address,
+        expectedAddress: check.configuration.expectedAddress,
+      });
+    }
+    case "dns-resolution": {
+      const source = built.getDevice(check.configuration.sourceDeviceId);
+      if (!(source instanceof EndHost)) return errorResult(check, "DNS client end host was not found");
+      const requestId = source.applications.resolveDns(check.configuration.hostname, check.configuration.dnsServer);
+      runtime.runUntil(() => source.applications.dnsResults.some((entry) => entry.requestId === requestId));
+      const resolution = source.applications.dnsResults.find((entry) => entry.requestId === requestId);
+      const passed = resolution?.status === "success" && resolution.address === check.configuration.expectedAddress;
+      return result(check, passed, `${source.name} ${passed ? "resolved" : "did not resolve"} ${check.configuration.hostname}`, {
+        status: resolution?.status,
+        actualAddress: resolution?.address,
+        expectedAddress: check.configuration.expectedAddress,
+      });
+    }
+    case "http-response": {
+      const source = built.getDevice(check.configuration.sourceDeviceId);
+      if (!(source instanceof EndHost)) return errorResult(check, "HTTP client end host was not found");
+      const requestId = source.applications.httpGet(check.configuration.url);
+      runtime.runUntil(() => source.applications.httpResults.some((entry) => entry.requestId === requestId));
+      const response = source.applications.httpResults.find((entry) => entry.requestId === requestId);
+      const passed = response?.status === "completed"
+        && response.statusCode === check.configuration.expectedStatus
+        && (check.configuration.expectedBody === undefined || response.body === check.configuration.expectedBody);
+      return result(check, passed, `HTTP ${check.configuration.url} returned ${response?.statusCode ?? response?.status ?? "no response"}`, {
+        actualStatus: response?.statusCode,
+        expectedStatus: check.configuration.expectedStatus,
+        bodyMatched: check.configuration.expectedBody === undefined || response?.body === check.configuration.expectedBody,
+      });
+    }
+    case "tftp-file": {
+      const source = built.getDevice(check.configuration.sourceDeviceId);
+      if (!(source instanceof EndHost)) return errorResult(check, "TFTP client end host was not found");
+      const requestId = source.applications.tftpGet(check.configuration.serverIp, check.configuration.filename);
+      runtime.runUntil(() => source.applications.tftpResults.some((entry) => entry.requestId === requestId));
+      const transfer = source.applications.tftpResults.find((entry) => entry.requestId === requestId);
+      const passed = transfer?.status === "completed"
+        && (check.configuration.expectedContent === undefined || transfer.content === check.configuration.expectedContent);
+      return result(check, passed, `${check.configuration.filename} ${passed ? "was downloaded" : "was not downloaded"}`, {
+        status: transfer?.status,
+        contentMatched: check.configuration.expectedContent === undefined || transfer?.content === check.configuration.expectedContent,
+      });
+    }
+    case "ntp-response": {
+      const source = built.getDevice(check.configuration.sourceDeviceId);
+      if (!(source instanceof EndHost)) return errorResult(check, "NTP client end host was not found");
+      const requestId = source.applications.queryNtp(check.configuration.serverIp);
+      runtime.runUntil(() => source.applications.ntpResults.some((entry) => entry.requestId === requestId));
+      const response = source.applications.ntpResults.find((entry) => entry.requestId === requestId);
+      const succeeded = response?.status === "completed";
+      const passed = check.configuration.expected === "success" ? succeeded : !succeeded;
+      return result(check, passed, `NTP query ${succeeded ? "received a response" : "timed out"}`, {
+        actual: succeeded ? "success" : "failure",
+        expected: check.configuration.expected,
+        serverTimeNs: response?.serverTimeNs,
+      });
+    }
+    case "syslog-received": {
+      const source = built.getDevice(check.configuration.sourceDeviceId);
+      const server = built.getServer(check.configuration.serverDeviceId);
+      if (!(source instanceof EndHost) || !server?.ip) return errorResult(check, "Syslog source or server was not found");
+      const before = server.serviceRuntimeSnapshot().syslog.entries.length;
+      source.applications.sendSyslog(server.ip, check.configuration.severity, check.configuration.message);
+      runtime.runUntil(() => server.serviceRuntimeSnapshot().syslog.entries.length > before);
+      const entry = server.serviceRuntimeSnapshot().syslog.entries.at(-1);
+      const passed = entry?.severity === check.configuration.severity && entry.message === check.configuration.message;
+      return result(check, passed, `Syslog message ${passed ? "was received" : "was not received"} by ${server.name}`, {
+        received: !!entry,
+        actualSeverity: entry?.severity,
+        source: entry?.source,
+      });
+    }
+    case "tcp-listener": {
+      const server = built.getServer(check.configuration.deviceId);
+      if (!server) return errorResult(check, "Server was not found");
+      const listener = server.transport.tcp.inspect().find((entry) =>
+        entry.localPort === check.configuration.port && entry.state === TcpState.Listen);
+      return result(check, !!listener, `TCP port ${check.configuration.port} is ${listener ? "listening" : "closed"} on ${server.name}`, {
+        listening: !!listener,
+        service: listener?.service,
+        port: check.configuration.port,
+      });
+    }
   }
 }
 
@@ -318,7 +419,15 @@ export function verifySubmission(input: unknown, limits: VerificationLimits = DE
   built.engine.enableTrace(limits.maximumTraceRecords);
   const runtime = new VerificationRuntime(built, limits);
   prepareDhcp(runtime, document);
-  const internalChecks = request.gradingSpec.checks.map((check) => runCheck(check, runtime));
+  runtime.runUntil(() => built.engine.nextEventTime() === undefined);
+  const internalChecks = request.gradingSpec.checks.map((check) => {
+    try {
+      return runCheck(check, runtime);
+    } catch (error) {
+      if (error instanceof VerificationResourceLimitError) throw error;
+      return errorResult(check, error instanceof Error ? error.message : "Check execution failed");
+    }
+  });
   const maximumPoints = internalChecks.reduce((total, check) => total + check.maximumPoints, 0);
   const awardedPoints = internalChecks.reduce((total, check) => total + check.awardedPoints, 0);
   const score = maximumPoints === 0 ? 0 : Math.round((awardedPoints / maximumPoints) * 10_000) / 100;

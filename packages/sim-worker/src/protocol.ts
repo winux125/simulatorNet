@@ -1,5 +1,16 @@
-import type { DeviceCapability, DeviceType, LabDocument } from "@sim/contracts";
+import type { DeviceCapability, DeviceType, LabDocument, ServerServiceConfig } from "@sim/contracts";
 import type { CliMode } from "@sim/cli-engine";
+import type {
+  DnsResolutionResult,
+  HttpClientResult,
+  NtpClientResult,
+  ServerServiceRuntimeSnapshot,
+  ServerServiceSummary,
+  TcpConnectionInspection,
+  TftpClientResult,
+  UdpSocketInspection,
+} from "@sim/sim-core";
+export type { ServerServiceRuntimeSnapshot } from "@sim/sim-core";
 
 export type EngineUiState = "idle" | "running" | "paused" | "error";
 
@@ -18,6 +29,7 @@ export interface LabUiNode {
   position: { x: number; y: number };
   status: "up" | "down";
   interfaces: LabUiInterface[];
+  serviceBadges?: string[];
 }
 
 export interface LabUiLink {
@@ -109,7 +121,22 @@ export interface DeviceInspection {
   }>;
   ipRoutingEnabled?: boolean;
   counters?: { repeatedFrames?: number; droppedFrames?: number };
-  services?: Array<{ type: string }>;
+  services?: ServerServiceSummary[];
+  serviceRuntime?: ServerServiceRuntimeSnapshot;
+  transport?: {
+    udpSockets: UdpSocketInspection[];
+    tcpConnections: TcpConnectionInspection[];
+  };
+  applications?: {
+    dnsServer?: string;
+    dnsResults: DnsResolutionResult[];
+    httpResults: HttpClientResult[];
+    tftpResults: TftpClientResult[];
+    downloadedFiles: Array<{ filename: string; content: string }>;
+    ntpResults: NtpClientResult[];
+    clockOffsetNs: number;
+    clockTimeNs: number;
+  };
   dhcp?: {
     enabled?: boolean;
     state?: string;
@@ -132,6 +159,12 @@ export interface DeviceInspection {
   };
 }
 
+export interface ServerServicesView {
+  deviceId: string;
+  configurations: ServerServiceConfig[];
+  services: ServerServiceSummary[];
+}
+
 export type SimWorkerRequest =
   | { type: "INITIALIZE_LAB"; requestId: string; document: LabDocument }
   | { type: "REBUILD_LAB"; requestId: string; document: LabDocument }
@@ -143,6 +176,12 @@ export type SimWorkerRequest =
   | { type: "RESET_RUNTIME"; requestId: string }
   | { type: "GET_SNAPSHOT"; requestId: string }
   | { type: "GET_DEVICE_INSPECTION"; requestId: string; deviceId: string }
+  | { type: "GET_SERVER_SERVICES"; requestId: string; deviceId: string }
+  | { type: "CONFIGURE_SERVER_SERVICE"; requestId: string; deviceId: string; configuration: ServerServiceConfig }
+  | { type: "ENABLE_SERVER_SERVICE"; requestId: string; deviceId: string; serviceId: string }
+  | { type: "DISABLE_SERVER_SERVICE"; requestId: string; deviceId: string; serviceId: string }
+  | { type: "GET_SERVER_SERVICE_RUNTIME"; requestId: string; deviceId: string }
+  | { type: "CLEAR_SYSLOG_RUNTIME"; requestId: string; deviceId: string }
   | { type: "SERIALIZE_LAB"; requestId: string };
 
 export type SimWorkerPayload =
@@ -150,6 +189,8 @@ export type SimWorkerPayload =
   | CliExecutionResult
   | SimulationRunResult
   | DeviceInspection
+  | ServerServicesView
+  | ServerServiceRuntimeSnapshot
   | LabDocument
   | { closed: boolean }
   | { paused: boolean; snapshot: LabUiSnapshot };
@@ -184,6 +225,12 @@ export interface SimWorkerPayloadByType {
   RESET_RUNTIME: LabUiSnapshot;
   GET_SNAPSHOT: LabUiSnapshot;
   GET_DEVICE_INSPECTION: DeviceInspection;
+  GET_SERVER_SERVICES: ServerServicesView;
+  CONFIGURE_SERVER_SERVICE: ServerServicesView;
+  ENABLE_SERVER_SERVICE: ServerServicesView;
+  DISABLE_SERVER_SERVICE: ServerServicesView;
+  GET_SERVER_SERVICE_RUNTIME: ServerServiceRuntimeSnapshot;
+  CLEAR_SYSLOG_RUNTIME: ServerServiceRuntimeSnapshot;
   SERIALIZE_LAB: LabDocument;
 }
 

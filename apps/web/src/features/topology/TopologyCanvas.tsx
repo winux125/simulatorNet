@@ -128,6 +128,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           id: iface.id,
           operationalUp: live?.interfaces.find((candidate) => candidate.id === iface.id)?.operationalUp ?? false,
         })),
+        serviceBadges: live?.serviceBadges,
         terminalOpen: props.terminalTabs.includes(node.id),
         configurationChanged: changed,
         connectable: editable && props.activeTool === "add-link",

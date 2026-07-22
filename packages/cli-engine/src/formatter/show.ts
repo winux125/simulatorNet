@@ -6,6 +6,7 @@ import {
   L2Switch,
   Layer3Switch,
   Router,
+  Server,
 } from "@sim/sim-core";
 import { dashes, row } from "./tables";
 
@@ -264,6 +265,12 @@ export function showRunningConfig(device: Device): string {
     if (!device.primary.adminUp) out.push(" shutdown");
     out.push("!");
     if (state.gateway) out.push(`ip default-gateway ${state.gateway}`);
+    if (state.dnsServer) out.push(`ip name-server ${state.dnsServer}`);
+    if (device instanceof Server) {
+      for (const service of device.services.configurations()) {
+        out.push(`service ${service.type} ${service.enabled ? "enabled" : "disabled"} port ${service.port}`);
+      }
+    }
   }
   out.push("end");
   return out.join("\n");

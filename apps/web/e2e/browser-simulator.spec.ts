@@ -157,6 +157,60 @@ test("M10.1 L3 Switch CLI configures SVIs and routes inter-VLAN ping", async ({ 
   await page.screenshot({ path: "/tmp/m10-1-l3-light-1280x720.png", animations: "disabled" });
 });
 
+test("M10.2 DNS and HTTP traverse UDP/TCP and expose Server service UI", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await chooseDemo(page, /DNS \+ Web Services/);
+  await expect(page.getByLabel("Enabled services: DNS, HTTP")).toBeVisible();
+
+  await openCli(page, "PC1");
+  await runCli(page, "nslookup portal.lab");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Address: 172.20.10.10");
+  await runCli(page, "http get http://172.20.10.10/");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("HTTP/1.1 200");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Welcome to SimulatorNet");
+
+  await page.getByRole("button", { name: "Select SRV1" }).click();
+  await page.getByRole("tab", { name: "Configuration" }).click();
+  await expect(page.getByLabel("Server services")).toBeVisible();
+  await expect(page.getByLabel("DNS records")).toHaveValue(/portal\.lab/);
+  await page.getByRole("tab", { name: /Packet trace/ }).click();
+  await page.getByLabel("Packet trace protocol filter").selectOption("HTTP");
+  await expect(page.locator('tr[data-event-type="http-response"]').first()).toBeVisible();
+
+  await page.getByLabel("Color theme").selectOption("dark");
+  await page.screenshot({ path: "/tmp/m10-2-dns-http-dark-1440x900.png", animations: "disabled" });
+  await page.getByLabel("Color theme").selectOption("light");
+  await page.screenshot({ path: "/tmp/m10-2-dns-http-light-1440x900.png", animations: "disabled" });
+});
+
+test("M10.2 TFTP, NTP, and Syslog workflows retain bounded runtime state", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/");
+  await chooseDemo(page, /TFTP Configuration Backup/);
+  await openCli(page, "PC1");
+  await runCli(page, "tftp get 172.20.10.10 branch-r1.cfg");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("branch-r1.cfg");
+
+  await page.getByRole("menuitem", { name: "File", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Load Demo Lab" }).click();
+  await page.getByRole("button", { name: /NTP \+ Syslog Operations/ }).click();
+  await openCli(page, "PC1");
+  await runCli(page, "ntp query 172.20.10.10");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("NTP server time");
+  await runCli(page, "syslog send 172.20.10.10 warning uplink changed");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("message sent");
+
+  await page.getByRole("button", { name: "Select SRV1" }).click();
+  await page.getByRole("tab", { name: "Runtime" }).click();
+  await expect(page.getByText("Syslog messages")).toBeVisible();
+  await expect(page.getByTestId("inspector").getByText("uplink changed", { exact: true })).toBeVisible();
+  await page.getByLabel("Color theme").selectOption("dark");
+  await page.screenshot({ path: "/tmp/m10-2-services-dark-1280x720.png", animations: "disabled" });
+  await page.getByLabel("Color theme").selectOption("light");
+  await page.screenshot({ path: "/tmp/m10-2-services-light-1280x720.png", animations: "disabled" });
+});
+
 test("M8 launch exchange strips the code and exposes organization session controls", async ({ page }) => {
   const launchCode = "launch-secret-that-must-disappear";
   await page.route("**/v1/session/launch-exchange", async (route) => {

@@ -12,7 +12,15 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkspaceStore } from "../state/workspace-store";
 import { DEMO_LAB } from "../fixtures/demo-lab";
-import { BRIDGE_MAC_DEMO, HUB_ETHERNET_DEMO, L3_SWITCH_DEMO, SERVER_CONNECTIVITY_DEMO } from "../fixtures/m10-demo-labs";
+import {
+  BRIDGE_MAC_DEMO,
+  DNS_WEB_DEMO,
+  HUB_ETHERNET_DEMO,
+  L3_SWITCH_DEMO,
+  NTP_SYSLOG_DEMO,
+  SERVER_CONNECTIVITY_DEMO,
+  TFTP_BACKUP_DEMO,
+} from "../fixtures/m10-demo-labs";
 import { THEME_STORAGE_KEY } from "../hooks/useTheme";
 import { App } from "./App";
 import type { SimulatorClient } from "./simulator-client";
@@ -630,7 +638,7 @@ describe("M10.1 expanded device palette", () => {
     expect(await screen.findByText("Repeater counters")).toBeTruthy();
   });
 
-  it("shows L3 Switch SVIs and the Server service placeholder", async () => {
+  it("shows L3 Switch SVIs and real Server transport runtime", async () => {
     const client = new RuntimeClient();
     render(<App client={client} />);
     await userEvent.click(screen.getByRole("button", { name: /^Load Demo Lab$/ }));
@@ -645,6 +653,164 @@ describe("M10.1 expanded device palette", () => {
     await userEvent.click(screen.getByRole("button", { name: /Server Connectivity/ }));
     await userEvent.click(await screen.findByRole("button", { name: "Select SRV1" }));
     await userEvent.click(screen.getByRole("tab", { name: "Runtime" }));
-    expect(await screen.findByText("Services will be added in M10.2.")).toBeTruthy();
+    expect(await screen.findByText("Application services")).toBeTruthy();
+    expect(screen.getByText("UDP sockets")).toBeTruthy();
+  });
+});
+
+async function loadFocusedDemo(client: RuntimeClient, label: RegExp, expectedId: string) {
+  render(<App client={client} />);
+  await userEvent.click(await screen.findByRole("button", { name: /^Load Demo Lab$/ }));
+  await userEvent.click(screen.getByRole("button", { name: label }));
+  await waitFor(() => expect(useWorkspaceStore.getState().snapshot?.labId).toBe(expectedId));
+}
+
+async function submitTerminal(terminal: MockXterm, command: string) {
+  await type(terminal, command);
+  await act(async () => terminal.emit("\r"));
+}
+
+describe("M10.2 transport and server applications", () => {
+  it("offers the three focused service demos without auto-loading them", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    await userEvent.click(screen.getByRole("button", { name: /^Load Demo Lab$/ }));
+    expect(screen.getByRole("button", { name: /DNS \+ Web Services/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /TFTP Configuration Backup/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /NTP \+ Syslog Operations/ })).toBeTruthy();
+    expect(useWorkspaceStore.getState().snapshot).toBeUndefined();
+  });
+
+  it("shows compact listening service badges on a Server node", async () => {
+    const client = new RuntimeClient();
+    await loadFocusedDemo(client, /DNS \+ Web Services/, DNS_WEB_DEMO.id);
+    expect(await screen.findByLabelText("Enabled services: DNS, HTTP")).toBeTruthy();
+  });
+
+  it("renders DNS, HTTP, TFTP, NTP, and Syslog configuration sections", async () => {
+    const client = new RuntimeClient();
+    await loadFocusedDemo(client, /DNS \+ Web Services/, DNS_WEB_DEMO.id);
+    await userEvent.click(screen.getByRole("button", { name: "Select SRV1" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Configuration" }));
+    const services = await screen.findByLabelText("Server services");
+    for (const type of ["dns", "http", "tftp", "ntp", "syslog"]) {
+      expect(services.querySelector(`[data-service-type="${type}"]`)).toBeTruthy();
+    }
+  });
+
+  it("applies edited DNS records through the typed worker boundary", async () => {
+    const client = new RuntimeClient();
+    await loadFocusedDemo(client, /DNS \+ Web Services/, DNS_WEB_DEMO.id);
+    await userEvent.click(screen.getByRole("button", { name: "Select SRV1" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Configuration" }));
+    fireEvent.change(await screen.findByLabelText("DNS records"), { target: { value: "portal.lab 172.20.10.10\napi.lab 172.20.10.10" } });
+    await userEvent.click(screen.getByRole("button", { name: "Apply DNS" }));
+    await waitFor(() => expect(client.requestTypes).toContain("CONFIGURE_SERVER_SERVICE"));
+    expect((screen.getByLabelText("DNS records") as HTMLTextAreaElement).value).toContain("api.lab");
+  });
+
+  it("disables and re-enables HTTP through explicit worker requests", async () => {
+    const client = new RuntimeClient();
+    await loadFocusedDemo(client, /DNS \+ Web Services/, DNS_WEB_DEMO.id);
+    await userEvent.click(screen.getByRole("button", { name: "Select SRV1" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Configuration" }));
+    const enabled = await screen.findByLabelText("http enabled");
+    await userEvent.click(enabled);
+    await waitFor(() => expect(client.requestTypes).toContain("DISABLE_SERVER_SERVICE"));
+    await userEvent.click(screen.getByLabelText("http enabled"));
+    await waitFor(() => expect(client.requestTypes).toContain("ENABLE_SERVER_SERVICE"));
+  });
+
+  it("shows service validation failures as workspace problems", async () => {
+    const client = new RuntimeClient();
+    await loadFocusedDemo(client, /DNS \+ Web Services/, DNS_WEB_DEMO.id);
+    await userEvent.click(screen.getByRole("button", { name: "Select SRV1" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Configuration" }));
+    fireEvent.change(await screen.findByLabelText("dns port"), { target: { value: "70000" } });
+    await userEvent.click(screen.getByRole("button", { name: "Apply DNS" }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/less than or equal to 65535/i);
+  });
+
+  it("inspects UDP sockets and TCP listeners separately", async () => {
+    const client = new RuntimeClient();
+    await loadFocusedDemo(client, /DNS \+ Web Services/, DNS_WEB_DEMO.id);
+    await userEvent.click(screen.getByRole("button", { name: "Select SRV1" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Runtime" }));
+    expect(await screen.findByText("UDP sockets")).toBeTruthy();
+    expect(screen.getByText("TCP connections")).toBeTruthy();
+    expect(screen.getAllByText("dns").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("LISTEN").length).toBeGreaterThan(0);
+  });
+
+  it("inspects PC resolver, runtime files, and virtual clock", async () => {
+    const client = new RuntimeClient();
+    await loadFocusedDemo(client, /TFTP Configuration Backup/, TFTP_BACKUP_DEMO.id);
+    await userEvent.click(screen.getByRole("button", { name: "Select PC1" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Runtime" }));
+    expect(await screen.findByText("DNS resolver")).toBeTruthy();
+    expect(screen.getByText("Downloaded files")).toBeTruthy();
+    expect(screen.getByText("Clock")).toBeTruthy();
+  });
+
+  it("executes nslookup end-to-end in the PC terminal", async () => {
+    const client = new RuntimeClient();
+    await loadFocusedDemo(client, /DNS \+ Web Services/, DNS_WEB_DEMO.id);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await submitTerminal(terminal, "nslookup portal.lab");
+    await waitFor(() => expect(terminal.output).toContain("Address: 172.20.10.10"));
+  });
+
+  it("executes an HTTP GET over TCP in the PC terminal", async () => {
+    const client = new RuntimeClient();
+    await loadFocusedDemo(client, /DNS \+ Web Services/, DNS_WEB_DEMO.id);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await submitTerminal(terminal, "http get http://172.20.10.10/");
+    await waitFor(() => expect(terminal.output).toContain("HTTP/1.1 200"));
+    expect(terminal.output).toContain("Welcome to SimulatorNet");
+  });
+
+  it("downloads a TFTP backup through the terminal", async () => {
+    const client = new RuntimeClient();
+    await loadFocusedDemo(client, /TFTP Configuration Backup/, TFTP_BACKUP_DEMO.id);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await submitTerminal(terminal, "tftp get 172.20.10.10 branch-r1.cfg");
+    await waitFor(() => expect(terminal.output).toContain("Received"));
+    expect(terminal.output).toContain("branch-r1.cfg");
+  });
+
+  it("queries NTP and sends Syslog through the terminal", async () => {
+    const client = new RuntimeClient();
+    await loadFocusedDemo(client, /NTP \+ Syslog Operations/, NTP_SYSLOG_DEMO.id);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await submitTerminal(terminal, "ntp query 172.20.10.10");
+    await waitFor(() => expect(terminal.output).toContain("NTP server time"));
+    await submitTerminal(terminal, "syslog send 172.20.10.10 warning uplink changed");
+    await waitFor(() => expect(terminal.output).toContain("message sent"));
+  });
+
+  it("filters packet trace by application and transport protocols", async () => {
+    const client = new RuntimeClient();
+    await loadFocusedDemo(client, /DNS \+ Web Services/, DNS_WEB_DEMO.id);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await submitTerminal(terminal, "nslookup portal.lab");
+    await waitFor(() => expect(terminal.output).toContain("Address:"));
+    await userEvent.click(screen.getByRole("tab", { name: /Packet trace/ }));
+    const filter = await screen.findByLabelText("Packet trace protocol filter");
+    await userEvent.selectOptions(filter, "DNS");
+    expect(screen.getAllByText(/dns-/i).length).toBeGreaterThan(0);
+  });
+
+  it("clears Syslog runtime without removing service configuration", async () => {
+    const client = new RuntimeClient();
+    await loadFocusedDemo(client, /NTP \+ Syslog Operations/, NTP_SYSLOG_DEMO.id);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await submitTerminal(terminal, "syslog send 172.20.10.10 notice ready");
+    await waitFor(() => expect(terminal.output).toContain("message sent"));
+    await userEvent.click(screen.getByRole("button", { name: "Select SRV1" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Configuration" }));
+    expect(await screen.findByText("ready")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(await screen.findByText("No received messages.")).toBeTruthy();
+    expect((screen.getByLabelText("syslog enabled") as HTMLInputElement).checked).toBe(true);
   });
 });

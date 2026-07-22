@@ -119,4 +119,51 @@ describe("M10 worker integration", () => {
       error: { code: "cli-not-supported" },
     });
   });
+
+  it("configures, toggles, inspects, and serializes server services through typed requests", () => {
+    const runtime = createSimulationWorkerRuntime();
+    request(runtime, { type: "INITIALIZE_LAB", document: expandedDeviceLab() });
+    const configured = request(runtime, {
+      type: "CONFIGURE_SERVER_SERVICE",
+      deviceId: "server-1",
+      configuration: {
+        id: "dns-main",
+        type: "dns",
+        enabled: true,
+        port: 53,
+        records: [{ name: "APP.LAB.", address: "10.0.10.2" }],
+      },
+    });
+    expect(configured).toMatchObject({ services: [{ id: "dns-main", state: "listening" }] });
+    const inspection = request(runtime, { type: "GET_DEVICE_INSPECTION", deviceId: "server-1" }) as DeviceInspection;
+    expect(inspection).toMatchObject({
+      services: [{ type: "dns", state: "listening" }],
+      transport: { udpSockets: [{ localPort: 53, service: "dns" }] },
+      applications: { dnsResults: [], downloadedFiles: [] },
+    });
+    const disabled = request(runtime, { type: "DISABLE_SERVER_SERVICE", deviceId: "server-1", serviceId: "dns-main" });
+    expect(disabled).toMatchObject({ services: [{ state: "disabled" }] });
+    const enabled = request(runtime, { type: "ENABLE_SERVER_SERVICE", deviceId: "server-1", serviceId: "dns-main" });
+    expect(enabled).toMatchObject({ services: [{ state: "listening" }] });
+    const serialized = request(runtime, { type: "SERIALIZE_LAB" }) as LabDocument;
+    expect(serialized.configurations["server-1"]).toMatchObject({
+      enabledServices: [{ id: "dns-main", records: [{ name: "app.lab" }] }],
+    });
+  });
+
+  it("rejects invalid service payloads and non-server targets with stable errors", () => {
+    const runtime = createSimulationWorkerRuntime();
+    request(runtime, { type: "INITIALIZE_LAB", document: expandedDeviceLab() });
+    expect(runtime.handleRequest({
+      type: "CONFIGURE_SERVER_SERVICE",
+      requestId: "invalid-service",
+      deviceId: "server-1",
+      configuration: { id: "bad", type: "dns", enabled: true, port: 70_000, records: [] },
+    })).toMatchObject({ type: "REQUEST_FAILED", error: { code: "invalid-service-configuration" } });
+    expect(runtime.handleRequest({
+      type: "GET_SERVER_SERVICES",
+      requestId: "not-server",
+      deviceId: "hub-1",
+    })).toMatchObject({ type: "REQUEST_FAILED", error: { code: "not-a-server" } });
+  });
 });

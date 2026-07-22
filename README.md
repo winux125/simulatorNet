@@ -543,7 +543,102 @@ Connectivity. The device library and topology use neutral distinct icons; the
 Inspector conditionally exposes MAC, ARP, route, SVI, repeater-counter and
 service-placeholder sections from the selected device's capabilities.
 
-Known M10.1 limits: no STP/RSTP, link aggregation, port security, CDP/LLDP,
-bridge VLANs, multilayer-switch DHCP server, DNS/HTTP/NTP services, dynamic
-routing, NAT, ACLs or IPv6. A Server supports one active simulated L3 interface
-in this milestone. M10.2 is intentionally not started.
+Known M10.1 limits at that checkpoint were no STP/RSTP, link aggregation, port
+security, CDP/LLDP, bridge VLANs, dynamic routing, NAT, ACLs or IPv6. A Server
+supports one active simulated L3 interface.
+
+## Milestone 10.2 — deterministic transport and server applications
+
+M10.2 adds one reusable transport path shared by PC and Server:
+
+```text
+application → per-device UDP/TCP socket → IPv4 → EthernetInterface.transmit
+            → deterministic links/routers → IPv4 → socket → application
+```
+
+The UDP registry provides exclusive `bindUdp`/`unbindUdp` listeners, stable
+ephemeral ports, unicast ICMP port-unreachable behavior, broadcast suppression,
+bounded structured payloads and local socket inspection. DHCP client traffic
+now uses that registry. The simplified message-oriented TCP model provides
+LISTEN and active open, SYN/SYN-ACK/ACK, ordered application messages,
+graceful FIN close, RST for closed ports, virtual-time retransmissions and
+TIME_WAIT. Connections are keyed by local/remote address and port. It does not
+model congestion control, byte windows, SACK, options, fragmentation or real
+bandwidth.
+
+Both stacks are pure TypeScript. They use the engine's stable event queue,
+integer nanosecond clock and seeded RNG; they do not use browser/Node sockets,
+wall-clock timers, `fetch`, `Date.now()` or `Math.random()`.
+
+### Server services
+
+Server owns a lifecycle-aware registry (`disabled`, `starting`, `listening`,
+`error`) with persistent discriminated-union configuration and transient
+runtime state:
+
+| Service | Transport | Implemented behavior |
+| --- | --- | --- |
+| DNS | UDP/53 | A records, canonical case-insensitive names, NOERROR, NXDOMAIN and FORMERR |
+| HTTP | TCP/80 | one GET/HEAD request, Host/path validation, 200/404/400, content type/body, graceful close |
+| TFTP | UDP/69 | read-only RRQ/DATA/ACK/ERROR, 512-character blocks, bounded retry/timeout and not-found |
+| NTP | UDP/123 | response derived only from engine virtual time plus configured server offset |
+| Syslog | UDP/514 | structured facility/severity/source/virtual timestamp/message and bounded retention |
+
+DNS recursion, CNAME/MX/AAAA/DNSSEC/TCP fallback/cache, TLS, chunked HTTP,
+cookies/authentication, TFTP writes/options/filesystem access and real external
+network access remain out of scope. Downloaded TFTP files, DNS/HTTP/NTP results,
+TCP connections, transfer state and Syslog entries are runtime-only and are
+excluded from `LabDocument` serialization.
+
+Central service limits are 16 services per Server, 256 DNS records, 128 HTTP
+resources, 65,536 bytes per HTTP body, 64 TFTP files, 262,144 bytes per TFTP
+file, 64 downloaded runtime files, 1,000 Syslog entries and 64 concurrent
+application requests. Transport limits are 64 UDP sockets, 32 TCP listeners,
+128 TCP connections, three retransmissions, 65,536-byte application payloads,
+64 queued TCP messages and two seconds of virtual TIME_WAIT.
+
+### CLI, worker and UI
+
+PC and Server host CLIs add:
+
+```text
+nslookup <hostname> [dns-server]
+http get <http://server-ip[:port]/path>
+tftp get <server-ip> <filename>
+ntp query <server-ip>
+show clock
+syslog send <server-ip> <severity> <message>
+show udp sockets
+show tcp connections
+```
+
+Server also exposes read-only `show services`, `show dns`, `show http`, `show
+tftp` and `show syslog`. The existing incomplete-command, validation and
+contextual `?` help rules apply. Commands drain only deterministic virtual
+events through the worker-owned engine.
+
+The Inspector contains compact DNS/HTTP/TFTP/NTP/Syslog editors and sends only
+typed `GET_SERVER_SERVICES`, `CONFIGURE_SERVER_SERVICE`, enable/disable,
+runtime and clear-Syslog requests. It separately shows UDP sockets, TCP
+connections, resolver results, downloaded files, clock state and service
+runtime. Server topology nodes carry compact listening-service badges. Packet
+Trace can filter UDP, TCP, DNS, HTTP, TFTP, NTP and Syslog events and displays
+virtual time, endpoints, ports, event and bounded result summaries.
+
+Focused demos are DNS + Web Services, TFTP Configuration Backup and NTP +
+Syslog Operations. They remain explicit choices on the welcome screen and are
+never auto-loaded.
+
+### Deterministic grading
+
+Server verification adds `dns-record`, `dns-resolution`, `http-response`,
+`tftp-file`, `ntp-response`, `syslog-received` and `tcp-listener` checks. Each
+verification rebuilds the submitted persistent document, starts services on
+virtual time and performs fresh server-owned actions. Browser results,
+downloads, logs, socket tables and traces are never trusted. Hidden checks use
+the existing student redaction; instructor results receive bounded diagnostics.
+
+Known M10.2 limits: no real sockets or web fetches, no full RFC TCP semantics,
+no Router/L3-switch application hosting, no server-side filesystem, no service
+persistence beyond structured lab configuration, and no new routing or
+security protocols.

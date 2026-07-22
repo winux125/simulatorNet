@@ -548,6 +548,15 @@ function CliCommandsDialog({ onClose }: { onClose(): void }) {
         <li><code>ipconfig</code> — show interface addressing and DHCP lease</li>
         <li><code>ipconfig /renew</code> — renew a DHCP client lease</li>
         <li><code>arp</code> — display the ARP cache</li>
+        <li><code>nslookup &lt;hostname&gt; [dns-server]</code> — resolve an A record</li>
+        <li><code>http get &lt;url&gt;</code>, <code>tftp get &lt;server-ip&gt; &lt;filename&gt;</code></li>
+        <li><code>ntp query &lt;server-ip&gt;</code>, <code>show clock</code></li>
+        <li><code>syslog send &lt;server-ip&gt; &lt;severity&gt; &lt;message&gt;</code></li>
+        <li><code>show udp sockets</code>, <code>show tcp connections</code></li>
+      </ul></section>
+      <section><h3>Server inspection</h3><ul>
+        <li><code>show services</code> — enabled state and listening ports</li>
+        <li><code>show dns</code>, <code>show http</code>, <code>show tftp</code>, <code>show syslog</code></li>
       </ul></section>
       <section><h3>Bridge / Switch</h3><ul>
         <li><code>show mac address-table</code> — display learned forwarding entries</li>

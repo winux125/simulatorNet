@@ -10,6 +10,7 @@ export type DeviceNodeData = Record<string, unknown> & {
   status: "up" | "down";
   subtitle: string;
   interfaces: Array<{ id: string; operationalUp: boolean }>;
+  serviceBadges?: string[];
   terminalOpen: boolean;
   configurationChanged: boolean;
   connectable: boolean;
@@ -64,6 +65,7 @@ export function DeviceNode({ id, data, selected }: NodeProps<DeviceFlowNode>) {
         <StatusIndicator status={data.status} compact />
       </button>
       <span className="device-node__type" title={profile.description}>{profile.displayName}</span>
+      {data.serviceBadges && data.serviceBadges.length > 0 && <span className="device-node__services" aria-label={`Enabled services: ${data.serviceBadges.join(", ")}`}>{data.serviceBadges.slice(0, 3).map((service) => <b key={service}>{service}</b>)}</span>}
       {data.configurationChanged && <span className="device-node__changed" title="Configuration changed">●</span>}
       {data.interfaces.map((iface, index) => (
         <Handle

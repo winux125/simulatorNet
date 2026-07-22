@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import type { SimulatorClient } from "../../app/simulator-client";
 import type { InspectorTab } from "../../state/workspace-store";
 import { Button, EmptyState, IconButton, Panel, PanelHeader, StatusIndicator, Tabs } from "../../ui";
+import { ServerServicesPanel } from "./ServerServicesPanel";
 
 interface InspectorPanelProps {
   client: SimulatorClient;
@@ -127,6 +128,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
         )}
         {node && props.tab === "configuration" && (
           <div className="inspector-section">
+            {node.type === "server" && <ServerServicesPanel client={props.client} deviceId={node.id} refreshKey={props.snapshot?.virtualTime ?? 0} onError={props.onError} />}
             <p className="section-eyebrow">Read-only structured configuration</p>
             <pre className="configuration-view">{JSON.stringify(props.document?.configurations[node.id] ?? {}, null, 2)}</pre>
             <p className="section-note">Use the device CLI to change configuration. Topology edits are applied through the rebuild boundary.</p>
@@ -150,7 +152,19 @@ export function InspectorPanel(props: InspectorPanelProps) {
                 <p>{inspection.dhcp.state ? `Client state: ${inspection.dhcp.state}` : `${inspection.dhcp.pools?.length ?? 0} configured pools`}</p>
                 {inspection.dhcp.lease && <code>{inspection.dhcp.lease.ipAddress} via {inspection.dhcp.lease.gateway ?? "—"}</code>}
               </div>}
-              {inspection.type === "server" && <div className="runtime-card"><h4>Application services</h4><p>Services will be added in M10.2.</p></div>}
+              {inspection.transport && <>
+                <RuntimeTable title="UDP sockets" empty="No UDP sockets" columns={["Local address", "Port", "Service", "State"]} rows={inspection.transport.udpSockets.map((row) => [row.localAddress ?? "0.0.0.0", String(row.localPort), row.service, row.state])} />
+                <RuntimeTable title="TCP connections" empty="No TCP connections" columns={["Local", "Remote", "State", "Service"]} rows={inspection.transport.tcpConnections.map((row) => [`${row.localAddress}:${row.localPort}`, row.remotePort === 0 ? "*" : `${row.remoteAddress}:${row.remotePort}`, row.state, row.service])} />
+              </>}
+              {inspection.applications && <>
+                <div className="runtime-card"><h4>Clock</h4><p><code>{inspection.applications.clockTimeNs} ns</code> virtual · offset <code>{inspection.applications.clockOffsetNs} ns</code></p></div>
+                <div className="runtime-card"><h4>DNS resolver</h4><p>{inspection.applications.dnsServer ?? "Not configured"} · {inspection.applications.dnsResults.length} results</p></div>
+                <RuntimeTable title="Downloaded files" empty="No runtime files" columns={["Filename", "Bytes"]} rows={inspection.applications.downloadedFiles.map((file) => [file.filename, String(file.content.length)])} />
+              </>}
+              {inspection.type === "server" && inspection.serviceRuntime && <>
+                <RuntimeTable title="Application services" empty="No services configured" columns={["ID", "Type", "State", "Port"]} rows={inspection.serviceRuntime.services.map((service) => [service.id, service.type, service.state, String(service.listeningPort ?? "—")])} />
+                <RuntimeTable title="Syslog messages" empty="No received Syslog messages" columns={["Time", "Source", "Severity", "Message"]} rows={inspection.serviceRuntime.syslog.entries.map((entry) => [String(entry.receivedAtNs), entry.source, entry.severity, entry.message])} />
+              </>}
             </>}
             {!loading && !inspection && <EmptyState icon={<CircleX size={24} />} title="Runtime unavailable" description="The worker did not return inspection data for this device." />}
           </div>

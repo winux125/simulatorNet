@@ -1,5 +1,5 @@
 import { createCliSession, type CliSession } from "@sim/cli-engine";
-import type { LabDocument, LabMetadata, NodeSpec } from "@sim/contracts";
+import { ServerServiceConfigSchema, type LabDocument, type LabMetadata, type NodeSpec } from "@sim/contracts";
 import {
   buildLabFromDocument,
   canonicalizeLabDocument,
@@ -33,6 +33,7 @@ import type {
   SimWorkerResponse,
   SimulationRunResult,
   SimulationTraceEvent,
+  ServerServicesView,
 } from "./protocol";
 
 interface CliSessionEntry {
@@ -110,6 +111,21 @@ export class SimulationWorkerRuntime {
         return this.snapshot();
       case "GET_DEVICE_INSPECTION":
         return this.inspectDevice(requireString(request, "deviceId"));
+      case "GET_SERVER_SERVICES":
+        return this.serverServices(requireString(request, "deviceId"));
+      case "CONFIGURE_SERVER_SERVICE":
+        return this.configureServerService(requireString(request, "deviceId"), request.configuration);
+      case "ENABLE_SERVER_SERVICE":
+        return this.setServerServiceEnabled(requireString(request, "deviceId"), requireString(request, "serviceId"), true);
+      case "DISABLE_SERVER_SERVICE":
+        return this.setServerServiceEnabled(requireString(request, "deviceId"), requireString(request, "serviceId"), false);
+      case "GET_SERVER_SERVICE_RUNTIME":
+        return this.requireServer(requireString(request, "deviceId")).serviceRuntimeSnapshot();
+      case "CLEAR_SYSLOG_RUNTIME": {
+        const server = this.requireServer(requireString(request, "deviceId"));
+        server.services.clearSyslog();
+        return server.serviceRuntimeSnapshot();
+      }
       case "SERIALIZE_LAB":
         return this.serialize();
       default:
@@ -284,7 +300,13 @@ export class SimulationWorkerRuntime {
             leaseSeconds: device.lease.leaseSeconds,
           } : undefined,
         },
-        services: [],
+        services: device.listServices(),
+        serviceRuntime: device.serviceRuntimeSnapshot(),
+        transport: {
+          udpSockets: device.transport.udp.inspect(),
+          tcpConnections: device.transport.tcp.inspect(),
+        },
+        applications: applicationInspection(device),
       };
     }
     if (device instanceof Pc) {
@@ -312,6 +334,11 @@ export class SimulationWorkerRuntime {
             leaseSeconds: device.lease.leaseSeconds,
           } : undefined,
         },
+        transport: {
+          udpSockets: device.transport.udp.inspect(),
+          tcpConnections: device.transport.tcp.inspect(),
+        },
+        applications: applicationInspection(device),
       };
     }
     if (device instanceof L2Switch) {
@@ -470,7 +497,48 @@ export class SimulationWorkerRuntime {
       position: node.position ?? { x: (index % 3) * 240, y: Math.floor(index / 3) * 180 },
       status: interfaces.some((iface) => iface.operationalUp) ? "up" : "down",
       interfaces,
+      serviceBadges: device instanceof Server
+        ? device.listServices().filter((service) => service.state === "listening").map((service) => service.type.toUpperCase())
+        : undefined,
     };
+  }
+
+  private serverServices(deviceId: string): ServerServicesView {
+    const server = this.requireServer(deviceId);
+    return {
+      deviceId,
+      configurations: server.services.configurations(),
+      services: server.listServices(),
+    };
+  }
+
+  private configureServerService(deviceId: string, input: unknown): ServerServicesView {
+    const parsed = ServerServiceConfigSchema.safeParse(input);
+    if (!parsed.success) {
+      throw new SimulationWorkerError("invalid-service-configuration", parsed.error.issues[0]?.message ?? "Invalid service configuration");
+    }
+    const server = this.requireServer(deviceId);
+    server.configureService(parsed.data);
+    this.requireBuiltLab().engine.runUntilIdle();
+    this.emitStateChanged();
+    this.flushTrace();
+    return this.serverServices(deviceId);
+  }
+
+  private setServerServiceEnabled(deviceId: string, serviceId: string, enabled: boolean): ServerServicesView {
+    const server = this.requireServer(deviceId);
+    if (enabled) server.enableService(serviceId);
+    else server.disableService(serviceId);
+    this.requireBuiltLab().engine.runUntilIdle();
+    this.emitStateChanged();
+    this.flushTrace();
+    return this.serverServices(deviceId);
+  }
+
+  private requireServer(deviceId: string): Server {
+    const server = this.requireBuiltLab().getServer(deviceId);
+    if (!server) throw new SimulationWorkerError("not-a-server", `Device '${deviceId}' is not a server`);
+    return server;
   }
 
   private flushTrace(): void {
@@ -520,6 +588,19 @@ function prefixLength(mask: number): number {
     value >>>= 1;
   }
   return count;
+}
+
+function applicationInspection(device: EndHost): NonNullable<DeviceInspection["applications"]> {
+  return {
+    dnsServer: device.applications.dnsServer,
+    dnsResults: device.applications.dnsResults.map((result) => ({ ...result })),
+    httpResults: device.applications.httpResults.map((result) => ({ ...result, headers: result.headers ? { ...result.headers } : undefined })),
+    tftpResults: device.applications.tftpResults.map((result) => ({ ...result })),
+    downloadedFiles: [...device.applications.downloadedFiles].map(([filename, content]) => ({ filename, content })),
+    ntpResults: device.applications.ntpResults.map((result) => ({ ...result })),
+    clockOffsetNs: device.applications.clockOffsetNs,
+    clockTimeNs: device.applications.clockNow(),
+  };
 }
 
 export function createSimulationWorkerRuntime(emit?: (message: SimWorkerOutboundMessage) => void): SimulationWorkerRuntime {
