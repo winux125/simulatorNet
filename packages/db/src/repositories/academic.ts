@@ -346,6 +346,42 @@ export class AcademicRepository {
     )).orderBy(assignmentStudents.assignedAt);
   }
 
+  /** Published assignments the student is currently assigned to (not removed). */
+  async listStudentAssignments(context: TenantContext, studentUserId: string): Promise<AssignmentRecord[]> {
+    const scope = tenant(context);
+    const rows = await this.database.select({ assignment: assignments })
+      .from(assignmentStudents)
+      .innerJoin(assignments, and(
+        eq(assignments.id, assignmentStudents.assignmentId),
+        eq(assignments.organizationId, assignmentStudents.organizationId),
+      ))
+      .where(and(
+        eq(assignmentStudents.organizationId, scope.organizationId),
+        eq(assignmentStudents.studentUserId, studentUserId),
+        ne(assignmentStudents.status, "removed"),
+        eq(assignments.status, "published"),
+      )).orderBy(desc(assignments.createdAt));
+    return rows.map((row) => row.assignment);
+  }
+
+  /** A single assignment the student is assigned to, regardless of availability. */
+  async getStudentAssignment(context: TenantContext, assignmentId: string, studentUserId: string): Promise<AssignmentRecord | undefined> {
+    const scope = tenant(context);
+    const [row] = await this.database.select({ assignment: assignments })
+      .from(assignmentStudents)
+      .innerJoin(assignments, and(
+        eq(assignments.id, assignmentStudents.assignmentId),
+        eq(assignments.organizationId, assignmentStudents.organizationId),
+      ))
+      .where(and(
+        eq(assignmentStudents.organizationId, scope.organizationId),
+        eq(assignmentStudents.assignmentId, assignmentId),
+        eq(assignmentStudents.studentUserId, studentUserId),
+        ne(assignmentStudents.status, "removed"),
+      )).limit(1);
+    return row?.assignment;
+  }
+
   // --- Lab instances -------------------------------------------------------
 
   async getOrCreateStudentLabInstance(context: TenantContext, assignmentId: string, studentUserId: string): Promise<LabInstanceRecord> {

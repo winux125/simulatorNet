@@ -87,6 +87,14 @@ label.ui-icon-button { display: inline-grid; }
 .session-identity > span { display: grid; min-width: 0; max-width: 150px; line-height: 1.1; }.session-identity strong, .session-identity small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.session-identity strong { color: var(--color-text); font-size: 9px; }.session-identity small { margin-top: 2px; color: var(--color-text-muted); font-size: 8px; text-transform: capitalize; }
 .session-identity .ui-icon-button { width: 26px; height: 27px; }.session-anonymous { padding: 0 5px; color: var(--color-text-faint); font-size: 9px; white-space: nowrap; }
 .launch-status { display: flex; min-height: 32px; flex: none; align-items: center; padding: 3px 14px; border-bottom: var(--border); background: var(--color-accent-muted); color: var(--color-accent); font-size: var(--font-size-11); }
+.assignment-bar { display: flex; min-height: 38px; flex: none; align-items: center; gap: 14px; padding: 4px 10px 4px 14px; border-bottom: var(--border); background: var(--color-panel-raised); }
+.assignment-bar__scope { display: flex; align-items: center; gap: 6px; color: var(--color-accent); font-size: 9px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
+.assignment-bar__meta { display: flex; min-width: 0; flex-direction: column; line-height: 1.2; }
+.assignment-bar__meta strong { font-size: var(--font-size-12); }
+.assignment-bar__meta span { overflow: hidden; max-width: 460px; color: var(--color-text-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.assignment-bar__status { display: flex; align-items: center; gap: 10px; margin-left: auto; color: var(--color-text-muted); font-size: var(--font-size-10); }
+.assignment-bar__score { display: inline-flex; align-items: center; gap: 4px; color: var(--color-success); font-weight: 650; }
+.assignment-bar__actions { display: flex; gap: 6px; }
 
 .workspace-error, .pending-banner { display: flex; min-height: 32px; flex: none; align-items: center; gap: 8px; padding: 3px 10px 3px 14px; border-bottom: var(--border); font-size: var(--font-size-11); }
 .workspace-error { background: var(--color-error-muted); color: var(--color-error-text); }

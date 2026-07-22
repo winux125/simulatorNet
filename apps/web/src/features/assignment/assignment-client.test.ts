@@ -1,0 +1,43 @@
+// @vitest-environment jsdom
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { assignmentClient, AssignmentApiError } from "./assignment-client";
+
+function mockFetch(status: number, body: unknown) {
+  return vi.fn(async () => ({
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => (body === undefined ? "" : JSON.stringify(body)),
+  })) as unknown as typeof fetch;
+}
+
+afterEach(() => vi.restoreAllMocks());
+
+describe("assignmentClient", () => {
+  it("lists the student's assignments", async () => {
+    const fetchMock = mockFetch(200, { assignments: [{ id: "a1", title: "Lab", status: "published" }] });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await assignmentClient.listAssignments();
+    expect(result.assignments[0]?.id).toBe("a1");
+    const call = (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(call[0]).toContain("/v1/student/assignments");
+    expect(call[1].credentials).toBe("include");
+  });
+
+  it("opens an assignment and returns the lab document", async () => {
+    const fetchMock = mockFetch(200, { assignment: { id: "a1" }, instance: { id: "i1", revision: 1 }, document: { id: "lab" } });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await assignmentClient.openAssignment("a1");
+    expect(result.instance.id).toBe("i1");
+    const [, init] = (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(init.method).toBe("POST");
+  });
+
+  it("surfaces a typed error with the server error code on a revision conflict", async () => {
+    vi.stubGlobal("fetch", mockFetch(409, { error: { code: "LAB_INSTANCE_REVISION_CONFLICT", message: "stale", details: { currentRevision: 4 } } }));
+    const error = await assignmentClient.saveInstance("i1", 1, { id: "lab" } as never).catch((e) => e);
+    expect(error).toBeInstanceOf(AssignmentApiError);
+    expect((error as AssignmentApiError).code).toBe("LAB_INSTANCE_REVISION_CONFLICT");
+    expect((error as AssignmentApiError).status).toBe(409);
+  });
+});

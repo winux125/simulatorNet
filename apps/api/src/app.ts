@@ -9,12 +9,12 @@ import {
   createOpaqueToken,
   DatabaseConflictError,
   DatabaseForbiddenError,
+  DatabaseInvalidInputError,
   DatabaseNotFoundError,
   hashOpaqueToken,
   PlatformAdminRepository,
   TenantRepository,
   type DatabaseClient,
-  type OrganizationRole,
   type SimulatorDatabase,
   type TenantContext,
 } from "@sim/db";
@@ -32,8 +32,11 @@ import {
   type ServiceAuthenticatorLike,
   type ServicePrincipal,
 } from "./service-auth";
+import { AcademicApiError, registerAcademicRoutes } from "./academic";
+import { resolveUserSession, SESSION_COOKIE } from "./session";
 
-const SESSION_COOKIE = "simulatornet_session";
+export type { UserSessionPrincipal } from "./session";
+
 const LAUNCH_TTL_MS = 60_000;
 const SESSION_TTL_MS = 8 * 60 * 60_000;
 
@@ -49,16 +52,6 @@ const LaunchBodySchema = z.object({
   requestedRole: z.enum(["student", "instructor", "organization_admin"]).optional(),
 });
 const LaunchExchangeSchema = z.object({ code: z.string().min(32).max(256) });
-
-export interface UserSessionPrincipal {
-  readonly kind: "user-session";
-  readonly sessionId: string;
-  readonly userId: string;
-  readonly organizationId: string;
-  readonly role: OrganizationRole;
-  readonly displayName: string;
-  readonly organizationName: string;
-}
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -182,7 +175,7 @@ export async function buildApi(options: ApiOptions = {}) {
     await app.register(swagger, {
       openapi: {
         info: { title: "SimulatorNet Internal API", version: "1.0.0" },
-        tags: [{ name: "system" }, { name: "integrations" }, { name: "sessions" }, { name: "labs" }, { name: "verifications" }],
+        tags: [{ name: "system" }, { name: "integrations" }, { name: "sessions" }, { name: "labs" }, { name: "verifications" }, { name: "academic", description: "Instructor and student academic surfaces (session-authenticated)." }],
       },
     });
   }
@@ -213,6 +206,10 @@ export async function buildApi(options: ApiOptions = {}) {
       code = error.code;
       const challenge = bearerChallenge(error);
       if (challenge) reply.header("www-authenticate", challenge);
+    } else if (error instanceof AcademicApiError) {
+      statusCode = error.statusCode;
+      code = error.code;
+      details = error.details;
     } else if (error instanceof VerificationError) {
       statusCode = error.code === "resource-limit" ? 422 : 400;
       code = error.code;
@@ -226,6 +223,10 @@ export async function buildApi(options: ApiOptions = {}) {
     } else if (error instanceof DatabaseConflictError) {
       statusCode = 409;
       code = error.code;
+    } else if (error instanceof DatabaseInvalidInputError) {
+      statusCode = 400;
+      code = "invalid-request";
+      details = error.details;
     } else if (error instanceof z.ZodError) {
       statusCode = 400;
       code = "invalid-request";
@@ -474,33 +475,16 @@ export async function buildApi(options: ApiOptions = {}) {
     return { ...execution.result, server: { durationMs: execution.durationMs } };
   });
 
+  registerAcademicRoutes(app, {
+    database,
+    authenticator,
+    limits,
+    now,
+    webOrigin,
+    verificationLimiter,
+  });
+
   if (openApiEnabled) app.get("/openapi.json", { schema: { hide: true } }, async () => app.swagger());
   await app.ready();
   return app;
-}
-
-async function resolveUserSession(request: FastifyRequest, database: SimulatorDatabase, now: Date): Promise<UserSessionPrincipal> {
-  const raw = request.cookies[SESSION_COOKIE];
-  if (!raw) throw new AuthenticationError("INVALID_SESSION", "Browser session is invalid", 401);
-  const tokenHash = hashOpaqueToken(raw);
-  const organizationId = await new AuthenticationLookupRepository(database).findBrowserSessionOrganizationId(tokenHash);
-  if (!organizationId) throw new AuthenticationError("INVALID_SESSION", "Browser session is invalid", 401);
-  const context: TenantContext = { organizationId, actor: { kind: "system", id: "browser-session-validation" } };
-  const repository = new TenantRepository(database);
-  const session = await repository.getBrowserSession(context, tokenHash, now);
-  if (!session) throw new AuthenticationError("INVALID_SESSION", "Browser session is invalid", 401);
-  const organization = await new PlatformAdminRepository(database).getOrganizationById(organizationId);
-  const member = await repository.getOrganizationUser(context, session.userId);
-  if (!organization || organization.status !== "active" || !member || member.user.status !== "active" || member.membership.status !== "active") {
-    throw new AuthenticationError("INVALID_SESSION", "Browser session is invalid", 401);
-  }
-  return {
-    kind: "user-session",
-    sessionId: session.id,
-    userId: session.userId,
-    organizationId,
-    role: member.membership.role,
-    displayName: member.user.displayName,
-    organizationName: organization.name,
-  };
 }
