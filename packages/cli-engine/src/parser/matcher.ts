@@ -12,6 +12,35 @@
  */
 export type Params = Record<string, string>;
 
+export interface PatternProgress {
+  status: "complete" | "incomplete" | "invalid";
+  matchedTokens: number;
+  invalidTokenIndex?: number;
+}
+
+export function analyzePattern(pattern: string, tokens: string[]): PatternProgress {
+  const parts = pattern.split(" ");
+  let tokenIndex = 0;
+  for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+    const part = parts[partIndex]!;
+    const rest = part.startsWith("{") && part.endsWith("...}");
+    const hole = part.startsWith("{") && part.endsWith("}");
+    if (tokenIndex >= tokens.length) return { status: "incomplete", matchedTokens: tokenIndex };
+    if (rest) return { status: "complete", matchedTokens: tokens.length };
+    if (!hole && tokens[tokenIndex]!.toLowerCase() !== part.toLowerCase()) {
+      return { status: "invalid", matchedTokens: tokenIndex, invalidTokenIndex: tokenIndex };
+    }
+    tokenIndex++;
+  }
+  return tokenIndex === tokens.length
+    ? { status: "complete", matchedTokens: tokenIndex }
+    : { status: "invalid", matchedTokens: tokenIndex, invalidTokenIndex: tokenIndex };
+}
+
+export function usageFromPattern(pattern: string): string {
+  return pattern.replace(/\{([^}.]+)(?:\.\.\.)?\}/g, "<$1>");
+}
+
 export function matchPattern(pattern: string, tokens: string[]): Params | null {
   const parts = pattern.split(" ");
   const params: Params = {};

@@ -11,16 +11,20 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkspaceStore } from "../state/workspace-store";
+import { DEMO_LAB } from "../fixtures/demo-lab";
+import { THEME_STORAGE_KEY } from "../hooks/useTheme";
 import { App } from "./App";
 import type { SimulatorClient } from "./simulator-client";
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
+    options = { theme: {} };
     loadAddon() {}
     open() {}
     write() {}
     clear() {}
     getSelection() { return ""; }
+    scrollToBottom() {}
     onData() { return { dispose() {} }; }
     dispose() {}
   },
@@ -67,7 +71,6 @@ vi.mock("@xyflow/react", async () => {
     BackgroundVariant: { Dots: "dots" },
     Background: () => null,
     Controls: () => null,
-    MiniMap: () => null,
   };
 });
 
@@ -97,13 +100,16 @@ class RuntimeClient implements SimulatorClient {
 }
 
 let compactViewport = false;
+let prefersDark = true;
 
 beforeEach(() => {
   compactViewport = false;
+  prefersDark = true;
+  window.localStorage.clear();
   useWorkspaceStore.getState().reset();
-  Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn(() => ({
-    matches: compactViewport,
-    media: "(max-width: 999px)",
+  Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn((query: string) => ({
+    matches: query.includes("max-width") ? compactViewport : query.includes("prefers-color-scheme: dark") ? prefersDark : false,
+    media: query,
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
   })) });
@@ -118,7 +124,7 @@ afterEach(() => cleanup());
 
 async function loadDemo(client: RuntimeClient) {
   render(<App client={client} />);
-  await userEvent.click(screen.getByRole("button", { name: "Load demo lab" }));
+  await userEvent.click(await screen.findByRole("button", { name: /^Load Demo Lab$/ }));
   await waitFor(() => expect(useWorkspaceStore.getState().snapshot?.labId).toBe("demo-router-on-a-stick"));
 }
 
@@ -127,14 +133,115 @@ async function enterEditMode() {
   await waitFor(() => expect(useWorkspaceStore.getState().mode).toBe("edit"));
 }
 
-describe("M6 simulator workspace", () => {
-  it("renders the professional app shell", async () => {
+describe("M6.1 simulator workspace", () => {
+  it("opens on a compact welcome workspace without loading the demo", async () => {
     const client = new RuntimeClient();
     render(<App client={client} />);
     expect(screen.getByRole("banner", { name: "Simulation toolbar" })).toBeTruthy();
     expect(screen.getByRole("navigation", { name: "Topology tools" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Load demo lab" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "SimulatorNet" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "New Lab" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Import Lab" })).toBeTruthy();
+    expect(useWorkspaceStore.getState().draft).toBeUndefined();
+    expect(client.requestTypes).not.toContain("INITIALIZE_LAB");
     expect(document.querySelector(".app-shell")?.getAttribute("data-workspace-mode")).toBe("simulate");
+  });
+
+  it("creates an empty deterministic document from New Lab", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New Lab" }));
+    await waitFor(() => expect(useWorkspaceStore.getState().draft?.id).toBe("untitled-lab"));
+    expect(useWorkspaceStore.getState().draft?.topology.nodes).toHaveLength(0);
+    expect(useWorkspaceStore.getState().draft?.topology.links).toHaveLength(0);
+    expect(useWorkspaceStore.getState().draft?.simulation.seed).toBe(1);
+    expect(useWorkspaceStore.getState().mode).toBe("edit");
+  });
+
+  it("loads the demo fixture only after an explicit welcome action", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    expect(client.requestTypes).not.toContain("INITIALIZE_LAB");
+    await userEvent.click(await screen.findByRole("button", { name: /^Load Demo Lab$/ }));
+    await waitFor(() => expect(useWorkspaceStore.getState().snapshot?.labId).toBe(DEMO_LAB.id));
+    expect(screen.queryByRole("heading", { name: "SimulatorNet" })).toBeNull();
+  });
+
+  it("imports a lab directly from the welcome workspace", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    const file = new File([JSON.stringify(DEMO_LAB)], "demo.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: async () => JSON.stringify(DEMO_LAB) });
+    fireEvent.change(document.getElementById("load-lab-file")!, { target: { files: [file] } });
+    await waitFor(() => expect(useWorkspaceStore.getState().snapshot?.labId).toBe(DEMO_LAB.id));
+    expect(screen.queryByRole("heading", { name: "SimulatorNet" })).toBeNull();
+  });
+
+  it("closes a clean lab back to the welcome workspace", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await userEvent.click(screen.getByLabelText("Close lab"));
+    expect(await screen.findByRole("heading", { name: "SimulatorNet" })).toBeTruthy();
+    expect(useWorkspaceStore.getState().draft).toBeUndefined();
+  });
+
+  it("requires confirmation before closing an unsaved lab", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await enterEditMode();
+    await userEvent.click(screen.getByRole("button", { name: "Add device" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add PC" }));
+    await userEvent.click(screen.getByLabelText("Close lab"));
+    expect(screen.getByRole("dialog", { name: "Close laboratory?" })).toBeTruthy();
+    expect(useWorkspaceStore.getState().draft).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Discard & Close" }));
+    expect(await screen.findByRole("heading", { name: "SimulatorNet" })).toBeTruthy();
+  });
+
+  it("does not render a React Flow minimap", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    expect(document.querySelector(".react-flow__minimap")).toBeNull();
+  });
+
+  it("defaults to System theme and switches Dark, Light and System immediately", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    const control = screen.getByLabelText("Color theme") as HTMLSelectElement;
+    expect(control.value).toBe("system");
+    expect(document.documentElement.dataset.themePreference).toBe("system");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    await userEvent.selectOptions(control, "light");
+    expect(document.documentElement.dataset.theme).toBe("light");
+    await userEvent.selectOptions(control, "dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    prefersDark = false;
+    await userEvent.selectOptions(control, "system");
+    expect(document.documentElement.dataset.themePreference).toBe("system");
+  });
+
+  it("persists the selected theme in localStorage", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    await userEvent.selectOptions(screen.getByLabelText("Color theme"), "light");
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
+    cleanup();
+    render(<App client={new RuntimeClient()} />);
+    expect((screen.getByLabelText("Color theme") as HTMLSelectElement).value).toBe("light");
+  });
+
+  it("keeps topology and terminal mounted in dark and light themes", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Select PC1" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: /Open CLI/ }));
+    expect(await screen.findByLabelText("PC1 CLI")).toBeTruthy();
+    await userEvent.selectOptions(screen.getByLabelText("Color theme"), "light");
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(screen.getByTestId("react-flow")).toBeTruthy();
+    expect(screen.getByLabelText("PC1 CLI")).toBeTruthy();
+    await userEvent.selectOptions(screen.getByLabelText("Color theme"), "dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
   });
 
   it("activates tool rail actions", async () => {

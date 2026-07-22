@@ -6,9 +6,10 @@ export { type CliMode, promptSuffix } from "./session/mode";
 export type { CommandSpec, DeviceFilter, InterfaceContext, SessionApi } from "./types";
 
 // Errors
-export { CliError, InvalidModeError, SyntaxError, ValidationError } from "./errors/errors";
+export { CliError, IncompleteCommandError, InvalidModeError, SyntaxError, ValidationError } from "./errors/errors";
 
 // Building blocks (exported for tests / future REPL front-ends)
 export { tokenize } from "./lexer/lexer";
-export { matchPattern, type Params } from "./parser/matcher";
+export { analyzePattern, matchPattern, usageFromPattern, type Params, type PatternProgress } from "./parser/matcher";
 export { allCommands } from "./commands";
+export { renderHelp } from "./help/help";

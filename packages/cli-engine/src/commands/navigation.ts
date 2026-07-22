@@ -56,6 +56,7 @@ export const navigationCommands: CommandSpec[] = [
   },
   {
     pattern: "interface {spec...}",
+    usage: "interface <interface-name>",
     modes: ["config"],
     run: (s, p) => {
       const resolved = resolveInterface(s.device, p.spec!);
@@ -88,6 +89,7 @@ export const navigationCommands: CommandSpec[] = [
   },
   {
     pattern: "ip route {network} {mask} {nexthop}",
+    usage: "ip route <network> <mask> <next-hop>",
     modes: ["config"],
     device: "router",
     run: (s, p) => {

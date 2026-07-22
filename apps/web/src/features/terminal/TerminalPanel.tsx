@@ -5,7 +5,9 @@ import type { Terminal as XtermTerminal } from "@xterm/xterm";
 import type { FitAddon as XtermFitAddon } from "@xterm/addon-fit";
 import type { SimulatorClient } from "../../app/simulator-client";
 import type { WorkspaceMode } from "../../state/workspace-store";
+import type { ResolvedTheme } from "../../hooks/useTheme";
 import { EmptyState, IconButton } from "../../ui";
+import { TerminalCommandHistory } from "./terminal-history";
 
 interface TerminalWorkspaceProps {
   client: SimulatorClient;
@@ -13,6 +15,7 @@ interface TerminalWorkspaceProps {
   activeDeviceId: string | undefined;
   nodes: LabUiNode[];
   mode: WorkspaceMode;
+  theme: ResolvedTheme;
   onActivate(deviceId: string): void;
   onClose(deviceId: string): void;
   onError(message: string): void;
@@ -54,6 +57,7 @@ export function TerminalWorkspace(props: TerminalWorkspaceProps) {
               hostname={node?.hostname ?? deviceId}
               active={props.activeDeviceId === deviceId}
               enabled={props.mode === "simulate" && node !== undefined}
+              theme={props.theme}
               onError={props.onError}
             />
           );
@@ -69,10 +73,22 @@ interface TerminalSessionProps {
   hostname: string;
   active: boolean;
   enabled: boolean;
+  theme: ResolvedTheme;
   onError(message: string): void;
 }
 
-function TerminalSession({ client, deviceId, hostname, active, enabled, onError }: TerminalSessionProps) {
+function terminalTheme() {
+  const styles = getComputedStyle(document.documentElement);
+  const token = (name: string) => styles.getPropertyValue(name).trim();
+  return {
+    background: token("--terminal-bg"),
+    foreground: token("--terminal-text"),
+    cursor: token("--terminal-cursor"),
+    selectionBackground: token("--terminal-selection"),
+  };
+}
+
+function TerminalSession({ client, deviceId, hostname, active, enabled, theme, onError }: TerminalSessionProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XtermTerminal | undefined>(undefined);
   const fitRef = useRef<XtermFitAddon | undefined>(undefined);
@@ -89,8 +105,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, onError 
     let dataDisposable: { dispose(): void } | undefined;
     let prompt = "";
     let input = "";
-    const history: string[] = [];
-    let historyIndex = 0;
+    const history = new TerminalCommandHistory();
 
     void Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit")]).then(([xterm, addon]) => {
       if (disposed) return;
@@ -101,7 +116,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, onError 
         fontSize: 13,
         lineHeight: 1.25,
         scrollback: 2000,
-        theme: { background: "#070b11", foreground: "#d7e2ef", cursor: "#38bdf8", selectionBackground: "#1e4d68" },
+        theme: terminalTheme(),
       });
       const fit = new addon.FitAddon();
       terminal.loadAddon(fit);
@@ -110,7 +125,9 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, onError 
       fitRef.current = fit;
       setReady(true);
 
-      const redrawInput = () => terminal.write(`\x1b[2K\r${prompt}${input}`);
+      const promptText = () => `${prompt} `;
+      const scrollToBottom = () => terminal.scrollToBottom();
+      const redrawInput = () => { terminal.write(`\x1b[2K\r${promptText()}${input}`); scrollToBottom(); };
       const execute = (value: string, alreadyEchoed = false) => {
         const submittedPrompt = prompt;
         if (!alreadyEchoed) terminal.write(`${terminalText(value)}\r\n`);
@@ -118,15 +135,16 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, onError 
           if (disposed) return;
           if (result.output) terminal.write(`${terminalText(result.output)}\r\n`);
           prompt = result.prompt;
-          terminal.write(prompt);
-          if (value || result.output) setTranscript((current) => `${current}${submittedPrompt}${value}\n${result.output ? `${result.output}\n` : ""}`);
+          terminal.write(promptText());
+          scrollToBottom();
+          if (value || result.output) setTranscript((current) => `${current}${submittedPrompt} ${value}\n${result.output ? `${result.output}\n` : ""}`);
         }).catch((error: unknown) => onError(error instanceof Error ? error.message : "CLI request failed"));
       };
       submitRef.current = execute;
       dataDisposable = terminal.onData((data) => {
         if (data === "\r") {
           const submitted = input;
-          if (submitted) { history.push(submitted); historyIndex = history.length; }
+          history.record(submitted);
           input = "";
           terminal.write("\r\n");
           execute(submitted, true);
@@ -137,8 +155,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, onError 
           return;
         }
         if (data === "\x1b[A" || data === "\x1b[B") {
-          historyIndex = data === "\x1b[A" ? Math.max(0, historyIndex - 1) : Math.min(history.length, historyIndex + 1);
-          input = history[historyIndex] ?? "";
+          input = data === "\x1b[A" ? history.previous() : history.next();
           redrawInput();
           return;
         }
@@ -161,6 +178,10 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, onError 
       void client.request({ type: "CLOSE_CLI_SESSION", sessionId }).catch(() => undefined);
     };
   }, [client, deviceId, onError]);
+
+  useEffect(() => {
+    if (terminalRef.current) terminalRef.current.options.theme = terminalTheme();
+  }, [theme]);
 
   useEffect(() => {
     if (active) window.requestAnimationFrame(() => { try { fitRef.current?.fit(); } catch { /* dock transition */ } });

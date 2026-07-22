@@ -63,7 +63,7 @@ export function resolveInterface(
 export function parseVlanId(token: string): number {
   const id = Number(token);
   if (!Number.isInteger(id) || id < 1 || id > 4094) {
-    throw new ValidationError(`Invalid VLAN id ${token} (must be 1-4094)`);
+    throw new ValidationError("VLAN ID must be between 1 and 4094.");
   }
   return id;
 }

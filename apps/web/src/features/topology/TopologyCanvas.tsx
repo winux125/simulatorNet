@@ -4,17 +4,16 @@ import {
   Background,
   BackgroundVariant,
   Controls,
-  MiniMap,
   ReactFlow,
   type Connection,
   type Edge,
   type NodeChange,
   type ReactFlowInstance,
 } from "@xyflow/react";
-import { Cable, Eye, Maximize2, Monitor, Network, Router as RouterIcon, Tag } from "lucide-react";
+import { Cable, Eye, FilePlus2, FlaskConical, Maximize2, Monitor, Network, Router as RouterIcon, Tag, Upload } from "lucide-react";
 import { useEffect, useMemo, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import type { WorkspaceMode, WorkspaceTool } from "../../state/workspace-store";
-import { Button, EmptyState, StatusIndicator } from "../../ui";
+import { Button, StatusIndicator } from "../../ui";
 import {
   addDraftDevice,
   allocateId,
@@ -43,6 +42,8 @@ interface TopologyCanvasProps {
   onShowLinkLabels(show: boolean): void;
   onChange(document: LabDocument): void;
   onLoadDemo(): void;
+  onNewLab(): void;
+  onImportLab(): void;
 }
 
 type ContextMenuState =
@@ -70,12 +71,18 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   if (!props.document) {
     return (
       <section className="topology-empty" aria-label="Topology canvas">
-        <EmptyState
-          icon={<Network size={36} strokeWidth={1.4} />}
-          title="Start a network laboratory"
-          description="Load the router-on-a-stick demo or import a versioned LabDocument JSON file."
-          action={<Button variant="primary" onClick={props.onLoadDemo}>Load demo laboratory</Button>}
-        />
+        <div className="welcome-workspace">
+          <span className="welcome-workspace__mark" aria-hidden="true"><Network size={26} /></span>
+          <p className="section-eyebrow">Browser network laboratory</p>
+          <h1>SimulatorNet</h1>
+          <p>Create and test deterministic network topologies directly in your browser.</p>
+          <div className="welcome-workspace__actions">
+            <Button variant="primary" icon={<FilePlus2 size={15} />} onClick={props.onNewLab}>New Lab</Button>
+            <Button icon={<Upload size={15} />} onClick={props.onImportLab}>Import Lab</Button>
+            <Button icon={<FlaskConical size={15} />} onClick={props.onLoadDemo}>Load Demo Lab</Button>
+          </div>
+          <ul><li>Runs locally in your browser</li><li>Cisco-like CLI</li><li>Deterministic simulation</li></ul>
+        </div>
       </section>
     );
   }
@@ -135,8 +142,8 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       selected,
       className: `topology-link ${operational ? "is-up" : "is-down"}`,
       label: props.showLinkLabels && (zoom >= 0.72 || selected) ? `${link.a.iface}  ↔  ${link.b.iface}` : undefined,
-      labelStyle: { fill: "#a8b7ca", fontSize: 10, fontFamily: "var(--font-mono)" },
-      labelBgStyle: { fill: "#101722", fillOpacity: 0.94 },
+      labelStyle: { fill: "var(--color-link-label)", fontSize: 10, fontFamily: "var(--font-mono)" },
+      labelBgStyle: { fill: "var(--color-link-label-bg)", fillOpacity: 0.94 },
       labelBgPadding: [5, 3] as [number, number],
       labelBgBorderRadius: 3,
     };
@@ -274,15 +281,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         nodesConnectable={editable && props.activeTool === "add-link"}
         deleteKeyCode={null}
       >
-        <Background variant={BackgroundVariant.Dots} color="#334155" gap={22} size={1} />
-        <MiniMap
-          pannable
-          zoomable
-          nodeColor={(node) => node.selected ? "#38bdf8" : "#58738a"}
-          nodeStrokeColor="#9bb5c8"
-          nodeStrokeWidth={3}
-          maskColor="rgba(5, 9, 15, .34)"
-        />
+        <Background variant={BackgroundVariant.Dots} color="var(--color-canvas-grid)" gap={22} size={1} />
         <Controls showInteractive={false} />
       </ReactFlow>
       {contextMenu && (

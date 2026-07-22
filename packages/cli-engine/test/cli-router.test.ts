@@ -29,6 +29,20 @@ describe("CLI router configuration", () => {
   });
 });
 
+describe("PC CLI guidance", () => {
+  it("explains an incomplete ping and its contextual argument", () => {
+    const engine = createSimulationEngine({ seed: 2 });
+    const pc = engine.add(new Pc("pc1", "PC1"));
+    pc.addInterface("eth0", macFromIndex(1));
+    pc.configure({ ip: "192.168.10.10", mask: 24, gateway: "192.168.10.1" });
+    const session = createCliSession(pc, engine);
+    expect(session.execute("ping")).toBe("% Incomplete command.\nUsage: ping <destination-ip>");
+    expect(session.execute("ping ?")).toBe("  <destination-ip>   IPv4 address to ping");
+    expect(session.execute("help")).toContain("ping");
+    expect(session.execute("help")).toContain("Display available commands");
+  });
+});
+
 describe("CLI-driven data plane (router-on-a-stick)", () => {
   it("routes between two VLANs after the switch and router are configured from the CLI", () => {
     const engine = createSimulationEngine({ seed: 3 });

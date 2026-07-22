@@ -2,6 +2,7 @@ import type { LabUiSnapshot, SimulationTraceEvent } from "@sim/sim-worker";
 import { AlertTriangle, Braces, List, Network, TerminalSquare, X } from "lucide-react";
 import type { SimulatorClient } from "../../app/simulator-client";
 import type { DockTab, WorkspaceMode, WorkspaceProblem } from "../../state/workspace-store";
+import type { ResolvedTheme } from "../../hooks/useTheme";
 import { Button, EmptyState, IconButton, Tabs } from "../../ui";
 import { TerminalWorkspace } from "../terminal/TerminalPanel";
 
@@ -14,6 +15,7 @@ interface BottomDockProps {
   terminalTabs: string[];
   activeTerminalDeviceId: string | undefined;
   mode: WorkspaceMode;
+  theme: ResolvedTheme;
   onTab(tab: DockTab): void;
   onActivateTerminal(deviceId: string): void;
   onCloseTerminal(deviceId: string): void;
@@ -43,7 +45,7 @@ export function BottomDock(props: BottomDockProps) {
         <IconButton label="Close bottom panel" icon={<X size={14} />} onClick={props.onClose} />
       </div>
       <div className="bottom-dock__content" role="tabpanel">
-        {props.tab === "terminal" && <TerminalWorkspace client={props.client} tabs={props.terminalTabs} activeDeviceId={props.activeTerminalDeviceId} nodes={props.snapshot?.nodes ?? []} mode={props.mode} onActivate={props.onActivateTerminal} onClose={props.onCloseTerminal} onError={props.onError} />}
+        {props.tab === "terminal" && <TerminalWorkspace client={props.client} tabs={props.terminalTabs} activeDeviceId={props.activeTerminalDeviceId} nodes={props.snapshot?.nodes ?? []} mode={props.mode} theme={props.theme} onActivate={props.onActivateTerminal} onClose={props.onCloseTerminal} onError={props.onError} />}
         {props.tab === "events" && <EventTable events={props.traces} />}
         {props.tab === "packet-trace" && <PacketTable events={packetEvents} />}
         {props.tab === "problems" && <Problems problems={props.problems} onClear={props.onClearProblems} />}

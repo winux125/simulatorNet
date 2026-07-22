@@ -7,14 +7,25 @@ export abstract class CliError extends Error {
   abstract render(): string;
 }
 
+/** A known command prefix is missing one or more required arguments. */
+export class IncompleteCommandError extends CliError {
+  constructor(readonly usage: string) {
+    super("Incomplete command");
+    this.name = "IncompleteCommandError";
+  }
+  override render(): string {
+    return `% Incomplete command.\nUsage: ${this.usage}`;
+  }
+}
+
 /** The command did not match any known syntax in the current mode. */
 export class SyntaxError extends CliError {
-  constructor(message = "Invalid input detected") {
+  constructor(readonly offset = 0, message = "Invalid input detected") {
     super(message);
     this.name = "SyntaxError";
   }
   override render(): string {
-    return "% Invalid input detected at '^' marker.";
+    return `${" ".repeat(this.offset)}^\n% Invalid input detected at '^' marker.`;
   }
 }
 

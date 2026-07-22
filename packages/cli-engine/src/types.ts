@@ -40,5 +40,7 @@ export interface CommandSpec {
   modes: CliMode[];
   /** Restrict to a device kind; defaults to "any". */
   device?: DeviceFilter;
+  /** Learner-facing syntax used when a known command is incomplete. */
+  usage?: string;
   run(session: SessionApi, params: Params): string | void;
 }

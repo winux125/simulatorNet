@@ -18,6 +18,7 @@ import {
 } from "../features/lab/document";
 import { InspectorPanel } from "../features/inspector/InspectorPanel";
 import { useMediaQuery } from "../hooks/useMediaQuery";
+import { useTheme } from "../hooks/useTheme";
 import { useWorkspaceStore, type WorkspaceMode } from "../state/workspace-store";
 import { Button, IconButton, Kbd } from "../ui";
 import type { SimulatorClient } from "./simulator-client";
@@ -26,6 +27,16 @@ const TopologyCanvas = lazy(() => import("../features/topology/TopologyCanvas"))
 const BottomDock = lazy(() => import("../features/dock/BottomDock"));
 
 interface AppProps { client: SimulatorClient }
+
+export const EMPTY_LAB: LabDocument = {
+  schemaVersion: 1,
+  id: "untitled-lab",
+  title: "Untitled Lab",
+  description: "A deterministic browser network laboratory",
+  simulation: { seed: 1 },
+  topology: { schemaVersion: 1, nodes: [], links: [] },
+  configurations: {},
+};
 
 export function downloadLabDocument(document: LabDocument): void {
   const blob = new Blob([stringifyLabDocument(document)], { type: "application/json" });
@@ -44,7 +55,9 @@ function isTypingTarget(target: EventTarget | null): boolean {
 export function App({ client }: AppProps) {
   const workspace = useWorkspaceStore();
   const compact = useMediaQuery("(max-width: 999px)");
+  const theme = useTheme();
   const [confirmApply, setConfirmApply] = useState(false);
+  const [confirmClose, setConfirmClose] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [pendingMode, setPendingMode] = useState<WorkspaceMode>();
@@ -66,7 +79,7 @@ export function App({ client }: AppProps) {
   const reportCliError = useCallback((message: string) => reportError(message, "cli"), [reportError]);
   const reportInspectionError = useCallback((message: string) => reportError(message, "worker"), [reportError]);
 
-  const initialize = async (document: LabDocument) => {
+  const initialize = async (document: LabDocument, initialMode: WorkspaceMode = "simulate") => {
     workspace.reset();
     workspace.setWorkerStatus("loading");
     const canonical = canonicalizeLabDocument(document);
@@ -75,12 +88,18 @@ export function App({ client }: AppProps) {
     workspace.setSnapshot(ready);
     workspace.selectNode(undefined);
     workspace.selectLink(undefined);
-    workspace.setMode("simulate");
+    workspace.setMode(initialMode);
     window.requestAnimationFrame(() => workspace.requestFit());
   };
 
   const loadDemo = () => void initialize(DEMO_LAB).catch((error) => reportError(error, "validation"));
+  const newLab = () => void initialize(EMPTY_LAB, "edit").catch((error) => reportError(error, "validation"));
   const loadFile = (file: File) => void file.text().then(loadLabDocumentText).then(initialize).catch((error) => reportError(error, "validation"));
+  const importLab = () => document.getElementById("load-lab-file")?.click();
+  const closeLab = () => {
+    if (workspace.dirty) setConfirmClose(true);
+    else workspace.reset();
+  };
 
   const save = useCallback(() => void (async () => {
     const draft = useWorkspaceStore.getState().draft;
@@ -189,8 +208,9 @@ export function App({ client }: AppProps) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [deleteSelection, run, save, workspace.requestFit, workspace.selectLink, workspace.selectNode, workspace.setPaletteOpen]);
 
-  const ready = workspace.workerStatus === "ready" && workspace.snapshot !== undefined;
-  const inspector = workspace.inspectorOpen && (
+  const labOpen = workspace.snapshot !== undefined;
+  const ready = workspace.workerStatus === "ready" && labOpen;
+  const inspector = labOpen && workspace.inspectorOpen && (
     <InspectorPanel
       client={client}
       document={workspace.draft}
@@ -214,10 +234,12 @@ export function App({ client }: AppProps) {
         workerStatus={workspace.workerStatus}
         engineState={workspace.snapshot?.engineState}
         ready={ready}
+        hasLab={labOpen}
         dirty={workspace.dirty}
         mode={workspace.mode}
         inspectorOpen={workspace.inspectorOpen}
         bottomDockOpen={workspace.bottomDockOpen}
+        theme={theme.preference}
         onModeChange={changeMode}
         onLoadDemo={loadDemo}
         onLoadFile={loadFile}
@@ -230,6 +252,8 @@ export function App({ client }: AppProps) {
         onToggleInspector={() => workspace.setInspectorOpen(!workspace.inspectorOpen)}
         onToggleBottomDock={() => workspace.setBottomDockOpen(!workspace.bottomDockOpen)}
         onOpenShortcuts={() => setShortcutsOpen(true)}
+        onThemeChange={theme.setPreference}
+        onCloseLab={closeLab}
       />
       {workspace.error && <div className="workspace-error" role="alert"><AlertTriangle size={14} /><span>{workspace.error}</span><button type="button" onClick={() => workspace.setDockTab("problems")}>View problems</button><IconButton label="Dismiss error" icon={<X size={13} />} onClick={() => workspace.setError(undefined)} /></div>}
       {workspace.dirty && workspace.mode === "edit" && <div className="pending-banner"><span><i /> Topology changes pending</span><Button size="sm" variant="primary" onClick={() => { setPendingMode("edit"); setConfirmApply(true); }}>Apply &amp; Rebuild</Button></div>}
@@ -261,7 +285,7 @@ export function App({ client }: AppProps) {
               {compact && inspector}
             </div>
           </ResizablePanel>
-          {workspace.bottomDockOpen && <>
+          {labOpen && workspace.bottomDockOpen && <>
             <Separator className="resize-handle resize-handle--horizontal" />
             <ResizablePanel id="bottom-dock" minSize="170px" maxSize="48%" defaultSize="270px">
               <Suspense fallback={<DockLoading />}>
@@ -274,6 +298,7 @@ export function App({ client }: AppProps) {
                   terminalTabs={workspace.terminalTabs}
                   activeTerminalDeviceId={workspace.activeTerminalDeviceId}
                   mode={workspace.mode}
+                  theme={theme.resolved}
                   onTab={workspace.setDockTab}
                   onActivateTerminal={workspace.setActiveTerminal}
                   onCloseTerminal={workspace.closeTerminal}
@@ -291,6 +316,10 @@ export function App({ client }: AppProps) {
       {confirmApply && <WorkspaceDialog title="Apply topology changes?" eyebrow="Runtime rebuild" onClose={() => { setConfirmApply(false); setPendingMode(undefined); }}>
         <p>Applying the draft serializes the current device configuration, merges topology positions and rebuilds the worker runtime. Volatile ARP, MAC and event state will reset.</p>
         <div className="dialog-actions"><Button variant="ghost" onClick={() => { setConfirmApply(false); setPendingMode(undefined); }}>Cancel</Button><Button variant="primary" onClick={() => void rebuild(pendingMode ?? "edit").catch(reportError)}>Apply &amp; Rebuild</Button></div>
+      </WorkspaceDialog>}
+      {confirmClose && <WorkspaceDialog title="Close laboratory?" eyebrow="Unsaved topology" onClose={() => setConfirmClose(false)}>
+        <p>The current topology has unapplied changes. Closing the laboratory will discard that draft.</p>
+        <div className="dialog-actions"><Button variant="ghost" onClick={() => setConfirmClose(false)}>Keep Editing</Button><Button variant="danger" onClick={() => { setConfirmClose(false); workspace.reset(); }}>Discard &amp; Close</Button></div>
       </WorkspaceDialog>}
       {shortcutsOpen && <WorkspaceDialog title="Keyboard shortcuts" eyebrow="Quick workflow" onClose={() => setShortcutsOpen(false)}>
         <div className="shortcut-list"><Shortcut keys="Ctrl / Cmd + O" label="Import lab" /><Shortcut keys="Ctrl / Cmd + S" label="Export JSON" /><Shortcut keys="Ctrl / Cmd + Enter" label="Run until idle" /><Shortcut keys="Ctrl / Cmd + K" label="Command palette" /><Shortcut keys="Delete" label="Delete selection in Edit mode" /><Shortcut keys="F" label="Fit topology" /><Shortcut keys="Escape" label="Close menus and clear selection" /></div>
@@ -325,6 +354,8 @@ export function App({ client }: AppProps) {
       onShowLinkLabels: workspace.setShowLinkLabels,
       onChange: updateDraft,
       onLoadDemo: loadDemo,
+      onNewLab: newLab,
+      onImportLab: importLab,
     };
   }
 }

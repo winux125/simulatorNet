@@ -3,6 +3,7 @@ import {
   CircleHelp,
   Download,
   FlaskConical,
+  FolderX,
   Maximize2,
   PanelBottom,
   PanelRight,
@@ -11,10 +12,12 @@ import {
   RotateCcw,
   SkipForward,
   Upload,
+  SunMoon,
 } from "lucide-react";
 import type { ChangeEvent } from "react";
 import type { EngineUiState } from "@sim/sim-worker";
 import type { WorkspaceMode } from "../state/workspace-store";
+import type { ThemePreference } from "../hooks/useTheme";
 import { Button, IconButton, StatusIndicator } from "../ui";
 
 interface ToolbarProps {
@@ -22,10 +25,12 @@ interface ToolbarProps {
   workerStatus: "empty" | "loading" | "ready" | "error";
   engineState?: EngineUiState;
   ready: boolean;
+  hasLab: boolean;
   dirty: boolean;
   mode: WorkspaceMode;
   inspectorOpen: boolean;
   bottomDockOpen: boolean;
+  theme: ThemePreference;
   onModeChange(mode: WorkspaceMode): void;
   onLoadDemo(): void;
   onLoadFile(file: File): void;
@@ -38,6 +43,8 @@ interface ToolbarProps {
   onToggleInspector(): void;
   onToggleBottomDock(): void;
   onOpenShortcuts(): void;
+  onThemeChange(theme: ThemePreference): void;
+  onCloseLab(): void;
 }
 
 export function Toolbar(props: ToolbarProps) {
@@ -80,11 +87,21 @@ export function Toolbar(props: ToolbarProps) {
         <label className="ui-icon-button tooltip-anchor" aria-label="Import lab JSON" data-tooltip="Import lab JSON" htmlFor="load-lab-file"><Upload size={15} /></label>
         <input id="load-lab-file" className="visually-hidden" type="file" accept="application/json,.json" onChange={loadFile} />
         <IconButton label="Export lab JSON" icon={<Download size={15} />} disabled={!props.ready} onClick={props.onSave} />
+        <IconButton label="Close lab" icon={<FolderX size={15} />} disabled={!props.hasLab} onClick={props.onCloseLab} />
         <span className="app-bar__divider" />
         <IconButton label="Fit topology" icon={<Maximize2 size={15} />} disabled={!props.ready} onClick={props.onFit} />
         <IconButton label="Toggle inspector" icon={<PanelRight size={15} />} active={props.inspectorOpen} onClick={props.onToggleInspector} />
         <IconButton label="Toggle bottom dock" icon={props.bottomDockOpen ? <ChevronsDownUp size={15} /> : <PanelBottom size={15} />} active={props.bottomDockOpen} onClick={props.onToggleBottomDock} />
         <IconButton label="Keyboard shortcuts" icon={<CircleHelp size={15} />} onClick={props.onOpenShortcuts} />
+        <label className="theme-control tooltip-anchor" data-tooltip="Theme" title="Theme">
+          <SunMoon size={15} aria-hidden="true" />
+          <span className="visually-hidden">Color theme</span>
+          <select aria-label="Color theme" value={props.theme} onChange={(event) => props.onThemeChange(event.target.value as ThemePreference)}>
+            <option value="system">System</option>
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </label>
       </div>
     </header>
   );

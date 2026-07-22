@@ -64,6 +64,7 @@ export const showCommands: CommandSpec[] = [
   },
   {
     pattern: "ping {target}",
+    usage: "ping <destination-ip>",
     modes: SHOW_MODES,
     run: (s, p) => runPing(s.device, s.engine, parseIpv4(p.target!)),
   },

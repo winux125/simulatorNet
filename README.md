@@ -111,7 +111,7 @@ import/export. The main thread owns only React, editor/UI state and plain JSON;
 the module Web Worker remains the sole owner of the simulation engine, device
 instances, CLI sessions, event queue, virtual clock and trace.
 
-## Milestone 6 (current)
+## Milestone 6
 
 The vertical slice is now a professional, desktop-first network-lab workspace:
 
@@ -169,3 +169,30 @@ M1 through M6 are complete. The browser remains an untrusted grading
 environment: a future headless server verifier will rebuild submissions and
 grade them. No backend, authentication, database or grading evaluator is part
 of M6.
+
+## Milestone 6.1 (current)
+
+The application now starts in a compact welcome workspace instead of loading a
+laboratory implicitly. **New Lab** creates an empty deterministic schema-v1
+document in Edit mode, **Import Lab** opens an existing JSON document, and
+**Load Demo Lab** explicitly opens the router-on-a-stick fixture. Closing a lab
+returns to the welcome state and asks for confirmation before discarding edits.
+
+The engineering workspace supports persistent **System**, **Dark** and
+**Light** themes. System follows `prefers-color-scheme`; the selected preference
+is stored in `localStorage` and applied immediately through the root
+`data-theme` attribute. Both palettes use shared semantic design tokens. The
+light palette uses cool grey surfaces rather than pure white, while the dark
+palette remains the primary visual reference. React Flow's minimap has been
+removed; zoom, fit-to-view, panning and the dotted canvas remain available.
+
+CLI parsing now distinguishes incomplete commands, invalid tokens and domain
+validation failures. Incomplete commands include usage, syntax errors place a
+caret under the first invalid token, and validation errors retain their direct
+message. Mode- and device-aware help is available through `?`, `help`,
+`ping ?` and `show ?`. Terminal tabs keep separate command histories, prompts
+have consistent spacing, empty Enter produces a fresh prompt, clearing output
+preserves the session, and output follows the latest line automatically.
+
+M1 through M6.1 are complete. Server-side verification remains outside this
+milestone and the browser is still treated as an untrusted grading environment.

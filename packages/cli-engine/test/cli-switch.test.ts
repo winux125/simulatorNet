@@ -68,14 +68,14 @@ describe("CLI error handling", () => {
     const { engine, sw } = buildSwitch();
     const session = createCliSession(sw, engine);
     session.execute("enable");
-    expect(session.execute("frobnicate")).toBe("% Invalid input detected at '^' marker.");
+    expect(session.execute("frobnicate")).toBe("^\n% Invalid input detected at '^' marker.");
   });
 
   it("rejects a config command issued from the wrong mode", () => {
     const { engine, sw } = buildSwitch();
     const session = createCliSession(sw, engine);
     // `hostname` is a config command; from user EXEC it is not valid.
-    expect(session.execute("hostname X")).toBe("% Invalid input detected at '^' marker.");
+    expect(session.execute("hostname X")).toBe("^\n% Invalid input detected at '^' marker.");
     expect(sw.name).toBe("Switch");
   });
 
@@ -84,7 +84,28 @@ describe("CLI error handling", () => {
     const session = createCliSession(sw, engine);
     session.execute("enable");
     session.execute("configure terminal");
-    expect(session.execute("vlan 9999")).toBe("% Invalid VLAN id 9999 (must be 1-4094)");
+    expect(session.execute("vlan 9999")).toBe("% VLAN ID must be between 1 and 4094.");
+  });
+
+  it("distinguishes incomplete, syntax and domain validation errors", () => {
+    const { engine, sw } = buildSwitch();
+    const session = createCliSession(sw, engine);
+    session.execute("enable");
+    session.execute("configure terminal");
+    expect(session.execute("interface")).toBe("% Incomplete command.\nUsage: interface <interface-name>");
+    session.execute("interface Gi0/1");
+    expect(session.execute("switchport banana")).toBe("           ^\n% Invalid input detected at '^' marker.");
+    expect(session.execute("switchport access vlan 5000")).toBe("% VLAN ID must be between 1 and 4094.");
+  });
+
+  it("provides mode and device-aware contextual help", () => {
+    const { engine, sw } = buildSwitch();
+    const session = createCliSession(sw, engine);
+    expect(session.execute("?")).toContain("show");
+    expect(session.execute("?")).toContain("enable");
+    session.execute("enable");
+    expect(session.execute("show ?")).toContain("vlan brief");
+    expect(session.execute("show ?")).toContain("mac address-table");
   });
 });
 
