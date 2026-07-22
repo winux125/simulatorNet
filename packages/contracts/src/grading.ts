@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DeviceCapabilitySchema, DeviceTypeSchema } from "./devices";
 import { Ipv4Schema, LabSubmissionDocumentSchema, PrefixLengthSchema, VlanIdSchema } from "./lab";
 
 export const GradingVisibilitySchema = z.enum(["hidden", "visible"]);
@@ -64,6 +65,31 @@ export const DhcpAddressGradingCheckSchema = CheckIdentitySchema.extend({
   configuration: z.object({ deviceId: z.string().min(1), expectedSubnet: Ipv4CidrSchema }),
 });
 
+export const DeviceTypeGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("device-type"),
+  configuration: z.object({ deviceId: z.string().min(1), expectedType: DeviceTypeSchema }),
+});
+
+export const CapabilityPresentGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("capability-present"),
+  configuration: z.object({ deviceId: z.string().min(1), capability: DeviceCapabilitySchema }),
+});
+
+export const SviStateGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("svi-state"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    vlanId: VlanIdSchema,
+    expectedAdminUp: z.boolean(),
+    expectedOperationalUp: z.boolean(),
+  }),
+});
+
+export const IpRoutingEnabledGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ip-routing-enabled"),
+  configuration: z.object({ deviceId: z.string().min(1), expected: z.boolean() }),
+});
+
 export const GradingCheckSchema = z.discriminatedUnion("type", [
   PingGradingCheckSchema,
   InterfaceStateGradingCheckSchema,
@@ -71,6 +97,10 @@ export const GradingCheckSchema = z.discriminatedUnion("type", [
   VlanExistsGradingCheckSchema,
   RouteExistsGradingCheckSchema,
   DhcpAddressGradingCheckSchema,
+  DeviceTypeGradingCheckSchema,
+  CapabilityPresentGradingCheckSchema,
+  SviStateGradingCheckSchema,
+  IpRoutingEnabledGradingCheckSchema,
 ]);
 export type GradingCheck = z.infer<typeof GradingCheckSchema>;
 

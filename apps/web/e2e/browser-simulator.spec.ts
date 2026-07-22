@@ -1,5 +1,22 @@
 import { expect, test } from "@playwright/test";
 
+async function chooseDemo(page: import("@playwright/test").Page, name: RegExp) {
+  await page.getByRole("button", { name: "Load Demo Lab", exact: true }).click();
+  await page.getByRole("button", { name }).click();
+}
+
+async function openCli(page: import("@playwright/test").Page, hostname: string) {
+  await page.getByRole("button", { name: `Select ${hostname}` }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: /Open CLI/ }).click();
+  await expect(page.getByRole("tab", { name: new RegExp(hostname) })).toBeVisible();
+}
+
+async function runCli(page: import("@playwright/test").Page, command: string) {
+  await page.locator(".terminal-session.is-active .xterm-screen").click();
+  await page.keyboard.type(command);
+  await page.keyboard.press("Enter");
+}
+
 test("M8.3 desktop menus drive the browser lab with an xterm-native CLI", async ({ page }) => {
   const menu = (label: string) => page.getByRole("menuitem", { name: label, exact: true });
   const theme = page.getByLabel("Color theme");
@@ -15,6 +32,7 @@ test("M8.3 desktop menus drive the browser lab with an xterm-native CLI", async 
   // 2. File → Load Demo Lab.
   await menu("File").click();
   await page.getByRole("menuitem", { name: "Load Demo Lab" }).click();
+  await page.getByRole("button", { name: /Router-on-a-stick \+ DHCP/ }).click();
   await expect(page.getByText("VLAN Routing Lab", { exact: true }).first()).toBeVisible();
   await expect(page.locator(".react-flow__minimap")).toHaveCount(0);
 
@@ -66,6 +84,77 @@ test("M8.3 desktop menus drive the browser lab with an xterm-native CLI", async 
   await theme.selectOption("light");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await page.screenshot({ path: "/tmp/m8-3-light-1440x900.png", animations: "disabled" });
+});
+
+test("M10.1 Hub and Bridge demos expose deterministic forwarding behavior", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+
+  await chooseDemo(page, /Hub Ethernet Basics/);
+  await expect(page.getByText("Hub Ethernet Basics", { exact: true }).first()).toBeVisible();
+  await page.getByLabel("Color theme").selectOption("dark");
+  await page.screenshot({ path: "/tmp/m10-1-hub-dark-1440x900.png", animations: "disabled" });
+  await openCli(page, "PC1");
+  await runCli(page, "ping 192.168.10.20");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Success rate is 100 percent");
+  await page.getByRole("tab", { name: /Events/ }).click();
+  await expect(page.locator('tr[data-event-type="hub-frame-repeated"]').first()).toBeVisible();
+
+  await page.getByRole("menuitem", { name: "File", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Load Demo Lab" }).click();
+  await page.getByRole("button", { name: /Bridge MAC Learning/ }).click();
+  await openCli(page, "PC1");
+  await runCli(page, "ping 192.168.30.20");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Success rate is 100 percent");
+  await openCli(page, "BR1");
+  await runCli(page, "show mac address-table");
+  await expect(page.getByTestId("terminal-transcript").last()).toContainText("Mac Address");
+  await expect(page.getByTestId("terminal-transcript").last()).toContainText("Eth0/1");
+});
+
+test("M10.1 L3 Switch CLI configures SVIs and routes inter-VLAN ping", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/");
+  await chooseDemo(page, /L3 Switch Inter-VLAN Routing/);
+  await page.getByLabel("Color theme").selectOption("dark");
+  await page.screenshot({ path: "/tmp/m10-1-l3-dark-1280x720.png", animations: "disabled" });
+  await openCli(page, "DSW1");
+
+  for (const command of [
+    "enable",
+    "configure terminal",
+    "interface Gi0/1",
+    "switchport",
+    "switchport mode access",
+    "switchport access vlan 10",
+    "no shutdown",
+    "exit",
+    "interface Gi0/2",
+    "switchport",
+    "switchport mode access",
+    "switchport access vlan 20",
+    "no shutdown",
+    "exit",
+    "interface vlan 10",
+    "ip address 192.168.10.1 255.255.255.0",
+    "no shutdown",
+    "exit",
+    "interface vlan 20",
+    "ip address 192.168.20.1 255.255.255.0",
+    "no shutdown",
+    "exit",
+    "ip routing",
+    "end",
+    "show ip route",
+  ]) await runCli(page, command);
+
+  await expect(page.getByTestId("terminal-transcript")).toContainText("192.168.10.0/24");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Vlan10");
+  await openCli(page, "PC1");
+  await runCli(page, "ping 192.168.20.10");
+  await expect(page.getByTestId("terminal-transcript").last()).toContainText("Success rate is 100 percent");
+  await page.getByLabel("Color theme").selectOption("light");
+  await page.screenshot({ path: "/tmp/m10-1-l3-light-1280x720.png", animations: "disabled" });
 });
 
 test("M8 launch exchange strips the code and exposes organization session controls", async ({ page }) => {

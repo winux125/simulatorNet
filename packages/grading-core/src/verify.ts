@@ -12,7 +12,7 @@ import {
   VerificationResultSchema,
 } from "@sim/contracts/grading";
 import { buildLabFromDocument, parseLabDocument, type BuiltLab } from "@sim/lab-format";
-import { ipToInt, maskToInt, Pc } from "@sim/sim-core";
+import { EndHost, ipToInt, Layer3Switch, maskToInt, Router } from "@sim/sim-core";
 import type { SimulationEngine } from "@sim/sim-core";
 import type { ZodIssue } from "zod";
 import { VerificationError, VerificationResourceLimitError } from "./errors";
@@ -112,13 +112,18 @@ function enforceStaticLimits(document: LabDocument, request: VerificationRequest
 }
 
 function prepareDhcp(runtime: VerificationRuntime, document: LabDocument): void {
-  const clients: Pc[] = [];
+  const clients: EndHost[] = [];
   for (const node of document.topology.nodes) {
     const config = document.configurations[node.id];
     const pc = runtime.built.getPc(node.id);
     if (pc && config?.kind === "pc" && config.dhcpEnabled) {
       pc.requestDhcp();
       clients.push(pc);
+    }
+    const server = runtime.built.getServer(node.id);
+    if (server && config?.kind === "server" && config.dhcpClientEnabled) {
+      server.requestDhcp();
+      clients.push(server);
     }
   }
   runtime.runUntil(() => clients.every((client) => client.dhcpState === "bound" || client.dhcpState === "failed"));
@@ -151,8 +156,11 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
   const built = runtime.built;
   switch (check.type) {
     case "ping": {
-      const source = built.getPc(check.configuration.sourceDeviceId);
-      if (!source) return errorResult(check, `PC '${check.configuration.sourceDeviceId}' was not found`);
+      const candidate = built.getDevice(check.configuration.sourceDeviceId);
+      const source = candidate instanceof EndHost || candidate instanceof Router || candidate instanceof Layer3Switch
+        ? candidate
+        : undefined;
+      if (!source) return errorResult(check, `Ping-capable device '${check.configuration.sourceDeviceId}' was not found`);
       const sequence = runtime.nextPingSequence();
       let failure: string | undefined;
       try {
@@ -188,10 +196,11 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
       const device = built.getSwitch(check.configuration.deviceId);
       if (!device?.getInterface(check.configuration.interfaceId)) return errorResult(check, "Switch or interface was not found");
       const actual = device.portConfigOf(check.configuration.interfaceId);
-      const passed = actual.mode === check.configuration.expectedMode
+      const routed = device instanceof Layer3Switch && device.isRoutedPort(check.configuration.interfaceId);
+      const passed = !routed && actual.mode === check.configuration.expectedMode
         && (check.configuration.expectedAccessVlan === undefined || actual.accessVlan === check.configuration.expectedAccessVlan);
-      return result(check, passed, `${device.name} ${check.configuration.interfaceId} is ${actual.mode} VLAN ${actual.accessVlan}`, {
-        actualMode: actual.mode,
+      return result(check, passed, `${device.name} ${check.configuration.interfaceId} is ${routed ? "routed" : actual.mode}${routed ? "" : ` VLAN ${actual.accessVlan}`}`, {
+        actualMode: routed ? "routed" : actual.mode,
         actualAccessVlan: actual.accessVlan,
         expectedMode: check.configuration.expectedMode,
         expectedAccessVlan: check.configuration.expectedAccessVlan,
@@ -207,8 +216,9 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
       });
     }
     case "route-exists": {
-      const device = built.getRouter(check.configuration.deviceId);
-      if (!device) return errorResult(check, "Router was not found");
+      const candidate = built.getDevice(check.configuration.deviceId);
+      const device = candidate instanceof Router || candidate instanceof Layer3Switch ? candidate : undefined;
+      if (!device) return errorResult(check, "Routing device was not found");
       const expectedMask = maskToInt(check.configuration.prefixLength);
       const exists = device.routingTable().some((route) => route.network === check.configuration.network && route.maskInt === expectedMask);
       return result(check, exists, `Route ${check.configuration.network}/${check.configuration.prefixLength} ${exists ? "exists" : "is missing"}`, {
@@ -218,8 +228,9 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
       });
     }
     case "dhcp-address": {
-      const device = built.getPc(check.configuration.deviceId);
-      if (!device) return errorResult(check, "PC was not found");
+      const candidate = built.getDevice(check.configuration.deviceId);
+      const device = candidate instanceof EndHost ? candidate : undefined;
+      if (!device) return errorResult(check, "DHCP-capable end host was not found");
       const [network, prefixText] = check.configuration.expectedSubnet.split("/");
       const prefixLength = Number(prefixText);
       const mask = maskToInt(prefixLength);
@@ -228,6 +239,47 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
         actualAddress: device.ip,
         expectedSubnet: check.configuration.expectedSubnet,
         dhcpState: device.dhcpState,
+      });
+    }
+    case "device-type": {
+      const device = built.getDevice(check.configuration.deviceId);
+      if (!device) return errorResult(check, "Device was not found");
+      const passed = device.deviceType === check.configuration.expectedType;
+      return result(check, passed, `${device.name} is a ${device.profile.displayName}`, {
+        actualType: device.deviceType,
+        expectedType: check.configuration.expectedType,
+      });
+    }
+    case "capability-present": {
+      const device = built.getDevice(check.configuration.deviceId);
+      if (!device) return errorResult(check, "Device was not found");
+      const present = device.hasCapability(check.configuration.capability);
+      return result(check, present, `${device.name} ${present ? "supports" : "does not support"} ${check.configuration.capability}`, {
+        capability: check.configuration.capability,
+        present,
+      });
+    }
+    case "svi-state": {
+      const device = built.getLayer3Switch(check.configuration.deviceId);
+      if (!device) return errorResult(check, "Layer-3 switch was not found");
+      const svi = device.sviSummaries().find((entry) => entry.vlanId === check.configuration.vlanId);
+      if (!svi) return errorResult(check, `SVI VLAN ${check.configuration.vlanId} was not found`);
+      const passed = svi.adminUp === check.configuration.expectedAdminUp
+        && svi.operUp === check.configuration.expectedOperationalUp;
+      return result(check, passed, `${device.name} Vlan${svi.vlanId} is ${svi.operUp ? "up" : "down"}`, {
+        actualAdminUp: svi.adminUp,
+        actualOperationalUp: svi.operUp,
+        expectedAdminUp: check.configuration.expectedAdminUp,
+        expectedOperationalUp: check.configuration.expectedOperationalUp,
+      });
+    }
+    case "ip-routing-enabled": {
+      const device = built.getLayer3Switch(check.configuration.deviceId);
+      if (!device) return errorResult(check, "Layer-3 switch was not found");
+      const passed = device.ipRoutingEnabled === check.configuration.expected;
+      return result(check, passed, `IP routing is ${device.ipRoutingEnabled ? "enabled" : "disabled"} on ${device.name}`, {
+        actual: device.ipRoutingEnabled,
+        expected: check.configuration.expected,
       });
     }
   }

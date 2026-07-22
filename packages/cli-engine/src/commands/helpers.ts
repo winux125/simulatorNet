@@ -1,4 +1,12 @@
-import { type Device, L2Switch, Pc, Router } from "@sim/sim-core";
+import {
+  type Device,
+  EndHost,
+  EthernetBridge,
+  L2Switch,
+  Layer3Switch,
+  Pc,
+  Router,
+} from "@sim/sim-core";
 import { ValidationError } from "../errors/errors";
 import type { DeviceFilter } from "../types";
 
@@ -8,6 +16,18 @@ export function isSwitch(d: Device): d is L2Switch {
 export function isRouter(d: Device): d is Router {
   return d instanceof Router;
 }
+export function isLayer3Switch(d: Device): d is Layer3Switch {
+  return d instanceof Layer3Switch;
+}
+export function isRoutingDevice(d: Device): d is Router | Layer3Switch {
+  return isRouter(d) || isLayer3Switch(d);
+}
+export function isBridge(d: Device): d is EthernetBridge {
+  return d instanceof EthernetBridge;
+}
+export function isEndHost(d: Device): d is EndHost {
+  return d instanceof EndHost;
+}
 export function isPc(d: Device): d is Pc {
   return d instanceof Pc;
 }
@@ -15,8 +35,10 @@ export function isPc(d: Device): d is Pc {
 export function deviceMatches(filter: DeviceFilter | undefined, device: Device): boolean {
   if (!filter || filter === "any") return true;
   if (filter === "switch") return isSwitch(device);
-  if (filter === "router") return isRouter(device);
-  return isPc(device);
+  if (filter === "router") return isRoutingDevice(device);
+  if (filter === "l3-switch") return isLayer3Switch(device);
+  if (filter === "bridge") return isBridge(device);
+  return isEndHost(device);
 }
 
 /** Normalize a typed interface token for comparison (lowercase, no spaces). */

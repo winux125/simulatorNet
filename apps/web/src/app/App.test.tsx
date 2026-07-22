@@ -12,6 +12,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkspaceStore } from "../state/workspace-store";
 import { DEMO_LAB } from "../fixtures/demo-lab";
+import { BRIDGE_MAC_DEMO, HUB_ETHERNET_DEMO, L3_SWITCH_DEMO, SERVER_CONNECTIVITY_DEMO } from "../fixtures/m10-demo-labs";
 import { THEME_STORAGE_KEY } from "../hooks/useTheme";
 import { App } from "./App";
 import type { SimulatorClient } from "./simulator-client";
@@ -148,6 +149,7 @@ afterEach(() => cleanup());
 async function loadDemo(client: RuntimeClient) {
   render(<App client={client} />);
   await userEvent.click(await screen.findByRole("button", { name: /^Load Demo Lab$/ }));
+  await userEvent.click(screen.getByRole("button", { name: /Router-on-a-stick \+ DHCP/ }));
   await waitFor(() => expect(useWorkspaceStore.getState().snapshot?.labId).toBe("demo-router-on-a-stick"));
 }
 
@@ -204,6 +206,7 @@ describe("M6.1 simulator workspace", () => {
     render(<App client={client} />);
     expect(client.requestTypes).not.toContain("INITIALIZE_LAB");
     await userEvent.click(await screen.findByRole("button", { name: /^Load Demo Lab$/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Router-on-a-stick \+ DHCP/ }));
     await waitFor(() => expect(useWorkspaceStore.getState().snapshot?.labId).toBe(DEMO_LAB.id));
     expect(screen.queryByRole("heading", { name: "SimulatorNet" })).toBeNull();
   });
@@ -576,5 +579,72 @@ describe("M8.3 desktop menus and terminal", () => {
     const client = new RuntimeClient();
     render(<App client={client} />);
     expect(within(screen.getByLabelText("Active laboratory")).getByText("Local Lab")).toBeTruthy();
+  });
+});
+
+describe("M10.1 expanded device palette", () => {
+  it("offers all device profiles and creates a Hub with stable interfaces", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    await userEvent.click(screen.getByRole("button", { name: "New Lab" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add device" }));
+    for (const label of ["PC", "Server", "Hub", "Bridge", "L2 Switch", "L3 Switch", "Router"]) {
+      expect(screen.getByRole("button", { name: `Add ${label}` })).toBeTruthy();
+    }
+    await userEvent.click(screen.getByRole("button", { name: "Add Hub" }));
+    const hub = useWorkspaceStore.getState().draft?.topology.nodes.find((node) => node.kind === "hub");
+    expect(hub).toMatchObject({ id: "hub-1", name: "HUB1" });
+    expect(hub?.interfaces.map((iface) => iface.id)).toEqual(["Eth0/1", "Eth0/2", "Eth0/3", "Eth0/4", "Eth0/5", "Eth0/6", "Eth0/7", "Eth0/8"]);
+  });
+
+  it("selects and loads each focused M10 demo", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    const demos = [
+      [HUB_ETHERNET_DEMO, "Hub Ethernet Basics"],
+      [BRIDGE_MAC_DEMO, "Bridge MAC Learning"],
+      [L3_SWITCH_DEMO, "L3 Switch Inter-VLAN Routing"],
+      [SERVER_CONNECTIVITY_DEMO, "Server Connectivity"],
+    ] as const;
+    for (const [document, label] of demos) {
+      if (useWorkspaceStore.getState().draft) {
+        await openMenu("File");
+        await userEvent.click(screen.getByRole("menuitem", { name: "Load Demo Lab" }));
+      } else {
+        await userEvent.click(screen.getByRole("button", { name: /^Load Demo Lab$/ }));
+      }
+      await userEvent.click(screen.getByRole("button", { name: new RegExp(label) }));
+      await waitFor(() => expect(useWorkspaceStore.getState().snapshot?.labId).toBe(document.id));
+    }
+  });
+
+  it("hides unsupported Hub CLI actions and shows capability-specific counters", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    await userEvent.click(screen.getByRole("button", { name: /^Load Demo Lab$/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Hub Ethernet Basics/ }));
+    fireEvent.contextMenu(await screen.findByRole("button", { name: "Select HUB1" }));
+    expect(screen.queryByRole("menuitem", { name: /Open CLI/ })).toBeNull();
+    await userEvent.click(screen.getByRole("menuitem", { name: /Inspect/ }));
+    await userEvent.click(screen.getByRole("tab", { name: "Runtime" }));
+    expect(await screen.findByText("Repeater counters")).toBeTruthy();
+  });
+
+  it("shows L3 Switch SVIs and the Server service placeholder", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    await userEvent.click(screen.getByRole("button", { name: /^Load Demo Lab$/ }));
+    await userEvent.click(screen.getByRole("button", { name: /L3 Switch Inter-VLAN Routing/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Select DSW1" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Runtime" }));
+    expect(await screen.findByText("SVIs")).toBeTruthy();
+    expect(screen.getByText("Enabled")).toBeTruthy();
+
+    await openMenu("File");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Load Demo Lab" }));
+    await userEvent.click(screen.getByRole("button", { name: /Server Connectivity/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Select SRV1" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Runtime" }));
+    expect(await screen.findByText("Services will be added in M10.2.")).toBeTruthy();
   });
 });

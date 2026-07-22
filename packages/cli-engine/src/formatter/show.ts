@@ -1,4 +1,12 @@
-import { type Device, intToIp, L2Switch, Pc, Router } from "@sim/sim-core";
+import {
+  type Device,
+  EndHost,
+  EthernetBridge,
+  intToIp,
+  L2Switch,
+  Layer3Switch,
+  Router,
+} from "@sim/sim-core";
 import { dashes, row } from "./tables";
 
 function maskLen(maskInt: number): number {
@@ -76,9 +84,16 @@ export function showMacAddressTable(sw: L2Switch): string {
   return [header, underline, ...lines].join("\n");
 }
 
+export function showBridgeMacAddressTable(bridge: EthernetBridge): string {
+  const header = row([["Mac Address", 20], ["Type", 10], ["Port", 0]]);
+  const lines = bridge.macAddressTable().map((entry) =>
+    row([[entry.mac, 20], ["DYNAMIC", 10], [entry.port, 0]]));
+  return [header, ...lines].join("\n");
+}
+
 // --- router shows --------------------------------------------------------
 
-export function showIpRoute(r: Router): string {
+export function showIpRoute(r: Router | Layer3Switch): string {
   const rows = r.routingTable();
   const body = rows.map((rt) => {
     const net = `${rt.network}/${maskLen(rt.maskInt)}`;
@@ -101,13 +116,24 @@ export function showIpInterfaceBrief(device: Device): string {
     ["Protocol", 0],
   ]);
   const lines: string[] = [];
-  if (device instanceof Router) {
+  if (device instanceof Layer3Switch) {
+    const physical = new Map(device.routedInterfaceSummaries().map((entry) => [entry.name, entry]));
+    for (const [name, iface] of device.interfaces) {
+      const routed = physical.get(name);
+      const { status, protocol } = ifStatus(iface.adminUp, iface.operationalUp);
+      lines.push(row([[name, 24], [routed?.ip ?? "unassigned", 16], [status, 24], [protocol, 0]]));
+    }
+    for (const svi of device.sviSummaries()) {
+      const { status, protocol } = ifStatus(svi.adminUp, svi.operUp);
+      lines.push(row([[svi.name, 24], [svi.ip ?? "unassigned", 16], [status, 24], [protocol, 0]]));
+    }
+  } else if (device instanceof Router) {
     for (const i of device.interfaceSummaries()) {
       const { status, protocol } = ifStatus(i.adminUp, i.operUp);
       lines.push(row([[i.name, 24], [i.ip ?? "unassigned", 16], [status, 24], [protocol, 0]]));
     }
-  } else if (device instanceof Pc) {
-    const iface = [...device.interfaces.values()][0];
+  } else if (device instanceof EndHost) {
+    const iface = device.primary;
     const up = iface?.operationalUp ?? false;
     lines.push(row([[iface?.name ?? "eth0", 24], [device.ip ?? "unassigned", 16], [up ? "up" : "down", 24], [up ? "up" : "down", 0]]));
   } else {
@@ -140,7 +166,7 @@ export function showArp(device: Device): string {
     ["Type", 0],
   ]);
   const entries: Array<[string, string]> = [];
-  if (device instanceof Pc || device instanceof Router) {
+  if (device instanceof EndHost || device instanceof Router || device instanceof Layer3Switch) {
     for (const [ip, mac] of device.arpTable) entries.push([ip, mac]);
   }
   entries.sort((a, b) => a[0].localeCompare(b[0]));
@@ -154,7 +180,42 @@ export function showArp(device: Device): string {
 
 export function showRunningConfig(device: Device): string {
   const out: string[] = ["!", `hostname ${device.name}`, "!"];
-  if (device instanceof L2Switch) {
+  if (device instanceof Layer3Switch) {
+    for (const vlan of device.vlanBrief()) {
+      if (vlan.id === 1) continue;
+      out.push(`vlan ${vlan.id}`, ` name ${vlan.name}`, "!");
+    }
+    const routed = new Map(device.routedInterfaceSummaries().map((entry) => [entry.name, entry]));
+    for (const port of device.portSummaries()) {
+      out.push(`interface ${port.name}`);
+      if (port.description) out.push(` description ${port.description}`);
+      if (device.isRoutedPort(port.name)) {
+        out.push(" no switchport");
+        const l3 = routed.get(port.name);
+        if (l3?.ip) out.push(` ip address ${l3.ip} ${intToIp(l3.maskInt)}`);
+      } else if (port.mode === "access") {
+        if (port.accessVlan !== 1) out.push(" switchport mode access", ` switchport access vlan ${port.accessVlan}`);
+      } else {
+        out.push(" switchport mode trunk");
+        if (port.nativeVlan !== 1) out.push(` switchport trunk native vlan ${port.nativeVlan}`);
+        if (port.allowedVlans !== "all") out.push(` switchport trunk allowed vlan ${port.allowedVlans.join(",")}`);
+      }
+      if (!port.adminUp) out.push(" shutdown");
+      out.push("!");
+    }
+    for (const svi of device.sviSummaries()) {
+      out.push(`interface vlan ${svi.vlanId}`);
+      if (svi.description) out.push(` description ${svi.description}`);
+      if (svi.ip) out.push(` ip address ${svi.ip} ${intToIp(svi.maskInt)}`);
+      if (!svi.adminUp) out.push(" shutdown");
+      out.push("!");
+    }
+    out.push(device.ipRoutingEnabled ? "ip routing" : "no ip routing");
+    for (const route of device.routingTable()) {
+      if (route.kind === "static") out.push(`ip route ${route.network} ${intToIp(route.maskInt)} ${route.viaIp}`);
+    }
+    out.push("!");
+  } else if (device instanceof L2Switch) {
     for (const v of device.vlanBrief()) {
       if (v.id === 1) continue;
       out.push(`vlan ${v.id}`, ` name ${v.name}`, "!");
@@ -174,6 +235,13 @@ export function showRunningConfig(device: Device): string {
       if (!p.adminUp) out.push(" shutdown");
       out.push("!");
     }
+  } else if (device instanceof EthernetBridge) {
+    for (const [name, iface] of device.interfaces) {
+      out.push(`interface ${name}`);
+      if (iface.description) out.push(` description ${iface.description}`);
+      if (!iface.adminUp) out.push(" shutdown");
+      out.push("!");
+    }
   } else if (device instanceof Router) {
     for (const i of device.interfaceSummaries()) {
       out.push(`interface ${i.name}`);
@@ -188,6 +256,14 @@ export function showRunningConfig(device: Device): string {
       if (rt.kind === "static") out.push(`ip route ${rt.network} ${intToIp(rt.maskInt)} ${rt.viaIp}`);
     }
     out.push("!");
+  } else if (device instanceof EndHost) {
+    const state = device.configurationSnapshot();
+    out.push(`interface ${device.primary.name}`);
+    if (state.ip) out.push(` ip address ${state.ip} ${intToIp(state.maskInt)}`);
+    if (state.dhcpEnabled) out.push(" ip address dhcp");
+    if (!device.primary.adminUp) out.push(" shutdown");
+    out.push("!");
+    if (state.gateway) out.push(`ip default-gateway ${state.gateway}`);
   }
   out.push("end");
   return out.join("\n");

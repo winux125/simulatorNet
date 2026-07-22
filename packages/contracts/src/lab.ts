@@ -141,11 +141,11 @@ export const RouterDeviceConfigSchema = z.object({
 export type RouterDeviceConfig = z.infer<typeof RouterDeviceConfigSchema>;
 
 export const Layer3SwitchInterfaceConfigSchema = z.discriminatedUnion("mode", [
-  SwitchInterfaceConfigSchema.extend({ mode: z.enum(["access", "trunk"]) }),
+  SwitchInterfaceConfigSchema.extend({ mode: z.enum(["access", "trunk"]) }).strict(),
   PhysicalInterfaceConfigSchema.extend({
     mode: z.literal("routed"),
     ipv4: Ipv4InterfaceConfigSchema.optional(),
-  }),
+  }).strict(),
 ]);
 export type Layer3SwitchInterfaceConfig = z.infer<typeof Layer3SwitchInterfaceConfigSchema>;
 

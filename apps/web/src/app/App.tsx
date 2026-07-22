@@ -1,4 +1,4 @@
-import type { LabDocument, NodeSpec } from "@sim/contracts";
+import { getDeviceProfile, type LabDocument, type NodeSpec } from "@sim/contracts";
 import { canonicalizeLabDocument, stringifyLabDocument } from "@sim/lab-format";
 import type { SimWorkerEvent } from "@sim/sim-worker";
 import { Group as PanelGroup, Panel as ResizablePanel, Separator } from "react-resizable-panels";
@@ -13,7 +13,7 @@ import { ToolRail } from "../components/ToolRail";
 import { Toolbar } from "../components/Toolbar";
 import type { MenuDef } from "../components/MenuBar";
 import { AssignmentPanel } from "../features/assignment/AssignmentPanel";
-import { DEMO_LAB } from "../fixtures/demo-lab";
+import { DEMO_LABS, type DemoLabId } from "../fixtures/m10-demo-labs";
 import {
   addDraftDevice,
   autoArrangeDocument,
@@ -75,6 +75,7 @@ export function App({ client }: AppProps) {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [saveAsOpen, setSaveAsOpen] = useState(false);
   const [advanceTimeOpen, setAdvanceTimeOpen] = useState(false);
+  const [demoLabOpen, setDemoLabOpen] = useState(false);
   const [validation, setValidation] = useState<string>();
   const [pendingMode, setPendingMode] = useState<WorkspaceMode>();
 
@@ -108,7 +109,12 @@ export function App({ client }: AppProps) {
     window.requestAnimationFrame(() => workspace.requestFit());
   };
 
-  const loadDemo = () => void initialize(DEMO_LAB).catch((error) => reportError(error, "validation"));
+  const loadDemo = (id: DemoLabId) => {
+    const demo = DEMO_LABS.find((candidate) => candidate.id === id);
+    if (!demo) return;
+    setDemoLabOpen(false);
+    void initialize(demo.document).catch((error) => reportError(error, "validation"));
+  };
   const newLab = () => void initialize(EMPTY_LAB, "edit").catch((error) => reportError(error, "validation"));
   const loadFile = (file: File) => void file.text().then(loadLabDocumentText).then((document) => initialize(document)).catch((error) => reportError(error, "validation"));
   const importLab = () => document.getElementById("load-lab-file")?.click();
@@ -194,12 +200,18 @@ export function App({ client }: AppProps) {
       reportError("CLI is available in Simulate mode", "cli");
       return;
     }
+    const node = useWorkspaceStore.getState().snapshot?.nodes.find((candidate) => candidate.id === deviceId);
+    if (!node || !getDeviceProfile(node.type).cliProfile) {
+      reportError(`${node ? getDeviceProfile(node.type).displayName : "Device"} does not provide an interactive CLI`, "cli");
+      return;
+    }
     workspace.openTerminal(deviceId);
   };
   const openTerminalFromMenu = () => {
     const state = useWorkspaceStore.getState();
     if (state.mode === "simulate") {
-      const target = state.selectedNodeId ?? state.snapshot?.nodes[0]?.id;
+      const target = state.selectedNodeId
+        ?? state.snapshot?.nodes.find((node) => getDeviceProfile(node.type).cliProfile)?.id;
       if (target) { openTerminal(target); return; }
     }
     workspace.setDockTab("terminal");
@@ -233,7 +245,7 @@ export function App({ client }: AppProps) {
       else if (event.key === "?") setShortcutsOpen(true);
       else if (event.key === "Escape") {
         setShortcutsOpen(false); setLabInfoOpen(false); setCliCommandsOpen(false); setAboutOpen(false);
-        setSaveAsOpen(false); setAdvanceTimeOpen(false); setConfirmApply(false); setValidation(undefined);
+        setSaveAsOpen(false); setAdvanceTimeOpen(false); setDemoLabOpen(false); setConfirmApply(false); setValidation(undefined);
         workspace.setPaletteOpen(false); workspace.selectNode(undefined); workspace.selectLink(undefined);
       }
     };
@@ -253,7 +265,7 @@ export function App({ client }: AppProps) {
     { id: "file", label: "File", items: [
       { id: "file-new", label: "New Lab", shortcut: "Ctrl N", icon: <FilePlus2 size={14} />, onSelect: newLab },
       { id: "file-open", label: "Open / Import Lab…", shortcut: "Ctrl O", icon: <FolderOpen size={14} />, onSelect: importLab },
-      { id: "file-demo", label: "Load Demo Lab", icon: <FlaskConical size={14} />, onSelect: loadDemo },
+      { id: "file-demo", label: "Load Demo Lab", icon: <FlaskConical size={14} />, onSelect: () => setDemoLabOpen(true) },
       { id: "file-close", label: "Close Lab", icon: <FolderX size={14} />, disabled: !labOpen, onSelect: closeLab },
       { separator: true },
       { id: "file-save", label: "Save / Export Lab", shortcut: "Ctrl S", icon: <Download size={14} />, disabled: !ready, onSelect: save },
@@ -417,6 +429,7 @@ export function App({ client }: AppProps) {
       </WorkspaceDialog>}
       {saveAsOpen && <SaveAsDialog defaultName={workspace.draft?.id ?? "lab"} onClose={() => setSaveAsOpen(false)} onSave={(name) => { exportLab(name); setSaveAsOpen(false); }} />}
       {advanceTimeOpen && <AdvanceTimeDialog onClose={() => setAdvanceTimeOpen(false)} onAdvance={(ms) => { advanceTime(ms); setAdvanceTimeOpen(false); }} />}
+      {demoLabOpen && <DemoLabDialog onClose={() => setDemoLabOpen(false)} onLoad={loadDemo} />}
       {labInfoOpen && workspace.draft && <LabInformationDialog document={workspace.draft} mode={workspace.mode} onClose={() => setLabInfoOpen(false)} />}
       {cliCommandsOpen && <CliCommandsDialog onClose={() => setCliCommandsOpen(false)} />}
       {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
@@ -455,11 +468,23 @@ export function App({ client }: AppProps) {
       onInspect: (id: string) => { workspace.selectNode(id); workspace.setInspectorOpen(true); },
       onShowLinkLabels: workspace.setShowLinkLabels,
       onChange: updateDraft,
-      onLoadDemo: loadDemo,
+      onLoadDemo: () => setDemoLabOpen(true),
       onNewLab: newLab,
       onImportLab: importLab,
     };
   }
+}
+
+function DemoLabDialog({ onClose, onLoad }: { onClose(): void; onLoad(id: DemoLabId): void }) {
+  return <WorkspaceDialog title="Load demo laboratory" eyebrow="Deterministic examples" onClose={onClose}>
+    <p>Choose a focused topology. Each demo uses the same browser and server simulation core.</p>
+    <div className="demo-lab-list">
+      {DEMO_LABS.map((demo) => <button key={demo.id} type="button" onClick={() => onLoad(demo.id)}>
+        <FlaskConical size={16} aria-hidden="true" />
+        <span><strong>{demo.label}</strong><small>{demo.document.description}</small></span>
+      </button>)}
+    </div>
+  </WorkspaceDialog>;
 }
 
 function CanvasLoading() {
@@ -518,16 +543,24 @@ function LabInformationDialog({ document, mode, onClose }: { document: LabDocume
 function CliCommandsDialog({ onClose }: { onClose(): void }) {
   return <WorkspaceDialog title="CLI commands" eyebrow="Implemented surface" onClose={onClose}>
     <div className="cli-command-reference">
-      <section><h3>PC</h3><ul>
+      <section><h3>PC / Server</h3><ul>
         <li><code>ping &lt;ip&gt;</code> — send ICMP echoes to a destination</li>
         <li><code>ipconfig</code> — show interface addressing and DHCP lease</li>
+        <li><code>ipconfig /renew</code> — renew a DHCP client lease</li>
         <li><code>arp</code> — display the ARP cache</li>
       </ul></section>
-      <section><h3>Switch</h3><ul>
+      <section><h3>Bridge / Switch</h3><ul>
+        <li><code>show mac address-table</code> — display learned forwarding entries</li>
         <li><code>enable</code> / <code>configure terminal</code> — enter privileged / global config</li>
         <li><code>vlan &lt;id&gt;</code>, <code>name &lt;text&gt;</code> — define VLANs</li>
         <li><code>interface &lt;id&gt;</code>, <code>switchport mode access|trunk</code>, <code>switchport access vlan &lt;id&gt;</code></li>
         <li><code>show vlan brief</code>, <code>show mac address-table</code>, <code>show interfaces status</code></li>
+      </ul></section>
+      <section><h3>L3 Switch</h3><ul>
+        <li><code>interface vlan &lt;id&gt;</code> — configure an SVI</li>
+        <li><code>no switchport</code> — convert a physical port to routed mode</li>
+        <li><code>ip routing</code> — enable IPv4 forwarding between SVIs and routed ports</li>
+        <li><code>show ip interface brief</code>, <code>show ip route</code></li>
       </ul></section>
       <section><h3>Router</h3><ul>
         <li><code>interface &lt;id&gt;</code>, <code>ip address &lt;ip&gt; &lt;mask&gt;</code>, <code>no shutdown</code></li>

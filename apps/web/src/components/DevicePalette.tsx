@@ -1,5 +1,5 @@
-import type { NodeSpec } from "@sim/contracts";
-import { ChevronDown, ChevronRight, GripVertical, Monitor, Network, Router as RouterIcon, Search, X } from "lucide-react";
+import { DEVICE_PROFILE_LIST, type DeviceProfile, type NodeSpec } from "@sim/contracts";
+import { ChevronDown, ChevronRight, GitMerge, GripVertical, Monitor, Network, Router as RouterIcon, Search, Server, Share2, Waypoints, X, type LucideIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { IconButton, PanelHeader } from "../ui";
 
@@ -9,28 +9,43 @@ interface DevicePaletteProps {
   onClose(): void;
 }
 
-const categories = [
-  {
-    id: "end",
-    label: "End devices",
-    devices: [{ kind: "pc" as const, icon: Monitor, label: "PC", short: "Host · 1 Ethernet" }],
-  },
-  {
-    id: "network",
-    label: "Network devices",
-    devices: [
-      { kind: "l2-switch" as const, icon: Network, label: "L2 Switch", short: "LAN · 8 Gigabit" },
-      { kind: "router" as const, icon: RouterIcon, label: "Router", short: "Layer 3 · 2 Gigabit" },
-    ],
-  },
-];
+const icons: Record<NodeSpec["kind"], LucideIcon> = {
+  pc: Monitor,
+  server: Server,
+  hub: Share2,
+  bridge: GitMerge,
+  "l2-switch": Network,
+  "l3-switch": Waypoints,
+  router: RouterIcon,
+};
+
+const categoryLabels = { "end-device": "End devices", network: "Network devices" } as const;
+const categories = (["end-device", "network"] as const).map((category) => ({
+  id: category,
+  label: categoryLabels[category],
+  devices: DEVICE_PROFILE_LIST.filter((profile) => profile.category === category).map((profile) => ({
+    profile,
+    kind: profile.type,
+    icon: icons[profile.type],
+    label: profile.displayName,
+    short: `${profile.interfaceTemplates.length} Ethernet · ${capabilitySummary(profile)}`,
+  })),
+}));
+
+function capabilitySummary(profile: DeviceProfile): string {
+  if (profile.capabilities.includes("ipv4-routing")) return "Layer 3";
+  if (profile.capabilities.includes("layer2-switching")) return "VLAN switching";
+  if (profile.capabilities.includes("ethernet-repeater")) return "Repeater";
+  if (profile.capabilities.includes("ethernet-bridge")) return "MAC learning";
+  return "IPv4 host";
+}
 
 export function DevicePalette({ disabled, onAdd, onClose }: DevicePaletteProps) {
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const filtered = useMemo(() => categories.map((category) => ({
     ...category,
-    devices: category.devices.filter((device) => `${device.label} ${device.short}`.toLowerCase().includes(query.toLowerCase())),
+    devices: category.devices.filter((device) => `${device.label} ${device.short} ${device.profile.description}`.toLowerCase().includes(query.toLowerCase())),
   })).filter((category) => category.devices.length > 0), [query]);
 
   const toggleCategory = (id: string) => setCollapsed((current) => {
@@ -71,6 +86,7 @@ export function DevicePalette({ disabled, onAdd, onClose }: DevicePaletteProps) 
                       type="button"
                       className="library-device"
                       aria-label={`Add ${device.label}`}
+                      title={device.profile.description}
                       disabled={disabled}
                       draggable={!disabled}
                       data-device-kind={device.kind}

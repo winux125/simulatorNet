@@ -1,4 +1,4 @@
-import type { LabDocument, NodeSpec } from "@sim/contracts";
+import { DEVICE_TYPES, getDeviceProfile, type LabDocument, type NodeSpec } from "@sim/contracts";
 import type { LabUiSnapshot } from "@sim/sim-worker";
 import {
   Background,
@@ -101,11 +101,15 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   const nodes: DeviceFlowNode[] = document.topology.nodes.map((node) => {
     const live = status.get(node.id);
     const ip = live?.interfaces.find((iface) => iface.ipAddress)?.ipAddress;
-    const subtitle = node.kind === "pc"
+    const subtitle = node.kind === "pc" || node.kind === "server"
       ? ip ?? "No IPv4 address"
-      : node.kind === "l2-switch"
+      : node.kind === "l2-switch" || node.kind === "l3-switch"
         ? `${node.interfaces.length} ports`
-        : `${node.interfaces.length} interfaces`;
+        : node.kind === "hub"
+          ? `${node.interfaces.length} shared ports`
+          : node.kind === "bridge"
+            ? "2 Ethernet segments"
+            : `${node.interfaces.length} interfaces`;
     const original = props.snapshot?.nodes.find((candidate) => candidate.id === node.id);
     const changed = !original || original.position.x !== node.position?.x || original.position.y !== node.position?.y;
     return {
@@ -197,7 +201,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   const dropDevice = (event: DragEvent) => {
     event.preventDefault();
     const kind = event.dataTransfer.getData("application/x-simulator-device") as NodeSpec["kind"];
-    if (!(["pc", "l2-switch", "router"] as string[]).includes(kind) || !instance) return;
+    if (!(DEVICE_TYPES as readonly string[]).includes(kind) || !instance) return;
     addAt(kind, instance.screenToFlowPosition({ x: event.clientX, y: event.clientY }));
   };
   const addFromPane = (kind: NodeSpec["kind"]) => {
@@ -241,7 +245,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         <small>Training laboratory</small>
         <strong>{document.title}</strong>
         <p>{document.description ?? "Build, inspect and validate a deterministic network topology."}</p>
-        <span>Expected: DHCP clients communicate across VLAN 10 and VLAN 20.</span>
+        <span>Seed {document.simulation.seed} · schema v{document.schemaVersion}</span>
       </div>
       <ReactFlow
         nodes={nodes}
@@ -292,7 +296,8 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       {contextMenu && (
         <div className="context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
           {contextMenu.kind === "node" && <>
-            {props.mode === "simulate" && <button role="menuitem" type="button" onClick={() => contextAction("terminal")}>Open CLI <kbd>Enter</kbd></button>}
+            {props.mode === "simulate" && getDeviceProfile(document.topology.nodes.find((node) => node.id === contextMenu.id)!.kind).cliProfile
+              && <button role="menuitem" type="button" onClick={() => contextAction("terminal")}>Open CLI <kbd>Enter</kbd></button>}
             <button role="menuitem" type="button" onClick={() => contextAction("inspect")}>Inspect <Eye size={13} /></button>
             {editable && <>
               <span className="context-menu__separator" />

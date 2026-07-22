@@ -208,7 +208,7 @@ preserves the session, and output follows the latest line automatically.
 
 M1 through M6.1 are complete. The browser remains an untrusted grading environment.
 
-## Milestone 7 (current)
+## Milestone 7
 
 M7 adds a deterministic server verification boundary without adding storage,
 identity or deployment concerns. The browser sends only a
@@ -467,3 +467,83 @@ raw `gradingSpec` remains internal. M8 has no standalone browser OIDC login,
 cross-site iframe support, Keycloak Admin REST automation, assignments, result
 persistence, Redis or queues. Anonymous Local Lab mode remains available and is
 visually distinct from an Authenticated Organization Session.
+
+## Milestone 10.1 — extensible device model
+
+M10.1 replaces scattered three-device conditionals with a browser-safe
+`DEVICE_PROFILES` registry in `@sim/contracts`. Every profile defines a stable
+device type, display name, category, capability set, interface template, icon
+key, optional CLI profile and short description. The first expanded palette is:
+
+| Device | Interfaces | Core capabilities | CLI |
+| --- | --- | --- | --- |
+| PC | `eth0` | Ethernet/IPv4 host, DHCP client | Host |
+| Server | `eth0`, `eth1` | Ethernet/IPv4 host, DHCP client, service registry | Host |
+| Hub | `Eth0/1`–`Eth0/8` | Ethernet repeater | None |
+| Bridge | `Eth0/1`, `Eth0/2` | Two-port MAC-learning bridge | Bridge |
+| L2 Switch | `Gi0/1`–`Gi0/8` | VLAN switching and dot1Q trunks | Switch |
+| L3 Switch | `Gi0/1`–`Gi0/8` | VLAN switching, SVIs, routed ports, IPv4/static routing | L3 switch |
+| Router | `Gi0/0`, `Gi0/1` | IPv4/static routing, subinterfaces, DHCP server | Router |
+
+Profiles are metadata, not protocol implementations. `sim-core` still owns all
+runtime behavior and attaches the relevant profile to each `Device`. Capability
+checks gate CLI commands, worker inspection and UI actions, so unsupported
+operations produce stable typed errors instead of accidental casts.
+
+### New deterministic devices
+
+- `Hub` is a true multiport repeater: it never learns addresses and repeats a
+  received frame to every other active port. Each branch carries a bounded
+  traversal budget, preventing a physical loop from recursing forever.
+- `EthernetBridge` is a dedicated two-port learning bridge with deterministic
+  flood/filter/forward behavior and MAC aging driven only by virtual time.
+- `Server` reuses the common `EndHost` IPv4/ARP/ICMP/DHCP-client behavior.
+  Its service registry is deliberately empty in M10.1; DHCP server and other
+  application services are M10.2 work.
+- `Layer3Switch` composes the existing L2 switch and router data planes. Access
+  and trunk ports keep switching; `no switchport` creates routed physical
+  ports; `interface vlan <id>` creates an SVI. An SVI is operational only when
+  it is administratively up, its VLAN exists and at least one active switchport
+  participates in that VLAN. Inter-VLAN forwarding also requires `ip routing`.
+
+Representative L3 switch configuration:
+
+```text
+DSW1(config)# interface Gi0/1
+DSW1(config-if)# switchport access vlan 10
+DSW1(config)# interface vlan 10
+DSW1(config-if)# ip address 192.168.10.1 255.255.255.0
+DSW1(config-if)# no shutdown
+DSW1(config)# ip routing
+```
+
+Hub has no interactive CLI. Bridge exposes interface state, running
+configuration and `show mac address-table`. Server uses host commands including
+`ping`, `arp`, `ipconfig` and `ipconfig /renew`. L3 Switch combines switch and
+router show/config commands, including `show vlan brief`, `show mac
+address-table`, `show ip interface brief` and `show ip route`.
+
+### Documents, worker, grading and demos
+
+Schema-v1 `LabDocument` remains backward compatible while adding structured
+Hub, Bridge, Server and L3 Switch configurations. Serialization persists only
+configuration: FDB/ARP entries, counters, DHCP leases, trace, event queues and
+virtual time are rebuilt. Worker snapshots and capability-aware inspections
+remain bounded plain JSON.
+
+Grading adds typed `device-type`, `capability-present`, `svi-state` and
+`ip-routing-enabled` checks. Existing interface, switchport, VLAN, route, DHCP
+and ping checks also understand applicable new devices. Browser submissions
+still contain no hidden grading definitions and no browser-supplied score is
+trusted.
+
+The welcome demo selector now includes Router-on-a-stick + DHCP, Hub Ethernet
+Basics, Bridge MAC Learning, L3 Switch Inter-VLAN Routing and Server
+Connectivity. The device library and topology use neutral distinct icons; the
+Inspector conditionally exposes MAC, ARP, route, SVI, repeater-counter and
+service-placeholder sections from the selected device's capabilities.
+
+Known M10.1 limits: no STP/RSTP, link aggregation, port security, CDP/LLDP,
+bridge VLANs, multilayer-switch DHCP server, DNS/HTTP/NTP services, dynamic
+routing, NAT, ACLs or IPv6. A Server supports one active simulated L3 interface
+in this milestone. M10.2 is intentionally not started.

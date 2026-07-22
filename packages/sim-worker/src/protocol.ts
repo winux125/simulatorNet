@@ -1,4 +1,4 @@
-import type { DeviceType, LabDocument } from "@sim/contracts";
+import type { DeviceCapability, DeviceType, LabDocument } from "@sim/contracts";
 import type { CliMode } from "@sim/cli-engine";
 
 export type EngineUiState = "idle" | "running" | "paused" | "error";
@@ -8,7 +8,7 @@ export interface LabUiInterface {
   adminUp: boolean;
   operationalUp: boolean;
   ipAddress?: string;
-  mode?: "access" | "trunk";
+  mode?: "access" | "trunk" | "routed";
 }
 
 export interface LabUiNode {
@@ -88,7 +88,8 @@ export interface DeviceInspection {
   type: LabUiNode["type"];
   interfaces: DeviceInspectionInterface[];
   arpEntries: Array<{ ipAddress: string; macAddress: string }>;
-  macEntries: Array<{ vlan: number; macAddress: string; interfaceId: string }>;
+  capabilities: DeviceCapability[];
+  macEntries: Array<{ vlan?: number; macAddress: string; interfaceId: string }>;
   routes: Array<{
     kind: "connected" | "static";
     network: string;
@@ -97,6 +98,18 @@ export interface DeviceInspection {
     interfaceId: string;
   }>;
   vlans: Array<{ id: number; name: string; interfaces: string[] }>;
+  svis?: Array<{
+    vlanId: number;
+    interfaceId: string;
+    ipAddress?: string;
+    prefixLength?: number;
+    adminUp: boolean;
+    operationalUp: boolean;
+    description?: string;
+  }>;
+  ipRoutingEnabled?: boolean;
+  counters?: { repeatedFrames?: number; droppedFrames?: number };
+  services?: Array<{ type: string }>;
   dhcp?: {
     enabled?: boolean;
     state?: string;

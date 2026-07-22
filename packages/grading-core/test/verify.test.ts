@@ -13,6 +13,57 @@ describe("deterministic grading checks", () => {
     expect(result.checks.find((check) => check.id === "ping-pc1-pc2")?.status).toBe("passed");
   });
 
+  it("grades device profiles, capabilities, SVIs, routing, and compatible L3 switch checks", () => {
+    const document = demoLabDocument();
+    document.topology.nodes = [
+      { id: "pc-1", kind: "pc", interfaces: [{ id: "eth0" }] },
+      { id: "l3", kind: "l3-switch", interfaces: [{ id: "Gi0/1" }, { id: "Gi0/2" }] },
+    ];
+    document.topology.links = [
+      { id: "link", a: { node: "pc-1", iface: "eth0" }, b: { node: "l3", iface: "Gi0/1" } },
+    ];
+    document.configurations = {
+      "pc-1": {
+        kind: "pc",
+        interfaces: [],
+        ipv4: { address: "192.168.10.10", prefixLength: 24, defaultGateway: "192.168.10.1" },
+        dhcpEnabled: false,
+      },
+      l3: {
+        kind: "l3-switch",
+        vlans: [{ id: 10, name: "USERS" }],
+        interfaces: [
+          { id: "Gi0/1", shutdown: false, mode: "access", accessVlan: 10, nativeVlan: 1 },
+          { id: "Gi0/2", shutdown: false, mode: "routed", ipv4: { address: "10.0.0.1", prefixLength: 24 } },
+        ],
+        svis: [{ vlanId: 10, ipAddress: "192.168.10.1", prefixLength: 24, adminUp: true }],
+        staticRoutes: [{ network: "172.16.0.0", prefixLength: 16, nextHop: "10.0.0.2" }],
+        ipRoutingEnabled: true,
+      },
+    };
+    const request = {
+      submission: submissionFrom(document),
+      resultView: "instructor" as const,
+      gradingSpec: {
+        schemaVersion: 1 as const,
+        id: "l3-checks",
+        checks: [
+          { id: "type", title: "Device type", type: "device-type" as const, points: 1, visibility: "visible" as const, configuration: { deviceId: "l3", expectedType: "l3-switch" as const } },
+          { id: "cap", title: "SVI capability", type: "capability-present" as const, points: 1, visibility: "visible" as const, configuration: { deviceId: "l3", capability: "svi" as const } },
+          { id: "svi", title: "SVI up", type: "svi-state" as const, points: 1, visibility: "visible" as const, configuration: { deviceId: "l3", vlanId: 10, expectedAdminUp: true, expectedOperationalUp: true } },
+          { id: "routing", title: "Routing enabled", type: "ip-routing-enabled" as const, points: 1, visibility: "visible" as const, configuration: { deviceId: "l3", expected: true } },
+          { id: "switchport", title: "Access VLAN", type: "switchport" as const, points: 1, visibility: "visible" as const, configuration: { deviceId: "l3", interfaceId: "Gi0/1", expectedMode: "access" as const, expectedAccessVlan: 10 } },
+          { id: "vlan", title: "VLAN exists", type: "vlan-exists" as const, points: 1, visibility: "visible" as const, configuration: { deviceId: "l3", vlanId: 10 } },
+          { id: "route", title: "Route exists", type: "route-exists" as const, points: 1, visibility: "visible" as const, configuration: { deviceId: "l3", network: "172.16.0.0", prefixLength: 16 } },
+        ],
+      },
+    };
+    const result = verifySubmission(request);
+    expect(result.checks).toHaveLength(7);
+    expect(result.checks.every((check) => check.status === "passed")).toBe(true);
+    expect(result.score).toBe(100);
+  });
+
   it("fails routed ping when the access VLAN is broken", () => {
     const document = demoLabDocument();
     const config = document.configurations["switch-1"]!;

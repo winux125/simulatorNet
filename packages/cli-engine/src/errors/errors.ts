@@ -40,6 +40,17 @@ export class InvalidModeError extends CliError {
   }
 }
 
+/** The syntax is known, but the attached device does not implement it. */
+export class UnsupportedCapabilityError extends CliError {
+  constructor(readonly capability: string) {
+    super(`Unsupported capability: ${capability}`);
+    this.name = "UnsupportedCapabilityError";
+  }
+  override render(): string {
+    return `% This device does not support ${this.capability}.`;
+  }
+}
+
 /** A recognised command carried an invalid argument (bad VLAN id, IP, etc.). */
 export class ValidationError extends CliError {
   constructor(message: string) {

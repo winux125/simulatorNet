@@ -1,9 +1,10 @@
+import type { DeviceCapability } from "@sim/contracts";
 import type { Device, SimulationEngine } from "@sim/sim-core";
 import type { Params } from "./parser/matcher";
 import type { CliMode } from "./session/mode";
 
 /** Which device kind a command applies to. */
-export type DeviceFilter = "switch" | "router" | "pc" | "any";
+export type DeviceFilter = "switch" | "router" | "pc" | "bridge" | "l3-switch" | "any";
 
 /** The interface-configuration context (`config-if`). */
 export interface InterfaceContext {
@@ -17,6 +18,8 @@ export interface InterfaceContext {
   subVlan: number | undefined;
   /** True once the router subinterface L3 has been created. */
   subCreated: boolean;
+  /** Present when `interface vlan <id>` selected an SVI. */
+  sviVlan: number | undefined;
 }
 
 /**
@@ -40,6 +43,8 @@ export interface CommandSpec {
   modes: CliMode[];
   /** Restrict to a device kind; defaults to "any". */
   device?: DeviceFilter;
+  /** Functional requirements, evaluated through the registered device profile. */
+  capabilities?: readonly DeviceCapability[];
   /** Learner-facing syntax used when a known command is incomplete. */
   usage?: string;
   run(session: SessionApi, params: Params): string | void;

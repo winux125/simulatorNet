@@ -8,7 +8,17 @@ import {
   serializeLabDocument,
   type BuiltLab,
 } from "@sim/lab-format";
-import { L2Switch, Pc, Router, type TraceEntry } from "@sim/sim-core";
+import {
+  EndHost,
+  EthernetBridge,
+  Hub,
+  L2Switch,
+  Layer3Switch,
+  Pc,
+  Router,
+  Server,
+  type TraceEntry,
+} from "@sim/sim-core";
 import { SimulationWorkerError, serializeWorkerError } from "./errors";
 import type {
   EngineUiState,
@@ -129,6 +139,7 @@ export class SimulationWorkerRuntime {
     for (const node of document.topology.nodes) {
       const config = document.configurations[node.id];
       if (config?.kind === "pc" && config.dhcpEnabled) this.builtLab.getPc(node.id)?.requestDhcp();
+      if (config?.kind === "server" && config.dhcpClientEnabled) this.builtLab.getServer(node.id)?.requestDhcp();
     }
     this.builtLab.engine.runUntilIdle();
   }
@@ -144,6 +155,9 @@ export class SimulationWorkerRuntime {
     }
     const device = built.getDevice(deviceId);
     if (!device) throw new SimulationWorkerError("unknown-device", `Unknown device '${deviceId}'`);
+    if (!device.profile.cliProfile) {
+      throw new SimulationWorkerError("cli-not-supported", `${device.profile.displayName} does not provide an interactive CLI`);
+    }
     const entry = existing ?? { deviceId, session: createCliSession(device, built.engine) };
     this.sessions.set(sessionId, entry);
     const output = entry.session.execute(input);
@@ -239,11 +253,40 @@ export class SimulationWorkerRuntime {
     const base = {
       deviceId,
       hostname: device.name,
+      capabilities: [...device.profile.capabilities],
       arpEntries: [] as DeviceInspection["arpEntries"],
       macEntries: [] as DeviceInspection["macEntries"],
       routes: [] as DeviceInspection["routes"],
       vlans: [] as DeviceInspection["vlans"],
     };
+    if (device instanceof Server) {
+      return {
+        ...base,
+        type: "server",
+        interfaces: [...device.interfaces.values()].map((iface) => ({
+          id: iface.name,
+          adminUp: iface.adminUp,
+          operationalUp: iface.operationalUp,
+          description: iface.description,
+          mode: "routed" as const,
+          ipAddress: iface === device.primary ? device.ip : undefined,
+          prefixLength: iface === device.primary ? prefixLength(device.maskInt) : undefined,
+        })),
+        arpEntries: [...device.arpTable].map(([ipAddress, macAddress]) => ({ ipAddress, macAddress })),
+        dhcp: {
+          enabled: device.dhcpEnabled,
+          state: device.dhcpState,
+          bound: device.dhcpBound,
+          lease: device.lease ? {
+            ipAddress: device.lease.ip,
+            gateway: device.lease.gateway,
+            serverIp: device.lease.serverIp,
+            leaseSeconds: device.lease.leaseSeconds,
+          } : undefined,
+        },
+        services: [],
+      };
+    }
     if (device instanceof Pc) {
       return {
         ...base,
@@ -272,6 +315,45 @@ export class SimulationWorkerRuntime {
       };
     }
     if (device instanceof L2Switch) {
+      if (device instanceof Layer3Switch) {
+        const routed = new Map(device.routedInterfaceSummaries().map((row) => [row.name, row]));
+        return {
+          ...base,
+          type: "l3-switch",
+          interfaces: device.portSummaries().map((row) => ({
+            id: row.name,
+            adminUp: row.adminUp,
+            operationalUp: row.operUp,
+            description: row.description,
+            mode: device.isRoutedPort(row.name) ? "routed" as const : row.mode,
+            vlan: !device.isRoutedPort(row.name) && row.mode === "access" ? row.accessVlan : undefined,
+            nativeVlan: !device.isRoutedPort(row.name) && row.mode === "trunk" ? row.nativeVlan : undefined,
+            allowedVlans: !device.isRoutedPort(row.name) && row.mode === "trunk" ? row.allowedVlans : undefined,
+            ipAddress: routed.get(row.name)?.ip,
+            prefixLength: routed.get(row.name)?.ip ? prefixLength(routed.get(row.name)!.maskInt) : undefined,
+          })),
+          macEntries: device.macAddressTable().map((row) => ({ vlan: row.vlan, macAddress: row.mac, interfaceId: row.port })),
+          vlans: device.vlanBrief().map((row) => ({ id: row.id, name: row.name, interfaces: row.ports })),
+          svis: device.sviSummaries().map((svi) => ({
+            vlanId: svi.vlanId,
+            interfaceId: svi.name,
+            ipAddress: svi.ip,
+            prefixLength: svi.ip ? prefixLength(svi.maskInt) : undefined,
+            adminUp: svi.adminUp,
+            operationalUp: svi.operUp,
+            description: svi.description,
+          })),
+          routes: device.routingTable().map((row) => ({
+            kind: row.kind,
+            network: row.network,
+            prefixLength: prefixLength(row.maskInt),
+            nextHop: row.viaIp,
+            interfaceId: row.egressName,
+          })),
+          arpEntries: [...device.arpTable].map(([ipAddress, macAddress]) => ({ ipAddress, macAddress })),
+          ipRoutingEnabled: device.ipRoutingEnabled,
+        };
+      }
       return {
         ...base,
         type: "l2-switch",
@@ -291,6 +373,32 @@ export class SimulationWorkerRuntime {
           interfaceId: row.port,
         })),
         vlans: device.vlanBrief().map((row) => ({ id: row.id, name: row.name, interfaces: row.ports })),
+      };
+    }
+    if (device instanceof Hub) {
+      return {
+        ...base,
+        type: "hub",
+        interfaces: [...device.interfaces.values()].map((iface) => ({
+          id: iface.name,
+          adminUp: iface.adminUp,
+          operationalUp: iface.operationalUp,
+          description: iface.description,
+        })),
+        counters: { repeatedFrames: device.repeatedFrameCount, droppedFrames: device.droppedFrameCount },
+      };
+    }
+    if (device instanceof EthernetBridge) {
+      return {
+        ...base,
+        type: "bridge",
+        interfaces: [...device.interfaces.values()].map((iface) => ({
+          id: iface.name,
+          adminUp: iface.adminUp,
+          operationalUp: iface.operationalUp,
+          description: iface.description,
+        })),
+        macEntries: device.macAddressTable().map((row) => ({ macAddress: row.mac, interfaceId: row.port })),
       };
     }
     if (device instanceof Router) {
@@ -340,6 +448,9 @@ export class SimulationWorkerRuntime {
     const switchRows = device instanceof L2Switch
       ? new Map(device.portSummaries().map((row) => [row.name, row]))
       : undefined;
+    const layer3Rows = device instanceof Layer3Switch
+      ? new Map(device.routedInterfaceSummaries().map((row) => [row.name, row]))
+      : undefined;
     const interfaces: LabUiInterface[] = node.interfaces.map((spec) => {
       const iface = device.getInterface(spec.id)!;
       const router = routerRows?.get(spec.id);
@@ -348,8 +459,8 @@ export class SimulationWorkerRuntime {
         id: spec.id,
         adminUp: iface.adminUp,
         operationalUp: iface.operationalUp,
-        ipAddress: device instanceof Pc ? device.ip : router?.ip,
-        mode: sw?.mode,
+        ipAddress: device instanceof EndHost && iface === device.primary ? device.ip : router?.ip ?? layer3Rows?.get(spec.id)?.ip,
+        mode: device instanceof Layer3Switch && device.isRoutedPort(spec.id) ? "routed" : sw?.mode,
       };
     });
     return {
@@ -367,7 +478,11 @@ export class SimulationWorkerRuntime {
     const entries = built.engine.traceLog.slice(this.traceCursor);
     if (entries.length === 0) return;
     const events: SimulationTraceEvent[] = entries.map((entry, index) => {
-      const interfaceValue = entry.detail?.iface ?? entry.detail?.port;
+      const interfaceValue = entry.detail?.iface
+        ?? entry.detail?.port
+        ?? entry.detail?.egress
+        ?? entry.detail?.ingress
+        ?? entry.detail?.interface;
       return {
         sequence: this.traceCursor + index + 1,
         virtualTime: entry.time,

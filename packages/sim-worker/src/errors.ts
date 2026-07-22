@@ -1,4 +1,5 @@
 import { LabSemanticError, LabValidationError, UnsupportedSchemaVersionError } from "@sim/lab-format";
+import { FrameTraversalLimitError } from "@sim/sim-core";
 import type { SerializedWorkerError } from "./protocol";
 
 export class SimulationWorkerError extends Error {
@@ -45,6 +46,14 @@ export function serializeWorkerError(error: unknown): SerializedWorkerError {
       message: error.message,
       path: first?.path.join("."),
       context: first ? { issue: first.message } : undefined,
+    };
+  }
+  if (error instanceof FrameTraversalLimitError) {
+    return {
+      name: error.name,
+      code: error.code,
+      message: error.message,
+      context: { deviceId: error.deviceId, interfaceId: error.interfaceId },
     };
   }
   if (error instanceof Error) return { name: error.name, code: "runtime-error", message: error.message };

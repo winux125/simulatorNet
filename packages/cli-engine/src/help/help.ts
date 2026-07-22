@@ -14,6 +14,7 @@ const ROOT_DESCRIPTIONS: Record<string, string> = {
   hostname: "Set device hostname",
   interface: "Select an interface",
   ip: "Configure IP parameters",
+  ipconfig: "Display or renew host IPv4 configuration",
   name: "Set VLAN name",
   no: "Negate a command",
   ping: "Send ICMP echo requests",
@@ -30,7 +31,9 @@ const ARGUMENT_HELP: Record<string, string> = {
 };
 
 function available(session: SessionApi): CommandSpec[] {
-  return allCommands.filter((command) => command.modes.includes(session.mode) && deviceMatches(command.device, session.device));
+  return allCommands.filter((command) => command.modes.includes(session.mode)
+    && deviceMatches(command.device, session.device)
+    && (command.capabilities?.every((capability) => session.device.hasCapability(capability)) ?? true));
 }
 
 function patternParts(pattern: string): string[] {
@@ -64,6 +67,11 @@ export function renderHelp(session: SessionApi, prefix: string[]): string {
   }
 
   const key = prefix.join(" ").toLowerCase();
+  if (key === "interface") {
+    const entries = [...session.device.interfaces.keys()].map((label) => ({ label }));
+    if (session.device.hasCapability("svi")) entries.push({ label: "vlan <1-4094>" });
+    return lines(entries);
+  }
   const argument = ARGUMENT_HELP[key];
   if (argument) {
     const [label, ...description] = argument.split(/\s{3,}/);

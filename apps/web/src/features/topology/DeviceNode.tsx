@@ -1,6 +1,6 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { getDeviceProfile, type DeviceType } from "@sim/contracts";
-import { Monitor, Network, Router as RouterIcon, TerminalSquare } from "lucide-react";
+import { GitMerge, Monitor, Network, Router as RouterIcon, Server, Share2, TerminalSquare, Waypoints, type LucideIcon } from "lucide-react";
 import type { MouseEvent } from "react";
 import { StatusIndicator } from "../../ui";
 
@@ -19,12 +19,19 @@ export type DeviceNodeData = Record<string, unknown> & {
 
 export type DeviceFlowNode = Node<DeviceNodeData, "device">;
 
-const icons = { pc: Monitor, "l2-switch": Network, router: RouterIcon } as const;
+const icons: Record<DeviceType, LucideIcon> = {
+  pc: Monitor,
+  server: Server,
+  hub: Share2,
+  bridge: GitMerge,
+  "l2-switch": Network,
+  "l3-switch": Waypoints,
+  router: RouterIcon,
+};
 
 export function DeviceNode({ id, data, selected }: NodeProps<DeviceFlowNode>) {
-  const DeviceIcon = data.deviceType in icons
-    ? icons[data.deviceType as keyof typeof icons]
-    : Network;
+  const DeviceIcon = icons[data.deviceType];
+  const profile = getDeviceProfile(data.deviceType);
   const nodeClass = [
     "device-node",
     selected ? "is-selected" : "",
@@ -56,7 +63,7 @@ export function DeviceNode({ id, data, selected }: NodeProps<DeviceFlowNode>) {
         </span>
         <StatusIndicator status={data.status} compact />
       </button>
-      <span className="device-node__type">{getDeviceProfile(data.deviceType).displayName}</span>
+      <span className="device-node__type" title={profile.description}>{profile.displayName}</span>
       {data.configurationChanged && <span className="device-node__changed" title="Configuration changed">●</span>}
       {data.interfaces.map((iface, index) => (
         <Handle

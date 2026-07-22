@@ -59,6 +59,7 @@ interface PendingPing {
  * with timeouts. Non-local destinations are sent to the default gateway.
  */
 export abstract class EndHost extends Device {
+  private primaryInterfaceName: string | undefined;
   ip: Ipv4 | undefined;
   maskInt = maskToInt(24);
   gateway: Ipv4 | undefined;
@@ -116,8 +117,18 @@ export abstract class EndHost extends Device {
 
   /** The PC's single Ethernet interface. */
   get primary(): EthernetInterface {
+    if (this.primaryInterfaceName) {
+      const selected = this.interfaces.get(this.primaryInterfaceName);
+      if (selected) return selected;
+    }
     for (const iface of this.interfaces.values()) return iface;
     throw new Error(`End host ${this.id} has no interface`);
+  }
+
+  /** Select the non-transit interface used by this host's IPv4 stack. */
+  selectPrimaryInterface(name: string): void {
+    if (!this.interfaces.has(name)) throw new Error(`End host ${this.id} has no interface ${name}`);
+    this.primaryInterfaceName = name;
   }
 
   /** Initiate one ICMP echo request. Result is recorded in `pingResults`. */

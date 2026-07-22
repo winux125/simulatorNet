@@ -1,7 +1,7 @@
 import type { Device, SimulationEngine } from "@sim/sim-core";
 import { allCommands } from "../commands";
 import { deviceMatches } from "../commands/helpers";
-import { CliError, IncompleteCommandError, SyntaxError } from "../errors/errors";
+import { CliError, IncompleteCommandError, SyntaxError, UnsupportedCapabilityError } from "../errors/errors";
 import { renderHelp } from "../help/help";
 import { tokenize } from "../lexer/lexer";
 import { analyzePattern, matchPattern, usageFromPattern } from "../parser/matcher";
@@ -43,10 +43,14 @@ export class CliSession implements SessionApi {
     if (lowered.length === 1 && (lowered[0] === "?" || lowered[0] === "help")) return renderHelp(this, []);
     if (tokens.at(-1) === "?") return renderHelp(this, tokens.slice(0, -1));
 
-    const eligible = allCommands.filter((spec) => spec.modes.includes(this.mode) && deviceMatches(spec.device, this.device));
+    const eligible = allCommands.filter((spec) =>
+      spec.modes.includes(this.mode)
+      && deviceMatches(spec.device, this.device));
     for (const spec of eligible) {
       const params = matchPattern(spec.pattern, tokens);
       if (!params) continue;
+      const missingCapability = spec.capabilities?.find((capability) => !this.device.hasCapability(capability));
+      if (missingCapability) return new UnsupportedCapabilityError(missingCapability).render();
       try {
         return spec.run(this, params) ?? "";
       } catch (err) {
@@ -83,5 +87,6 @@ export class CliSession implements SessionApi {
 }
 
 export function createCliSession(device: Device, engine: SimulationEngine): CliSession {
+  if (!device.profile.cliProfile) throw new Error(`Device type '${device.deviceType}' has no CLI profile`);
   return new CliSession(device, engine);
 }

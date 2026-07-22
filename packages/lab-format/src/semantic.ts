@@ -1,9 +1,11 @@
 import type {
   DeviceConfig,
+  Layer3SwitchDeviceConfig,
   LabDocument,
   NodeSpec,
   RouterDeviceConfig,
   SwitchDeviceConfig,
+  ServerDeviceConfig,
 } from "@sim/contracts";
 import { ipToInt, maskToInt } from "@sim/sim-core";
 import { LabSemanticError } from "./errors";
@@ -37,6 +39,68 @@ function validateSwitch(config: SwitchDeviceConfig, node: NodeSpec, path: string
     }
     if (iface.allowedVlans) {
       requireUnique(iface.allowedVlans.map(String), `${path}.interfaces[${index}].allowedVlans`, "VLAN id");
+    }
+  });
+}
+
+function validatePhysicalInterfaces(
+  interfaces: readonly { id: string }[],
+  node: NodeSpec,
+  path: string,
+): void {
+  requireUnique(interfaces.map((iface) => iface.id), `${path}.interfaces`, "interface id");
+  const physical = new Set(node.interfaces.map((iface) => iface.id));
+  interfaces.forEach((iface, index) => {
+    if (!physical.has(iface.id)) fail("unknown-interface", `${path}.interfaces[${index}].id`, `Unknown interface '${iface.id}'`);
+  });
+}
+
+function validateServer(config: ServerDeviceConfig, node: NodeSpec, path: string): void {
+  validatePhysicalInterfaces(config.interfaces, node, path);
+  const addressed = config.interfaces.filter((iface) => iface.ipv4 !== undefined);
+  if (addressed.length > 1) {
+    fail("server-multiple-l3-interfaces", `${path}.interfaces`, "M10.1 supports one active server IPv4 interface");
+  }
+  if (config.dhcpClientEnabled && addressed.length > 0) {
+    fail("server-address-mode-conflict", path, "A server cannot use static IPv4 and DHCP at the same time");
+  }
+  if (config.defaultGateway && !addressed.some((iface) =>
+    iface.ipv4 && inSubnet(config.defaultGateway!, iface.ipv4.address, iface.ipv4.prefixLength))) {
+    fail("server-unreachable-default-gateway", `${path}.defaultGateway`, "Server default gateway is not on its connected subnet");
+  }
+}
+
+function validateLayer3Switch(config: Layer3SwitchDeviceConfig, node: NodeSpec, path: string): void {
+  validatePhysicalInterfaces(config.interfaces, node, path);
+  requireUnique(config.vlans.map((vlan) => String(vlan.id)), `${path}.vlans`, "VLAN id");
+  requireUnique(config.svis.map((svi) => String(svi.vlanId)), `${path}.svis`, "SVI VLAN id");
+  const vlans = new Set(config.vlans.map((vlan) => vlan.id));
+  config.svis.forEach((svi, index) => {
+    if (!vlans.has(svi.vlanId)) {
+      fail("unknown-svi-vlan", `${path}.svis[${index}].vlanId`, `SVI references undefined VLAN ${svi.vlanId}`);
+    }
+    if ((svi.ipAddress === undefined) !== (svi.prefixLength === undefined)) {
+      fail("incomplete-svi-address", `${path}.svis[${index}]`, "SVI address and prefix length must be configured together");
+    }
+  });
+
+  const connected = [
+    ...config.interfaces.flatMap((iface) => iface.mode === "routed" && iface.ipv4 ? [iface.ipv4] : []),
+    ...config.svis.flatMap((svi) => svi.ipAddress !== undefined && svi.prefixLength !== undefined
+      ? [{ address: svi.ipAddress, prefixLength: svi.prefixLength }]
+      : []),
+  ];
+  const routes = new Set<string>();
+  config.staticRoutes.forEach((route, index) => {
+    const key = `${route.network}/${route.prefixLength}`;
+    if (routes.has(key)) fail("duplicate-static-route", `${path}.staticRoutes[${index}]`, `Duplicate static route '${key}'`);
+    routes.add(key);
+    const mask = maskToInt(route.prefixLength);
+    if (((ipToInt(route.network) & mask) >>> 0) !== ipToInt(route.network)) {
+      fail("invalid-route-network", `${path}.staticRoutes[${index}].network`, "Static route must use a network address");
+    }
+    if (!connected.some((iface) => inSubnet(route.nextHop, iface.address, iface.prefixLength))) {
+      fail("unreachable-static-next-hop", `${path}.staticRoutes[${index}].nextHop`, `Next hop '${route.nextHop}' is not directly connected`);
     }
   });
 }
@@ -120,7 +184,14 @@ function validateConfiguration(config: DeviceConfig, node: NodeSpec, path: strin
     fail("configuration-type-mismatch", `${path}.kind`, `Configuration kind '${config.kind}' does not match device kind '${node.kind}'`);
   }
   if (config.kind === "l2-switch") validateSwitch(config, node, path);
+  if (config.kind === "l3-switch") validateLayer3Switch(config, node, path);
   if (config.kind === "router") validateRouter(config, node, path);
+  if (config.kind === "server") validateServer(config, node, path);
+  if (config.kind === "hub") validatePhysicalInterfaces(config.interfaces, node, path);
+  if (config.kind === "bridge") {
+    validatePhysicalInterfaces(config.interfaces, node, path);
+    if (node.interfaces.length !== 2) fail("invalid-bridge-interface-count", `${path}.interfaces`, "A bridge must have exactly two interfaces");
+  }
   if (config.kind === "pc") {
     requireUnique(config.interfaces.map((iface) => iface.id), `${path}.interfaces`, "interface id");
     const physical = new Set(node.interfaces.map((iface) => iface.id));

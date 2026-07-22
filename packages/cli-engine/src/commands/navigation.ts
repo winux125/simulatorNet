@@ -1,6 +1,6 @@
 import { InvalidModeError, ValidationError } from "../errors/errors";
 import type { CommandSpec } from "../types";
-import { isRouter, isSwitch, parseIpv4, parseVlanId, resolveInterface } from "./helpers";
+import { isLayer3Switch, isRouter, isRoutingDevice, isSwitch, parseIpv4, parseVlanId, resolveInterface } from "./helpers";
 
 /** Mode navigation, hostname, and entry into interface/VLAN configuration. */
 export const navigationCommands: CommandSpec[] = [
@@ -55,6 +55,27 @@ export const navigationCommands: CommandSpec[] = [
     run: (s, p) => s.device.rename(p.name!),
   },
   {
+    pattern: "interface vlan {id}",
+    usage: "interface vlan <1-4094>",
+    modes: ["config"],
+    device: "l3-switch",
+    capabilities: ["svi"],
+    run: (s, p) => {
+      const vlanId = parseVlanId(p.id!);
+      if (!isLayer3Switch(s.device)) return;
+      s.device.defineSvi(vlanId);
+      s.ifaceCtx = {
+        physical: `Vlan${vlanId}`,
+        isSubinterface: false,
+        label: `Vlan${vlanId}`,
+        subVlan: undefined,
+        subCreated: false,
+        sviVlan: vlanId,
+      };
+      s.enter("config-if");
+    },
+  },
+  {
     pattern: "interface {spec...}",
     usage: "interface <interface-name>",
     modes: ["config"],
@@ -72,6 +93,7 @@ export const navigationCommands: CommandSpec[] = [
         label: resolved.subLabel,
         subVlan: undefined,
         subCreated: false,
+        sviVlan: undefined,
       };
       s.enter("config-if");
     },
@@ -80,6 +102,7 @@ export const navigationCommands: CommandSpec[] = [
     pattern: "vlan {id}",
     modes: ["config"],
     device: "switch",
+    capabilities: ["vlan"],
     run: (s, p) => {
       const id = parseVlanId(p.id!);
       if (isSwitch(s.device)) s.device.defineVlan(id);
@@ -92,11 +115,26 @@ export const navigationCommands: CommandSpec[] = [
     usage: "ip route <network> <mask> <next-hop>",
     modes: ["config"],
     device: "router",
+    capabilities: ["static-routing"],
     run: (s, p) => {
       const network = parseIpv4(p.network!);
       const mask = parseIpv4(p.mask!);
       const nexthop = parseIpv4(p.nexthop!);
-      if (isRouter(s.device)) s.device.addStaticRoute(network, mask, nexthop);
+      if (isRoutingDevice(s.device)) s.device.addStaticRoute(network, mask, nexthop);
     },
+  },
+  {
+    pattern: "ip routing",
+    modes: ["config"],
+    device: "l3-switch",
+    capabilities: ["ipv4-routing"],
+    run: (s) => { if (isLayer3Switch(s.device)) s.device.setIpRouting(true); },
+  },
+  {
+    pattern: "no ip routing",
+    modes: ["config"],
+    device: "l3-switch",
+    capabilities: ["ipv4-routing"],
+    run: (s) => { if (isLayer3Switch(s.device)) s.device.setIpRouting(false); },
   },
 ];

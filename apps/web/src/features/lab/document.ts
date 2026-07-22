@@ -1,4 +1,4 @@
-import type { DeviceConfig, LabDocument, NodeSpec } from "@sim/contracts";
+import { getDeviceProfile, type DeviceConfig, type DeviceType, type LabDocument, type NodeSpec } from "@sim/contracts";
 import { canonicalizeLabDocument, parseLabDocument } from "@sim/lab-format";
 
 export function loadLabDocumentText(text: string): LabDocument {
@@ -13,16 +13,21 @@ export function allocateId(prefix: string, existing: Iterable<string>): string {
 }
 
 function defaultNode(kind: NodeSpec["kind"], id: string, index: number, position?: { x: number; y: number }): NodeSpec {
-  const interfaces = kind === "pc"
-    ? [{ id: "eth0" }]
-    : kind === "l2-switch"
-      ? Array.from({ length: 8 }, (_, port) => ({ id: `Gi0/${port + 1}` }))
-      : [{ id: "Gi0/0" }, { id: "Gi0/1" }];
-  const label = kind === "pc" ? "PC" : kind === "l2-switch" ? "SW" : "R";
+  const profile = getDeviceProfile(kind);
+  const interfaces = profile.interfaceTemplates.map((template) => ({ id: template.id }));
+  const label: Record<DeviceType, string> = {
+    pc: "PC",
+    server: "SRV",
+    hub: "HUB",
+    bridge: "BR",
+    "l2-switch": "SW",
+    "l3-switch": "DSW",
+    router: "R",
+  };
   return {
     id,
     kind,
-    name: `${label}${index}`,
+    name: `${label[kind]}${index}`,
     position: position ?? { x: 120 + ((index - 1) % 3) * 240, y: 100 + Math.floor((index - 1) / 3) * 180 },
     interfaces,
   };
@@ -30,9 +35,27 @@ function defaultNode(kind: NodeSpec["kind"], id: string, index: number, position
 
 function defaultConfiguration(node: NodeSpec): DeviceConfig {
   const hostname = node.name ?? node.id;
-  if (node.kind === "pc") return { kind: "pc", hostname, interfaces: [], dhcpEnabled: false };
-  if (node.kind === "l2-switch") return { kind: "l2-switch", hostname, interfaces: [], vlans: [] };
-  return { kind: "router", hostname, interfaces: [], subinterfaces: [], staticRoutes: [], dhcpPools: [] };
+  switch (node.kind) {
+    case "pc": return { kind: "pc", hostname, interfaces: [], dhcpEnabled: false };
+    case "server": return { kind: "server", hostname, interfaces: [], dhcpClientEnabled: false, enabledServices: [] };
+    case "hub": return { kind: "hub", hostname, interfaces: [] };
+    case "bridge": return { kind: "bridge", hostname, interfaces: [], agingTimeNs: 300_000_000_000 };
+    case "l2-switch": return { kind: "l2-switch", hostname, interfaces: [], vlans: [] };
+    case "l3-switch": return { kind: "l3-switch", hostname, interfaces: [], vlans: [], svis: [], staticRoutes: [], ipRoutingEnabled: false };
+    case "router": return { kind: "router", hostname, interfaces: [], subinterfaces: [], staticRoutes: [], dhcpPools: [] };
+  }
+}
+
+function idPrefix(kind: DeviceType): string {
+  return {
+    pc: "pc",
+    server: "server",
+    hub: "hub",
+    bridge: "bridge",
+    "l2-switch": "switch",
+    "l3-switch": "l3-switch",
+    router: "router",
+  }[kind];
 }
 
 export function addDraftDevice(
@@ -40,7 +63,7 @@ export function addDraftDevice(
   kind: NodeSpec["kind"],
   position?: { x: number; y: number },
 ): LabDocument {
-  const prefix = kind === "pc" ? "pc" : kind === "l2-switch" ? "switch" : "router";
+  const prefix = idPrefix(kind);
   const id = allocateId(prefix, document.topology.nodes.map((node) => node.id));
   const index = Number(id.slice(id.lastIndexOf("-") + 1));
   const node = defaultNode(kind, id, index, position);
@@ -70,7 +93,7 @@ export function renameDraftDevice(document: LabDocument, nodeId: string, hostnam
 export function duplicateDraftDevice(document: LabDocument, nodeId: string): LabDocument {
   const source = document.topology.nodes.find((node) => node.id === nodeId);
   if (!source) return document;
-  const prefix = source.kind === "pc" ? "pc" : source.kind === "l2-switch" ? "switch" : "router";
+  const prefix = idPrefix(source.kind);
   const id = allocateId(prefix, document.topology.nodes.map((node) => node.id));
   const sourcePosition = source.position ?? { x: 0, y: 0 };
   const name = `${source.name ?? source.id} copy`;
