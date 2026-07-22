@@ -21,3 +21,21 @@ export const DEFAULT_DHCP_TIMEOUT_NS = 4 * NS_PER_S;
 
 /** Default TTL stamped on IPv4 packets a host originates. */
 export const DEFAULT_IP_TTL = 64;
+
+/** Deterministic transport defaults and safety bounds. */
+export const DEFAULT_TCP_RETRANSMISSION_TIMEOUT_NS = NS_PER_S;
+export const DEFAULT_TCP_TIME_WAIT_NS = 2 * NS_PER_S;
+export const EPHEMERAL_PORT_START = 49_152;
+export const EPHEMERAL_PORT_END = 65_535;
+
+export const DEFAULT_TRANSPORT_LIMITS = Object.freeze({
+  maximumUdpSockets: 64,
+  maximumTcpListeners: 32,
+  maximumTcpConnections: 128,
+  maximumRetransmissions: 3,
+  maximumApplicationPayloadBytes: 64 * 1_024,
+  maximumQueuedMessages: 64,
+  maximumTimeWaitNs: DEFAULT_TCP_TIME_WAIT_NS,
+});
+
+export type TransportLimits = typeof DEFAULT_TRANSPORT_LIMITS;

@@ -1,4 +1,4 @@
-import { ArpOp, DhcpMessageType, EtherType, IcmpType, IpProtocol } from "@sim/contracts";
+import { ArpOp, DhcpMessageType, EtherType, IcmpCode, IcmpType, IpProtocol } from "@sim/contracts";
 import {
   DEFAULT_DHCP_TIMEOUT_NS,
   DEFAULT_IP_TTL,
@@ -13,6 +13,10 @@ import type { EthernetFrame } from "../packets/ethernet";
 import type { IcmpMessage } from "../packets/icmp";
 import type { Ipv4Packet } from "../packets/ipv4";
 import type { UdpDatagram } from "../packets/udp";
+import type { TcpSegment } from "../packets/tcp";
+import { HostTransportStack } from "../transport/host-transport";
+import type { TcpAcceptListener, TcpConnection, TcpConnectionHandlers } from "../transport/tcp";
+import type { UdpListener, UdpSendOptions } from "../transport/udp";
 import { BROADCAST_IP, type Ipv4, ipsShareNetwork, maskToInt, UNSPECIFIED_IP } from "../util/ipv4";
 import { BROADCAST_MAC, type Mac, normalizeMac, ZERO_MAC } from "../util/mac";
 import { Device } from "./device";
@@ -59,6 +63,7 @@ interface PendingPing {
  * with timeouts. Non-local destinations are sent to the default gateway.
  */
 export abstract class EndHost extends Device {
+  readonly transport: HostTransportStack;
   private primaryInterfaceName: string | undefined;
   ip: Ipv4 | undefined;
   maskInt = maskToInt(24);
@@ -82,6 +87,53 @@ export abstract class EndHost extends Device {
   /** In-flight echo requests keyed by ICMP sequence number. */
   private readonly pendingPings = new Map<number, PendingPing>();
   private readonly icmpIdentifier = 0x4242;
+
+  constructor(id: string, name: string) {
+    super(id, name);
+    this.transport = new HostTransportStack({
+      deviceId: this.id,
+      engine: () => this.engine,
+      localAddress: () => this.ip,
+      sendUdpPacket: (destinationAddress, datagram, sourceAddress) => {
+        this.sendTransportPacket(destinationAddress, IpProtocol.UDP, datagram, sourceAddress);
+      },
+      sendTcpPacket: (destinationAddress, segment, sourceAddress) => {
+        this.sendTransportPacket(destinationAddress, IpProtocol.TCP, segment, sourceAddress);
+      },
+      portUnreachable: (destinationAddress, destinationPort) => {
+        this.sendPortUnreachable(destinationAddress, destinationPort);
+      },
+    });
+  }
+
+  bindUdp(port: number, listener: UdpListener, service?: string): number {
+    return this.transport.udp.bind(port, listener, service);
+  }
+
+  unbindUdp(port: number): boolean {
+    return this.transport.udp.unbind(port);
+  }
+
+  sendUdp(options: UdpSendOptions): number {
+    return this.transport.udp.send(options);
+  }
+
+  listenTcp(port: number, listener: TcpAcceptListener, service?: string): void {
+    this.transport.tcp.listen(port, listener, service);
+  }
+
+  unlistenTcp(port: number): boolean {
+    return this.transport.tcp.unlisten(port);
+  }
+
+  connectTcp(
+    destinationAddress: Ipv4,
+    destinationPort: number,
+    handlers?: TcpConnectionHandlers,
+    service?: string,
+  ): TcpConnection {
+    return this.transport.tcp.connect(destinationAddress, destinationPort, handlers, service);
+  }
 
   configure(config: PcConfig): void {
     this.dhcpEnabled = false;
@@ -275,8 +327,11 @@ export abstract class EndHost extends Device {
   private handleIpv4(packet: Ipv4Packet, frame: EthernetFrame): void {
     // DHCP replies are broadcast and arrive before we have an address, so they
     // are handled before the "addressed to me" check that gates unicast traffic.
-    if (packet.payload.kind === "udp") {
-      this.handleUdp(packet.payload);
+    if (packet.protocol === IpProtocol.UDP && packet.payload.kind === "udp") {
+      const broadcast = packet.dst === BROADCAST_IP;
+      if (!broadcast && packet.dst !== this.ip) return;
+      if (!broadcast) this.arpTable.set(packet.src, normalizeMac(frame.src));
+      this.transport.receiveUdp(packet.src, packet.dst, packet.payload, broadcast);
       return;
     }
 
@@ -284,6 +339,10 @@ export abstract class EndHost extends Device {
     // Opportunistically cache the L2 address of the L3 source.
     this.arpTable.set(packet.src, normalizeMac(frame.src));
 
+    if (packet.protocol === IpProtocol.TCP && packet.payload.kind === "tcp") {
+      this.transport.receiveTcp(packet.src, packet.dst, packet.payload);
+      return;
+    }
     if (packet.protocol !== IpProtocol.ICMP || packet.payload.kind !== "icmp") return;
     const icmp = packet.payload;
     if (icmp.type === IcmpType.EchoRequest) {
@@ -301,6 +360,8 @@ export abstract class EndHost extends Device {
     this.dhcpXid = this.engine.rng.nextU32();
     this.dhcpState = "discovering";
     this.dhcpBound = false;
+    this.transport.udp.unbind(DHCP_CLIENT_PORT);
+    this.transport.udp.bind(DHCP_CLIENT_PORT, (datagram) => this.handleDhcp(datagram.payload), "dhcp-client");
     this.engine.trace({
       time: this.engine.now(),
       type: "dhcp-discover",
@@ -311,9 +372,9 @@ export abstract class EndHost extends Device {
     this.engine.scheduleIn(DEFAULT_DHCP_TIMEOUT_NS, () => this.dhcpTimeout(this.dhcpXid));
   }
 
-  private handleUdp(udp: UdpDatagram): void {
-    if (udp.dstPort !== DHCP_CLIENT_PORT || udp.payload.kind !== "dhcp") return;
-    const msg = udp.payload;
+  private handleDhcp(payload: UdpDatagram["payload"]): void {
+    if (payload.kind !== "dhcp") return;
+    const msg = payload;
     if (msg.transactionId !== this.dhcpXid) return;
     if (normalizeMac(msg.clientMac) !== normalizeMac(this.primary.mac)) return;
 
@@ -345,6 +406,7 @@ export abstract class EndHost extends Device {
       serverIp: ack.serverIp,
       leaseSeconds: ack.leaseSeconds,
     };
+    this.transport.udp.unbind(DHCP_CLIENT_PORT);
     this.engine.trace({
       time: this.engine.now(),
       type: "dhcp-bound",
@@ -356,6 +418,7 @@ export abstract class EndHost extends Device {
   private dhcpTimeout(xid: number): void {
     if (xid !== this.dhcpXid || this.dhcpBound) return;
     this.dhcpState = "failed";
+    this.transport.udp.unbind(DHCP_CLIENT_PORT);
   }
 
   private sendDhcp(fields: Partial<DhcpMessage> & { messageType: DhcpMessage["messageType"] }): void {
@@ -365,25 +428,62 @@ export abstract class EndHost extends Device {
       clientMac: this.primary.mac,
       ...fields,
     };
-    const udp: UdpDatagram = {
-      kind: "udp",
-      srcPort: DHCP_CLIENT_PORT,
-      dstPort: DHCP_SERVER_PORT,
+    this.sendUdp({
+      destinationAddress: BROADCAST_IP,
+      destinationPort: DHCP_SERVER_PORT,
+      sourcePort: DHCP_CLIENT_PORT,
+      sourceAddress: this.ip ?? UNSPECIFIED_IP,
       payload: dhcp,
-    };
+    });
+  }
+
+  private sendTransportPacket(
+    destinationAddress: Ipv4,
+    protocol: typeof IpProtocol.UDP | typeof IpProtocol.TCP,
+    payload: UdpDatagram | TcpSegment,
+    sourceAddress?: Ipv4,
+  ): void {
     const packet: Ipv4Packet = {
       kind: "ipv4",
-      src: this.ip ?? UNSPECIFIED_IP,
-      dst: BROADCAST_IP,
-      protocol: IpProtocol.UDP,
+      src: sourceAddress ?? this.ip ?? UNSPECIFIED_IP,
+      dst: destinationAddress,
+      protocol,
       ttl: DEFAULT_IP_TTL,
-      payload: udp,
+      payload,
     };
-    this.primary.transmit({
-      src: this.primary.mac,
-      dst: BROADCAST_MAC,
-      etherType: EtherType.IPv4,
-      payload: packet,
+    if (destinationAddress === BROADCAST_IP) {
+      this.primary.transmit({
+        src: this.primary.mac,
+        dst: BROADCAST_MAC,
+        etherType: EtherType.IPv4,
+        payload: packet,
+      });
+      return;
+    }
+    this.sendIpv4(packet);
+  }
+
+  private sendPortUnreachable(destinationAddress: Ipv4, destinationPort: number): void {
+    if (this.ip === undefined || destinationAddress === UNSPECIFIED_IP) return;
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "icmp-port-unreachable",
+      device: this.id,
+      detail: { destinationAddress, destinationPort },
+    });
+    this.sendIpv4({
+      kind: "ipv4",
+      src: this.ip,
+      dst: destinationAddress,
+      protocol: IpProtocol.ICMP,
+      ttl: DEFAULT_IP_TTL,
+      payload: {
+        kind: "icmp",
+        type: IcmpType.DestinationUnreachable,
+        code: IcmpCode.PortUnreachable,
+        identifier: 0,
+        sequence: 0,
+      },
     });
   }
 

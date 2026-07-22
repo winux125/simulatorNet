@@ -2,9 +2,10 @@ import type { IpProtocol } from "@sim/contracts";
 import type { Ipv4 } from "../util/ipv4";
 import type { IcmpMessage } from "./icmp";
 import type { UdpDatagram } from "./udp";
+import type { TcpSegment } from "./tcp";
 
 /** Upper-layer payloads carried in IPv4. Extended as protocols are added. */
-export type Ipv4Payload = IcmpMessage | UdpDatagram;
+export type Ipv4Payload = IcmpMessage | UdpDatagram | TcpSegment;
 
 export interface Ipv4Packet {
   readonly kind: "ipv4";

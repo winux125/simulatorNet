@@ -26,7 +26,14 @@ export * from "./packets/arp";
 export * from "./packets/ipv4";
 export * from "./packets/icmp";
 export * from "./packets/udp";
+export * from "./packets/tcp";
 export * from "./packets/dhcp";
+
+// Host transport
+export * from "./transport/errors";
+export * from "./transport/udp";
+export * from "./transport/tcp";
+export * from "./transport/host-transport";
 
 // Address utilities
 export * from "./util/mac";

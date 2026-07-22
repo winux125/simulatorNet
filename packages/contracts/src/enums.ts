@@ -49,6 +49,8 @@ export const IcmpCode = {
   NetUnreachable: 0,
   /** DestinationUnreachable: host did not answer ARP. */
   HostUnreachable: 1,
+  /** DestinationUnreachable: no application is listening on the UDP port. */
+  PortUnreachable: 3,
   /** TimeExceeded: TTL hit zero in transit. */
   TtlExceeded: 0,
 } as const;
