@@ -16,19 +16,41 @@ import { THEME_STORAGE_KEY } from "../hooks/useTheme";
 import { App } from "./App";
 import type { SimulatorClient } from "./simulator-client";
 
-vi.mock("@xterm/xterm", () => ({
-  Terminal: class {
+interface MockXterm {
+  output: string;
+  clears: number;
+  focused: number;
+  disposed: boolean;
+  selection: string;
+  dataHandler?: (data: string) => void;
+  emit(data: string): void;
+}
+
+const xtermHarness = vi.hoisted(() => ({ instances: [] as MockXterm[] }));
+
+vi.mock("@xterm/xterm", () => {
+  class MockTerminal {
     options = { theme: {} };
+    output = "";
+    clears = 0;
+    focused = 0;
+    disposed = false;
+    selection = "";
+    dataHandler?: (data: string) => void;
+    constructor() { xtermHarness.instances.push(this as unknown as MockXterm); }
     loadAddon() {}
     open() {}
-    write() {}
-    clear() {}
-    getSelection() { return ""; }
+    write(chunk: string) { this.output += chunk; }
+    clear() { this.clears += 1; this.output = ""; }
+    getSelection() { return this.selection; }
     scrollToBottom() {}
-    onData() { return { dispose() {} }; }
-    dispose() {}
-  },
-}));
+    focus() { this.focused += 1; }
+    onData(handler: (data: string) => void) { this.dataHandler = handler; return { dispose: () => { this.dataHandler = undefined; } }; }
+    dispose() { this.disposed = true; }
+    emit(data: string) { this.dataHandler?.(data); }
+  }
+  return { Terminal: MockTerminal };
+});
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 vi.mock("react-resizable-panels", async () => {
   const React = await import("react");
@@ -105,6 +127,7 @@ let prefersDark = true;
 beforeEach(() => {
   compactViewport = false;
   prefersDark = true;
+  xtermHarness.instances.length = 0;
   window.localStorage.clear();
   useWorkspaceStore.getState().reset();
   Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn((query: string) => ({
@@ -131,6 +154,24 @@ async function loadDemo(client: RuntimeClient) {
 async function enterEditMode() {
   await userEvent.click(screen.getByRole("button", { name: "Edit" }));
   await waitFor(() => expect(useWorkspaceStore.getState().mode).toBe("edit"));
+}
+
+async function openMenu(label: string) {
+  await userEvent.click(screen.getByRole("menuitem", { name: label }));
+}
+
+async function openDeviceTerminal(deviceLabel: string): Promise<MockXterm> {
+  fireEvent.contextMenu(screen.getByRole("button", { name: deviceLabel }));
+  await userEvent.click(screen.getByRole("menuitem", { name: /Open CLI/ }));
+  await waitFor(() => expect(xtermHarness.instances.length).toBeGreaterThan(0));
+  const terminal = xtermHarness.instances.at(-1);
+  if (!terminal) throw new Error("terminal not created");
+  await waitFor(() => expect(terminal.dataHandler).toBeDefined());
+  return terminal;
+}
+
+async function type(terminal: MockXterm, text: string) {
+  await act(async () => { for (const ch of text) terminal.emit(ch); });
 }
 
 describe("M6.1 simulator workspace", () => {
@@ -180,7 +221,8 @@ describe("M6.1 simulator workspace", () => {
   it("closes a clean lab back to the welcome workspace", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);
-    await userEvent.click(screen.getByLabelText("Close lab"));
+    await openMenu("File");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Close Lab" }));
     expect(await screen.findByRole("heading", { name: "SimulatorNet" })).toBeTruthy();
     expect(useWorkspaceStore.getState().draft).toBeUndefined();
   });
@@ -191,7 +233,8 @@ describe("M6.1 simulator workspace", () => {
     await enterEditMode();
     await userEvent.click(screen.getByRole("button", { name: "Add device" }));
     await userEvent.click(screen.getByRole("button", { name: "Add PC" }));
-    await userEvent.click(screen.getByLabelText("Close lab"));
+    await openMenu("File");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Close Lab" }));
     expect(screen.getByRole("dialog", { name: "Close laboratory?" })).toBeTruthy();
     expect(useWorkspaceStore.getState().draft).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Discard & Close" }));
@@ -342,7 +385,8 @@ describe("M6.1 simulator workspace", () => {
   it("exports the canonical LabDocument", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);
-    await userEvent.click(screen.getByLabelText("Export lab JSON"));
+    await openMenu("File");
+    await userEvent.click(screen.getByRole("menuitem", { name: /Save \/ Export Lab/ }));
     await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
     expect(client.requestTypes).toContain("SERIALIZE_LAB");
   });
@@ -350,11 +394,9 @@ describe("M6.1 simulator workspace", () => {
   it("does not trigger global shortcuts while typing in terminal", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Select PC1" }));
-    await userEvent.click(screen.getByRole("menuitem", { name: /Open CLI/ }));
-    const input = await screen.findByLabelText("CLI command");
+    await openDeviceTerminal("Select PC1");
     const before = client.requestTypes.filter((type) => type === "SERIALIZE_LAB").length;
-    fireEvent.keyDown(input, { key: "s", ctrlKey: true });
+    fireEvent.keyDown(screen.getByLabelText("PC1 CLI"), { key: "s", ctrlKey: true });
     expect(client.requestTypes.filter((type) => type === "SERIALIZE_LAB")).toHaveLength(before);
   });
 
@@ -374,5 +416,165 @@ describe("M6.1 simulator workspace", () => {
     await userEvent.click(screen.getByRole("button", { name: "Select R1" }));
     expect(document.querySelector(".app-shell")?.getAttribute("data-responsive")).toBe("compact");
     expect(document.querySelector(".inspector-panel.is-drawer")).toBeTruthy();
+  });
+});
+
+describe("M8.3 desktop menus and terminal", () => {
+  it("removes the separate terminal command form — xterm is the only CLI input", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await openDeviceTerminal("Select PC1");
+    expect(document.querySelector(".terminal-command")).toBeNull();
+    expect(document.querySelector(".terminal-session form")).toBeNull();
+    expect(screen.queryByLabelText("CLI command")).toBeNull();
+  });
+
+  it("executes a command typed directly into xterm", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await type(terminal, "ping 192.168.20.10");
+    await act(async () => { terminal.emit("\r"); });
+    await waitFor(() => expect(screen.getByTestId("terminal-transcript").textContent).toContain("Success rate is 100 percent"));
+  });
+
+  it("supports mid-line cursor editing before submit", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    // Type a wrong last octet then repair it with ArrowLeft + Backspace.
+    await type(terminal, "ping 192.168.20.100");
+    await act(async () => { terminal.emit("\x1b[D"); terminal.emit("\x7f"); terminal.emit("\r"); });
+    await waitFor(() => expect(screen.getByTestId("terminal-transcript").textContent).toContain("Success rate is 100 percent"));
+    expect(screen.getByTestId("terminal-transcript").textContent).not.toContain("192.168.20.100");
+  });
+
+  it("returns a fresh prompt on an empty Enter without an error", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    const before = client.requestTypes.filter((type) => type === "EXECUTE_CLI").length;
+    await act(async () => { terminal.emit("\r"); });
+    await waitFor(() => expect(client.requestTypes.filter((type) => type === "EXECUTE_CLI").length).toBeGreaterThan(before));
+    expect(useWorkspaceStore.getState().problems).toHaveLength(0);
+  });
+
+  it("Ctrl+L clears the visible buffer but keeps the session open", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await type(terminal, "arp");
+    await act(async () => { terminal.emit("\x0c"); });
+    expect(terminal.clears).toBeGreaterThanOrEqual(1);
+    expect(client.requestTypes).not.toContain("CLOSE_CLI_SESSION");
+    expect(useWorkspaceStore.getState().terminalTabs).toEqual(["pc-1"]);
+  });
+
+  it("keeps command history isolated per terminal session", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const pc = await openDeviceTerminal("Select PC1");
+    await type(pc, "arp");
+    await act(async () => { pc.emit("\r"); });
+    const sw = await openDeviceTerminal("Select SW1");
+    sw.output = "";
+    await act(async () => { sw.emit("\x1b[A"); }); // ArrowUp on the fresh session
+    expect(sw.output).not.toContain("arp");
+  });
+
+  it("opens the File menu on click", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    await openMenu("File");
+    expect(screen.getByRole("menuitem", { name: /New Lab/ })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /Save \/ Export Lab/ })).toBeTruthy();
+  });
+
+  it("triggers Import from the File menu", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    const input = document.getElementById("load-lab-file") as HTMLInputElement;
+    const clickSpy = vi.spyOn(input, "click");
+    await openMenu("File");
+    await userEvent.click(screen.getByRole("menuitem", { name: /Open \/ Import Lab/ }));
+    expect(clickSpy).toHaveBeenCalled();
+  });
+
+  it("exports the lab from the File menu", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await openMenu("File");
+    await userEvent.click(screen.getByRole("menuitem", { name: /Save \/ Export Lab/ }));
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
+    expect(client.requestTypes).toContain("SERIALIZE_LAB");
+  });
+
+  it("toggles the Inspector from the View menu", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    expect(useWorkspaceStore.getState().inspectorOpen).toBe(true);
+    await openMenu("View");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Hide Inspector" }));
+    expect(useWorkspaceStore.getState().inspectorOpen).toBe(false);
+  });
+
+  it("changes the theme through the View menu submenu", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    await openMenu("View");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Theme" }));
+    await userEvent.click(screen.getByRole("menuitemradio", { name: "Light" }));
+    expect(document.documentElement.dataset.theme).toBe("light");
+  });
+
+  it("switches to Edit mode through the Lab menu", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await openMenu("Lab");
+    await userEvent.click(screen.getByRole("menuitemradio", { name: "Edit Mode" }));
+    await waitFor(() => expect(useWorkspaceStore.getState().mode).toBe("edit"));
+  });
+
+  it("disables Apply & Rebuild when there are no pending changes", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await openMenu("Lab");
+    expect((screen.getByRole("menuitem", { name: "Apply & Rebuild" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("runs Run Until Idle from the Simulation menu", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await openMenu("Simulation");
+    await userEvent.click(screen.getByRole("menuitem", { name: /Run Until Idle/ }));
+    expect(client.requestTypes).toContain("RUN_UNTIL_IDLE");
+  });
+
+  it("navigates dropdown items with the keyboard", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    const file = screen.getByRole("menuitem", { name: "File" });
+    file.focus();
+    await userEvent.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: /New Lab/ }));
+    await userEvent.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: /Open \/ Import Lab/ }));
+  });
+
+  it("closes a menu with Escape and restores trigger focus", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    const file = screen.getByRole("menuitem", { name: "File" });
+    await userEvent.click(file);
+    expect(screen.getByRole("menuitem", { name: /New Lab/ })).toBeTruthy();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("menuitem", { name: /New Lab/ })).toBeNull();
+    expect(document.activeElement).toBe(file);
+  });
+
+  it("shows the desktop scope label for a local anonymous lab", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    expect(within(screen.getByLabelText("Active laboratory")).getByText("Local Lab")).toBeTruthy();
   });
 });

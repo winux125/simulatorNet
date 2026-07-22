@@ -1,63 +1,32 @@
-import {
-  ChevronsDownUp,
-  CircleHelp,
-  Download,
-  FlaskConical,
-  FolderX,
-  Maximize2,
-  PanelBottom,
-  PanelRight,
-  Pause,
-  Play,
-  LogOut,
-  RotateCcw,
-  SkipForward,
-  Upload,
-  SunMoon,
-  UserRound,
-} from "lucide-react";
-import type { ChangeEvent } from "react";
+import { Pause, Play, RotateCcw, SkipForward, SunMoon, LogOut, UserRound } from "lucide-react";
 import type { EngineUiState } from "@sim/sim-worker";
 import type { WorkspaceMode } from "../state/workspace-store";
 import type { ThemePreference } from "../hooks/useTheme";
-import { Button, IconButton, StatusIndicator } from "../ui";
+import { IconButton, StatusIndicator } from "../ui";
+import { MenuBar, type MenuDef } from "./MenuBar";
 
 interface ToolbarProps {
+  menus: MenuDef[];
   labTitle?: string;
+  sessionScope: string;
   workerStatus: "empty" | "loading" | "ready" | "error";
   engineState?: EngineUiState;
   ready: boolean;
-  hasLab: boolean;
   dirty: boolean;
   mode: WorkspaceMode;
-  inspectorOpen: boolean;
-  bottomDockOpen: boolean;
   theme: ThemePreference;
   session?: { displayName: string; organizationName: string; role: string };
   sessionPending: boolean;
   onModeChange(mode: WorkspaceMode): void;
-  onLoadDemo(): void;
-  onLoadFile(file: File): void;
-  onSave(): void;
-  onReset(): void;
   onRun(): void;
   onStep(): void;
   onPause(): void;
-  onFit(): void;
-  onToggleInspector(): void;
-  onToggleBottomDock(): void;
-  onOpenShortcuts(): void;
+  onReset(): void;
   onThemeChange(theme: ThemePreference): void;
-  onCloseLab(): void;
   onLogout(): void;
 }
 
 export function Toolbar(props: ToolbarProps) {
-  const loadFile = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) props.onLoadFile(file);
-    event.target.value = "";
-  };
   const simulationEnabled = props.ready && props.mode === "simulate";
   const workerLabel = props.workerStatus === "ready"
     ? props.engineState === "paused" ? "Paused" : props.engineState === "running" ? "Running" : "Ready"
@@ -68,43 +37,42 @@ export function Toolbar(props: ToolbarProps) {
 
   return (
     <header className="app-bar" aria-label="Simulation toolbar">
-      <div className="app-bar__identity">
+      <div className="app-bar__lead">
         <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>
-        <div className="brand-copy"><strong>SimulatorNet</strong><span>{props.labTitle ?? "No laboratory loaded"}</span></div>
-        {props.dirty && <StatusIndicator status="unsaved" label="Unsaved" />}
-        <StatusIndicator status={status} label={workerLabel} />
-      </div>
-
-      <div className="mode-switch" role="group" aria-label="Workspace mode">
-        <button type="button" className={props.mode === "edit" ? "is-active" : ""} aria-pressed={props.mode === "edit"} disabled={!props.ready} onClick={() => props.onModeChange("edit")}>Edit</button>
-        <button type="button" className={props.mode === "simulate" ? "is-active" : ""} aria-pressed={props.mode === "simulate"} disabled={!props.ready} onClick={() => props.onModeChange("simulate")}>Simulate</button>
-      </div>
-
-      <div className="simulation-controls" aria-label="Simulation controls">
-        <Button size="sm" variant="primary" icon={<Play size={14} />} disabled={!simulationEnabled || props.engineState === "paused"} onClick={props.onRun}>Run</Button>
-        <IconButton label="Step 10 ms" icon={<SkipForward size={15} />} disabled={!simulationEnabled || props.engineState === "paused"} onClick={props.onStep} />
-        <IconButton label={props.engineState === "paused" ? "Resume simulation" : "Pause simulation"} icon={props.engineState === "paused" ? <Play size={15} /> : <Pause size={15} />} active={props.engineState === "paused"} disabled={!simulationEnabled} onClick={props.onPause} />
-        <IconButton label="Reset runtime" icon={<RotateCcw size={15} />} disabled={!simulationEnabled} onClick={props.onReset} />
+        <strong className="brand-wordmark">SimulatorNet</strong>
+        <MenuBar menus={props.menus} />
       </div>
 
       <div className="app-bar__actions" aria-label="Workspace actions">
-        <IconButton label="Load demo lab" icon={<FlaskConical size={15} />} onClick={props.onLoadDemo} />
-        <label className="ui-icon-button tooltip-anchor" aria-label="Import lab JSON" data-tooltip="Import lab JSON" htmlFor="load-lab-file"><Upload size={15} /></label>
-        <input id="load-lab-file" className="visually-hidden" type="file" accept="application/json,.json" onChange={loadFile} />
-        <IconButton label="Export lab JSON" icon={<Download size={15} />} disabled={!props.ready} onClick={props.onSave} />
-        <IconButton label="Close lab" icon={<FolderX size={15} />} disabled={!props.hasLab} onClick={props.onCloseLab} />
+        <div className="app-bar__lab" aria-label="Active laboratory">
+          <span className="app-bar__scope" data-scope={props.session ? "organization" : "local"}>{props.sessionScope}</span>
+          <strong>{props.labTitle ?? "No laboratory loaded"}</strong>
+          {props.dirty && <StatusIndicator status="unsaved" label="Unsaved" />}
+        </div>
+
+        <div className="mode-switch" role="group" aria-label="Workspace mode">
+          <button type="button" className={props.mode === "edit" ? "is-active" : ""} aria-pressed={props.mode === "edit"} disabled={!props.ready} onClick={() => props.onModeChange("edit")}>Edit</button>
+          <button type="button" className={props.mode === "simulate" ? "is-active" : ""} aria-pressed={props.mode === "simulate"} disabled={!props.ready} onClick={() => props.onModeChange("simulate")}>Simulate</button>
+        </div>
+
+        <div className="simulation-controls" aria-label="Simulation controls">
+          <IconButton label="Run until idle" icon={<Play size={15} />} disabled={!simulationEnabled || props.engineState === "paused"} onClick={props.onRun} />
+          <IconButton label="Advance one step" icon={<SkipForward size={15} />} disabled={!simulationEnabled || props.engineState === "paused"} onClick={props.onStep} />
+          <IconButton label={props.engineState === "paused" ? "Resume simulation" : "Pause simulation"} icon={props.engineState === "paused" ? <Play size={15} /> : <Pause size={15} />} active={props.engineState === "paused"} disabled={!simulationEnabled} onClick={props.onPause} />
+          <IconButton label="Reset runtime" icon={<RotateCcw size={15} />} disabled={!simulationEnabled} onClick={props.onReset} />
+        </div>
+
         <span className="app-bar__divider" />
-        <IconButton label="Fit topology" icon={<Maximize2 size={15} />} disabled={!props.ready} onClick={props.onFit} />
-        <IconButton label="Toggle inspector" icon={<PanelRight size={15} />} active={props.inspectorOpen} onClick={props.onToggleInspector} />
-        <IconButton label="Toggle bottom dock" icon={props.bottomDockOpen ? <ChevronsDownUp size={15} /> : <PanelBottom size={15} />} active={props.bottomDockOpen} onClick={props.onToggleBottomDock} />
-        <IconButton label="Keyboard shortcuts" icon={<CircleHelp size={15} />} onClick={props.onOpenShortcuts} />
+        <StatusIndicator status={status} label={workerLabel} />
+
         {props.session ? (
           <div className="session-identity" aria-label="Authenticated organization session">
             <UserRound size={14} aria-hidden="true" />
             <span><strong>{props.session.displayName}</strong><small>{props.session.organizationName} · {props.session.role.replaceAll("_", " ")}</small></span>
             <IconButton label="Log out organization session" icon={<LogOut size={14} />} onClick={props.onLogout} />
           </div>
-        ) : <span className="session-anonymous">{props.sessionPending ? "Checking session…" : "Anonymous Local Lab"}</span>}
+        ) : <span className="session-anonymous">{props.sessionPending ? "Checking session…" : "Anonymous"}</span>}
+
         <label className="theme-control tooltip-anchor" data-tooltip="Theme" title="Theme">
           <SunMoon size={15} aria-hidden="true" />
           <span className="visually-hidden">Color theme</span>

@@ -35,6 +35,7 @@ interface TopologyCanvasProps {
   terminalTabs: string[];
   showLinkLabels: boolean;
   fitRequest: number;
+  zoomResetRequest: number;
   onSelectNode(id: string | undefined): void;
   onSelectLink(id: string | undefined): void;
   onOpenTerminal(id: string): void;
@@ -67,6 +68,10 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   useEffect(() => {
     if (props.fitRequest > 0) void instance?.fitView({ padding: 0.18, duration: 260 });
   }, [instance, props.fitRequest]);
+
+  useEffect(() => {
+    if (props.zoomResetRequest > 0) void instance?.zoomTo(1, { duration: 200 });
+  }, [instance, props.zoomResetRequest]);
 
   if (!props.document) {
     return (

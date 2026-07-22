@@ -41,7 +41,14 @@ interface WorkspaceState {
   bottomDockOpen: boolean;
   showLinkLabels: boolean;
   fitRequest: number;
+  zoomResetRequest: number;
+  // Bounded topology-edit history (edit-mode drafts only) for Undo/Redo.
+  past: LabDocument[];
+  future: LabDocument[];
   setDraft(draft: LabDocument | undefined, dirty?: boolean): void;
+  undo(): void;
+  redo(): void;
+  requestZoomReset(): void;
   setSnapshot(snapshot: LabUiSnapshot): void;
   appendTraces(events: SimulationTraceEvent[]): void;
   clearTraces(): void;
@@ -88,13 +95,33 @@ const initialState = {
   bottomDockOpen: true,
   showLinkLabels: true,
   fitRequest: 0,
+  zoomResetRequest: 0,
+  past: [] as LabDocument[],
+  future: [] as LabDocument[],
 };
 
+const MAX_HISTORY = 50;
 let nextProblemId = 1;
 
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   ...initialState,
-  setDraft: (draft, dirty = false) => set({ draft, dirty }),
+  // A `dirty` write is a user topology edit: snapshot the previous draft so it can
+  // be undone. Programmatic syncs (rebuild/merge/import) pass `dirty === false` and
+  // leave the history untouched.
+  setDraft: (draft, dirty = false) => set((state) => dirty && state.draft
+    ? { draft, dirty, past: [...state.past, state.draft].slice(-MAX_HISTORY), future: [] }
+    : { draft, dirty }),
+  undo: () => set((state) => {
+    const previous = state.past.at(-1);
+    if (!previous || !state.draft) return {};
+    return { draft: previous, past: state.past.slice(0, -1), future: [state.draft, ...state.future], dirty: true };
+  }),
+  redo: () => set((state) => {
+    const next = state.future[0];
+    if (!next || !state.draft) return {};
+    return { draft: next, future: state.future.slice(1), past: [...state.past, state.draft], dirty: true };
+  }),
+  requestZoomReset: () => set((state) => ({ zoomResetRequest: state.zoomResetRequest + 1 })),
   setSnapshot: (snapshot) => set({ snapshot, workerStatus: "ready" }),
   appendTraces: (events) => set((state) => ({ traces: [...state.traces, ...events].slice(-500) })),
   clearTraces: () => set({ traces: [] }),

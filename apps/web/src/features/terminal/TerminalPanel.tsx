@@ -1,5 +1,5 @@
 import type { LabUiNode } from "@sim/sim-worker";
-import { Clipboard, Eraser, Plus, TerminalSquare, X } from "lucide-react";
+import { Clipboard, Eraser, TerminalSquare, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Terminal as XtermTerminal } from "@xterm/xterm";
 import type { FitAddon as XtermFitAddon } from "@xterm/addon-fit";
@@ -8,6 +8,7 @@ import type { WorkspaceMode } from "../../state/workspace-store";
 import type { ResolvedTheme } from "../../hooks/useTheme";
 import { EmptyState, IconButton } from "../../ui";
 import { TerminalCommandHistory } from "./terminal-history";
+import { LineBuffer, classifyTerminalKey } from "./terminal-line-editor";
 
 interface TerminalWorkspaceProps {
   client: SimulatorClient;
@@ -28,15 +29,16 @@ function terminalText(value: string): string {
 export function TerminalWorkspace(props: TerminalWorkspaceProps) {
   const activeNode = props.nodes.find((node) => node.id === props.activeDeviceId);
   if (props.tabs.length === 0) {
-    return <EmptyState icon={<TerminalSquare size={28} />} title="No terminal sessions" description="Open a device context menu or use Open CLI in the inspector. Sessions remain isolated inside the worker." />;
+    return <EmptyState icon={<TerminalSquare size={28} />} title="No terminal sessions" description="Open a device context menu or use Open CLI in the inspector. Type commands directly into the terminal — each session keeps its own history inside the worker." />;
   }
   return (
     <div className="terminal-workspace">
       <div className="terminal-tabs" role="tablist" aria-label="Device terminal sessions">
         {props.tabs.map((deviceId) => {
           const node = props.nodes.find((candidate) => candidate.id === deviceId);
+          const active = props.activeDeviceId === deviceId;
           return (
-            <button key={deviceId} type="button" role="tab" aria-selected={props.activeDeviceId === deviceId} className={props.activeDeviceId === deviceId ? "is-active" : ""} onClick={() => props.onActivate(deviceId)}>
+            <button key={deviceId} type="button" role="tab" aria-selected={active} aria-label={`${node?.hostname ?? deviceId} terminal${active ? ", active" : ""}`} className={active ? "is-active" : ""} onClick={() => props.onActivate(deviceId)}>
               <TerminalSquare size={13} aria-hidden="true" />
               <span>{node?.hostname ?? deviceId}</span>
               <small>{deviceId}</small>
@@ -92,10 +94,12 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, o
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XtermTerminal | undefined>(undefined);
   const fitRef = useRef<XtermFitAddon | undefined>(undefined);
-  const submitRef = useRef<(command: string, alreadyEchoed?: boolean) => void>(() => undefined);
-  const [command, setCommand] = useState("");
+  const focusRef = useRef<() => void>(() => undefined);
+  const enabledRef = useRef(enabled);
   const [transcript, setTranscript] = useState("");
   const [ready, setReady] = useState(false);
+
+  enabledRef.current = enabled;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -104,7 +108,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, o
     let disposed = false;
     let dataDisposable: { dispose(): void } | undefined;
     let prompt = "";
-    let input = "";
+    const buffer = new LineBuffer();
     const history = new TerminalCommandHistory();
 
     void Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit")]).then(([xterm, addon]) => {
@@ -123,11 +127,23 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, o
       terminal.open(host);
       terminalRef.current = terminal;
       fitRef.current = fit;
+      focusRef.current = () => { try { terminal.focus(); } catch { /* not attached */ } };
       setReady(true);
+
+      // Name the hidden input xterm uses for keyboard capture so screen readers
+      // announce which device's CLI has focus.
+      const helper = host.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
+      helper?.setAttribute("aria-label", `${hostname} command line`);
 
       const promptText = () => `${prompt} `;
       const scrollToBottom = () => terminal.scrollToBottom();
-      const redrawInput = () => { terminal.write(`\x1b[2K\r${promptText()}${input}`); scrollToBottom(); };
+      // Repaint the current line: clear it, rewrite prompt + buffer, then park the
+      // caret at its logical offset. This is what makes mid-line editing visible.
+      const redraw = () => {
+        terminal.write(`\x1b[2K\r${promptText()}${buffer.value}`);
+        if (buffer.tail > 0) terminal.write(`\x1b[${buffer.tail}D`);
+        scrollToBottom();
+      };
       const execute = (value: string, alreadyEchoed = false) => {
         const submittedPrompt = prompt;
         if (!alreadyEchoed) terminal.write(`${terminalText(value)}\r\n`);
@@ -140,26 +156,48 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, o
           if (value || result.output) setTranscript((current) => `${current}${submittedPrompt} ${value}\n${result.output ? `${result.output}\n` : ""}`);
         }).catch((error: unknown) => onError(error instanceof Error ? error.message : "CLI request failed"));
       };
-      submitRef.current = execute;
+
       dataDisposable = terminal.onData((data) => {
-        if (data === "\r") {
-          const submitted = input;
-          history.record(submitted);
-          input = "";
-          terminal.write("\r\n");
-          execute(submitted, true);
+        const key = classifyTerminalKey(data);
+        if (!key) return;
+        if (key.kind === "interrupt") {
+          const selection = terminal.getSelection();
+          if (selection) {
+            void navigator.clipboard?.writeText(selection).catch(() => onError("Clipboard permission was denied"));
+          } else {
+            terminal.write("^C\r\n");
+            buffer.clear();
+            terminal.write(promptText());
+          }
           return;
         }
-        if (data === "\u007f") {
-          if (input.length > 0) { input = input.slice(0, -1); terminal.write("\b \b"); }
+        if (key.kind === "clear") {
+          // Ctrl+L wipes the visible scrollback but keeps the CLI session/mode.
+          terminal.clear();
+          terminal.write(`${promptText()}${buffer.value}`);
+          if (buffer.tail > 0) terminal.write(`\x1b[${buffer.tail}D`);
           return;
         }
-        if (data === "\x1b[A" || data === "\x1b[B") {
-          input = data === "\x1b[A" ? history.previous() : history.next();
-          redrawInput();
-          return;
+        if (!enabledRef.current) return;
+        switch (key.kind) {
+          case "enter": {
+            const submitted = buffer.value;
+            history.record(submitted);
+            buffer.clear();
+            terminal.write("\r\n");
+            execute(submitted, true);
+            break;
+          }
+          case "insert": buffer.insert(key.text); redraw(); break;
+          case "backspace": if (buffer.backspace()) redraw(); break;
+          case "delete": if (buffer.deleteForward()) redraw(); break;
+          case "left": if (buffer.left()) terminal.write("\x1b[D"); break;
+          case "right": if (buffer.right()) terminal.write("\x1b[C"); break;
+          case "home": buffer.home(); redraw(); break;
+          case "end": buffer.end(); redraw(); break;
+          case "history-prev": buffer.replace(history.previous()); redraw(); break;
+          case "history-next": buffer.replace(history.next()); redraw(); break;
         }
-        if (/^[\x20-\x7e]+$/.test(data)) { input += data; terminal.write(data); }
       });
       execute("");
       window.requestAnimationFrame(() => { if (!disposed && active) { try { fit.fit(); } catch { /* zero-sized dock */ } } });
@@ -169,7 +207,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, o
     window.addEventListener("resize", fitTerminal);
     return () => {
       disposed = true;
-      submitRef.current = () => undefined;
+      focusRef.current = () => undefined;
       window.removeEventListener("resize", fitTerminal);
       dataDisposable?.dispose();
       terminalRef.current?.dispose();
@@ -177,23 +215,17 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, o
       fitRef.current = undefined;
       void client.request({ type: "CLOSE_CLI_SESSION", sessionId }).catch(() => undefined);
     };
-  }, [client, deviceId, onError]);
+  }, [client, deviceId, hostname, onError]);
 
   useEffect(() => {
     if (terminalRef.current) terminalRef.current.options.theme = terminalTheme();
   }, [theme]);
 
   useEffect(() => {
-    if (active) window.requestAnimationFrame(() => { try { fitRef.current?.fit(); } catch { /* dock transition */ } });
+    // Restore keyboard focus (and layout) when this session's tab becomes active.
+    if (active) window.requestAnimationFrame(() => { try { fitRef.current?.fit(); } catch { /* dock transition */ } focusRef.current(); });
   }, [active]);
 
-  const submit = (event: React.FormEvent) => {
-    event.preventDefault();
-    const value = command.trim();
-    if (!value) return;
-    submitRef.current(value);
-    setCommand("");
-  };
   const copy = () => {
     const text = terminalRef.current?.getSelection() || transcript;
     if (text) void navigator.clipboard?.writeText(text).catch(() => onError("Clipboard permission was denied"));
@@ -201,21 +233,22 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, o
   const clear = () => {
     terminalRef.current?.clear();
     setTranscript("");
+    focusRef.current();
   };
 
   return (
-    <section className={`terminal-session ${active ? "is-active" : ""}`} aria-label={`${hostname} CLI`} aria-hidden={!active} hidden={!active}>
+    <section className={`terminal-session ${active ? "is-active" : ""}`} role="group" aria-label={`${hostname} CLI`} aria-hidden={!active} hidden={!active}>
       <div className="terminal-session__actions">
-        <span><i className={ready ? "is-ready" : ""} />{ready ? "Connected" : "Loading terminal…"}</span>
-        <IconButton label="Copy terminal text" icon={<Clipboard size={13} />} onClick={copy} />
-        <IconButton label="Clear terminal" icon={<Eraser size={13} />} onClick={clear} />
+        <span><i className={ready ? "is-ready" : ""} />{ready ? `${hostname} connected` : "Loading terminal…"}</span>
+        <IconButton label="Copy terminal selection" icon={<Clipboard size={13} />} onClick={copy} />
+        <IconButton label="Clear terminal (Ctrl+L)" icon={<Eraser size={13} />} onClick={clear} />
       </div>
-      <div ref={hostRef} className="xterm-host" />
-      <form className="terminal-command" onSubmit={submit}>
-        <label htmlFor={`terminal-command-${deviceId}`}>CLI command</label>
-        <input id={`terminal-command-${deviceId}`} aria-label="CLI command" value={command} disabled={!enabled || !ready} onChange={(event) => setCommand(event.target.value)} placeholder={enabled ? "e.g. show vlan brief" : "Switch to Simulate mode to use CLI"} autoComplete="off" />
-        <button type="submit" disabled={!enabled || !ready || !command.trim()}><Plus size={13} /> Send</button>
-      </form>
+      <div
+        ref={hostRef}
+        className="xterm-host"
+        aria-label={`${hostname} terminal`}
+        onMouseDown={() => { if (active) focusRef.current(); }}
+      />
       <pre className="visually-hidden" data-testid={active ? "terminal-transcript" : `terminal-transcript-${deviceId}`} aria-live="polite">{transcript}</pre>
     </section>
   );
