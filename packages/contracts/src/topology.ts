@@ -34,6 +34,8 @@ export const LinkSpecSchema = z.object({
   id: z.string().min(1),
   a: LinkEndpointSchema,
   b: LinkEndpointSchema,
+  /** Optional deterministic propagation delay override, in nanoseconds. */
+  propagationDelayNs: z.number().int().nonnegative().optional(),
 });
 export type LinkSpec = z.infer<typeof LinkSpecSchema>;
 

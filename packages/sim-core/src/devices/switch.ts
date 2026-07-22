@@ -169,6 +169,13 @@ export class L2Switch extends Device {
     return [...rows.values()].sort((a, b) => a.id - b.id);
   }
 
+  /** Persistent VLAN database, excluding the runtime forwarding table. */
+  vlanDefinitions(): VlanInfo[] {
+    return [...this.vlans.values()]
+      .map((vlan) => ({ ...vlan }))
+      .sort((a, b) => a.id - b.id);
+  }
+
   /** `show interfaces trunk`: the trunk ports and their VLAN scope. */
   trunkSummary(): TrunkRow[] {
     const rows: TrunkRow[] = [];

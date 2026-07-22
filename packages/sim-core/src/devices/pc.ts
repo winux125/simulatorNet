@@ -34,6 +34,14 @@ export interface PcConfig {
   gateway?: Ipv4;
 }
 
+/** Persistent PC configuration. Runtime DHCP lease data is intentionally absent. */
+export interface PcConfigurationSnapshot {
+  ip: Ipv4 | undefined;
+  maskInt: number;
+  gateway: Ipv4 | undefined;
+  dhcpEnabled: boolean;
+}
+
 export interface PingResult {
   sequence: number;
   success: boolean;
@@ -62,7 +70,11 @@ export class Pc extends Device {
   dhcpState: DhcpState = "idle";
   dhcpBound = false;
   lease: DhcpLease | undefined;
+  dhcpEnabled = false;
   private dhcpXid = 0;
+  private configuredIp: Ipv4 | undefined;
+  private configuredMaskInt = maskToInt(24);
+  private configuredGateway: Ipv4 | undefined;
 
   /** IPv4 packets waiting on ARP resolution, keyed by next-hop IP. */
   private readonly arpPending = new Map<Ipv4, Ipv4Packet[]>();
@@ -71,9 +83,35 @@ export class Pc extends Device {
   private readonly icmpIdentifier = 0x4242;
 
   configure(config: PcConfig): void {
-    if (config.ip !== undefined) this.ip = config.ip;
-    if (config.mask !== undefined) this.maskInt = maskToInt(config.mask);
-    if (config.gateway !== undefined) this.gateway = config.gateway;
+    this.dhcpEnabled = false;
+    if (config.ip !== undefined) this.configuredIp = config.ip;
+    if (config.mask !== undefined) this.configuredMaskInt = maskToInt(config.mask);
+    if (config.gateway !== undefined) this.configuredGateway = config.gateway;
+    this.ip = this.configuredIp;
+    this.maskInt = this.configuredMaskInt;
+    this.gateway = this.configuredGateway;
+  }
+
+  /** Enable/disable persistent DHCP client mode without preserving a lease. */
+  setDhcpEnabled(enabled: boolean): void {
+    this.dhcpEnabled = enabled;
+    if (enabled) {
+      this.configuredIp = undefined;
+      this.configuredGateway = undefined;
+      this.ip = undefined;
+      this.gateway = undefined;
+      this.dhcpBound = false;
+      this.lease = undefined;
+    }
+  }
+
+  configurationSnapshot(): PcConfigurationSnapshot {
+    return {
+      ip: this.configuredIp,
+      maskInt: this.configuredMaskInt,
+      gateway: this.configuredGateway,
+      dhcpEnabled: this.dhcpEnabled,
+    };
   }
 
   /** The PC's single Ethernet interface. */
@@ -248,6 +286,7 @@ export class Pc extends Device {
 
   /** Begin DHCP address acquisition (the DORA exchange). */
   requestDhcp(): void {
+    this.setDhcpEnabled(true);
     this.dhcpXid = this.engine.rng.nextU32();
     this.dhcpState = "discovering";
     this.dhcpBound = false;

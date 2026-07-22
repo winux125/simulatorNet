@@ -71,6 +71,7 @@ interface ResolvedRoute {
 }
 
 interface DhcpPool {
+  id: string;
   network: number;
   maskInt: number;
   mask: Ipv4;
@@ -85,6 +86,8 @@ interface DhcpPool {
 }
 
 export interface DhcpPoolConfig {
+  /** Stable document identifier; derived from the subnet when omitted. */
+  id?: string;
   /** Any address inside the target subnet (masked to the network). */
   network: Ipv4;
   mask: Ipv4 | number;
@@ -185,8 +188,10 @@ export class Router extends Device {
 
   addDhcpPool(config: DhcpPoolConfig): void {
     const maskInt = maskToInt(config.mask);
+    const network = (ipToInt(config.network) & maskInt) >>> 0;
     this.dhcpPools.push({
-      network: (ipToInt(config.network) & maskInt) >>> 0,
+      id: config.id ?? `${intToIp(network)}/${popcount(maskInt)}`,
+      network,
       maskInt,
       mask: intToIp(maskInt),
       gateway: config.gateway,
@@ -201,6 +206,36 @@ export class Router extends Device {
   /** All configured L3 interfaces, for inspection/tests. */
   get l3Interfaces(): readonly L3Interface[] {
     return [...this.l3.values()];
+  }
+
+  /** Static routes as persistent configuration, without resolved runtime data. */
+  staticRouteConfigurations(): Array<{ network: Ipv4; maskInt: number; nextHop: Ipv4 }> {
+    return this.staticRoutes.map((route) => ({
+      network: intToIp(route.network),
+      maskInt: route.maskInt,
+      nextHop: route.nextHop,
+    }));
+  }
+
+  /** DHCP pool definitions without leases or assigned-address runtime state. */
+  dhcpPoolConfigurations(): Array<{
+    id: string;
+    network: Ipv4;
+    maskInt: number;
+    gateway: Ipv4 | undefined;
+    rangeStart: Ipv4;
+    rangeEnd: Ipv4;
+    leaseSeconds: number;
+  }> {
+    return this.dhcpPools.map((pool) => ({
+      id: pool.id,
+      network: intToIp(pool.network),
+      maskInt: pool.maskInt,
+      gateway: pool.gateway,
+      rangeStart: intToIp(pool.rangeStart),
+      rangeEnd: intToIp(pool.rangeEnd),
+      leaseSeconds: pool.leaseSeconds,
+    }));
   }
 
   // --- inspection (public API for the CLI `show` formatters) -------------

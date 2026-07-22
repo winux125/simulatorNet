@@ -25,10 +25,11 @@ tamper-proof — the browser is never trusted to report its own score.
 packages/
   contracts/   Shared types + zod schemas (topology, lab document, enums)
   sim-core/    Deterministic simulation engine (no DOM, no Node, no timers)
+  cli-engine/  Cisco-like CLI adapter over public sim-core methods
+  lab-format/  Versioned validation, canonical JSON, rebuild and serialization
 ```
 
-`apps/` (web, api, verifier) and the remaining packages (cli-engine, lab-format)
-arrive in later milestones. `sim-core` is intentionally a pure,
+`apps/` (web, api, verifier) arrive in later milestones. `sim-core` is intentionally a pure,
 zero-runtime-dependency package: no DOM, no Node APIs, no `Date.now()` /
 `Math.random()` / `setTimeout`.
 
@@ -52,7 +53,7 @@ Deterministic core with an L2 data plane: virtual clock, seeded PRNG,
 event queue, Ethernet, MAC learning + flooding, ARP, IPv4, ICMP — proven by an
 end-to-end PC↔switch↔PC ping and a determinism golden test.
 
-## Milestone 2 (current)
+## Milestone 2
 
 The full CCNA protocol layer in `sim-core`:
 
@@ -67,7 +68,7 @@ The full CCNA protocol layer in `sim-core`:
 
 Proven by 31 Vitest tests, including a router-on-a-stick determinism golden test.
 
-## Milestone 3 (current)
+## Milestone 3
 
 A Cisco-like **CLI engine** (`packages/cli-engine`): a mode-aware console
 session (user/privileged EXEC, global/interface/VLAN config) with a lexer,
@@ -78,4 +79,23 @@ same engine still grades headless. Includes golden transcript tests and an
 end-to-end check that a router-on-a-stick configured entirely from the CLI
 produces a working data plane.
 
-Next: lab-format (load/save), then the apps (web / api / verifier).
+## Milestone 4 (current)
+
+The pure TypeScript **versioned lab format** (`packages/lab-format`) connects
+contracts to the simulation core. Its public API is:
+
+- `parseLabDocument` / `migrateLabDocument` for schema-versioned validation;
+- `canonicalizeLabDocument` / `stringifyLabDocument` for stable JSON;
+- `buildLabFromDocument` for a deterministic engine and typed device registry;
+- `serializeLabDocument` for a structured snapshot of current configuration.
+
+`LabDocument` stores topology, stable interface definitions, structured PC /
+switch / router configuration and the simulation seed. It does **not** store
+runtime state such as ARP or MAC tables, DHCP leases, packet queues, counters,
+event queue, virtual time or trace. Those are re-derived by the engine after a
+rebuild. Browser submissions use a separate `LabSubmissionDocument`; hidden
+grading tests/specifications are server-only and never enter the browser lab
+document.
+
+M1 (deterministic L2), M2 (routing/VLAN/DHCP), M3 (CLI) and M4 (lab format) are
+complete. Next come the web / API / verifier application milestones.
