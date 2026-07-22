@@ -38,3 +38,26 @@ export const IcmpType = {
   TimeExceeded: 11,
 } as const;
 export type IcmpType = (typeof IcmpType)[keyof typeof IcmpType];
+
+/** ICMP codes relevant to the router's error replies. */
+export const IcmpCode = {
+  /** DestinationUnreachable: no route to the network. */
+  NetUnreachable: 0,
+  /** DestinationUnreachable: host did not answer ARP. */
+  HostUnreachable: 1,
+  /** TimeExceeded: TTL hit zero in transit. */
+  TtlExceeded: 0,
+} as const;
+export type IcmpCode = (typeof IcmpCode)[keyof typeof IcmpCode];
+
+/** DHCP message types (option 53), following the DORA exchange. */
+export const DhcpMessageType = {
+  Discover: 1,
+  Offer: 2,
+  Request: 3,
+  Decline: 4,
+  Ack: 5,
+  Nak: 6,
+  Release: 7,
+} as const;
+export type DhcpMessageType = (typeof DhcpMessageType)[keyof typeof DhcpMessageType];

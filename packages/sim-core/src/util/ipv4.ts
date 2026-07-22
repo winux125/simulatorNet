@@ -1,6 +1,15 @@
 /** An IPv4 address in dotted-decimal form: "192.168.1.1". */
 export type Ipv4 = string;
 
+/** The all-hosts limited broadcast address. */
+export const BROADCAST_IP: Ipv4 = "255.255.255.255";
+/** The "this host" / unspecified source used before a DHCP lease is obtained. */
+export const UNSPECIFIED_IP: Ipv4 = "0.0.0.0";
+
+export function isBroadcastIp(ip: Ipv4): boolean {
+  return ip === BROADCAST_IP;
+}
+
 export function ipToInt(ip: Ipv4): number {
   const parts = ip.split(".");
   if (parts.length !== 4) throw new Error(`Invalid IPv4 address: ${ip}`);

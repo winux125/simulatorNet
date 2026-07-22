@@ -10,7 +10,7 @@ export interface EthernetFrame {
   readonly src: Mac;
   readonly dst: Mac;
   readonly etherType: EtherType;
-  /** 802.1Q VLAN id; undefined = untagged. Full VLAN handling lands next milestone. */
+  /** 802.1Q VLAN id carried on the wire; undefined = untagged. */
   readonly vlan?: number;
   readonly payload: L2Payload;
 }

@@ -13,12 +13,15 @@ export * from "./net/interface";
 export * from "./devices/device";
 export * from "./devices/switch";
 export * from "./devices/pc";
+export * from "./devices/router";
 
 // Packets / frames
 export * from "./packets/ethernet";
 export * from "./packets/arp";
 export * from "./packets/ipv4";
 export * from "./packets/icmp";
+export * from "./packets/udp";
+export * from "./packets/dhcp";
 
 // Address utilities
 export * from "./util/mac";

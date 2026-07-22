@@ -1,13 +1,31 @@
-import { ArpOp, EtherType, IcmpType, IpProtocol } from "@sim/contracts";
-import { DEFAULT_PING_TIMEOUT_NS } from "../engine/constants";
+import { ArpOp, DhcpMessageType, EtherType, IcmpType, IpProtocol } from "@sim/contracts";
+import {
+  DEFAULT_DHCP_TIMEOUT_NS,
+  DEFAULT_IP_TTL,
+  DEFAULT_PING_TIMEOUT_NS,
+  DHCP_CLIENT_PORT,
+  DHCP_SERVER_PORT,
+} from "../engine/constants";
 import type { EthernetInterface } from "../net/interface";
 import type { ArpPacket } from "../packets/arp";
+import type { DhcpMessage } from "../packets/dhcp";
 import type { EthernetFrame } from "../packets/ethernet";
 import type { IcmpMessage } from "../packets/icmp";
 import type { Ipv4Packet } from "../packets/ipv4";
-import { type Ipv4, ipsShareNetwork, maskToInt } from "../util/ipv4";
+import type { UdpDatagram } from "../packets/udp";
+import { BROADCAST_IP, type Ipv4, ipsShareNetwork, maskToInt, UNSPECIFIED_IP } from "../util/ipv4";
 import { BROADCAST_MAC, type Mac, normalizeMac, ZERO_MAC } from "../util/mac";
 import { Device } from "./device";
+
+export interface DhcpLease {
+  ip: Ipv4;
+  mask?: Ipv4;
+  gateway?: Ipv4;
+  serverIp?: Ipv4;
+  leaseSeconds?: number;
+}
+
+type DhcpState = "idle" | "discovering" | "requesting" | "bound" | "failed";
 
 export interface PcConfig {
   ip?: Ipv4;
@@ -39,6 +57,12 @@ export class Pc extends Device {
 
   readonly arpTable = new Map<Ipv4, Mac>();
   readonly pingResults: PingResult[] = [];
+
+  /** DHCP client state (see `requestDhcp`). */
+  dhcpState: DhcpState = "idle";
+  dhcpBound = false;
+  lease: DhcpLease | undefined;
+  private dhcpXid = 0;
 
   /** IPv4 packets waiting on ARP resolution, keyed by next-hop IP. */
   private readonly arpPending = new Map<Ipv4, Ipv4Packet[]>();
@@ -200,17 +224,117 @@ export class Pc extends Device {
   }
 
   private handleIpv4(packet: Ipv4Packet, frame: EthernetFrame): void {
+    // DHCP replies are broadcast and arrive before we have an address, so they
+    // are handled before the "addressed to me" check that gates unicast traffic.
+    if (packet.payload.kind === "udp") {
+      this.handleUdp(packet.payload);
+      return;
+    }
+
     if (packet.dst !== this.ip) return; // PCs do not route
     // Opportunistically cache the L2 address of the L3 source.
     this.arpTable.set(packet.src, normalizeMac(frame.src));
 
-    if (packet.protocol !== IpProtocol.ICMP) return;
+    if (packet.protocol !== IpProtocol.ICMP || packet.payload.kind !== "icmp") return;
     const icmp = packet.payload;
     if (icmp.type === IcmpType.EchoRequest) {
       this.sendEchoReply(packet.src, icmp);
     } else if (icmp.type === IcmpType.EchoReply) {
       this.completePing(icmp.sequence);
     }
+  }
+
+  // --- DHCP client -------------------------------------------------------
+
+  /** Begin DHCP address acquisition (the DORA exchange). */
+  requestDhcp(): void {
+    this.dhcpXid = this.engine.rng.nextU32();
+    this.dhcpState = "discovering";
+    this.dhcpBound = false;
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "dhcp-discover",
+      device: this.id,
+      detail: { xid: this.dhcpXid },
+    });
+    this.sendDhcp({ messageType: DhcpMessageType.Discover });
+    this.engine.scheduleIn(DEFAULT_DHCP_TIMEOUT_NS, () => this.dhcpTimeout(this.dhcpXid));
+  }
+
+  private handleUdp(udp: UdpDatagram): void {
+    if (udp.dstPort !== DHCP_CLIENT_PORT || udp.payload.kind !== "dhcp") return;
+    const msg = udp.payload;
+    if (msg.transactionId !== this.dhcpXid) return;
+    if (normalizeMac(msg.clientMac) !== normalizeMac(this.primary.mac)) return;
+
+    if (msg.messageType === DhcpMessageType.Offer && this.dhcpState === "discovering") {
+      this.dhcpState = "requesting";
+      this.sendDhcp({
+        messageType: DhcpMessageType.Request,
+        requestedIp: msg.yourIp,
+        serverIp: msg.serverIp,
+      });
+    } else if (msg.messageType === DhcpMessageType.Ack && this.dhcpState === "requesting") {
+      this.bindLease(msg);
+    } else if (msg.messageType === DhcpMessageType.Nak) {
+      this.dhcpState = "failed";
+    }
+  }
+
+  private bindLease(ack: DhcpMessage): void {
+    if (ack.yourIp === undefined) return;
+    this.ip = ack.yourIp;
+    if (ack.subnetMask !== undefined) this.maskInt = maskToInt(ack.subnetMask);
+    if (ack.gateway !== undefined) this.gateway = ack.gateway;
+    this.dhcpBound = true;
+    this.dhcpState = "bound";
+    this.lease = {
+      ip: ack.yourIp,
+      mask: ack.subnetMask,
+      gateway: ack.gateway,
+      serverIp: ack.serverIp,
+      leaseSeconds: ack.leaseSeconds,
+    };
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "dhcp-bound",
+      device: this.id,
+      detail: { ip: ack.yourIp, gateway: ack.gateway },
+    });
+  }
+
+  private dhcpTimeout(xid: number): void {
+    if (xid !== this.dhcpXid || this.dhcpBound) return;
+    this.dhcpState = "failed";
+  }
+
+  private sendDhcp(fields: Partial<DhcpMessage> & { messageType: DhcpMessage["messageType"] }): void {
+    const dhcp: DhcpMessage = {
+      kind: "dhcp",
+      transactionId: this.dhcpXid,
+      clientMac: this.primary.mac,
+      ...fields,
+    };
+    const udp: UdpDatagram = {
+      kind: "udp",
+      srcPort: DHCP_CLIENT_PORT,
+      dstPort: DHCP_SERVER_PORT,
+      payload: dhcp,
+    };
+    const packet: Ipv4Packet = {
+      kind: "ipv4",
+      src: this.ip ?? UNSPECIFIED_IP,
+      dst: BROADCAST_IP,
+      protocol: IpProtocol.UDP,
+      ttl: DEFAULT_IP_TTL,
+      payload: udp,
+    };
+    this.primary.transmit({
+      src: this.primary.mac,
+      dst: BROADCAST_MAC,
+      etherType: EtherType.IPv4,
+      payload: packet,
+    });
   }
 
   private sendEchoReply(dst: Ipv4, request: IcmpMessage): void {
