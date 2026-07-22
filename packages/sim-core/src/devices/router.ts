@@ -1,5 +1,11 @@
 import { ArpOp, DhcpMessageType, EtherType, IcmpCode, IcmpType, IpProtocol } from "@sim/contracts";
-import { DEFAULT_DHCP_LEASE_SECONDS, DEFAULT_IP_TTL, DHCP_CLIENT_PORT, DHCP_SERVER_PORT } from "../engine/constants";
+import {
+  DEFAULT_DHCP_LEASE_SECONDS,
+  DEFAULT_IP_TTL,
+  DEFAULT_PING_TIMEOUT_NS,
+  DHCP_CLIENT_PORT,
+  DHCP_SERVER_PORT,
+} from "../engine/constants";
 import type { EthernetInterface } from "../net/interface";
 import type { ArpPacket } from "../packets/arp";
 import type { DhcpMessage } from "../packets/dhcp";
@@ -105,9 +111,13 @@ export interface DhcpPoolConfig {
  * server that leases addresses from per-subnet pools.
  */
 export class Router extends Device {
+  readonly deviceType = "router" as const;
   private readonly l3 = new Map<string, L3Interface>();
   private readonly staticRoutes: StaticRoute[] = [];
   private readonly dhcpPools: DhcpPool[] = [];
+  private forwardingEnabled = true;
+  readonly pingResults: Array<{ sequence: number; success: boolean; rttNs?: number }> = [];
+  private readonly pendingPings = new Map<number, number>();
 
   readonly arpTable = new Map<Ipv4, Mac>();
   /** IPv4 packets awaiting ARP resolution, keyed by next-hop IP. */
@@ -145,6 +155,18 @@ export class Router extends Device {
     };
     this.l3.set(iface.name, iface);
     return iface;
+  }
+
+  removeInterface(name: string): void {
+    this.l3.delete(name);
+  }
+
+  setForwardingEnabled(enabled: boolean): void {
+    this.forwardingEnabled = enabled;
+  }
+
+  get ipRoutingEnabled(): boolean {
+    return this.forwardingEnabled;
   }
 
   /** `encapsulation dot1Q <vlan> [native]`: ensure the subinterface exists. */
@@ -280,6 +302,38 @@ export class Router extends Device {
     return rows;
   }
 
+  /** Originate an ICMP echo from the address selected by longest-prefix match. */
+  ping(target: Ipv4, sequence = 0): void {
+    const route = this.resolve(target);
+    if (!route?.egress.ip) throw new Error(`Router ${this.id} has no route to ${target}`);
+    const request: IcmpMessage = {
+      kind: "icmp",
+      type: IcmpType.EchoRequest,
+      code: 0,
+      identifier: 0x5254,
+      sequence,
+    };
+    this.pendingPings.set(sequence, this.engine.now());
+    this.engine.scheduleIn(DEFAULT_PING_TIMEOUT_NS, () => {
+      if (!this.pendingPings.delete(sequence)) return;
+      this.pingResults.push({ sequence, success: false });
+    });
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "icmp-echo-request",
+      device: this.id,
+      detail: { dst: target, sequence },
+    });
+    this.originate({
+      kind: "ipv4",
+      src: route.egress.ip,
+      dst: target,
+      protocol: IpProtocol.ICMP,
+      ttl: DEFAULT_IP_TTL,
+      payload: request,
+    });
+  }
+
   // --- receive path ------------------------------------------------------
 
   override onReceive(frame: EthernetFrame, ingress: EthernetInterface): void {
@@ -385,6 +439,20 @@ export class Router extends Device {
   private deliverLocal(packet: Ipv4Packet): void {
     if (packet.protocol !== IpProtocol.ICMP || packet.payload.kind !== "icmp") return;
     const icmp = packet.payload;
+    if (icmp.type === IcmpType.EchoReply) {
+      const sentAt = this.pendingPings.get(icmp.sequence);
+      if (sentAt === undefined) return;
+      this.pendingPings.delete(icmp.sequence);
+      const rttNs = this.engine.now() - sentAt;
+      this.pingResults.push({ sequence: icmp.sequence, success: true, rttNs });
+      this.engine.trace({
+        time: this.engine.now(),
+        type: "ping-success",
+        device: this.id,
+        detail: { sequence: icmp.sequence, rttNs },
+      });
+      return;
+    }
     if (icmp.type !== IcmpType.EchoRequest) return;
     const reply: IcmpMessage = {
       kind: "icmp",
@@ -410,6 +478,7 @@ export class Router extends Device {
   }
 
   private forward(packet: Ipv4Packet, ingress: L3Interface): void {
+    if (!this.forwardingEnabled) return;
     const ttl = packet.ttl - 1;
     if (ttl <= 0) {
       this.sendIcmpError(IcmpType.TimeExceeded, IcmpCode.TtlExceeded, packet, ingress);

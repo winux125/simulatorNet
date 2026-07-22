@@ -1,3 +1,10 @@
+import {
+  deviceTypeHasCapability,
+  getDeviceProfile,
+  type DeviceCapability,
+  type DeviceProfile,
+  type DeviceType,
+} from "@sim/contracts";
 import type { SimulationEngine } from "../engine/simulation-engine";
 import { EthernetInterface } from "../net/interface";
 import type { EthernetFrame } from "../packets/ethernet";
@@ -9,6 +16,7 @@ import type { Mac } from "../util/mac";
  * `onReceive` to define their forwarding / host behaviour.
  */
 export abstract class Device {
+  abstract readonly deviceType: DeviceType;
   /** Set by the engine when the device is added; used to schedule events. */
   engine!: SimulationEngine;
   readonly interfaces = new Map<string, EthernetInterface>();
@@ -17,6 +25,14 @@ export abstract class Device {
     readonly id: string,
     public name: string,
   ) {}
+
+  get profile(): DeviceProfile {
+    return getDeviceProfile(this.deviceType);
+  }
+
+  hasCapability(capability: DeviceCapability): boolean {
+    return deviceTypeHasCapability(this.deviceType, capability);
+  }
 
   /** `hostname <name>`: rename the device (drives the CLI prompt). */
   rename(name: string): void {

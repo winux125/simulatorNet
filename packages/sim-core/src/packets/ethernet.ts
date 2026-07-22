@@ -14,3 +14,20 @@ export interface EthernetFrame {
   readonly vlan?: number;
   readonly payload: L2Payload;
 }
+
+export const DEFAULT_FRAME_TRAVERSAL_BUDGET = 64;
+
+const traversalBudget = Symbol("simulatornet.frame-traversal-budget");
+type InternalEthernetFrame = EthernetFrame & { [traversalBudget]?: number };
+
+/** Internal simulator safety metadata. Symbol keys never become wire fields or JSON. */
+export function nextFrameTraversal(frame: EthernetFrame): EthernetFrame | undefined {
+  const current = (frame as InternalEthernetFrame)[traversalBudget] ?? DEFAULT_FRAME_TRAVERSAL_BUDGET;
+  if (current <= 0) return undefined;
+  const next: InternalEthernetFrame = { ...frame, [traversalBudget]: current - 1 };
+  return next;
+}
+
+export function frameTraversalBudget(frame: EthernetFrame): number {
+  return (frame as InternalEthernetFrame)[traversalBudget] ?? DEFAULT_FRAME_TRAVERSAL_BUDGET;
+}

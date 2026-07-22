@@ -2,6 +2,7 @@ import type { EthernetInterface } from "../net/interface";
 import type { EthernetFrame } from "../packets/ethernet";
 import { isBroadcastMac, type Mac, normalizeMac } from "../util/mac";
 import { Device } from "./device";
+import { ForwardingDatabase } from "./forwarding-database";
 
 export const DEFAULT_VLAN = 1;
 
@@ -76,10 +77,11 @@ function defaultVlanName(id: number): string {
  * access port. STP is not modelled yet — topologies must be loop-free.
  */
 export class L2Switch extends Device {
+  readonly deviceType: import("@sim/contracts").DeviceType = "l2-switch";
   /** Last-seen location of each MAC (for inspection / `show mac address-table`). */
   readonly macTable = new Map<Mac, MacTableEntry>();
   /** Forwarding database keyed per VLAN, so one MAC can live in several VLANs. */
-  private readonly fdb = new Map<string, MacTableEntry>();
+  private readonly fdb = new ForwardingDatabase<number>();
   private readonly portConfig = new Map<string, SwitchPortConfig>();
   /** The VLAN database (`vlan <id>` / `name <name>`); VLAN 1 always exists. */
   private readonly vlans = new Map<number, VlanInfo>([[DEFAULT_VLAN, { id: DEFAULT_VLAN, name: "default" }]]);
@@ -89,6 +91,10 @@ export class L2Switch extends Device {
   /** `vlan <id>`: create the VLAN in the database if absent. */
   defineVlan(id: number): void {
     if (!this.vlans.has(id)) this.vlans.set(id, { id, name: defaultVlanName(id) });
+  }
+
+  hasVlan(id: number): boolean {
+    return this.vlans.has(id);
   }
 
   /** `name <name>` inside `vlan <id>` configuration. */
@@ -194,10 +200,8 @@ export class L2Switch extends Device {
   /** `show mac address-table`: the learned forwarding entries. */
   macAddressTable(): MacAddressRow[] {
     const rows: MacAddressRow[] = [];
-    for (const [key, entry] of this.fdb) {
-      // The composite key is `${vlan} ${mac}` — recover the MAC after the space.
-      const mac = key.slice(key.indexOf(" ") + 1);
-      rows.push({ vlan: entry.vlan, mac, port: entry.port });
+    for (const entry of this.fdb.entries(this.engine.now())) {
+      rows.push({ vlan: entry.scope, mac: entry.mac, port: entry.port });
     }
     return rows.sort((a, b) => a.vlan - b.vlan || a.mac.localeCompare(b.mac));
   }
@@ -233,13 +237,14 @@ export class L2Switch extends Device {
   }
 
   override onReceive(frame: EthernetFrame, ingress: EthernetInterface): void {
+    if (!this.switchingEnabledOnPort(ingress.name)) return;
     const vlan = this.ingressVlan(ingress.name, frame);
     if (vlan === undefined) return; // frame not permitted on this port: drop
 
     const src = normalizeMac(frame.src);
     const entry = { port: ingress.name, vlan, learnedAt: this.engine.now() };
     this.macTable.set(src, entry);
-    this.fdb.set(fdbKey(vlan, src), entry);
+    this.fdb.learn(vlan, src, ingress.name, this.engine.now());
     this.engine.trace({
       time: this.engine.now(),
       type: "mac-learn",
@@ -248,7 +253,9 @@ export class L2Switch extends Device {
     });
 
     const dst = normalizeMac(frame.dst);
-    const dstEntry = isBroadcastMac(dst) ? undefined : this.fdb.get(fdbKey(vlan, dst));
+    const consumed = this.receiveLocal(frame, ingress, vlan);
+    const dstEntry = isBroadcastMac(dst) ? undefined : this.fdb.lookup(vlan, dst, this.engine.now());
+    if (consumed && !isBroadcastMac(dst)) return;
 
     // Flood when broadcast or the destination is unknown within this VLAN.
     if (!dstEntry) {
@@ -268,7 +275,7 @@ export class L2Switch extends Device {
     egress.transmit(this.egressFrame(egress.name, vlan, frame));
   }
 
-  private flood(frame: EthernetFrame, vlan: number, ingress: EthernetInterface): void {
+  protected flood(frame: EthernetFrame, vlan: number, ingress?: EthernetInterface): void {
     this.engine.trace({
       time: this.engine.now(),
       type: "flood",
@@ -277,6 +284,7 @@ export class L2Switch extends Device {
     });
     for (const iface of this.interfaces.values()) {
       if (iface === ingress) continue;
+      if (!this.switchingEnabledOnPort(iface.name)) continue;
       if (!iface.operationalUp) continue;
       if (!this.portCarriesVlan(iface.name, vlan)) continue;
       iface.transmit(this.egressFrame(iface.name, vlan, frame));
@@ -284,7 +292,7 @@ export class L2Switch extends Device {
   }
 
   /** The VLAN a frame belongs to on ingress, or `undefined` if it must be dropped. */
-  private ingressVlan(port: string, frame: EthernetFrame): number | undefined {
+  protected ingressVlan(port: string, frame: EthernetFrame): number | undefined {
     const cfg = this.portConfigOf(port);
     if (cfg.mode === "access") {
       // Access ports expect untagged traffic; a foreign tag is dropped.
@@ -295,7 +303,8 @@ export class L2Switch extends Device {
     return this.trunkAllows(cfg, vlan) ? vlan : undefined;
   }
 
-  private portCarriesVlan(port: string, vlan: number): boolean {
+  protected portCarriesVlan(port: string, vlan: number): boolean {
+    if (!this.switchingEnabledOnPort(port)) return false;
     const cfg = this.portConfigOf(port);
     return cfg.mode === "access" ? cfg.accessVlan === vlan : this.trunkAllows(cfg, vlan);
   }
@@ -305,7 +314,7 @@ export class L2Switch extends Device {
   }
 
   /** Re-tag a frame for egress on `port`: untagged on access / native, else tagged. */
-  private egressFrame(port: string, vlan: number, frame: EthernetFrame): EthernetFrame {
+  protected egressFrame(port: string, vlan: number, frame: EthernetFrame): EthernetFrame {
     const cfg = this.portConfigOf(port);
     const tagged = cfg.mode === "trunk" && vlan !== cfg.nativeVlan;
     if (tagged) {
@@ -313,9 +322,24 @@ export class L2Switch extends Device {
     }
     return frame.vlan === undefined ? frame : { ...frame, vlan: undefined };
   }
-}
 
-/** Composite key so the forwarding database is scoped per VLAN. */
-function fdbKey(vlan: number, mac: Mac): string {
-  return `${vlan} ${mac}`;
+  protected switchingEnabledOnPort(_port: string): boolean {
+    return true;
+  }
+
+  /** Hook for a local control/L3 plane. Broadcasts may be consumed and flooded. */
+  protected receiveLocal(_frame: EthernetFrame, _ingress: EthernetInterface, _vlan: number): boolean {
+    return false;
+  }
+
+  protected transmitFromLocal(frame: EthernetFrame, vlan: number): void {
+    const destination = normalizeMac(frame.dst);
+    const learned = isBroadcastMac(destination) ? undefined : this.fdb.lookup(vlan, destination, this.engine.now());
+    const egress = learned ? this.interfaces.get(learned.port) : undefined;
+    if (egress?.operationalUp && this.portCarriesVlan(egress.name, vlan)) {
+      egress.transmit(this.egressFrame(egress.name, vlan, frame));
+      return;
+    }
+    this.flood(frame, vlan);
+  }
 }

@@ -58,7 +58,7 @@ interface PendingPing {
  * with a pending queue, ICMP echo request/reply, and a per-sequence ping table
  * with timeouts. Non-local destinations are sent to the default gateway.
  */
-export class Pc extends Device {
+export abstract class EndHost extends Device {
   ip: Ipv4 | undefined;
   maskInt = maskToInt(24);
   gateway: Ipv4 | undefined;
@@ -117,7 +117,7 @@ export class Pc extends Device {
   /** The PC's single Ethernet interface. */
   get primary(): EthernetInterface {
     for (const iface of this.interfaces.values()) return iface;
-    throw new Error(`PC ${this.id} has no interface`);
+    throw new Error(`End host ${this.id} has no interface`);
   }
 
   /** Initiate one ICMP echo request. Result is recorded in `pingResults`. */
@@ -421,4 +421,9 @@ export class Pc extends Device {
     this.pendingPings.delete(sequence);
     this.pingResults.push({ sequence, success: false });
   }
+}
+
+/** Interactive client end host. */
+export class Pc extends EndHost {
+  readonly deviceType = "pc" as const;
 }

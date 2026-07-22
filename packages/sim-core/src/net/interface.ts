@@ -1,5 +1,5 @@
 import type { Device } from "../devices/device";
-import type { EthernetFrame } from "../packets/ethernet";
+import { frameTraversalBudget, nextFrameTraversal, type EthernetFrame } from "../packets/ethernet";
 import type { Mac } from "../util/mac";
 import type { Link } from "./link";
 
@@ -52,8 +52,27 @@ export class EthernetInterface {
     const link = this.link;
     if (!link || !peer || !this.operationalUp) return; // link down: frame dropped
     const engine = this.device.engine;
+    const traversed = nextFrameTraversal(frame);
+    if (!traversed) {
+      engine.trace({
+        time: engine.now(),
+        type: "frame-traversal-limit",
+        device: this.device.id,
+        detail: { interface: this.name, remaining: frameTraversalBudget(frame) },
+      });
+      throw new FrameTraversalLimitError(this.device.id, this.name);
+    }
     engine.scheduleIn(link.propagationDelayNs, () => {
-      peer.device.onReceive(frame, peer);
+      peer.device.onReceive(traversed, peer);
     });
+  }
+}
+
+export class FrameTraversalLimitError extends Error {
+  readonly code = "frame-traversal-limit";
+
+  constructor(readonly deviceId: string, readonly interfaceId: string) {
+    super(`Ethernet frame traversal budget exhausted at ${deviceId}/${interfaceId}`);
+    this.name = "FrameTraversalLimitError";
   }
 }
