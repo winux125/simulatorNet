@@ -1,0 +1,33 @@
+{
+  "name": "@sim/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Node-only PostgreSQL persistence and tenant-scoped repositories.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate --config drizzle.config.ts",
+    "db:migrate": "drizzle-kit migrate --config drizzle.config.ts",
+    "db:check": "drizzle-kit check --config drizzle.config.ts",
+    "db:seed:dev": "tsx src/seed-dev.ts",
+    "test:integration": "vitest --root ../.. run packages/db/tests/db.integration.test.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.22.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.0",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.20.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}

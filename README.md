@@ -29,6 +29,7 @@ packages/
   lab-format/  Versioned validation, canonical JSON, rebuild and serialization
   sim-worker/  Typed worker protocol, runtime owner and browser client
   grading-core/ Pure deterministic checks, scoring, redaction and resource limits
+  db/          Node-only PostgreSQL schema, migrations and tenant repositories
 apps/
   web/         React/Vite browser simulator (React Flow + xterm.js)
   verifier/    Headless Node adapter and JSON fixture CLI
@@ -43,6 +44,7 @@ APIs. The deterministic engine has no `Date.now()` / `Math.random()` /
 
 - Node.js 24 LTS (see `.nvmrc`)
 - pnpm (via `corepack enable`)
+- Docker with Compose (for PostgreSQL/Keycloak integration workflows)
 
 ## Getting started
 
@@ -57,6 +59,8 @@ pnpm typecheck   # type-check every package
 pnpm test:e2e    # run the Chromium browser vertical slice
 pnpm dev:api     # start the internal API at http://127.0.0.1:3000
 pnpm verify:fixture # run the deterministic verifier JSON fixture
+pnpm db:migrate     # apply committed PostgreSQL migrations
+pnpm db:seed:dev    # idempotently create the local development tenant
 ```
 
 ## Milestone 1
@@ -275,3 +279,42 @@ Start it with `pnpm dev:api`; production bundles are created by
 > only for M7 development and integration. It must not be exposed publicly
 > before M8 authentication and assignment-owned hidden-spec lookup. M7 has no
 > users, organizations, roles, OAuth, persistence, queues or browser API client.
+
+## Milestone 8.1 — PostgreSQL persistence
+
+`@sim/db` is a Node-only persistence package built on PostgreSQL 18,
+`node-postgres` and Drizzle. It owns the versioned SQL migrations and repository
+boundary for organizations, users and identities, organization memberships,
+integration clients, external-user links, one-time launch codes, browser
+sessions and audit events. It does not import Fastify, HTTP middleware or the
+simulation engine.
+
+All tenant operations require a parsed `TenantContext` and include the
+organization predicate in reads and mutations. Cross-tenant operations are
+limited to the explicit platform-admin repository and narrow authentication
+lookups that establish a tenant from an already verified credential. M8 does
+not claim database-enforced RLS: the deployment has not yet introduced
+separate restricted DB roles, `FORCE ROW LEVEL SECURITY`, or transaction-local
+tenant settings. Application-level tenant predicates are covered against a
+real database, including connection-pool reuse and cross-tenant read/update
+attempts.
+
+Launch codes and browser session tokens are 32 random bytes encoded as
+base64url. Only their SHA-256 hashes are stored; plaintext credentials never
+enter PostgreSQL or audit metadata. Code consumption is a single conditional
+update, so expired/reused codes fail and concurrent exchanges have exactly one
+winner.
+
+Create `.env` from `.env.example`, then run:
+
+```bash
+pnpm db:generate       # generate a committed migration after a schema change
+pnpm db:check          # validate migration history
+pnpm db:migrate        # apply committed migrations (never drizzle push)
+pnpm db:seed:dev       # safe, idempotent kai-dev development data
+pnpm db:test:integration
+```
+
+The integration suite uses `packages/db/compose.test.yaml` and
+`TEST_DATABASE_URL`. The development seed creates no passwords, client secrets,
+tokens or production credentials.
