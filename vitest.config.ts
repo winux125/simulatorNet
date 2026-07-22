@@ -8,15 +8,18 @@ const fromRoot = (p: string): string => fileURLToPath(new URL(p, import.meta.url
 export default defineConfig({
   resolve: {
     alias: {
+      "@sim/contracts/grading": fromRoot("./packages/contracts/src/grading.ts"),
       "@sim/contracts": fromRoot("./packages/contracts/src/index.ts"),
       "@sim/sim-core": fromRoot("./packages/sim-core/src/index.ts"),
       "@sim/cli-engine": fromRoot("./packages/cli-engine/src/index.ts"),
       "@sim/lab-format": fromRoot("./packages/lab-format/src/index.ts"),
       "@sim/sim-worker": fromRoot("./packages/sim-worker/src/index.ts"),
+      "@sim/grading-core": fromRoot("./packages/grading-core/src/index.ts"),
+      "@simulatornet/verifier": fromRoot("./apps/verifier/src/index.ts"),
     },
   },
   test: {
-    include: ["packages/**/*.test.ts", "apps/**/*.test.tsx"],
+    include: ["packages/**/*.test.ts", "apps/**/*.test.ts", "apps/**/*.test.tsx"],
     environment: "node",
   },
 });

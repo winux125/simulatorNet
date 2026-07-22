@@ -1,0 +1,33 @@
+{
+  "name": "@simulatornet/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal internal Fastify API for validation and deterministic verification.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "build": "tsup"
+  },
+  "dependencies": {
+    "@fastify/swagger": "^9.5.0",
+    "@sim/contracts": "workspace:*",
+    "@sim/grading-core": "workspace:*",
+    "@sim/lab-format": "workspace:*",
+    "@simulatornet/verifier": "workspace:*",
+    "fastify": "^5.6.0"
+  },
+  "devDependencies": {
+    "@sim/cli-engine": "workspace:*",
+    "tsx": "^4.20.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.6.0"
+  }
+}

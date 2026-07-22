@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EventQueue } from "@sim/sim-core";
+import { createSimulationEngine, EventQueue } from "@sim/sim-core";
 
 describe("EventQueue", () => {
   it("pops events in ascending time order", () => {
@@ -40,5 +40,27 @@ describe("EventQueue", () => {
     q.push(30, () => seen.push(30));
     while (!q.isEmpty()) q.pop()!.run();
     expect(seen).toEqual([20, 10, 30, 40]);
+  });
+});
+
+describe("bounded SimulationEngine inspection", () => {
+  it("exposes one-event stepping without changing deterministic order", () => {
+    const engine = createSimulationEngine({ seed: 1 });
+    const seen: number[] = [];
+    engine.scheduleAt(20, () => seen.push(20));
+    engine.scheduleAt(10, () => seen.push(10));
+    expect(engine.pendingEventCount()).toBe(2);
+    expect(engine.nextEventTime()).toBe(10);
+    expect(engine.runNextEvent()).toBe(true);
+    expect(seen).toEqual([10]);
+    expect(engine.now()).toBe(10);
+  });
+
+  it("retains no more trace records than the configured cap", () => {
+    const engine = createSimulationEngine({ seed: 1 });
+    engine.enableTrace(1);
+    engine.trace({ time: 0, type: "first", device: "test" });
+    engine.trace({ time: 0, type: "second", device: "test" });
+    expect(engine.traceLog).toEqual([{ time: 0, type: "first", device: "test" }]);
   });
 });

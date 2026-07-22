@@ -10,10 +10,13 @@
   "packageManager": "pnpm@11.15.1",
   "scripts": {
     "dev": "pnpm --filter @sim/web dev",
+    "dev:api": "pnpm --filter @simulatornet/api dev",
     "build": "pnpm --filter @sim/web build",
+    "build:server": "pnpm --filter @simulatornet/verifier build && pnpm --filter @simulatornet/api build",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "verify:fixture": "pnpm --filter @simulatornet/verifier verify --submission ./fixtures/submission.json --grading ./fixtures/grading.json",
     "typecheck": "pnpm -r --if-present typecheck"
   },
   "devDependencies": {

@@ -23,18 +23,21 @@ tamper-proof — the browser is never trusted to report its own score.
 
 ```
 packages/
-  contracts/   Shared types + zod schemas (topology, lab document, enums)
+  contracts/   Shared types + Zod schemas (topology, lab and grading contracts)
   sim-core/    Deterministic simulation engine (no DOM, no Node, no timers)
   cli-engine/  Cisco-like CLI adapter over public sim-core methods
   lab-format/  Versioned validation, canonical JSON, rebuild and serialization
   sim-worker/  Typed worker protocol, runtime owner and browser client
+  grading-core/ Pure deterministic checks, scoring, redaction and resource limits
 apps/
   web/         React/Vite browser simulator (React Flow + xterm.js)
+  verifier/    Headless Node adapter and JSON fixture CLI
+  api/         Minimal internal Fastify validation/verification API
 ```
 
-The API and verifier applications arrive in later milestones. `sim-core` is intentionally a pure,
-zero-runtime-dependency package: no DOM, no Node APIs, no `Date.now()` /
-`Math.random()` / `setTimeout`.
+`sim-core` and `grading-core` remain independent of Fastify, DOM and Node file
+APIs. The deterministic engine has no `Date.now()` / `Math.random()` /
+`setTimeout` simulation paths.
 
 ## Requirements
 
@@ -47,10 +50,13 @@ zero-runtime-dependency package: no DOM, no Node APIs, no `Date.now()` /
 pnpm install
 pnpm dev         # start the browser simulator at http://127.0.0.1:4173
 pnpm build       # production web + worker bundles
+pnpm build:server # production verifier + API bundles
 pnpm test        # run the full test suite once
 pnpm test:watch  # watch mode
 pnpm typecheck   # type-check every package
 pnpm test:e2e    # run the Chromium browser vertical slice
+pnpm dev:api     # start the internal API at http://127.0.0.1:3000
+pnpm verify:fixture # run the deterministic verifier JSON fixture
 ```
 
 ## Milestone 1
@@ -170,7 +176,7 @@ environment: a future headless server verifier will rebuild submissions and
 grade them. No backend, authentication, database or grading evaluator is part
 of M6.
 
-## Milestone 6.1 (current)
+## Milestone 6.1
 
 The application now starts in a compact welcome workspace instead of loading a
 laboratory implicitly. **New Lab** creates an empty deterministic schema-v1
@@ -194,5 +200,78 @@ message. Mode- and device-aware help is available through `?`, `help`,
 have consistent spacing, empty Enter produces a fresh prompt, clearing output
 preserves the session, and output follows the latest line automatically.
 
-M1 through M6.1 are complete. Server-side verification remains outside this
-milestone and the browser is still treated as an untrusted grading environment.
+M1 through M6.1 are complete. The browser remains an untrusted grading environment.
+
+## Milestone 7 (current)
+
+M7 adds a deterministic server verification boundary without adding storage,
+identity or deployment concerns. The browser sends only a
+`LabSubmissionDocument` containing topology, structured persistent
+configuration and seed. `grading-core` validates it, creates a fresh
+`LabDocument`, rebuilds the same `sim-core` engine through `lab-format`, resets
+transient state by construction, performs deterministic DHCP/ping actions and
+calculates points. Browser-provided scores, traces, ping results, ARP/MAC
+caches, DHCP leases, event queues and virtual time are never trusted.
+
+Hidden `GradingSpec` definitions are separate server-side contracts and are not
+part of `LabDocument` or imported by the web application. Student results
+redact hidden titles, expected values and diagnostics; instructor results add
+bounded diagnostics without arbitrary stack traces. Verification IDs and core
+results are stable for identical input.
+
+### Supported grading checks
+
+- routed or local `ping` success/failure;
+- physical interface administrative state;
+- switchport mode and optional access VLAN;
+- VLAN existence;
+- connected or static route existence;
+- deterministic DHCP address membership in an IPv4 subnet.
+
+No grading contract accepts JavaScript, regex, dynamic imports or network
+callbacks.
+
+### Resource limits
+
+The central MVP envelope is 64 nodes, 128 links, 512 interfaces, 100 grading
+checks, 50,000 processed virtual events, 60 seconds of simulated virtual time,
+2,000 retained trace records and a 1,000,000-byte JSON payload. Limits are
+checked before build where possible and during every verifier-driven event
+step. Exceeding one produces a typed `resource-limit` error.
+
+### Verifier CLI
+
+The Node adapter owns file access and timing; grading business logic stays in
+the pure package. Run the checked-in routed/DHCP fixture with:
+
+```bash
+pnpm --filter @simulatornet/verifier verify \
+  --submission ./fixtures/submission.json \
+  --grading ./fixtures/grading.json
+```
+
+It writes a structured JSON result to stdout and exits `0` after completed
+verification, or writes a structured error to stderr and exits `1` for invalid
+input or failed execution.
+
+### Fastify API
+
+`apps/api` uses Fastify 5 with Zod domain contracts, OpenAPI, request IDs,
+Pino-backed Fastify logging, strict JSON content types, a body-size cap and
+graceful `SIGINT`/`SIGTERM` shutdown. CORS is not registered and therefore is
+disabled by default.
+
+- `GET /health`
+- `GET /ready`
+- `GET /openapi.json`
+- `POST /v1/labs/validate` — validate and return a canonical lab document;
+- `POST /v1/verifications` — rebuild, run checks and return a server-calculated result.
+
+Start it with `pnpm dev:api`; production bundles are created by
+`pnpm build:server` and the API bundle runs with
+`pnpm --filter @simulatornet/api start`.
+
+> **Internal API warning:** `/v1/verifications` accepts a grading spec directly
+> only for M7 development and integration. It must not be exposed publicly
+> before M8 authentication and assignment-owned hidden-spec lookup. M7 has no
+> users, organizations, roles, OAuth, persistence, queues or browser API client.

@@ -8,6 +8,10 @@
     ".": {
       "types": "./src/index.ts",
       "import": "./src/index.ts"
+    },
+    "./grading": {
+      "types": "./src/grading.ts",
+      "import": "./src/grading.ts"
     }
   },
   "scripts": {

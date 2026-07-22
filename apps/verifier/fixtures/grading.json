@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "demo-grade",
+  "title": "Router-on-a-stick verification",
+  "checks": [
+    {
+      "id": "ping-pc1-pc2", "title": "PC1 reaches PC2", "type": "ping", "points": 3,
+      "visibility": "hidden",
+      "configuration": { "sourceDeviceId": "pc-1", "destinationIp": "192.168.20.10", "expected": "success" }
+    },
+    {
+      "id": "access-vlan-10", "title": "PC1 access port", "type": "switchport", "points": 2,
+      "visibility": "visible",
+      "configuration": { "deviceId": "switch-1", "interfaceId": "Gi0/1", "expectedMode": "access", "expectedAccessVlan": 10 }
+    },
+    {
+      "id": "vlan-10", "title": "VLAN 10 exists", "type": "vlan-exists", "points": 1,
+      "visibility": "visible", "configuration": { "deviceId": "switch-1", "vlanId": 10 }
+    },
+    {
+      "id": "interface-up", "title": "PC1 interface enabled", "type": "interface-state", "points": 1,
+      "visibility": "visible",
+      "configuration": { "deviceId": "switch-1", "interfaceId": "Gi0/1", "expectedAdminUp": true }
+    },
+    {
+      "id": "static-route", "title": "Static route exists", "type": "route-exists", "points": 1,
+      "visibility": "visible",
+      "configuration": { "deviceId": "router-1", "network": "172.16.0.0", "prefixLength": 16 }
+    },
+    {
+      "id": "dhcp-pc1", "title": "PC1 receives VLAN 10 address", "type": "dhcp-address", "points": 2,
+      "visibility": "hidden", "configuration": { "deviceId": "pc-1", "expectedSubnet": "192.168.10.0/24" }
+    }
+  ]
+}

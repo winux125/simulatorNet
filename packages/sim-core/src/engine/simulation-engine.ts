@@ -35,6 +35,7 @@ export class SimulationEngine {
   private readonly clock = new VirtualClock();
   private readonly queue = new EventQueue();
   private tracing = false;
+  private traceLimit = Number.POSITIVE_INFINITY;
 
   constructor(options: EngineOptions) {
     this.rng = new SeededRandom(options.seed);
@@ -79,12 +80,32 @@ export class SimulationEngine {
     this.queue.push(timeNs, run);
   }
 
-  enableTrace(): void {
+  enableTrace(maxEntries = Number.POSITIVE_INFINITY): void {
     this.tracing = true;
+    this.traceLimit = Math.max(0, maxEntries);
   }
 
   trace(entry: TraceEntry): void {
-    if (this.tracing) this.traceLog.push(entry);
+    if (this.tracing && this.traceLog.length < this.traceLimit) this.traceLog.push(entry);
+  }
+
+  /** Scheduled virtual time of the next event, for bounded headless runners. */
+  nextEventTime(): number | undefined {
+    return this.queue.peekTime();
+  }
+
+  /** Number of pending deterministic events, exposed for diagnostics only. */
+  pendingEventCount(): number {
+    return this.queue.size;
+  }
+
+  /** Process exactly one event, returning false when the queue is empty. */
+  runNextEvent(): boolean {
+    const event = this.queue.pop();
+    if (!event) return false;
+    this.clock.set(event.time);
+    event.run();
+    return true;
   }
 
   /** Process all pending events in deterministic order until the queue drains. */
