@@ -27,9 +27,12 @@ packages/
   sim-core/    Deterministic simulation engine (no DOM, no Node, no timers)
   cli-engine/  Cisco-like CLI adapter over public sim-core methods
   lab-format/  Versioned validation, canonical JSON, rebuild and serialization
+  sim-worker/  Typed worker protocol, runtime owner and browser client
+apps/
+  web/         React/Vite browser simulator (React Flow + xterm.js)
 ```
 
-`apps/` (web, api, verifier) arrive in later milestones. `sim-core` is intentionally a pure,
+The API and verifier applications arrive in later milestones. `sim-core` is intentionally a pure,
 zero-runtime-dependency package: no DOM, no Node APIs, no `Date.now()` /
 `Math.random()` / `setTimeout`.
 
@@ -42,9 +45,12 @@ zero-runtime-dependency package: no DOM, no Node APIs, no `Date.now()` /
 
 ```bash
 pnpm install
+pnpm dev         # start the browser simulator at http://127.0.0.1:4173
+pnpm build       # production web + worker bundles
 pnpm test        # run the full test suite once
 pnpm test:watch  # watch mode
 pnpm typecheck   # type-check every package
+pnpm test:e2e    # run the Chromium browser vertical slice
 ```
 
 ## Milestone 1
@@ -79,7 +85,7 @@ same engine still grades headless. Includes golden transcript tests and an
 end-to-end check that a router-on-a-stick configured entirely from the CLI
 produces a working data plane.
 
-## Milestone 4 (current)
+## Milestone 4
 
 The pure TypeScript **versioned lab format** (`packages/lab-format`) connects
 contracts to the simulation core. Its public API is:
@@ -97,5 +103,27 @@ rebuild. Browser submissions use a separate `LabSubmissionDocument`; hidden
 grading tests/specifications are server-only and never enter the browser lab
 document.
 
-M1 (deterministic L2), M2 (routing/VLAN/DHCP), M3 (CLI) and M4 (lab format) are
-complete. Next come the web / API / verifier application milestones.
+## Milestone 5 (current)
+
+The browser simulator vertical slice is implemented in `apps/web`. It provides
+a dark desktop workspace with a device palette, editable React Flow topology,
+per-device xterm.js CLI, explicit virtual-time controls, filtered event trace,
+and versioned JSON import/export. The built-in lab demonstrates two DHCP clients
+in separate VLANs communicating through router-on-a-stick.
+
+The main thread owns only React, editor/UI state and plain JSON snapshots. A
+module Web Worker is the sole owner of `SimulationEngine`, device instances,
+CLI sessions, event queue, virtual clock and trace. `packages/sim-worker`
+defines the discriminated request/response/event protocol, correlation IDs,
+safe serialized errors, request timeouts and termination cleanup.
+
+To import a lab, choose **Load JSON** and select a schema-v1 `LabDocument`.
+**Save JSON** first requests the current structured configuration from the
+worker, merges editor positions, canonicalizes it and downloads JSON. Topology
+edits remain a draft until **Apply / Rebuild**; rebuilding deliberately resets
+runtime state.
+
+M1 through M5 are complete. The browser remains an untrusted grading
+environment: a separate headless server verifier will rebuild submissions and
+grade them in the next milestone. No backend, authentication, database or
+grading evaluator is part of M5.

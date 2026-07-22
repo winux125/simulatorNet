@@ -12,10 +12,11 @@ export default defineConfig({
       "@sim/sim-core": fromRoot("./packages/sim-core/src/index.ts"),
       "@sim/cli-engine": fromRoot("./packages/cli-engine/src/index.ts"),
       "@sim/lab-format": fromRoot("./packages/lab-format/src/index.ts"),
+      "@sim/sim-worker": fromRoot("./packages/sim-worker/src/index.ts"),
     },
   },
   test: {
-    include: ["packages/**/*.test.ts"],
+    include: ["packages/**/*.test.ts", "apps/**/*.test.tsx"],
     environment: "node",
   },
 });

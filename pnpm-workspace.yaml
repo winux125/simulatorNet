@@ -1,8 +1,13 @@
 packages:
   - "packages/*"
-  # apps/* (web, api, verifier) will be added in later milestones.
+  - "apps/*"
 
 # pnpm blocks dependency build scripts by default. esbuild (pulled in by
 # vitest/vite) needs its install script to link the platform-native binary.
 allowBuilds:
   esbuild: true
+
+minimumReleaseAgeExclude:
+  - '@vitejs/plugin-react@6.0.4'
+  - react-dom@19.2.8
+  - react@19.2.8
