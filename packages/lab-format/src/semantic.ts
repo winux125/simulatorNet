@@ -7,7 +7,7 @@ import type {
   SwitchDeviceConfig,
   ServerDeviceConfig,
 } from "@sim/contracts";
-import { ipToInt, maskToInt } from "@sim/sim-core";
+import { ipToInt, maskToInt, normalizeDnsName, normalizeHttpPath, normalizeTftpFilename } from "@sim/sim-core";
 import { LabSemanticError } from "./errors";
 
 function fail(code: string, path: string, message: string, context: Record<string, unknown> = {}): never {
@@ -68,6 +68,17 @@ function validateServer(config: ServerDeviceConfig, node: NodeSpec, path: string
     iface.ipv4 && inSubnet(config.defaultGateway!, iface.ipv4.address, iface.ipv4.prefixLength))) {
     fail("server-unreachable-default-gateway", `${path}.defaultGateway`, "Server default gateway is not on its connected subnet");
   }
+  requireUnique(config.enabledServices.map((service) => service.id), `${path}.enabledServices`, "service id");
+  config.enabledServices.forEach((service, index) => {
+    const servicePath = `${path}.enabledServices[${index}]`;
+    if (service.type === "dns") {
+      requireUnique(service.records.map((record) => normalizeDnsName(record.name)), `${servicePath}.records`, "DNS name");
+    } else if (service.type === "http") {
+      requireUnique(service.resources.map((resource) => normalizeHttpPath(resource.path)), `${servicePath}.resources`, "HTTP path");
+    } else if (service.type === "tftp") {
+      requireUnique(service.files.map((file) => normalizeTftpFilename(file.filename)), `${servicePath}.files`, "TFTP filename");
+    }
+  });
 }
 
 function validateLayer3Switch(config: Layer3SwitchDeviceConfig, node: NodeSpec, path: string): void {

@@ -33,6 +33,7 @@ export const PcDeviceConfigSchema = z.object({
     defaultGateway: Ipv4Schema.optional(),
   }).optional(),
   dhcpEnabled: z.boolean().default(false),
+  dnsServer: Ipv4Schema.optional(),
 });
 export type PcDeviceConfig = z.infer<typeof PcDeviceConfigSchema>;
 
@@ -41,9 +42,81 @@ export const HostInterfaceConfigSchema = PhysicalInterfaceConfigSchema.extend({
 });
 export type HostInterfaceConfig = z.infer<typeof HostInterfaceConfigSchema>;
 
-export const ServerServiceConfigSchema = z.object({
-  type: z.literal("dhcp-server"),
+const ServiceBaseSchema = z.object({
+  id: z.string().min(1),
+  enabled: z.boolean().default(true),
+});
+
+export const DnsRecordSchema = z.object({
+  name: z.string().min(1).max(253).refine(
+    (value) => /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.?$/i.test(value.trim()),
+    "Invalid DNS name",
+  ),
+  address: Ipv4Schema,
 }).strict();
+export type DnsRecord = z.infer<typeof DnsRecordSchema>;
+
+export const DnsServiceConfigSchema = ServiceBaseSchema.extend({
+  type: z.literal("dns"),
+  port: z.number().int().min(1).max(65_535).default(53),
+  records: z.array(DnsRecordSchema).max(256).default([]),
+}).strict();
+export type DnsServiceConfig = z.infer<typeof DnsServiceConfigSchema>;
+
+export const HttpResourceSchema = z.object({
+  path: z.string().min(1).max(512).refine(
+    (value) => value.startsWith("/") && !value.includes("\\") && !value.includes(".."),
+    "Invalid HTTP resource path",
+  ),
+  contentType: z.string().min(1).max(128).default("text/plain"),
+  body: z.string().max(65_536),
+}).strict();
+export type HttpResource = z.infer<typeof HttpResourceSchema>;
+
+export const HttpServiceConfigSchema = ServiceBaseSchema.extend({
+  type: z.literal("http"),
+  port: z.number().int().min(1).max(65_535).default(80),
+  resources: z.array(HttpResourceSchema).max(128).default([]),
+}).strict();
+export type HttpServiceConfig = z.infer<typeof HttpServiceConfigSchema>;
+
+export const TftpFileSchema = z.object({
+  filename: z.string().min(1).max(255).refine(
+    (value) => !value.includes("/") && !value.includes("\\") && !value.includes(".."),
+    "Invalid TFTP filename",
+  ),
+  content: z.string().max(262_144),
+}).strict();
+export type TftpFile = z.infer<typeof TftpFileSchema>;
+
+export const TftpServiceConfigSchema = ServiceBaseSchema.extend({
+  type: z.literal("tftp"),
+  port: z.number().int().min(1).max(65_535).default(69),
+  files: z.array(TftpFileSchema).max(64).default([]),
+}).strict();
+export type TftpServiceConfig = z.infer<typeof TftpServiceConfigSchema>;
+
+export const NtpServiceConfigSchema = ServiceBaseSchema.extend({
+  type: z.literal("ntp"),
+  port: z.number().int().min(1).max(65_535).default(123),
+  offsetNs: z.number().int().default(0),
+}).strict();
+export type NtpServiceConfig = z.infer<typeof NtpServiceConfigSchema>;
+
+export const SyslogServiceConfigSchema = ServiceBaseSchema.extend({
+  type: z.literal("syslog"),
+  port: z.number().int().min(1).max(65_535).default(514),
+  retention: z.number().int().min(1).max(1_000).default(200),
+}).strict();
+export type SyslogServiceConfig = z.infer<typeof SyslogServiceConfigSchema>;
+
+export const ServerServiceConfigSchema = z.discriminatedUnion("type", [
+  DnsServiceConfigSchema,
+  HttpServiceConfigSchema,
+  TftpServiceConfigSchema,
+  NtpServiceConfigSchema,
+  SyslogServiceConfigSchema,
+]);
 export type ServerServiceConfig = z.infer<typeof ServerServiceConfigSchema>;
 
 export const ServerDeviceConfigSchema = z.object({
@@ -52,8 +125,8 @@ export const ServerDeviceConfigSchema = z.object({
   interfaces: z.array(HostInterfaceConfigSchema).default([]),
   defaultGateway: Ipv4Schema.optional(),
   dhcpClientEnabled: z.boolean().default(false),
-  /** Reserved registry; simulation support intentionally begins in M10.2. */
-  enabledServices: z.array(ServerServiceConfigSchema).max(0).default([]),
+  dnsServer: Ipv4Schema.optional(),
+  enabledServices: z.array(ServerServiceConfigSchema).max(16).default([]),
 });
 export type ServerDeviceConfig = z.infer<typeof ServerDeviceConfigSchema>;
 

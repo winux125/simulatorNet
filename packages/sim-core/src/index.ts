@@ -35,6 +35,13 @@ export * from "./transport/udp";
 export * from "./transport/tcp";
 export * from "./transport/host-transport";
 
+// Deterministic application services
+export * from "./services/messages";
+export * from "./services/limits";
+export * from "./services/normalize";
+export * from "./services/host-applications";
+export * from "./services/server-services";
+
 // Address utilities
 export * from "./util/mac";
 export * from "./util/ipv4";

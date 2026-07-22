@@ -116,8 +116,10 @@ function applyConfiguration(device: Device, config: DeviceConfig): void {
         ip: config.ipv4.address,
         mask: config.ipv4.prefixLength,
         gateway: config.ipv4.defaultGateway,
+        dnsServer: config.dnsServer,
       });
     }
+    if (config.dnsServer !== undefined) device.applications.setDnsServer(config.dnsServer);
     if (config.dhcpEnabled) device.setDhcpEnabled(true);
     return;
   }
@@ -130,9 +132,12 @@ function applyConfiguration(device: Device, config: DeviceConfig): void {
         ip: configured.ipv4.address,
         mask: configured.ipv4.prefixLength,
         gateway: config.defaultGateway,
+        dnsServer: config.dnsServer,
       });
     }
+    if (config.dnsServer !== undefined) device.applications.setDnsServer(config.dnsServer);
     if (config.dhcpClientEnabled) device.setDhcpEnabled(true);
+    device.configureServices(config.enabledServices);
     return;
   }
   if (device instanceof Hub && config.kind === "hub") {
@@ -268,7 +273,8 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       })),
       defaultGateway: state.gateway,
       dhcpClientEnabled: state.dhcpEnabled,
-      enabledServices: [],
+      dnsServer: state.dnsServer,
+      enabledServices: device.services.configurations(),
     };
   }
   if (device instanceof Pc) {
@@ -281,6 +287,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
         ? undefined
         : { address: state.ip, prefixLength: prefixLength(state.maskInt), defaultGateway: state.gateway },
       dhcpEnabled: state.dhcpEnabled,
+      dnsServer: state.dnsServer,
     };
   }
   if (device instanceof Hub) {

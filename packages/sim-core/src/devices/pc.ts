@@ -15,6 +15,7 @@ import type { Ipv4Packet } from "../packets/ipv4";
 import type { UdpDatagram } from "../packets/udp";
 import type { TcpSegment } from "../packets/tcp";
 import { HostTransportStack } from "../transport/host-transport";
+import { HostApplications } from "../services/host-applications";
 import type { TcpAcceptListener, TcpConnection, TcpConnectionHandlers } from "../transport/tcp";
 import type { UdpListener, UdpSendOptions } from "../transport/udp";
 import { BROADCAST_IP, type Ipv4, ipsShareNetwork, maskToInt, UNSPECIFIED_IP } from "../util/ipv4";
@@ -36,6 +37,7 @@ export interface PcConfig {
   /** Dotted mask ("255.255.255.0") or prefix length (24). */
   mask?: Ipv4 | number;
   gateway?: Ipv4;
+  dnsServer?: Ipv4;
 }
 
 /** Persistent PC configuration. Runtime DHCP lease data is intentionally absent. */
@@ -44,6 +46,7 @@ export interface PcConfigurationSnapshot {
   maskInt: number;
   gateway: Ipv4 | undefined;
   dhcpEnabled: boolean;
+  dnsServer: Ipv4 | undefined;
 }
 
 export interface PingResult {
@@ -64,6 +67,7 @@ interface PendingPing {
  */
 export abstract class EndHost extends Device {
   readonly transport: HostTransportStack;
+  readonly applications: HostApplications;
   private primaryInterfaceName: string | undefined;
   ip: Ipv4 | undefined;
   maskInt = maskToInt(24);
@@ -104,6 +108,13 @@ export abstract class EndHost extends Device {
         this.sendPortUnreachable(destinationAddress, destinationPort);
       },
     });
+    this.applications = new HostApplications({
+      deviceId: this.id,
+      hostname: () => this.name,
+      engine: () => this.engine,
+      localAddress: () => this.ip,
+      transport: this.transport,
+    });
   }
 
   bindUdp(port: number, listener: UdpListener, service?: string): number {
@@ -140,6 +151,7 @@ export abstract class EndHost extends Device {
     if (config.ip !== undefined) this.configuredIp = config.ip;
     if (config.mask !== undefined) this.configuredMaskInt = maskToInt(config.mask);
     if (config.gateway !== undefined) this.configuredGateway = config.gateway;
+    if (config.dnsServer !== undefined) this.applications.setDnsServer(config.dnsServer);
     this.ip = this.configuredIp;
     this.maskInt = this.configuredMaskInt;
     this.gateway = this.configuredGateway;
@@ -164,6 +176,7 @@ export abstract class EndHost extends Device {
       maskInt: this.configuredMaskInt,
       gateway: this.configuredGateway,
       dhcpEnabled: this.dhcpEnabled,
+      dnsServer: this.applications.dnsServer,
     };
   }
 

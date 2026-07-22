@@ -14,7 +14,7 @@ import type {
   SwitchDeviceConfig,
   SwitchInterfaceConfig,
 } from "@sim/contracts";
-import { ipToInt, macFromIndex } from "@sim/sim-core";
+import { ipToInt, macFromIndex, normalizeServiceConfiguration } from "@sim/sim-core";
 import { parseLabDocument } from "./parse";
 import { validateLabSemantics } from "./semantic";
 
@@ -62,6 +62,7 @@ function pcConfiguration(node: NodeSpec, config: PcDeviceConfig | undefined): Pc
     interfaces: node.interfaces.map((iface) => commonInterface(iface.id, interfaces.get(iface.id))),
     ipv4: config?.ipv4,
     dhcpEnabled: config?.dhcpEnabled ?? false,
+    dnsServer: config?.dnsServer,
   };
 }
 
@@ -76,7 +77,10 @@ function serverConfiguration(node: NodeSpec, config: ServerDeviceConfig | undefi
     })),
     defaultGateway: config?.defaultGateway,
     dhcpClientEnabled: config?.dhcpClientEnabled ?? false,
-    enabledServices: [],
+    dnsServer: config?.dnsServer,
+    enabledServices: [...(config?.enabledServices ?? [])]
+      .sort(byId)
+      .map((service) => normalizeServiceConfiguration(service)),
   };
 }
 

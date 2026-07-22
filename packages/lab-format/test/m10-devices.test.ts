@@ -106,6 +106,48 @@ describe("M10 device lab-format integration", () => {
     expect(second.getServer("server")!.primary.name).toBe("eth0");
   });
 
+  it("round-trips canonical service configuration and excludes transient runtime", () => {
+    const client = host("client", "10.20.0.20");
+    const lab = document(
+      [client.node, { id: "server", kind: "server", interfaces: [{ id: "eth0" }] }],
+      [{ id: "direct", a: { node: "client", iface: "eth0" }, b: { node: "server", iface: "eth0" } }],
+      {
+        client: { ...client.config, dnsServer: "10.20.0.10" },
+        server: {
+          kind: "server",
+          interfaces: [{ id: "eth0", shutdown: false, ipv4: { address: "10.20.0.10", prefixLength: 24 } }],
+          dhcpClientEnabled: false,
+          enabledServices: [
+            { id: "syslog", type: "syslog", enabled: true, port: 514, retention: 10 },
+            { id: "web", type: "http", enabled: true, port: 80, resources: [{ path: "/", contentType: "text/plain", body: "ok" }] },
+            { id: "dns", type: "dns", enabled: true, port: 53, records: [{ name: "APP.EXAMPLE.", address: "10.20.0.10" }] },
+            { id: "tftp", type: "tftp", enabled: true, port: 69, files: [{ filename: "BACKUP.CFG", content: "hostname R1" }] },
+            { id: "ntp", type: "ntp", enabled: true, port: 123, offsetNs: 500 },
+          ],
+        },
+      },
+    );
+    const { first, serialized, second } = rebuild(lab);
+    first.engine.runUntilIdle();
+    first.getPc("client")!.applications.sendSyslog("10.20.0.10", "notice", "runtime-only");
+    first.engine.runUntilIdle();
+    expect(first.getServer("server")!.serviceRuntimeSnapshot().syslog.entries).toHaveLength(1);
+    const runtimeSerialized = serializeLabDocument(first, metadata);
+
+    expect(serialized.configurations.server).toMatchObject({
+      enabledServices: [
+        { id: "dns", records: [{ name: "app.example" }] },
+        { id: "ntp" },
+        { id: "syslog" },
+        { id: "tftp", files: [{ filename: "backup.cfg" }] },
+        { id: "web" },
+      ],
+    });
+    expect(JSON.stringify(runtimeSerialized)).not.toContain("runtime-only");
+    expect(second.getServer("server")!.serviceRuntimeSnapshot().syslog.entries).toEqual([]);
+    expect(second.getPc("client")!.applications.dnsServer).toBe("10.20.0.10");
+  });
+
   it("round-trips L3 switch SVIs, routed state, and inter-VLAN behaviour", () => {
     const a = host("a", "192.168.10.10", "192.168.10.1");
     const b = host("b", "192.168.20.10", "192.168.20.1");

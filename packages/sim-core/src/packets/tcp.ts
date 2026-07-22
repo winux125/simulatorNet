@@ -5,7 +5,7 @@ export interface TcpApplicationPayload {
   readonly data: unknown;
 }
 
-export type TcpPayload = TcpApplicationPayload;
+export type TcpPayload = TcpApplicationPayload | HttpMessage;
 
 /**
  * A deterministic, message-oriented TCP segment. Sequence numbers advance by
@@ -23,3 +23,4 @@ export interface TcpSegment {
   readonly rst?: boolean;
   readonly payload?: TcpPayload;
 }
+import type { HttpMessage } from "../services/messages";
