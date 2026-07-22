@@ -1,4 +1,4 @@
-import type { LabDocument } from "@sim/contracts";
+import type { DeviceType, LabDocument } from "@sim/contracts";
 import type { CliMode } from "@sim/cli-engine";
 
 export type EngineUiState = "idle" | "running" | "paused" | "error";
@@ -13,7 +13,7 @@ export interface LabUiInterface {
 
 export interface LabUiNode {
   id: string;
-  type: "pc" | "l2-switch" | "router";
+  type: DeviceType;
   hostname: string;
   position: { x: number; y: number };
   status: "up" | "down";

@@ -6,7 +6,11 @@
 
 export const DeviceKind = {
   Pc: "pc",
+  Server: "server",
+  Hub: "hub",
+  Bridge: "bridge",
   L2Switch: "l2-switch",
+  L3Switch: "l3-switch",
   Router: "router",
 } as const;
 export type DeviceKind = (typeof DeviceKind)[keyof typeof DeviceKind];

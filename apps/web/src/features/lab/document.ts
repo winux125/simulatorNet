@@ -146,7 +146,15 @@ export function removeDraftLink(document: LabDocument, linkId: string): LabDocum
 
 export function autoArrangeDocument(document: LabDocument): LabDocument {
   const byKind = new Map<NodeSpec["kind"], number>();
-  const columns: Record<NodeSpec["kind"], number> = { pc: 80, "l2-switch": 400, router: 720 };
+  const columns: Record<NodeSpec["kind"], number> = {
+    pc: 80,
+    server: 80,
+    hub: 320,
+    bridge: 320,
+    "l2-switch": 400,
+    "l3-switch": 520,
+    router: 720,
+  };
   return {
     ...document,
     topology: {

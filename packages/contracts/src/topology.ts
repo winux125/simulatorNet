@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DeviceTypeSchema } from "./devices";
 
 /**
  * Serializable topology document. This is the vendor-neutral description of a
@@ -16,7 +17,7 @@ export type InterfaceSpec = z.infer<typeof InterfaceSpecSchema>;
 
 export const NodeSpecSchema = z.object({
   id: z.string().min(1),
-  kind: z.enum(["pc", "l2-switch", "router"]),
+  kind: DeviceTypeSchema,
   name: z.string().optional(),
   /** Editor canvas position; irrelevant to simulation. */
   position: z.object({ x: z.number(), y: z.number() }).optional(),

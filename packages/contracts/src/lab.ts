@@ -36,6 +36,43 @@ export const PcDeviceConfigSchema = z.object({
 });
 export type PcDeviceConfig = z.infer<typeof PcDeviceConfigSchema>;
 
+export const HostInterfaceConfigSchema = PhysicalInterfaceConfigSchema.extend({
+  ipv4: Ipv4InterfaceConfigSchema.optional(),
+});
+export type HostInterfaceConfig = z.infer<typeof HostInterfaceConfigSchema>;
+
+export const ServerServiceConfigSchema = z.object({
+  type: z.literal("dhcp-server"),
+}).strict();
+export type ServerServiceConfig = z.infer<typeof ServerServiceConfigSchema>;
+
+export const ServerDeviceConfigSchema = z.object({
+  kind: z.literal("server"),
+  hostname: z.string().min(1).optional(),
+  interfaces: z.array(HostInterfaceConfigSchema).default([]),
+  defaultGateway: Ipv4Schema.optional(),
+  dhcpClientEnabled: z.boolean().default(false),
+  /** Reserved registry; simulation support intentionally begins in M10.2. */
+  enabledServices: z.array(ServerServiceConfigSchema).max(0).default([]),
+});
+export type ServerDeviceConfig = z.infer<typeof ServerDeviceConfigSchema>;
+
+export const HubDeviceConfigSchema = z.object({
+  kind: z.literal("hub"),
+  hostname: z.string().min(1).optional(),
+  interfaces: z.array(PhysicalInterfaceConfigSchema).default([]),
+});
+export type HubDeviceConfig = z.infer<typeof HubDeviceConfigSchema>;
+
+export const DEFAULT_BRIDGE_AGING_TIME_NS = 300_000_000_000;
+export const BridgeDeviceConfigSchema = z.object({
+  kind: z.literal("bridge"),
+  hostname: z.string().min(1).optional(),
+  interfaces: z.array(PhysicalInterfaceConfigSchema).default([]),
+  agingTimeNs: z.number().int().positive().default(DEFAULT_BRIDGE_AGING_TIME_NS),
+});
+export type BridgeDeviceConfig = z.infer<typeof BridgeDeviceConfigSchema>;
+
 export const VlanConfigSchema = z.object({
   id: VlanIdSchema,
   name: z.string().min(1),
@@ -103,9 +140,42 @@ export const RouterDeviceConfigSchema = z.object({
 });
 export type RouterDeviceConfig = z.infer<typeof RouterDeviceConfigSchema>;
 
+export const Layer3SwitchInterfaceConfigSchema = z.discriminatedUnion("mode", [
+  SwitchInterfaceConfigSchema.extend({ mode: z.enum(["access", "trunk"]) }),
+  PhysicalInterfaceConfigSchema.extend({
+    mode: z.literal("routed"),
+    ipv4: Ipv4InterfaceConfigSchema.optional(),
+  }),
+]);
+export type Layer3SwitchInterfaceConfig = z.infer<typeof Layer3SwitchInterfaceConfigSchema>;
+
+export const SviConfigSchema = z.object({
+  vlanId: VlanIdSchema,
+  ipAddress: Ipv4Schema.optional(),
+  prefixLength: PrefixLengthSchema.optional(),
+  adminUp: z.boolean().default(true),
+  description: z.string().min(1).optional(),
+});
+export type SviConfig = z.infer<typeof SviConfigSchema>;
+
+export const Layer3SwitchDeviceConfigSchema = z.object({
+  kind: z.literal("l3-switch"),
+  hostname: z.string().min(1).optional(),
+  vlans: z.array(VlanConfigSchema).default([]),
+  interfaces: z.array(Layer3SwitchInterfaceConfigSchema).default([]),
+  svis: z.array(SviConfigSchema).default([]),
+  staticRoutes: z.array(StaticRouteConfigSchema).default([]),
+  ipRoutingEnabled: z.boolean().default(false),
+});
+export type Layer3SwitchDeviceConfig = z.infer<typeof Layer3SwitchDeviceConfigSchema>;
+
 export const DeviceConfigSchema = z.discriminatedUnion("kind", [
   PcDeviceConfigSchema,
+  ServerDeviceConfigSchema,
+  HubDeviceConfigSchema,
+  BridgeDeviceConfigSchema,
   SwitchDeviceConfigSchema,
+  Layer3SwitchDeviceConfigSchema,
   RouterDeviceConfigSchema,
 ]);
 export type DeviceConfig = z.infer<typeof DeviceConfigSchema>;
