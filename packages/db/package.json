@@ -19,6 +19,8 @@
     "test:integration": "vitest --root ../.. run packages/db/tests/db.integration.test.ts"
   },
   "dependencies": {
+    "@sim/contracts": "workspace:*",
+    "@sim/lab-format": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "pg": "^8.22.0",
     "zod": "^3.24.0"

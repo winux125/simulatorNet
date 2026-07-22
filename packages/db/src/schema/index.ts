@@ -167,3 +167,8 @@ export type ExternalUserLinkRecord = typeof externalUserLinks.$inferSelect;
 export type LaunchCodeRecord = typeof launchCodes.$inferSelect;
 export type BrowserSessionRecord = typeof browserSessions.$inferSelect;
 export type AuditEventRecord = typeof auditEvents.$inferSelect;
+
+// Academic model (templates, versions, grading specs, assignments, instances,
+// submissions, results). Re-exported last so the base tables above are already
+// defined when academic.ts imports them.
+export * from "./academic";

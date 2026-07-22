@@ -28,6 +28,29 @@ export class DatabaseForbiddenError extends DatabaseError {
   }
 }
 
+export class DatabaseInvalidInputError extends DatabaseError {
+  constructor(message: string, readonly details?: Record<string, unknown>) {
+    super("DB_INVALID_INPUT", message);
+    this.name = "DatabaseInvalidInputError";
+  }
+}
+
+/** Optimistic-concurrency failure: the caller's expected revision was stale. */
+export class DatabaseRevisionConflictError extends DatabaseConflictError {
+  constructor(message: string, readonly currentRevision: number) {
+    super(message);
+    this.name = "DatabaseRevisionConflictError";
+  }
+}
+
+/** A bounded resource (e.g. submission attempts) has been exhausted. */
+export class DatabaseLimitReachedError extends DatabaseConflictError {
+  constructor(message: string) {
+    super(message);
+    this.name = "DatabaseLimitReachedError";
+  }
+}
+
 /** Drizzle preserves PostgreSQL errors as a cause; walk that chain without leaking it. */
 export function hasPostgresErrorCode(error: unknown, expectedCode: string): boolean {
   const seen = new Set<object>();

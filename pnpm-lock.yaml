@@ -179,6 +179,12 @@ importers:
 
   packages/db:
     dependencies:
+      '@sim/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@sim/lab-format':
+        specifier: workspace:*
+        version: link:../lab-format
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@types/pg@8.20.0)(pg@8.22.0)

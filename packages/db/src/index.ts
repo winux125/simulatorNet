@@ -1,3 +1,5 @@
+export * from "./academic/canonical";
+export * from "./academic/types";
 export * from "./audit";
 export * from "./database";
 export * from "./errors/index";
