@@ -198,6 +198,22 @@ export class TenantRepository {
     return membership;
   }
 
+  async setOrganizationMembershipStatus(
+    context: TenantContext,
+    userId: string,
+    status: "active" | "inactive",
+  ): Promise<MembershipRecord | undefined> {
+    const scope = tenant(context);
+    const [membership] = await this.database.update(organizationMemberships).set({
+      status,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(organizationMemberships.organizationId, scope.organizationId),
+      eq(organizationMemberships.userId, userId),
+    )).returning();
+    return membership;
+  }
+
   async createLaunchCode(
     context: TenantContext,
     input: { userId: string; integrationClientId: string; codeHash: string; returnUrl: string; expiresAt: Date },

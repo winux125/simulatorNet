@@ -57,6 +57,10 @@ label.ui-icon-button { display: inline-grid; }
 .app-bar__divider { width: 1px; height: 20px; margin: 0 3px; background: var(--color-border); }
 .theme-control { position: relative; display: flex; height: 29px; align-items: center; gap: 4px; margin-left: 3px; padding: 0 4px 0 7px; border: var(--border); border-radius: var(--radius-md); background: var(--color-panel); color: var(--color-text-muted); }
 .theme-control:focus-within { border-color: var(--color-accent); box-shadow: var(--focus-ring); }.theme-control select { width: 64px; border: 0; outline: 0; background: transparent; color: var(--color-text-soft); cursor: pointer; font-size: var(--font-size-10); }
+.session-identity { display: flex; height: 31px; min-width: 0; align-items: center; gap: 6px; padding-left: 8px; border: var(--border); border-radius: var(--radius-md); background: var(--color-panel); color: var(--color-accent); }
+.session-identity > span { display: grid; min-width: 0; max-width: 150px; line-height: 1.1; }.session-identity strong, .session-identity small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.session-identity strong { color: var(--color-text); font-size: 9px; }.session-identity small { margin-top: 2px; color: var(--color-text-muted); font-size: 8px; text-transform: capitalize; }
+.session-identity .ui-icon-button { width: 26px; height: 27px; }.session-anonymous { padding: 0 5px; color: var(--color-text-faint); font-size: 9px; white-space: nowrap; }
+.launch-status { display: flex; min-height: 32px; flex: none; align-items: center; padding: 3px 14px; border-bottom: var(--border); background: var(--color-accent-muted); color: var(--color-accent); font-size: var(--font-size-11); }
 
 .workspace-error, .pending-banner { display: flex; min-height: 32px; flex: none; align-items: center; gap: 8px; padding: 3px 10px 3px 14px; border-bottom: var(--border); font-size: var(--font-size-11); }
 .workspace-error { background: var(--color-error-muted); color: var(--color-error-text); }
@@ -179,6 +183,8 @@ label.ui-icon-button { display: inline-grid; }
   .inspector-panel > .ui-tabs button { gap: 0; padding: 0 6px; }
   .inspector-panel > .ui-tabs button > span { display: none; }
   .lab-information { width: 230px; }
+  .session-identity > span { display: none; }
+  .session-identity { padding-left: 6px; }
 }
 
 @media (max-width: 999px) {

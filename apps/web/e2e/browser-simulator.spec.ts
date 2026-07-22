@@ -54,3 +54,30 @@ test("M6.1 welcome, themes and CLI guidance remain a complete browser workflow",
   await page.getByLabel("Close lab").click();
   await expect(page.getByRole("heading", { name: "SimulatorNet" })).toBeVisible();
 });
+
+test("M8 launch exchange strips the code and exposes organization session controls", async ({ page }) => {
+  const launchCode = "launch-secret-that-must-disappear";
+  await page.route("**/v1/session/launch-exchange", async (route) => {
+    expect(route.request().postDataJSON()).toEqual({ code: launchCode });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "set-cookie": "simulatornet_session=opaque; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800" },
+      body: JSON.stringify({
+        user: { id: "user-1", displayName: "KAI Student" },
+        organization: { id: "org-1", name: "KAI Development" },
+        role: "student",
+        returnUrl: "https://academy.kai.kz/course/ccna",
+      }),
+    });
+  });
+  await page.route("**/v1/session/logout", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ loggedOut: true }) }));
+
+  await page.goto(`/launch?code=${launchCode}`);
+  await expect(page).toHaveURL("http://127.0.0.1:4173/");
+  await expect(page.getByLabel("Authenticated organization session")).toContainText("KAI Student");
+  await expect(page.getByLabel("Authenticated organization session")).toContainText("KAI Development");
+  expect(page.url()).not.toContain(launchCode);
+  await page.getByLabel("Log out organization session").click();
+  await expect(page.getByText("Anonymous Local Lab")).toBeVisible();
+});

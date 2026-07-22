@@ -17,12 +17,19 @@
     "build": "tsup"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.0.0",
     "@fastify/swagger": "^9.5.0",
+    "@sim/authz": "workspace:*",
     "@sim/contracts": "workspace:*",
+    "@sim/db": "workspace:*",
     "@sim/grading-core": "workspace:*",
     "@sim/lab-format": "workspace:*",
     "@simulatornet/verifier": "workspace:*",
-    "fastify": "^5.6.0"
+    "drizzle-orm": "^0.45.2",
+    "fastify": "^5.6.0",
+    "jose": "^6.2.4",
+    "pg": "^8.22.0",
+    "zod": "^3.24.0"
   },
   "devDependencies": {
     "@sim/cli-engine": "workspace:*",

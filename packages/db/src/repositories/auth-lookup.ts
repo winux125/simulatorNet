@@ -7,6 +7,12 @@ export interface IntegrationClientBinding {
   readonly organization: typeof organizations.$inferSelect;
 }
 
+export interface LaunchCodeLookup {
+  readonly organizationId: string;
+  readonly expiresAt: Date;
+  readonly consumedAt: Date | null;
+}
+
 /** Global lookup used only to establish tenant identity from a verified OAuth client id. */
 export class AuthenticationLookupRepository {
   constructor(private readonly database: SimulatorDatabase) {}
@@ -21,10 +27,14 @@ export class AuthenticationLookupRepository {
   }
 
   /** Finds only the tenant key needed before the tenant-scoped atomic consume. */
-  async findLaunchCodeOrganizationId(codeHash: string): Promise<string | undefined> {
-    const [row] = await this.database.select({ organizationId: launchCodes.organizationId })
+  async findLaunchCode(codeHash: string): Promise<LaunchCodeLookup | undefined> {
+    const [row] = await this.database.select({
+      organizationId: launchCodes.organizationId,
+      expiresAt: launchCodes.expiresAt,
+      consumedAt: launchCodes.consumedAt,
+    })
       .from(launchCodes).where(eq(launchCodes.codeHash, codeHash)).limit(1);
-    return row?.organizationId;
+    return row;
   }
 
   /** Finds only the tenant key needed before tenant-scoped session validation. */

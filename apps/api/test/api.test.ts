@@ -9,9 +9,22 @@ import {
   verificationRequest,
 } from "../../../packages/grading-core/test/fixtures";
 
+const servicePrincipal = {
+  kind: "service" as const,
+  keycloakClientId: "m7-test-client",
+  integrationClientId: "00000000-0000-4000-8000-000000000001",
+  organizationId: "00000000-0000-4000-8000-000000000002",
+  tokenScopes: new Set(["users:read", "users:write", "memberships:write", "launch:write", "labs:validate", "verifications:write"]),
+  effectiveScopes: new Set(["users:read", "users:write", "memberships:write", "launch:write", "labs:validate", "verifications:write"]),
+};
+
+function buildM7Api(options: Parameters<typeof buildApi>[0] = {}) {
+  return buildApi({ ...options, serviceAuthenticator: { authenticate: async () => servicePrincipal } });
+}
+
 describe("Fastify verification API", () => {
   it("reports health", async () => {
-    const app = await buildApi();
+    const app = await buildM7Api();
     const response = await app.inject({ method: "GET", url: "/health" });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ status: "ok" });
@@ -20,7 +33,7 @@ describe("Fastify verification API", () => {
   });
 
   it("reports readiness", async () => {
-    const app = await buildApi();
+    const app = await buildM7Api();
     const response = await app.inject({ method: "GET", url: "/ready" });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ status: "ready" });
@@ -28,7 +41,7 @@ describe("Fastify verification API", () => {
   });
 
   it("returns a canonical valid lab", async () => {
-    const app = await buildApi();
+    const app = await buildM7Api();
     const response = await app.inject({ method: "POST", url: "/v1/labs/validate", payload: demoLabDocument() });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ valid: true, canonicalDocument: { id: "demo-router-on-a-stick" }, errors: [] });
@@ -36,7 +49,7 @@ describe("Fastify verification API", () => {
   });
 
   it("returns stable validation issues for an invalid lab", async () => {
-    const app = await buildApi();
+    const app = await buildM7Api();
     const response = await app.inject({ method: "POST", url: "/v1/labs/validate", payload: {} });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ valid: false, errors: expect.any(Array) });
@@ -44,7 +57,7 @@ describe("Fastify verification API", () => {
   });
 
   it("runs a valid verification request", async () => {
-    const app = await buildApi();
+    const app = await buildM7Api();
     const response = await app.inject({ method: "POST", url: "/v1/verifications", payload: verificationRequest() });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ status: "completed", score: 100, server: { durationMs: expect.any(Number) } });
@@ -52,7 +65,7 @@ describe("Fastify verification API", () => {
   });
 
   it("ignores a fake browser score", async () => {
-    const app = await buildApi();
+    const app = await buildM7Api();
     const response = await app.inject({
       method: "POST",
       url: "/v1/verifications",
@@ -63,7 +76,7 @@ describe("Fastify verification API", () => {
   });
 
   it("rejects an invalid grading specification", async () => {
-    const app = await buildApi();
+    const app = await buildM7Api();
     const response = await app.inject({
       method: "POST",
       url: "/v1/verifications",
@@ -75,7 +88,7 @@ describe("Fastify verification API", () => {
   });
 
   it("rejects an oversized payload before verification", async () => {
-    const app = await buildApi({ bodyLimit: 256 });
+    const app = await buildM7Api({ bodyLimit: 256 });
     const response = await app.inject({
       method: "POST",
       url: "/v1/verifications",
@@ -88,7 +101,7 @@ describe("Fastify verification API", () => {
   });
 
   it("rejects unknown content types", async () => {
-    const app = await buildApi();
+    const app = await buildM7Api();
     const response = await app.inject({
       method: "POST",
       url: "/v1/verifications",
@@ -101,7 +114,7 @@ describe("Fastify verification API", () => {
   });
 
   it("uses the same structured error envelope for malformed requests", async () => {
-    const app = await buildApi();
+    const app = await buildM7Api();
     const response = await app.inject({ method: "POST", url: "/v1/verifications", payload: {} });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({
@@ -115,10 +128,17 @@ describe("Fastify verification API", () => {
   });
 
   it("publishes an OpenAPI document", async () => {
-    const app = await buildApi();
+    const app = await buildM7Api();
     const response = await app.inject({ method: "GET", url: "/openapi.json" });
     expect(response.statusCode).toBe(200);
     expect(response.json().paths).toHaveProperty("/v1/verifications");
+    await app.close();
+  });
+
+  it("does not publish OpenAPI when disabled for production", async () => {
+    const app = await buildM7Api({ production: true, openApiEnabled: false });
+    const response = await app.inject({ method: "GET", url: "/openapi.json" });
+    expect(response.statusCode).toBe(404);
     await app.close();
   });
 
@@ -139,7 +159,7 @@ describe("Fastify verification API", () => {
     ]) cli.execute(command);
     const configured = serializeLabDocument(built, { id: document.id, title: document.title });
 
-    const app = await buildApi();
+    const app = await buildM7Api();
     const response = await app.inject({
       method: "POST",
       url: "/v1/verifications",

@@ -8,5 +8,6 @@ export default defineConfig({
   clean: true,
   dts: true,
   sourcemap: true,
+  external: ["pg", /^drizzle-orm(?:\/.*)?$/],
   noExternal: [/^@sim\//, /^@simulatornet\/verifier$/, "zod"],
 });

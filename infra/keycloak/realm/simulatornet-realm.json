@@ -1,0 +1,70 @@
+{
+  "realm": "simulatornet",
+  "enabled": true,
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": false,
+  "resetPasswordAllowed": false,
+  "clientScopes": [
+    { "name": "users:read", "protocol": "openid-connect", "attributes": { "include.in.token.scope": "true" } },
+    { "name": "users:write", "protocol": "openid-connect", "attributes": { "include.in.token.scope": "true" } },
+    { "name": "memberships:write", "protocol": "openid-connect", "attributes": { "include.in.token.scope": "true" } },
+    { "name": "launch:write", "protocol": "openid-connect", "attributes": { "include.in.token.scope": "true" } },
+    { "name": "labs:validate", "protocol": "openid-connect", "attributes": { "include.in.token.scope": "true" } },
+    { "name": "verifications:write", "protocol": "openid-connect", "attributes": { "include.in.token.scope": "true" } },
+    {
+      "name": "simulatornet-api-audience",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "false" },
+      "protocolMappers": [
+        {
+          "name": "simulatornet-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "simulatornet-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "simulatornet-api",
+      "name": "SimulatorNet API resource server",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "bearerOnly": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "kai-platform-dev",
+      "name": "KAI Platform Development",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${KAI_PLATFORM_CLIENT_SECRET}",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "defaultClientScopes": ["simulatornet-api-audience"],
+      "optionalClientScopes": [
+        "users:read",
+        "users:write",
+        "memberships:write",
+        "launch:write",
+        "labs:validate",
+        "verifications:write"
+      ]
+    }
+  ]
+}

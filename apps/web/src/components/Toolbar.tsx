@@ -9,10 +9,12 @@ import {
   PanelRight,
   Pause,
   Play,
+  LogOut,
   RotateCcw,
   SkipForward,
   Upload,
   SunMoon,
+  UserRound,
 } from "lucide-react";
 import type { ChangeEvent } from "react";
 import type { EngineUiState } from "@sim/sim-worker";
@@ -31,6 +33,8 @@ interface ToolbarProps {
   inspectorOpen: boolean;
   bottomDockOpen: boolean;
   theme: ThemePreference;
+  session?: { displayName: string; organizationName: string; role: string };
+  sessionPending: boolean;
   onModeChange(mode: WorkspaceMode): void;
   onLoadDemo(): void;
   onLoadFile(file: File): void;
@@ -45,6 +49,7 @@ interface ToolbarProps {
   onOpenShortcuts(): void;
   onThemeChange(theme: ThemePreference): void;
   onCloseLab(): void;
+  onLogout(): void;
 }
 
 export function Toolbar(props: ToolbarProps) {
@@ -93,6 +98,13 @@ export function Toolbar(props: ToolbarProps) {
         <IconButton label="Toggle inspector" icon={<PanelRight size={15} />} active={props.inspectorOpen} onClick={props.onToggleInspector} />
         <IconButton label="Toggle bottom dock" icon={props.bottomDockOpen ? <ChevronsDownUp size={15} /> : <PanelBottom size={15} />} active={props.bottomDockOpen} onClick={props.onToggleBottomDock} />
         <IconButton label="Keyboard shortcuts" icon={<CircleHelp size={15} />} onClick={props.onOpenShortcuts} />
+        {props.session ? (
+          <div className="session-identity" aria-label="Authenticated organization session">
+            <UserRound size={14} aria-hidden="true" />
+            <span><strong>{props.session.displayName}</strong><small>{props.session.organizationName} · {props.session.role.replaceAll("_", " ")}</small></span>
+            <IconButton label="Log out organization session" icon={<LogOut size={14} />} onClick={props.onLogout} />
+          </div>
+        ) : <span className="session-anonymous">{props.sessionPending ? "Checking session…" : "Anonymous Local Lab"}</span>}
         <label className="theme-control tooltip-anchor" data-tooltip="Theme" title="Theme">
           <SunMoon size={15} aria-hidden="true" />
           <span className="visually-hidden">Color theme</span>

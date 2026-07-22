@@ -1,0 +1,88 @@
+name: simulatornet
+
+services:
+  simulatornet-postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${SIMULATORNET_DB_NAME:?set in .env}
+      POSTGRES_USER: ${SIMULATORNET_DB_USER:?set in .env}
+      POSTGRES_PASSWORD: ${SIMULATORNET_DB_PASSWORD:?set in .env}
+    volumes:
+      - simulatornet-postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  keycloak-postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${KEYCLOAK_DB_NAME:?set in .env}
+      POSTGRES_USER: ${KEYCLOAK_DB_USER:?set in .env}
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set in .env}
+    volumes:
+      - keycloak-postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.0
+    restart: unless-stopped
+    command: ["start-dev", "--import-realm", "--health-enabled=true"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-postgres:5432/${KEYCLOAK_DB_NAME}
+      KC_DB_USERNAME: ${KEYCLOAK_DB_USER}
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}
+      KAI_PLATFORM_CLIENT_SECRET: ${KAI_PLATFORM_CLIENT_SECRET}
+    volumes:
+      - ./keycloak/realm:/opt/keycloak/data/import:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      keycloak-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/9000; printf \"GET /health/ready HTTP/1.0\\r\\n\\r\\n\" >&3; grep -q \"200 OK\" <&3'"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://${SIMULATORNET_DB_USER}:${SIMULATORNET_DB_PASSWORD}@simulatornet-postgres:5432/${SIMULATORNET_DB_NAME}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_PUBLIC_URL}/realms/simulatornet
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/simulatornet/protocol/openid-connect/certs
+      KEYCLOAK_AUDIENCE: simulatornet-api
+      WEB_ORIGIN: ${WEB_ORIGIN}
+      PUBLIC_WEB_URL: ${PUBLIC_WEB_URL}
+      OPENAPI_ENABLED: ${OPENAPI_ENABLED:-true}
+    ports:
+      - "3000:3000"
+    depends_on:
+      simulatornet-postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  simulatornet-postgres-data:
+  keycloak-postgres-data:

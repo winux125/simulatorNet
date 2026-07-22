@@ -16,10 +16,12 @@ export default defineConfig({
       "@sim/sim-worker": fromRoot("./packages/sim-worker/src/index.ts"),
       "@sim/grading-core": fromRoot("./packages/grading-core/src/index.ts"),
       "@sim/db": fromRoot("./packages/db/src/index.ts"),
+      "@sim/authz": fromRoot("./packages/authz/src/index.ts"),
       "@simulatornet/verifier": fromRoot("./apps/verifier/src/index.ts"),
     },
   },
   test: {
+    fileParallelism: false,
     include: ["packages/**/*.test.ts", "apps/**/*.test.ts", "apps/**/*.test.tsx"],
     environment: "node",
   },

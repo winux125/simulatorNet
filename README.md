@@ -30,10 +30,12 @@ packages/
   sim-worker/  Typed worker protocol, runtime owner and browser client
   grading-core/ Pure deterministic checks, scoring, redaction and resource limits
   db/          Node-only PostgreSQL schema, migrations and tenant repositories
+  authz/       Framework-independent role and service-scope policies
 apps/
   web/         React/Vite browser simulator (React Flow + xterm.js)
   verifier/    Headless Node adapter and JSON fixture CLI
   api/         Minimal internal Fastify validation/verification API
+infra/         PostgreSQL 18, Keycloak 26.7.0 and API development Compose stack
 ```
 
 `sim-core` and `grading-core` remain independent of Fastify, DOM and Node file
@@ -318,3 +320,150 @@ pnpm db:test:integration
 The integration suite uses `packages/db/compose.test.yaml` and
 `TEST_DATABASE_URL`. The development seed creates no passwords, client secrets,
 tokens or production credentials.
+
+## Milestone 8.2 — Keycloak authentication and launch sessions
+
+M8 completes the server-to-server and browser-launch boundary. The external
+platform authenticates directly to the pinned Keycloak 26.7.0 realm with OAuth
+2.0 Client Credentials. SimulatorNet receives only the signed access token,
+validates it with `jose`, maps the verified `azp` to one local integration
+client/organization, intersects token scopes with that client's local
+allowlist, and executes every repository call with the resulting tenant.
+
+```mermaid
+sequenceDiagram
+  participant KAI as KAI backend
+  participant KC as Keycloak
+  participant API as SimulatorNet API
+  participant Browser as Student browser
+  KAI->>KC: client_credentials + requested scopes
+  KC-->>KAI: signed access token
+  KAI->>API: upsert user + membership (Bearer token)
+  KAI->>API: create 60-second launch session
+  API-->>KAI: one-time launch URL
+  KAI-->>Browser: redirect to /launch?code=...
+  Browser->>API: same-origin launch exchange
+  API-->>Browser: HttpOnly session cookie
+  Browser->>API: GET /v1/session/me
+```
+
+The API verifies RS256 signature, trusted issuer, `simulatornet-api` audience,
+`exp`, `nbf`, JWT/Bearer token type, `azp` and required scope. Remote JWKS are
+cached and an unknown signing `kid` triggers safe key refresh. Claims are never
+used before cryptographic verification. A valid token still fails when its
+client mapping is missing/disabled, its organization is suspended, or the
+required scope is absent from either the token or local allowlist.
+
+### Realm, clients and scopes
+
+The imported `simulatornet` realm contains a bearer-only resource client
+`simulatornet-api` and a confidential service-account client
+`kai-platform-dev`. Standard Authorization Code, implicit and Direct Access
+Grant/password flows are disabled for the service client. Its secret is read
+from `KAI_PLATFORM_CLIENT_SECRET` during realm import and is never committed,
+sent to SimulatorNet, or exposed to the browser. These scopes are optional and
+must be requested explicitly:
+
+| Scope | API capability |
+| --- | --- |
+| `users:read` | Read an integration-owned external user |
+| `users:write` | Idempotently upsert an external user |
+| `memberships:write` | Assign student/instructor/organization-admin membership |
+| `launch:write` | Create a one-time launch URL |
+| `labs:validate` | Call the protected M7 lab validator |
+| `verifications:write` | Call the internal deterministic verifier |
+
+Obtain a development token directly from Keycloak (keep shell history and
+output private):
+
+```bash
+curl --fail --silent --show-error \
+  -u "kai-platform-dev:${KAI_PLATFORM_CLIENT_SECRET}" \
+  -d grant_type=client_credentials \
+  --data-urlencode 'scope=users:read users:write memberships:write launch:write' \
+  http://127.0.0.1:8080/realms/simulatornet/protocol/openid-connect/token
+```
+
+### API routes
+
+`GET /health` and `GET /ready` are public and disclose only a coarse status.
+OpenAPI at `GET /openapi.json` is enabled in development and disabled in
+production unless `OPENAPI_ENABLED=true` is set deliberately.
+
+| Route | Authentication |
+| --- | --- |
+| `PUT /v1/integrations/users/:externalUserId` | Bearer + `users:write` |
+| `GET /v1/integrations/users/:externalUserId` | Bearer + `users:read` |
+| `PUT /v1/integrations/users/:externalUserId/membership` | Bearer + `memberships:write` |
+| `POST /v1/launch-sessions` | Bearer + `launch:write` |
+| `POST /v1/labs/validate` | Bearer + `labs:validate` |
+| `POST /v1/verifications` | Bearer + `verifications:write` |
+| `POST /v1/session/launch-exchange` | Public one-time code + allowed Origin |
+| `GET /v1/session/me` | Browser session cookie |
+| `POST /v1/session/logout` | Browser session cookie + allowed Origin |
+
+Example integration calls:
+
+```bash
+curl -X PUT http://127.0.0.1:3000/v1/integrations/users/kai-user-123 \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" -H 'Content-Type: application/json' \
+  -d '{"email":"student@example.kz","displayName":"Student Name"}'
+
+curl -X PUT http://127.0.0.1:3000/v1/integrations/users/kai-user-123/membership \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" -H 'Content-Type: application/json' \
+  -d '{"role":"student"}'
+
+curl -X POST http://127.0.0.1:3000/v1/launch-sessions \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" -H 'Content-Type: application/json' \
+  -d '{"externalUserId":"kai-user-123","returnUrl":"http://127.0.0.1:4173/course/ccna"}'
+```
+
+Launch codes live for 60 seconds and are atomically consumed once. The browser
+removes `code` from the address bar/history before rendering the organization
+workspace. The resulting `simulatornet_session` cookie is opaque, `HttpOnly`,
+`SameSite=Lax`, `Path=/`, has an explicit eight-hour maximum age, and is
+`Secure` in production. Only token hashes are stored. Logout revokes the
+server-side session and clears the cookie. State-changing browser requests
+require the exact `WEB_ORIGIN`; permissive CORS and cross-site cookies are not
+enabled.
+
+### Role policy
+
+`@sim/authz` owns the matrix rather than embedding role checks in handlers:
+
+| Role | Current/future permissions |
+| --- | --- |
+| `platform_admin` | All platform and organization actions |
+| `organization_admin` | Organization users/settings, integrations, lab use/authoring and verification |
+| `instructor` | Organization read, lab use/authoring and verification |
+| `student` | Lab use |
+
+Integration endpoints may assign only `student`, `instructor` and
+`organization_admin`; they can never assign `platform_admin`. A launch request's
+`requestedRole` is informational and never elevates the stored membership.
+
+### Local development and environment
+
+Copy `.env.example` to `.env`, replace every `change-me`, then run:
+
+```bash
+pnpm infra:up       # build API and start both PostgreSQL services + Keycloak
+pnpm smoke:m8       # real Client Credentials → launch → cookie → logout smoke
+pnpm infra:down
+```
+
+Important variables are `DATABASE_URL`, the two logical PostgreSQL credential
+sets, Keycloak bootstrap credentials, `KAI_PLATFORM_CLIENT_SECRET`,
+`KEYCLOAK_ISSUER`, `KEYCLOAK_JWKS_URL`, `KEYCLOAK_AUDIENCE`, `WEB_ORIGIN`,
+`PUBLIC_WEB_URL`, `API_BASE_URL` and `OPENAPI_ENABLED`. Compose uses separate
+named volumes for SimulatorNet and Keycloak data. `db:migrate` runs committed
+migrations and the idempotent development seed creates the local client
+mapping before API startup.
+
+Production must replace all development credentials, use TLS origins, keep
+OpenAPI disabled/protected, terminate cookies over HTTPS, and provision
+Keycloak clients outside the development realm import. The endpoint accepting
+raw `gradingSpec` remains internal. M8 has no standalone browser OIDC login,
+cross-site iframe support, Keycloak Admin REST automation, assignments, result
+persistence, Redis or queues. Anonymous Local Lab mode remains available and is
+visually distinct from an Authenticated Organization Session.

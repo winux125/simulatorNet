@@ -17,6 +17,7 @@ import {
   removeDraftLink,
 } from "../features/lab/document";
 import { InspectorPanel } from "../features/inspector/InspectorPanel";
+import { useLaunchSession } from "../features/session/useLaunchSession";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useTheme } from "../hooks/useTheme";
 import { useWorkspaceStore, type WorkspaceMode } from "../state/workspace-store";
@@ -56,6 +57,7 @@ export function App({ client }: AppProps) {
   const workspace = useWorkspaceStore();
   const compact = useMediaQuery("(max-width: 999px)");
   const theme = useTheme();
+  const launchSession = useLaunchSession();
   const [confirmApply, setConfirmApply] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -240,6 +242,8 @@ export function App({ client }: AppProps) {
         inspectorOpen={workspace.inspectorOpen}
         bottomDockOpen={workspace.bottomDockOpen}
         theme={theme.preference}
+        session={launchSession.state.status === "authenticated" ? launchSession.state.identity : undefined}
+        sessionPending={launchSession.state.status === "checking" || launchSession.state.status === "exchanging"}
         onModeChange={changeMode}
         onLoadDemo={loadDemo}
         onLoadFile={loadFile}
@@ -254,7 +258,10 @@ export function App({ client }: AppProps) {
         onOpenShortcuts={() => setShortcutsOpen(true)}
         onThemeChange={theme.setPreference}
         onCloseLab={closeLab}
+        onLogout={() => void launchSession.logout().catch((error) => reportError(error, "validation"))}
       />
+      {launchSession.state.status === "exchanging" && <div className="launch-status" role="status">Exchanging secure launch code…</div>}
+      {launchSession.state.status === "error" && <div className="workspace-error" role="alert"><AlertTriangle size={14} /><span>{launchSession.state.message}</span></div>}
       {workspace.error && <div className="workspace-error" role="alert"><AlertTriangle size={14} /><span>{workspace.error}</span><button type="button" onClick={() => workspace.setDockTab("problems")}>View problems</button><IconButton label="Dismiss error" icon={<X size={13} />} onClick={() => workspace.setError(undefined)} /></div>}
       {workspace.dirty && workspace.mode === "edit" && <div className="pending-banner"><span><i /> Topology changes pending</span><Button size="sm" variant="primary" onClick={() => { setPendingMode("edit"); setConfirmApply(true); }}>Apply &amp; Rebuild</Button></div>}
       <div className="workspace-body">
