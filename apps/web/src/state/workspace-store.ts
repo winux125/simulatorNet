@@ -29,7 +29,7 @@ export type DockTab = "terminal" | "events" | "packet-trace" | "problems";
 
 export interface WorkspaceProblem {
   id: number;
-  source: "worker" | "cli" | "validation";
+  source: "worker" | "cli" | "validation" | "runtime";
   message: string;
 }
 
@@ -70,6 +70,7 @@ interface WorkspaceState {
   past: LabDocument[];
   future: LabDocument[];
   setDraft(draft: LabDocument | undefined, dirty?: boolean): void;
+  syncDraft(draft: LabDocument): void;
   undo(): void;
   redo(): void;
   requestZoomReset(): void;
@@ -89,6 +90,7 @@ interface WorkspaceState {
   setPendingDeviceKind(kind: NodeSpec["kind"] | undefined): void;
   setError(error: string | undefined, source?: WorkspaceProblem["source"]): void;
   clearProblems(): void;
+  replaceRuntimeWarnings(messages: string[]): void;
   setFilter(filter: Partial<TraceFilters>): void;
   setInspectorTab(tab: InspectorTab): void;
   setDockTab(tab: DockTab): void;
@@ -143,6 +145,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   setDraft: (draft, dirty = false) => set((state) => dirty && state.draft
     ? { draft, dirty, past: [...state.past, state.draft].slice(-MAX_HISTORY), future: [] }
     : { draft, dirty }),
+  syncDraft: (draft) => set({ draft }),
   undo: () => set((state) => {
     const previous = state.past.at(-1);
     if (!previous || !state.draft) return {};
@@ -196,6 +199,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     }))
     : set({ error: undefined }),
   clearProblems: () => set({ problems: [], error: undefined }),
+  replaceRuntimeWarnings: (messages) => set((state) => ({
+    problems: [
+      ...state.problems.filter((problem) => problem.source !== "runtime"),
+      ...[...new Set(messages)].sort().map((message) => ({ id: nextProblemId++, source: "runtime" as const, message })),
+    ].slice(-100),
+  })),
   setFilter: (filter) => set((state) => ({ filters: { ...state.filters, ...filter } })),
   setInspectorTab: (inspectorTab) => set({ inspectorTab, inspectorOpen: true }),
   setDockTab: (dockTab) => set({ dockTab }),

@@ -1,4 +1,12 @@
-import { ArpOp, DhcpMessageType, EtherType, IcmpCode, IcmpType, IpProtocol } from "@sim/contracts";
+import {
+  ArpOp,
+  DhcpMessageType,
+  EtherType,
+  IcmpCode,
+  IcmpType,
+  IpProtocol,
+  type HostStaticConfiguration,
+} from "@sim/contracts";
 import {
   DEFAULT_DHCP_TIMEOUT_NS,
   DEFAULT_IP_TTL,
@@ -157,8 +165,27 @@ export abstract class EndHost extends Device {
     this.gateway = this.configuredGateway;
   }
 
+  /**
+   * Replace persistent static addressing while preserving physical links.
+   * Every address-bound runtime object belongs to the old address and is
+   * invalidated before the new configuration becomes visible.
+   */
+  setStaticConfiguration(config: HostStaticConfiguration): void {
+    this.resetNetworkRuntime();
+    this.dhcpEnabled = false;
+    this.configuredIp = config.address;
+    this.configuredMaskInt = maskToInt(config.prefixLength);
+    this.configuredGateway = config.defaultGateway;
+    this.ip = config.address;
+    this.maskInt = this.configuredMaskInt;
+    this.gateway = config.defaultGateway;
+    this.applications.setDnsServer(config.dnsServer);
+    this.onNetworkConfigurationChanged();
+  }
+
   /** Enable/disable persistent DHCP client mode without preserving a lease. */
   setDhcpEnabled(enabled: boolean): void {
+    this.resetNetworkRuntime();
     this.dhcpEnabled = enabled;
     if (enabled) {
       this.configuredIp = undefined;
@@ -167,7 +194,12 @@ export abstract class EndHost extends Device {
       this.gateway = undefined;
       this.dhcpBound = false;
       this.lease = undefined;
+    } else {
+      this.ip = this.configuredIp;
+      this.maskInt = this.configuredMaskInt;
+      this.gateway = this.configuredGateway;
     }
+    this.onNetworkConfigurationChanged();
   }
 
   configurationSnapshot(): PcConfigurationSnapshot {
@@ -369,7 +401,14 @@ export abstract class EndHost extends Device {
 
   /** Begin DHCP address acquisition (the DORA exchange). */
   requestDhcp(): void {
-    this.setDhcpEnabled(true);
+    if (!this.dhcpEnabled) this.setDhcpEnabled(true);
+    else {
+      this.resetNetworkRuntime();
+      this.dhcpEnabled = true;
+      this.ip = undefined;
+      this.gateway = undefined;
+      this.onNetworkConfigurationChanged();
+    }
     this.dhcpXid = this.engine.rng.nextU32();
     this.dhcpState = "discovering";
     this.dhcpBound = false;
@@ -384,6 +423,32 @@ export abstract class EndHost extends Device {
     this.sendDhcp({ messageType: DhcpMessageType.Discover });
     this.engine.scheduleIn(DEFAULT_DHCP_TIMEOUT_NS, () => this.dhcpTimeout(this.dhcpXid));
   }
+
+  /** Release a transient lease while keeping DHCP as the persisted mode. */
+  releaseDhcp(): void {
+    this.resetNetworkRuntime();
+    this.dhcpEnabled = true;
+    this.ip = undefined;
+    this.gateway = undefined;
+    this.onNetworkConfigurationChanged();
+  }
+
+  /** Runtime state that must never survive an address or DHCP mode change. */
+  protected resetNetworkRuntime(): void {
+    this.dhcpXid = (this.dhcpXid + 1) >>> 0;
+    this.dhcpState = "idle";
+    this.dhcpBound = false;
+    this.lease = undefined;
+    this.arpTable.clear();
+    this.arpPending.clear();
+    this.pendingPings.clear();
+    this.pingResults.length = 0;
+    this.transport.reset();
+    this.applications.resetRuntime();
+  }
+
+  /** Server overrides this to recreate address-bound service listeners. */
+  protected onNetworkConfigurationChanged(): void {}
 
   private handleDhcp(payload: UdpDatagram["payload"]): void {
     if (payload.kind !== "dhcp") return;
@@ -420,6 +485,7 @@ export abstract class EndHost extends Device {
       leaseSeconds: ack.leaseSeconds,
     };
     this.transport.udp.unbind(DHCP_CLIENT_PORT);
+    this.onNetworkConfigurationChanged();
     this.engine.trace({
       time: this.engine.now(),
       type: "dhcp-bound",

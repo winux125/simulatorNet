@@ -7,10 +7,12 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import type { SimulatorClient } from "../../app/simulator-client";
 import type { ResolvedTheme } from "../../hooks/useTheme";
+import type { LabPowerState } from "../../state/workspace-store";
 import { DeviceIcon } from "../../components/DeviceIcon";
 import { Button, IconButton } from "../../ui";
 import { ServerServicesPanel } from "../inspector/ServerServicesPanel";
 import { TerminalWorkspace } from "../terminal/TerminalPanel";
+import { HostIpConfigurationPanel } from "./HostIpConfigurationPanel";
 
 type DeviceWindowTab = "overview" | "desktop" | "config" | "services" | "terminal" | "interfaces" | "attributes";
 type DesktopTool = "ip" | "command" | "web" | "tftp" | "ntp" | "syslog" | "transport";
@@ -20,6 +22,9 @@ interface DeviceWindowProps {
   document: LabDocument;
   node: LabUiNode;
   theme: ResolvedTheme;
+  powerState: LabPowerState;
+  runtimeAvailable: boolean;
+  onConfigurationChanged(document: LabDocument, runtimeSynchronized: boolean): void;
   onError(message: string): void;
   onClose(): void;
 }
@@ -71,10 +76,21 @@ export function DeviceWindow(props: DeviceWindowProps) {
         </nav>
         <div className="device-window__content" role="tabpanel">
           {tab === "overview" && <Overview node={props.node} description={profile.description} />}
-          {tab === "desktop" && <Desktop client={props.client} node={props.node} onTerminal={() => setTab("terminal")} onError={props.onError} />}
+          {tab === "desktop" && <Desktop
+            client={props.client}
+            document={props.document}
+            node={props.node}
+            powerState={props.powerState}
+            runtimeAvailable={props.runtimeAvailable}
+            onConfigurationChanged={props.onConfigurationChanged}
+            onTerminal={() => setTab("terminal")}
+            onError={props.onError}
+          />}
           {tab === "config" && <StructuredConfiguration document={props.document} node={props.node} />}
-          {tab === "services" && <ServerServicesPanel client={props.client} deviceId={props.node.id} refreshKey={props.node.interfaces.length} onError={props.onError} />}
-          {tab === "terminal" && <TerminalWorkspace
+          {tab === "services" && (props.runtimeAvailable
+            ? <ServerServicesPanel client={props.client} deviceId={props.node.id} refreshKey={props.node.interfaces.length} onError={props.onError} />
+            : <DraftRuntimeNotice />)}
+          {tab === "terminal" && (props.runtimeAvailable ? <TerminalWorkspace
             client={props.client}
             tabs={[props.node.id]}
             activeDeviceId={props.node.id}
@@ -85,7 +101,7 @@ export function DeviceWindow(props: DeviceWindowProps) {
             onActivate={() => undefined}
             onClose={props.onClose}
             onError={props.onError}
-          />}
+          /> : <DraftRuntimeNotice />)}
           {tab === "interfaces" && <Interfaces node={props.node} />}
           {tab === "attributes" && <Attributes node={props.node} description={profile.description} capabilities={profile.capabilities} />}
         </div>
@@ -110,10 +126,33 @@ function Attributes({ node, description, capabilities }: { node: LabUiNode; desc
   return <div className="device-window-section"><p className="section-eyebrow">Attributes</p><h2>{node.hostname}</h2><p>{description}</p><dl className="property-list"><div><dt>Device ID</dt><dd><code>{node.id}</code></dd></div><div><dt>Profile</dt><dd>{node.type}</dd></div><div><dt>Capabilities</dt><dd>{capabilities.join(", ")}</dd></div></dl></div>;
 }
 
-function Desktop({ client, node, onTerminal, onError }: { client: SimulatorClient; node: LabUiNode; onTerminal(): void; onError(message: string): void }) {
+function Desktop({
+  client,
+  document,
+  node,
+  powerState,
+  runtimeAvailable,
+  onConfigurationChanged,
+  onTerminal,
+  onError,
+}: {
+  client: SimulatorClient;
+  document: LabDocument;
+  node: LabUiNode;
+  powerState: LabPowerState;
+  runtimeAvailable: boolean;
+  onConfigurationChanged(document: LabDocument, runtimeSynchronized: boolean): void;
+  onTerminal(): void;
+  onError(message: string): void;
+}) {
   const [tool, setTool] = useState<DesktopTool>("ip");
   const [output, setOutput] = useState("Choose a desktop utility.");
   const execute = async (command: string) => {
+    if (!runtimeAvailable) {
+      const message = "Start the lab to use runtime desktop tools.";
+      setOutput(message);
+      return message;
+    }
     try {
       const result = await client.request({ type: "EXECUTE_CLI", sessionId: `desktop:${node.id}`, deviceId: node.id, input: command });
       setOutput(result.output || "Command completed.");
@@ -129,7 +168,6 @@ function Desktop({ client, node, onTerminal, onError }: { client: SimulatorClien
   const choose = (next: DesktopTool) => {
     setTool(next);
     if (next === "command") onTerminal();
-    if (next === "ip") void execute("ipconfig");
     if (next === "transport") void Promise.all([execute("sim show udp sockets"), execute("sim show tcp connections")]).then(([udp, tcp]) => setOutput(`${udp}\n\n${tcp}`));
   };
 
@@ -149,10 +187,23 @@ function Desktop({ client, node, onTerminal, onError }: { client: SimulatorClien
         {tool === "tftp" && <TwoFieldTool title="TFTP Client" firstLabel="Server IP" secondLabel="Filename" action="Get" onRun={(server, filename) => execute(`sim tftp get ${server} ${filename}`)} />}
         {tool === "ntp" && <OneFieldTool title="NTP Client" label="Server IP" action="Query" onRun={(server) => execute(`sim ntp query ${server}`)} />}
         {tool === "syslog" && <SyslogTool onRun={(server, severity, message) => execute(`sim syslog send ${server} ${severity} ${message}`)} />}
-        {!["web", "tftp", "ntp", "syslog"].includes(tool) && <pre className="desktop-tool-output">{output}</pre>}
+        {tool === "ip" && <HostIpConfigurationPanel
+          client={client}
+          document={document}
+          node={node}
+          powerState={powerState}
+          runtimeAvailable={runtimeAvailable}
+          onConfigurationChanged={onConfigurationChanged}
+          onError={onError}
+        />}
+        {tool === "transport" && <pre className="desktop-tool-output">{output}</pre>}
       </div>
     </div>
   );
+}
+
+function DraftRuntimeNotice() {
+  return <div className="device-window-section"><p className="section-eyebrow">Pending rebuild</p><h2>Start the lab to open this tool</h2><p>This device exists in the topology draft. Its runtime tools become available after Apply &amp; Rebuild.</p></div>;
 }
 
 function DesktopButton({ label, icon: ToolIcon, active, onClick }: { label: string; icon: LucideIcon; active: boolean; onClick(): void }) {

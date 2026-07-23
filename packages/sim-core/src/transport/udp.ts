@@ -149,6 +149,12 @@ export class UdpSocketRegistry {
       }));
   }
 
+  /** Drop every transient binding after an address/mode change. */
+  reset(): void {
+    this.bindings.clear();
+    this.nextEphemeralPort = EPHEMERAL_PORT_START;
+  }
+
   private allocateEphemeralPort(): number {
     const range = EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1;
     for (let offset = 0; offset < range; offset++) {

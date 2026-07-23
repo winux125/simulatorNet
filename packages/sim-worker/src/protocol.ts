@@ -1,4 +1,11 @@
-import type { DeviceCapability, DeviceType, LabDocument, ServerServiceConfig } from "@sim/contracts";
+import type {
+  DeviceCapability,
+  DeviceType,
+  HostIpConfiguration,
+  HostStaticConfiguration,
+  LabDocument,
+  ServerServiceConfig,
+} from "@sim/contracts";
 import type { CliMode } from "@sim/cli-engine";
 import type {
   DnsResolutionResult,
@@ -165,6 +172,34 @@ export interface ServerServicesView {
   services: ServerServiceSummary[];
 }
 
+export interface HostNetworkWarning {
+  code: "duplicate-ip";
+  message: string;
+  address: string;
+  deviceIds: readonly [string, string];
+}
+
+export interface HostNetworkStatus {
+  deviceId: string;
+  configuration: HostIpConfiguration;
+  runtime: {
+    address?: string;
+    prefixLength: number;
+    defaultGateway?: string;
+    dnsServer?: string;
+    dhcpState: string;
+    dhcpBound: boolean;
+    lease?: {
+      address: string;
+      gateway?: string;
+      serverAddress?: string;
+      leaseSeconds?: number;
+    };
+  };
+  warnings: HostNetworkWarning[];
+  guidance?: string;
+}
+
 export type SimWorkerRequest =
   | { type: "INITIALIZE_LAB"; requestId: string; document: LabDocument }
   | { type: "REBUILD_LAB"; requestId: string; document: LabDocument }
@@ -176,6 +211,12 @@ export type SimWorkerRequest =
   | { type: "RESET_RUNTIME"; requestId: string }
   | { type: "GET_SNAPSHOT"; requestId: string }
   | { type: "GET_DEVICE_INSPECTION"; requestId: string; deviceId: string }
+  | { type: "GET_HOST_IP_CONFIGURATION"; requestId: string; deviceId: string }
+  | { type: "SET_HOST_STATIC_CONFIGURATION"; requestId: string; deviceId: string; configuration: HostStaticConfiguration }
+  | { type: "SET_HOST_DHCP_MODE"; requestId: string; deviceId: string; startImmediately: boolean }
+  | { type: "RENEW_HOST_DHCP"; requestId: string; deviceId: string }
+  | { type: "RELEASE_HOST_DHCP"; requestId: string; deviceId: string }
+  | { type: "GET_HOST_NETWORK_STATUS"; requestId: string; deviceId: string }
   | { type: "GET_SERVER_SERVICES"; requestId: string; deviceId: string }
   | { type: "CONFIGURE_SERVER_SERVICE"; requestId: string; deviceId: string; configuration: ServerServiceConfig }
   | { type: "ENABLE_SERVER_SERVICE"; requestId: string; deviceId: string; serviceId: string }
@@ -189,6 +230,8 @@ export type SimWorkerPayload =
   | CliExecutionResult
   | SimulationRunResult
   | DeviceInspection
+  | HostIpConfiguration
+  | HostNetworkStatus
   | ServerServicesView
   | ServerServiceRuntimeSnapshot
   | LabDocument
@@ -203,6 +246,7 @@ export type SimWorkerEvent =
   | { type: "LAB_READY"; snapshot: LabUiSnapshot }
   | { type: "STATE_CHANGED"; snapshot: LabUiSnapshot }
   | { type: "TRACE_BATCH"; events: SimulationTraceEvent[] }
+  | { type: "RUNTIME_WARNING"; warnings: HostNetworkWarning[] }
   | ({ type: "CLI_OUTPUT" } & CliExecutionResult)
   | { type: "RUNTIME_ERROR"; error: SerializedWorkerError };
 
@@ -225,6 +269,12 @@ export interface SimWorkerPayloadByType {
   RESET_RUNTIME: LabUiSnapshot;
   GET_SNAPSHOT: LabUiSnapshot;
   GET_DEVICE_INSPECTION: DeviceInspection;
+  GET_HOST_IP_CONFIGURATION: HostIpConfiguration;
+  SET_HOST_STATIC_CONFIGURATION: HostNetworkStatus;
+  SET_HOST_DHCP_MODE: HostNetworkStatus;
+  RENEW_HOST_DHCP: HostNetworkStatus;
+  RELEASE_HOST_DHCP: HostNetworkStatus;
+  GET_HOST_NETWORK_STATUS: HostNetworkStatus;
   GET_SERVER_SERVICES: ServerServicesView;
   CONFIGURE_SERVER_SERVICE: ServerServicesView;
   ENABLE_SERVER_SERVICE: ServerServicesView;

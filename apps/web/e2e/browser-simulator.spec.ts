@@ -234,6 +234,54 @@ test("draft-only devices wait for worker rebuild without unknown-device errors",
   await expect(page.getByText(/Unknown device/)).toHaveCount(0);
 });
 
+test("two draft-configured PCs ping through an L2 switch after Start Lab", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "New Lab", exact: true }).click();
+  const canvas = page.getByTestId("topology-graph");
+
+  const place = async (category: "End Devices" | "Network Devices", name: string, x: number, y: number) => {
+    await page.getByRole("button", { name: "Add Device", exact: true }).click();
+    await page.getByRole("tab", { name: category }).click();
+    await page.getByRole("button", { name: `Add ${name}` }).click();
+    await canvas.click({ position: { x, y } });
+  };
+  await place("End Devices", "PC", 170, 150);
+  await place("Network Devices", "L2 Switch", 500, 260);
+  await place("End Devices", "PC", 830, 150);
+
+  const configurePc = async (hostname: string, address: string) => {
+    await page.getByRole("button", { name: `Select ${hostname}` }).dblclick();
+    const window = page.getByRole("dialog", { name: `${hostname} device window` });
+    await expect(window.getByRole("heading", { name: "IP Configuration" })).toBeVisible();
+    await window.getByLabel("IPv4 Address").fill(address);
+    await window.getByLabel("Subnet Mask").fill("255.255.255.0");
+    await window.getByRole("button", { name: "Apply" }).click();
+    await expect(window.getByText("Loading IP configuration…")).toHaveCount(0);
+    if (hostname === "PC1") await page.screenshot({ path: "/tmp/host-ip-configuration-1440x900.png", animations: "disabled" });
+    await window.getByRole("button", { name: "Close device window" }).click();
+  };
+  await configurePc("PC1", "192.168.10.10");
+  await configurePc("PC2", "192.168.10.20");
+  await expect(page.getByText(/Unknown device/)).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Add link" }).click();
+  await page.locator('[data-cell-id="pc-1"] [data-interface="eth0"]').dragTo(
+    page.locator('[data-cell-id="switch-1"] [data-interface="Gi0/1"]'),
+  );
+  await page.locator('[data-cell-id="pc-2"] [data-interface="eth0"]').dragTo(
+    page.locator('[data-cell-id="switch-1"] [data-interface="Gi0/2"]'),
+  );
+  await expect(page.getByText("2 links", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Start Lab" }).click();
+  await page.getByRole("dialog", { name: "Apply topology changes?" }).getByRole("button", { name: "Apply & Rebuild" }).click();
+  await expect(page.getByRole("button", { name: "Stop Lab" })).toBeVisible();
+  await openCli(page, "PC1");
+  await runCli(page, "ping 192.168.10.20");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Success rate is 100 percent");
+});
+
 test("deleting a device closes its CLI before the worker rebuild", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto("/");
@@ -270,6 +318,8 @@ test("lab power lifecycle locks the topology while running and unlocks after sto
 
   // 4-5. Start the lab; topology becomes locked.
   await page.getByRole("button", { name: "Start Lab" }).click();
+  const applyDialog = page.getByRole("dialog", { name: "Apply topology changes?" });
+  if (await applyDialog.count()) await applyDialog.getByRole("button", { name: "Apply & Rebuild" }).click();
   await expect(page.getByLabel("Topology locked — stop the lab to edit")).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop Lab" })).toBeVisible();
 
@@ -285,6 +335,7 @@ test("lab power lifecycle locks the topology while running and unlocks after sto
 
   // 15-16. Topology editing works again.
   await page.getByRole("button", { name: "Add Device", exact: true }).click();
+  await page.getByRole("tab", { name: "Network Devices" }).click();
   await expect(page.getByRole("button", { name: "Add Router" })).toBeEnabled();
 });
 

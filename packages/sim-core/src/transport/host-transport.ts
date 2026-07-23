@@ -42,4 +42,10 @@ export class HostTransportStack {
   receiveTcp(sourceAddress: Ipv4, destinationAddress: Ipv4, segment: TcpSegment): void {
     this.tcp.receive(sourceAddress, destinationAddress, segment);
   }
+
+  /** Clear address-bound sockets and active connections. */
+  reset(): void {
+    this.tcp.reset();
+    this.udp.reset();
+  }
 }

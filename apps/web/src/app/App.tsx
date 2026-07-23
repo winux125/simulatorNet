@@ -1,6 +1,6 @@
 import { getDeviceProfile, type LabDocument } from "@sim/contracts";
 import { canonicalizeLabDocument, stringifyLabDocument } from "@sim/lab-format";
-import type { SimWorkerEvent } from "@sim/sim-worker";
+import type { LabUiNode, SimWorkerEvent } from "@sim/sim-worker";
 import { Group as PanelGroup, Panel as ResizablePanel, Separator } from "react-resizable-panels";
 import {
   AlertTriangle, CheckCircle2, Command, Download, Eraser, FilePlus2, FlaskConical, FolderOpen, FolderX,
@@ -61,6 +61,41 @@ function isTypingTarget(target: EventTarget | null): boolean {
     && Boolean(target.closest("input, textarea, select, [contenteditable='true'], .xterm, .terminal-session, [role='menu'], [role='menubar']"));
 }
 
+function draftDeviceNode(document: LabDocument, deviceId: string): LabUiNode | undefined {
+  const node = document.topology.nodes.find((candidate) => candidate.id === deviceId);
+  if (!node) return undefined;
+  const configuration = document.configurations[deviceId];
+  const configuredInterfaces = configuration?.interfaces ?? [];
+  return {
+    id: node.id,
+    type: node.kind,
+    hostname: configuration?.hostname ?? node.name ?? node.id,
+    position: node.position ?? { x: 0, y: 0 },
+    status: "down",
+    interfaces: node.interfaces.map((iface, index) => {
+      const configured = configuredInterfaces.find((candidate) => candidate.id === iface.id);
+      let ipAddress: string | undefined;
+      let mode: "access" | "trunk" | "routed" | undefined;
+      if (configuration?.kind === "pc" && index === 0) ipAddress = configuration.ipv4?.address;
+      if (configuration?.kind === "server") ipAddress = configuration.interfaces.find((candidate) => candidate.id === iface.id)?.ipv4?.address;
+      if (configuration?.kind === "router") ipAddress = configuration.interfaces.find((candidate) => candidate.id === iface.id)?.ipv4?.address;
+      if (configuration?.kind === "l2-switch") mode = configuration.interfaces.find((candidate) => candidate.id === iface.id)?.mode;
+      if (configuration?.kind === "l3-switch") {
+        const l3 = configuration.interfaces.find((candidate) => candidate.id === iface.id);
+        mode = l3?.mode;
+        if (l3?.mode === "routed") ipAddress = l3.ipv4?.address;
+      }
+      return {
+        id: iface.id,
+        adminUp: !(configured?.shutdown ?? false),
+        operationalUp: false,
+        ipAddress,
+        mode,
+      };
+    }),
+  };
+}
+
 export function App({ client }: AppProps) {
   const workspace = useWorkspaceStore();
   const compact = useMediaQuery("(max-width: 999px)");
@@ -84,11 +119,12 @@ export function App({ client }: AppProps) {
   useEffect(() => client.onEvent((event: SimWorkerEvent) => {
     if (event.type === "LAB_READY" || event.type === "STATE_CHANGED") workspace.setSnapshot(event.snapshot);
     if (event.type === "TRACE_BATCH") workspace.appendTraces(event.events);
+    if (event.type === "RUNTIME_WARNING") workspace.replaceRuntimeWarnings(event.warnings.map((warning) => warning.message));
     if (event.type === "RUNTIME_ERROR") {
       workspace.setError(event.error.message, "worker");
       workspace.setDockTab("problems");
     }
-  }), [client, workspace.appendTraces, workspace.setDockTab, workspace.setError, workspace.setSnapshot]);
+  }), [client, workspace.appendTraces, workspace.replaceRuntimeWarnings, workspace.setDockTab, workspace.setError, workspace.setSnapshot]);
 
   const reportError = useCallback((value: unknown, source: "worker" | "cli" | "validation" = "worker") => {
     const message = value instanceof Error ? value.message : typeof value === "string" ? value : "Unexpected simulator error";
@@ -388,6 +424,12 @@ export function App({ client }: AppProps) {
     ] },
   ];
 
+  const runtimeDeviceNode = deviceWindowId
+    ? workspace.snapshot?.nodes.find((node) => node.id === deviceWindowId)
+    : undefined;
+  const openDeviceNode = runtimeDeviceNode
+    ?? (deviceWindowId && workspace.draft ? draftDeviceNode(workspace.draft, deviceWindowId) : undefined);
+
   const inspector = labOpen && workspace.inspectorOpen && (
     <InspectorPanel
       client={client}
@@ -537,11 +579,19 @@ export function App({ client }: AppProps) {
           <Shortcut keys="Escape" label="Close menus and dialogs" />
         </div>
       </WorkspaceDialog>}
-      {deviceWindowId && workspace.draft && workspace.snapshot?.nodes.find((node) => node.id === deviceWindowId) && <DeviceWindow
+      {deviceWindowId && workspace.draft && openDeviceNode && <DeviceWindow
         client={client}
         document={workspace.draft}
-        node={workspace.snapshot.nodes.find((node) => node.id === deviceWindowId)!}
+        node={openDeviceNode}
         theme={theme.resolved}
+        powerState={workspace.powerState}
+        runtimeAvailable={Boolean(runtimeDeviceNode)}
+        onConfigurationChanged={(next, runtimeSynchronized) => {
+          const state = useWorkspaceStore.getState();
+          if (!state.draft) return;
+          if (runtimeSynchronized) state.syncDraft(mergeRunningConfiguration(next, state.draft));
+          else state.setDraft(next, true);
+        }}
         onError={reportInspectionError}
         onClose={() => setDeviceWindowId(undefined)}
       />}

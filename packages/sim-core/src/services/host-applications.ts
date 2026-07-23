@@ -70,6 +70,7 @@ interface TftpDownloadState {
   expectedBlock: number;
   attempts: number;
   completed: boolean;
+  readonly runtimeGeneration: number;
 }
 
 /** Deterministic application clients shared by PC and Server. */
@@ -84,6 +85,7 @@ export class HostApplications {
 
   private nextRequestId = 1;
   private activeRequests = 0;
+  private runtimeGeneration = 0;
 
   constructor(
     private readonly host: HostApplicationAdapter,
@@ -95,15 +97,29 @@ export class HostApplications {
     this.dnsServer = address;
   }
 
+  /** Invalidate pending application work tied to the previous host address. */
+  resetRuntime(): void {
+    this.runtimeGeneration++;
+    this.activeRequests = 0;
+    this.dnsResults.length = 0;
+    this.httpResults.length = 0;
+    this.tftpResults.length = 0;
+    this.ntpResults.length = 0;
+    this.downloadedFiles.clear();
+    this.clockOffsetNs = 0;
+  }
+
   resolveDns(hostname: string, serverAddress = this.dnsServer): number {
     const name = normalizeDnsName(hostname);
     if (!serverAddress) throw new Error(`No DNS server configured on ${this.host.deviceId}`);
     ipToInt(serverAddress);
     this.beginRequest();
     const requestId = this.allocateRequestId();
+    const generation = this.runtimeGeneration;
     let completed = false;
     let attempts = 0;
     const port = this.host.transport.udp.bind(0, (received) => {
+      if (generation !== this.runtimeGeneration) return;
       if (received.sourceAddress !== serverAddress || received.payload.kind !== "dns") return;
       const message = received.payload;
       if (message.messageType !== "response" || message.transactionId !== requestId || completed) return;
@@ -119,6 +135,7 @@ export class HostApplications {
       this.trace("dns-response", { requestId, hostname: name, status, address: message.address });
     }, "dns-client");
     const query = (): void => {
+      if (generation !== this.runtimeGeneration) return;
       attempts++;
       const payload: DnsMessage = { kind: "dns", messageType: "query", transactionId: requestId, name };
       this.host.transport.udp.send({ destinationAddress: serverAddress, destinationPort: 53, sourcePort: port, payload });
@@ -126,6 +143,7 @@ export class HostApplications {
       this.host.engine().scheduleIn(SERVICE_REQUEST_TIMEOUT_NS, timeout);
     };
     const timeout = (): void => {
+      if (generation !== this.runtimeGeneration) return;
       if (completed) return;
       if (attempts <= this.limits.maximumProtocolRetries) {
         query();
@@ -145,8 +163,10 @@ export class HostApplications {
     const target = parseHttpUrl(url);
     this.beginRequest();
     const requestId = this.allocateRequestId();
+    const generation = this.runtimeGeneration;
     let completed = false;
     const finish = (result: HttpClientResult): void => {
+      if (generation !== this.runtimeGeneration) return;
       if (completed) return;
       completed = true;
       this.endRequest();
@@ -154,6 +174,7 @@ export class HostApplications {
     };
     const connection = this.host.transport.tcp.connect(target.address, target.port, {
       onEstablished: (current) => {
+        if (generation !== this.runtimeGeneration) return;
         const request: HttpMessage = {
           kind: "http",
           messageType: "request",
@@ -165,6 +186,7 @@ export class HostApplications {
         this.trace("http-request", { requestId, method, host: target.host, path: target.path });
       },
       onMessage: (payload) => {
+        if (generation !== this.runtimeGeneration) return;
         if (payload.kind !== "http" || payload.messageType !== "response") return;
         finish({
           requestId,
@@ -179,6 +201,7 @@ export class HostApplications {
       onReset: () => finish({ requestId, url, status: "connection-refused" }),
     }, "http-client");
     this.host.engine().scheduleIn(SERVICE_REQUEST_TIMEOUT_NS, () => {
+      if (generation !== this.runtimeGeneration) return;
       if (completed) return;
       connection.close();
       finish({ requestId, url, status: "timeout" });
@@ -192,6 +215,7 @@ export class HostApplications {
     const normalized = normalizeTftpFilename(filename);
     this.beginRequest();
     const requestId = this.allocateRequestId();
+    const generation = this.runtimeGeneration;
     const state: TftpDownloadState = {
       requestId,
       serverAddress,
@@ -201,16 +225,19 @@ export class HostApplications {
       expectedBlock: 1,
       attempts: 0,
       completed: false,
+      runtimeGeneration: generation,
     };
     const port = this.host.transport.udp.bind(0, (received) => this.handleTftpDownload(state, received.payload), "tftp-client");
     Object.assign(state, { port });
     const request = (): void => {
+      if (state.runtimeGeneration !== this.runtimeGeneration) return;
       if (state.completed) return;
       state.attempts++;
       const rrq: TftpMessage = { kind: "tftp", opcode: "RRQ", transferId: requestId, filename: normalized };
       this.host.transport.udp.send({ destinationAddress: serverAddress, destinationPort: 69, sourcePort: port, payload: rrq });
       this.trace("tftp-rrq", { requestId, serverAddress, filename: normalized, attempt: state.attempts });
       this.host.engine().scheduleIn(SERVICE_REQUEST_TIMEOUT_NS, () => {
+        if (state.runtimeGeneration !== this.runtimeGeneration) return;
         if (state.completed) return;
         if (state.attempts <= this.limits.maximumProtocolRetries) request();
         else this.finishTftp(state, "timeout", undefined, "Transfer timed out");
@@ -224,8 +251,10 @@ export class HostApplications {
     ipToInt(serverAddress);
     this.beginRequest();
     const requestId = this.allocateRequestId();
+    const generation = this.runtimeGeneration;
     let completed = false;
     const port = this.host.transport.udp.bind(0, (received) => {
+      if (generation !== this.runtimeGeneration) return;
       if (received.sourceAddress !== serverAddress || received.payload.kind !== "ntp") return;
       const response = received.payload;
       if (response.messageType !== "response" || response.requestId !== requestId || response.serverTimeNs === undefined || completed) return;
@@ -246,6 +275,7 @@ export class HostApplications {
     this.host.transport.udp.send({ destinationAddress: serverAddress, destinationPort: 123, sourcePort: port, payload: query });
     this.trace("ntp-query", { requestId, serverAddress });
     this.host.engine().scheduleIn(SERVICE_REQUEST_TIMEOUT_NS, () => {
+      if (generation !== this.runtimeGeneration) return;
       if (completed) return;
       completed = true;
       this.host.transport.udp.unbind(port);
@@ -276,6 +306,7 @@ export class HostApplications {
   }
 
   private handleTftpDownload(state: TftpDownloadState, payload: UdpPayload): void {
+    if (state.runtimeGeneration !== this.runtimeGeneration) return;
     if (payload.kind !== "tftp" || payload.transferId !== state.requestId || state.completed) return;
     if (payload.opcode === "ERROR") {
       this.finishTftp(state, payload.errorCode === "not-found" ? "not-found" : "error", undefined, payload.message);
@@ -310,6 +341,7 @@ export class HostApplications {
     content?: string,
     message?: string,
   ): void {
+    if (state.runtimeGeneration !== this.runtimeGeneration) return;
     if (state.completed) return;
     state.completed = true;
     this.host.transport.udp.unbind(state.port);

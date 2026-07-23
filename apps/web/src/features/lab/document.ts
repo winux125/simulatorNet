@@ -1,4 +1,12 @@
-import { getDeviceProfile, type DeviceConfig, type DeviceType, type LabDocument, type NodeSpec } from "@sim/contracts";
+import {
+  getDeviceProfile,
+  type DeviceConfig,
+  type DeviceType,
+  type HostIpConfiguration,
+  type HostStaticConfiguration,
+  type LabDocument,
+  type NodeSpec,
+} from "@sim/contracts";
 import { canonicalizeLabDocument, parseLabDocument } from "@sim/lab-format";
 
 export function loadLabDocumentText(text: string): LabDocument {
@@ -145,6 +153,121 @@ export function mergeRunningConfiguration(running: LabDocument, draft: LabDocume
     topology: draft.topology,
     configurations,
   });
+}
+
+export function hostIpConfigurationFromDocument(document: LabDocument, nodeId: string): HostIpConfiguration | undefined {
+  const configuration = document.configurations[nodeId];
+  if (configuration?.kind === "pc") {
+    return {
+      mode: configuration.dhcpEnabled ? "dhcp" : "static",
+      address: configuration.ipv4?.address,
+      prefixLength: configuration.ipv4?.prefixLength ?? 24,
+      defaultGateway: configuration.ipv4?.defaultGateway,
+      dnsServer: configuration.dnsServer,
+    };
+  }
+  if (configuration?.kind === "server") {
+    const address = configuration.interfaces.find((iface) => iface.ipv4)?.ipv4;
+    return {
+      mode: configuration.dhcpClientEnabled ? "dhcp" : "static",
+      address: address?.address,
+      prefixLength: address?.prefixLength ?? 24,
+      defaultGateway: configuration.defaultGateway,
+      dnsServer: configuration.dnsServer,
+    };
+  }
+  return undefined;
+}
+
+export function withHostStaticConfiguration(
+  document: LabDocument,
+  nodeId: string,
+  next: HostStaticConfiguration,
+): LabDocument {
+  const configuration = document.configurations[nodeId];
+  if (configuration?.kind === "pc") {
+    return {
+      ...document,
+      configurations: {
+        ...document.configurations,
+        [nodeId]: {
+          ...configuration,
+          ipv4: {
+            address: next.address,
+            prefixLength: next.prefixLength,
+            defaultGateway: next.defaultGateway,
+          },
+          dhcpEnabled: false,
+          dnsServer: next.dnsServer,
+        },
+      },
+    };
+  }
+  if (configuration?.kind === "server") {
+    const node = document.topology.nodes.find((candidate) => candidate.id === nodeId);
+    const primaryId = configuration.interfaces.find((iface) => iface.ipv4)?.id
+      ?? node?.interfaces[0]?.id
+      ?? configuration.interfaces[0]?.id;
+    if (!primaryId) return document;
+    const existing = new Map(configuration.interfaces.map((iface) => [iface.id, iface]));
+    const interfaces = (node?.interfaces ?? configuration.interfaces).map((iface) => {
+      const current = existing.get(iface.id);
+      return iface.id === primaryId
+        ? {
+            id: iface.id,
+            description: current?.description,
+            shutdown: current?.shutdown ?? false,
+            ipv4: { address: next.address, prefixLength: next.prefixLength },
+          }
+        : {
+            id: iface.id,
+            description: current?.description,
+            shutdown: current?.shutdown ?? false,
+          };
+    });
+    return {
+      ...document,
+      configurations: {
+        ...document.configurations,
+        [nodeId]: {
+          ...configuration,
+          interfaces,
+          defaultGateway: next.defaultGateway,
+          dhcpClientEnabled: false,
+          dnsServer: next.dnsServer,
+        },
+      },
+    };
+  }
+  return document;
+}
+
+export function withHostDhcpMode(document: LabDocument, nodeId: string): LabDocument {
+  const configuration = document.configurations[nodeId];
+  if (configuration?.kind === "pc") {
+    return {
+      ...document,
+      configurations: {
+        ...document.configurations,
+        [nodeId]: { ...configuration, ipv4: undefined, dhcpEnabled: true },
+      },
+    };
+  }
+  if (configuration?.kind === "server") {
+    return {
+      ...document,
+      configurations: {
+        ...document.configurations,
+        [nodeId]: {
+          ...configuration,
+          interfaces: configuration.interfaces.map((iface) => ({ ...iface, ipv4: undefined })),
+          defaultGateway: undefined,
+          dhcpClientEnabled: true,
+        },
+      },
+    };
+  }
+  return document;
 }
 
 export function withNodePosition(document: LabDocument, nodeId: string, position: { x: number; y: number }): LabDocument {

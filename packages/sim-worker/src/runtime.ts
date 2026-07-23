@@ -1,8 +1,16 @@
 import { createCliSession, type CliSession } from "@sim/cli-engine";
-import { ServerServiceConfigSchema, type LabDocument, type LabMetadata, type NodeSpec } from "@sim/contracts";
+import {
+  HostStaticConfigurationSchema,
+  ServerServiceConfigSchema,
+  type HostIpConfiguration,
+  type LabDocument,
+  type LabMetadata,
+  type NodeSpec,
+} from "@sim/contracts";
 import {
   buildLabFromDocument,
   canonicalizeLabDocument,
+  findDuplicateHostAddresses,
   migrateLabDocument,
   parseLabDocument,
   serializeLabDocument,
@@ -23,6 +31,7 @@ import { SimulationWorkerError, serializeWorkerError } from "./errors";
 import type {
   EngineUiState,
   DeviceInspection,
+  HostNetworkStatus,
   LabUiInterface,
   LabUiNode,
   LabUiSnapshot,
@@ -111,6 +120,18 @@ export class SimulationWorkerRuntime {
         return this.snapshot();
       case "GET_DEVICE_INSPECTION":
         return this.inspectDevice(requireString(request, "deviceId"));
+      case "GET_HOST_IP_CONFIGURATION":
+        return this.hostIpConfiguration(requireString(request, "deviceId"));
+      case "SET_HOST_STATIC_CONFIGURATION":
+        return this.setHostStaticConfiguration(requireString(request, "deviceId"), request.configuration);
+      case "SET_HOST_DHCP_MODE":
+        return this.setHostDhcpMode(requireString(request, "deviceId"), request.startImmediately);
+      case "RENEW_HOST_DHCP":
+        return this.renewHostDhcp(requireString(request, "deviceId"));
+      case "RELEASE_HOST_DHCP":
+        return this.releaseHostDhcp(requireString(request, "deviceId"));
+      case "GET_HOST_NETWORK_STATUS":
+        return this.hostNetworkStatus(requireString(request, "deviceId"));
       case "GET_SERVER_SERVICES":
         return this.serverServices(requireString(request, "deviceId"));
       case "CONFIGURE_SERVER_SERVICE":
@@ -142,6 +163,7 @@ export class SimulationWorkerRuntime {
     this.rebuildEngine(canonical);
     const snapshot = this.snapshot();
     this.emit({ type: isInitial ? "LAB_READY" : "STATE_CHANGED", snapshot });
+    this.emitHostWarnings();
     this.flushTrace();
     return snapshot;
   }
@@ -464,6 +486,118 @@ export class SimulationWorkerRuntime {
       };
     }
     throw new SimulationWorkerError("unsupported-device", `Unsupported device '${deviceId}'`);
+  }
+
+  private requireHost(deviceId: string): EndHost {
+    const device = this.requireBuiltLab().getDevice(deviceId);
+    if (!(device instanceof EndHost)) {
+      throw new SimulationWorkerError("not-an-end-host", `Device '${deviceId}' does not support host IP configuration`);
+    }
+    return device;
+  }
+
+  private hostIpConfiguration(deviceId: string): HostIpConfiguration {
+    const host = this.requireHost(deviceId);
+    const configuration = host.configurationSnapshot();
+    return {
+      mode: configuration.dhcpEnabled ? "dhcp" : "static",
+      address: configuration.ip,
+      prefixLength: prefixLength(configuration.maskInt),
+      defaultGateway: configuration.gateway,
+      dnsServer: configuration.dnsServer,
+    };
+  }
+
+  private hostNetworkStatus(deviceId: string): HostNetworkStatus {
+    const host = this.requireHost(deviceId);
+    const warnings = this.hostWarnings().filter((warning) => warning.deviceIds.includes(deviceId));
+    return {
+      deviceId,
+      configuration: this.hostIpConfiguration(deviceId),
+      runtime: {
+        address: host.ip,
+        prefixLength: prefixLength(host.maskInt),
+        defaultGateway: host.gateway,
+        dnsServer: host.applications.dnsServer,
+        dhcpState: host.dhcpState,
+        dhcpBound: host.dhcpBound,
+        lease: host.lease ? {
+          address: host.lease.ip,
+          gateway: host.lease.gateway,
+          serverAddress: host.lease.serverIp,
+          leaseSeconds: host.lease.leaseSeconds,
+        } : undefined,
+      },
+      warnings,
+      guidance: host.dhcpEnabled && host.dhcpState === "failed"
+        ? "No DHCP offer received.\n\nAn L2 switch forwards Ethernet frames but does not assign IP addresses.\n\nConfigure a static address or add a Router/Server with an enabled DHCP service."
+        : undefined,
+    };
+  }
+
+  private setHostStaticConfiguration(deviceId: string, input: unknown): HostNetworkStatus {
+    const parsed = HostStaticConfigurationSchema.safeParse(input);
+    if (!parsed.success) {
+      throw new SimulationWorkerError("invalid-host-ip-configuration", parsed.error.issues[0]?.message ?? "Invalid host IP configuration");
+    }
+    this.requireHost(deviceId).setStaticConfiguration(parsed.data);
+    this.requireBuiltLab().engine.runUntilIdle();
+    this.serialize();
+    this.emitStateChanged();
+    this.emitHostWarnings();
+    this.flushTrace();
+    return this.hostNetworkStatus(deviceId);
+  }
+
+  private setHostDhcpMode(deviceId: string, startImmediately: unknown): HostNetworkStatus {
+    if (typeof startImmediately !== "boolean") {
+      throw new SimulationWorkerError("invalid-request", "startImmediately must be a boolean");
+    }
+    const host = this.requireHost(deviceId);
+    if (startImmediately) {
+      host.requestDhcp();
+      this.requireBuiltLab().engine.runUntilIdle();
+    } else {
+      host.setDhcpEnabled(true);
+    }
+    this.serialize();
+    this.emitStateChanged();
+    this.emitHostWarnings();
+    this.flushTrace();
+    return this.hostNetworkStatus(deviceId);
+  }
+
+  private renewHostDhcp(deviceId: string): HostNetworkStatus {
+    const host = this.requireHost(deviceId);
+    host.requestDhcp();
+    this.requireBuiltLab().engine.runUntilIdle();
+    this.serialize();
+    this.emitStateChanged();
+    this.emitHostWarnings();
+    this.flushTrace();
+    return this.hostNetworkStatus(deviceId);
+  }
+
+  private releaseHostDhcp(deviceId: string): HostNetworkStatus {
+    this.requireHost(deviceId).releaseDhcp();
+    this.serialize();
+    this.emitStateChanged();
+    this.emitHostWarnings();
+    this.flushTrace();
+    return this.hostNetworkStatus(deviceId);
+  }
+
+  private hostWarnings() {
+    const document = this.document;
+    if (!document) return [];
+    const records = [...this.requireBuiltLab().devices.values()]
+      .filter((device): device is EndHost => device instanceof EndHost && device.ip !== undefined)
+      .map((device) => ({ deviceId: device.id, address: device.ip! }));
+    return findDuplicateHostAddresses(document, records);
+  }
+
+  private emitHostWarnings(): void {
+    this.emit({ type: "RUNTIME_WARNING", warnings: this.hostWarnings() });
   }
 
   private nodeSnapshot(node: NodeSpec, index: number): LabUiNode {

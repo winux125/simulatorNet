@@ -89,6 +89,7 @@ export class ServerServiceRegistry {
   private ntpQueries = 0;
   private syslogSequence = 0;
   private readonly syslogEntries: SyslogEntry[] = [];
+  private runtimeGeneration = 0;
 
   constructor(
     private readonly host: ServerServiceAdapter,
@@ -186,8 +187,24 @@ export class ServerServiceRegistry {
     this.syslogEntries.length = 0;
   }
 
+  /** Recreate listeners and clear transient service state after an IP change. */
+  restartRuntime(): void {
+    const configurations = this.configurations();
+    this.runtimeGeneration++;
+    this.tftpTransfers.clear();
+    this.dnsQueries = 0;
+    this.httpRequests = 0;
+    this.completedTftpTransfers = 0;
+    this.ntpQueries = 0;
+    this.syslogSequence = 0;
+    this.syslogEntries.length = 0;
+    this.configureAll(configurations);
+  }
+
   private scheduleStart(config: ServerServiceConfig, generation: number): void {
+    const runtimeGeneration = this.runtimeGeneration;
     this.host.engine().scheduleIn(SERVICE_START_DELAY_NS, () => {
+      if (runtimeGeneration !== this.runtimeGeneration) return;
       const state = this.states.get(config.id);
       const current = this.configs.get(config.id);
       if (!state || !current || state.generation !== generation || !current.enabled) return;

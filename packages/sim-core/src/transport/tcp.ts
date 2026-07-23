@@ -111,6 +111,17 @@ export class TcpConnection {
     this.flushOrClose();
   }
 
+  /** Immediately invalidate a connection during host runtime reconfiguration. */
+  abort(): void {
+    if (this.state === TcpState.Closed) return;
+    this.outstanding = undefined;
+    this.queuedPayloads.length = 0;
+    this.closeRequested = true;
+    this.transition(TcpState.Closed);
+    this.handlers.onReset?.(this);
+    this.stack.remove(this);
+  }
+
   /** @internal */
   activeOpen(): void {
     this.transition(TcpState.SynSent);
@@ -387,6 +398,14 @@ export class TcpSocketRegistry {
     return [...listeners, ...connections].sort((a, b) =>
       a.localPort - b.localPort || a.remoteAddress.localeCompare(b.remoteAddress) || a.remotePort - b.remotePort,
     );
+  }
+
+  /** Close active connections and listeners without scheduling network I/O. */
+  reset(): void {
+    for (const connection of [...this.connections.values()]) connection.abort();
+    this.connections.clear();
+    this.listeners.clear();
+    this.nextEphemeralPort = EPHEMERAL_PORT_START;
   }
 
   /** @internal */

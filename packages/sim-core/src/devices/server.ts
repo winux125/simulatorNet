@@ -49,4 +49,8 @@ export class Server extends EndHost {
   serviceRuntimeSnapshot(): ServerServiceRuntimeSnapshot {
     return this.services.runtimeSnapshot();
   }
+
+  protected override onNetworkConfigurationChanged(): void {
+    this.services.restartRuntime();
+  }
 }
