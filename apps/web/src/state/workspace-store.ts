@@ -1,8 +1,9 @@
-import type { LabDocument } from "@sim/contracts";
+import type { LabDocument, NodeSpec } from "@sim/contracts";
 import type { LabUiSnapshot, SimulationTraceEvent } from "@sim/sim-worker";
 import { create } from "zustand";
 
 export type WorkspaceMode = "edit" | "simulate";
+export type ExecutionMode = "realtime" | "simulation";
 export type WorkspaceTool = "select" | "add-device" | "add-link" | "delete";
 export type InspectorTab = "overview" | "interfaces" | "configuration" | "runtime";
 export type DockTab = "terminal" | "events" | "packet-trace" | "problems";
@@ -29,7 +30,9 @@ interface WorkspaceState {
   activeTerminalDeviceId: string | undefined;
   workerStatus: "empty" | "loading" | "ready" | "error";
   mode: WorkspaceMode;
+  executionMode: ExecutionMode;
   activeTool: WorkspaceTool;
+  pendingDeviceKind: NodeSpec["kind"] | undefined;
   dirty: boolean;
   error: string | undefined;
   problems: WorkspaceProblem[];
@@ -42,6 +45,8 @@ interface WorkspaceState {
   showLinkLabels: boolean;
   fitRequest: number;
   zoomResetRequest: number;
+  zoomInRequest: number;
+  zoomOutRequest: number;
   // Bounded topology-edit history (edit-mode drafts only) for Undo/Redo.
   past: LabDocument[];
   future: LabDocument[];
@@ -59,7 +64,9 @@ interface WorkspaceState {
   setActiveTerminal(deviceId: string): void;
   setWorkerStatus(status: WorkspaceState["workerStatus"]): void;
   setMode(mode: WorkspaceMode): void;
+  setExecutionMode(mode: ExecutionMode): void;
   setActiveTool(tool: WorkspaceTool): void;
+  setPendingDeviceKind(kind: NodeSpec["kind"] | undefined): void;
   setError(error: string | undefined, source?: WorkspaceProblem["source"]): void;
   clearProblems(): void;
   setFilter(filter: Partial<TraceFilters>): void;
@@ -70,6 +77,8 @@ interface WorkspaceState {
   setBottomDockOpen(open: boolean): void;
   setShowLinkLabels(show: boolean): void;
   requestFit(): void;
+  requestZoomIn(): void;
+  requestZoomOut(): void;
   reset(): void;
 }
 
@@ -83,7 +92,9 @@ const initialState = {
   activeTerminalDeviceId: undefined,
   workerStatus: "empty" as const,
   mode: "simulate" as const,
+  executionMode: "realtime" as const,
   activeTool: "select" as const,
+  pendingDeviceKind: undefined,
   dirty: false,
   error: undefined,
   problems: [],
@@ -96,6 +107,8 @@ const initialState = {
   showLinkLabels: true,
   fitRequest: 0,
   zoomResetRequest: 0,
+  zoomInRequest: 0,
+  zoomOutRequest: 0,
   past: [] as LabDocument[],
   future: [] as LabDocument[],
 };
@@ -142,8 +155,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   }),
   setActiveTerminal: (activeTerminalDeviceId) => set({ activeTerminalDeviceId, dockTab: "terminal" }),
   setWorkerStatus: (workerStatus) => set({ workerStatus }),
-  setMode: (mode) => set({ mode, activeTool: "select", paletteOpen: false }),
-  setActiveTool: (activeTool) => set({ activeTool, paletteOpen: activeTool === "add-device" }),
+  setMode: (mode) => set({ mode, activeTool: "select", pendingDeviceKind: undefined, paletteOpen: false }),
+  setExecutionMode: (executionMode) => set({ executionMode }),
+  setActiveTool: (activeTool) => set({ activeTool, pendingDeviceKind: undefined, paletteOpen: false }),
+  setPendingDeviceKind: (pendingDeviceKind) => set({
+    pendingDeviceKind,
+    activeTool: pendingDeviceKind ? "add-device" : "select",
+  }),
   setError: (error, source = "worker") => error
     ? set((state) => ({
       error,
@@ -160,6 +178,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   setBottomDockOpen: (bottomDockOpen) => set({ bottomDockOpen }),
   setShowLinkLabels: (showLinkLabels) => set({ showLinkLabels }),
   requestFit: () => set((state) => ({ fitRequest: state.fitRequest + 1 })),
+  requestZoomIn: () => set((state) => ({ zoomInRequest: state.zoomInRequest + 1 })),
+  requestZoomOut: () => set((state) => ({ zoomOutRequest: state.zoomOutRequest + 1 })),
   reset: () => {
     nextProblemId = 1;
     set(initialState);

@@ -47,7 +47,7 @@ export function BottomDock(props: BottomDockProps) {
     { value: "problems" as const, label: "Problems", icon: <AlertTriangle size={13} />, count: props.problems.length },
   ];
   return (
-    <section className="bottom-dock" aria-label="Workspace bottom panel">
+    <section className="bottom-dock" aria-label="Workspace bottom panel" data-overflow-boundary="hidden">
       <div className="bottom-dock__header">
         <Tabs label="Bottom panel sections" value={props.tab} options={options} onChange={props.onTab} />
         <IconButton label="Close bottom panel" icon={<X size={14} />} onClick={props.onClose} />

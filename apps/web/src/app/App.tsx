@@ -1,21 +1,19 @@
-import { getDeviceProfile, type LabDocument, type NodeSpec } from "@sim/contracts";
+import { getDeviceProfile, type LabDocument } from "@sim/contracts";
 import { canonicalizeLabDocument, stringifyLabDocument } from "@sim/lab-format";
 import type { SimWorkerEvent } from "@sim/sim-worker";
 import { Group as PanelGroup, Panel as ResizablePanel, Separator } from "react-resizable-panels";
 import {
   AlertTriangle, CheckCircle2, Command, Download, Eraser, FilePlus2, FlaskConical, FolderOpen, FolderX,
-  Info, Keyboard, Maximize2, Pause, PanelBottom, PanelRight, Play, Redo2, RotateCcw, SkipForward,
-  SunMoon, Tag, TerminalSquare, Undo2, X,
+  Grid3X3, Info, Keyboard, Maximize2, Pause, PanelBottom, PanelRight, Play, Redo2, RotateCcw, SkipForward,
+  SunMoon, Tag, TerminalSquare, Undo2, Wrench, X,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { DevicePalette } from "../components/DevicePalette";
-import { ToolRail } from "../components/ToolRail";
 import { Toolbar } from "../components/Toolbar";
 import type { MenuDef } from "../components/MenuBar";
 import { AssignmentPanel } from "../features/assignment/AssignmentPanel";
 import { DEMO_LABS, type DemoLabId } from "../fixtures/m10-demo-labs";
 import {
-  addDraftDevice,
   autoArrangeDocument,
   duplicateDraftDevice,
   loadLabDocumentText,
@@ -24,10 +22,11 @@ import {
   removeDraftLink,
 } from "../features/lab/document";
 import { InspectorPanel } from "../features/inspector/InspectorPanel";
+import { DeviceWindow } from "../features/device/DeviceWindow";
 import { useLaunchSession } from "../features/session/useLaunchSession";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useTheme } from "../hooks/useTheme";
-import { useWorkspaceStore, type WorkspaceMode } from "../state/workspace-store";
+import { useWorkspaceStore, type ExecutionMode, type WorkspaceMode } from "../state/workspace-store";
 import { Button, IconButton, Kbd } from "../ui";
 import type { SimulatorClient } from "./simulator-client";
 
@@ -65,6 +64,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
 export function App({ client }: AppProps) {
   const workspace = useWorkspaceStore();
   const compact = useMediaQuery("(max-width: 999px)");
+  const narrowDesktop = useMediaQuery("(max-width: 1299px)");
   const theme = useTheme();
   const launchSession = useLaunchSession();
   const [confirmApply, setConfirmApply] = useState(false);
@@ -78,6 +78,7 @@ export function App({ client }: AppProps) {
   const [demoLabOpen, setDemoLabOpen] = useState(false);
   const [validation, setValidation] = useState<string>();
   const [pendingMode, setPendingMode] = useState<WorkspaceMode>();
+  const [deviceWindowId, setDeviceWindowId] = useState<string>();
 
   useEffect(() => client.onEvent((event: SimWorkerEvent) => {
     if (event.type === "LAB_READY" || event.type === "STATE_CHANGED") workspace.setSnapshot(event.snapshot);
@@ -105,6 +106,7 @@ export function App({ client }: AppProps) {
     workspace.setSnapshot(ready);
     workspace.selectNode(undefined);
     workspace.selectLink(undefined);
+    workspace.setInspectorOpen(!narrowDesktop);
     workspace.setMode(initialMode);
     window.requestAnimationFrame(() => workspace.requestFit());
   };
@@ -163,16 +165,17 @@ export function App({ client }: AppProps) {
     else void rebuild("simulate").catch(reportError);
   };
 
+  const changeExecutionMode = (mode: ExecutionMode) => {
+    workspace.setExecutionMode(mode);
+    if (workspace.mode === "edit") changeMode("simulate");
+  };
+
   const run = useCallback(() => void client.request({ type: "RUN_UNTIL_IDLE" }).then((result) => useWorkspaceStore.getState().setSnapshot(result.snapshot)).catch(reportError), [client, reportError]);
   const step = () => void client.request({ type: "ADVANCE_TIME", milliseconds: 10 }).then((result) => workspace.setSnapshot(result.snapshot)).catch(reportError);
   const advanceTime = (milliseconds: number) => void client.request({ type: "ADVANCE_TIME", milliseconds }).then((result) => workspace.setSnapshot(result.snapshot)).catch(reportError);
   const reset = () => void client.request({ type: "RESET_RUNTIME" }).then((ready) => { workspace.clearTraces(); workspace.setSnapshot(ready); }).catch(reportError);
   const pause = () => void client.request({ type: "SET_PAUSED", paused: workspace.snapshot?.engineState !== "paused" }).then((result) => workspace.setSnapshot(result.snapshot)).catch(reportError);
 
-  const addDevice = (kind: NodeSpec["kind"]) => {
-    const draft = useWorkspaceStore.getState().draft;
-    if (draft && useWorkspaceStore.getState().mode === "edit") workspace.setDraft(addDraftDevice(draft, kind), true);
-  };
   const updateDraft = (document: LabDocument) => workspace.setDraft(document, true);
   const deleteSelection = useCallback(() => {
     const state = useWorkspaceStore.getState();
@@ -294,8 +297,8 @@ export function App({ client }: AppProps) {
       ] },
     ] },
     { id: "lab", label: "Lab", items: [
-      { id: "lab-edit", label: "Edit Mode", checked: editMode, disabled: !ready, onSelect: () => changeMode("edit") },
-      { id: "lab-sim", label: "Simulate Mode", checked: workspace.mode === "simulate", disabled: !ready, onSelect: () => changeMode("simulate") },
+      { id: "lab-edit", label: "Edit Topology", checked: editMode, disabled: !ready, onSelect: () => changeMode("edit") },
+      { id: "lab-sim", label: "Operate Topology", checked: workspace.mode === "simulate", disabled: !ready, onSelect: () => changeMode("simulate") },
       { separator: true },
       { id: "lab-apply", label: "Apply & Rebuild", disabled: !workspace.dirty, onSelect: () => { setPendingMode(workspace.mode); setConfirmApply(true); } },
       { id: "lab-info", label: "Lab Information", icon: <Info size={14} />, disabled: !labOpen, onSelect: () => setLabInfoOpen(true) },
@@ -303,12 +306,22 @@ export function App({ client }: AppProps) {
       { id: "lab-reset", label: "Reset Runtime", icon: <RotateCcw size={14} />, disabled: !simulationEnabled, onSelect: reset },
     ] },
     { id: "simulation", label: "Simulation", items: [
+      { id: "sim-realtime", label: "Realtime", checked: workspace.executionMode === "realtime", disabled: !ready, onSelect: () => changeExecutionMode("realtime") },
+      { id: "sim-mode", label: "Simulation Mode", checked: workspace.executionMode === "simulation", disabled: !ready, onSelect: () => changeExecutionMode("simulation") },
+      { separator: true },
       { id: "sim-run", label: "Run Until Idle", shortcut: "Ctrl ↵", icon: <Play size={14} />, disabled: !simulationEnabled || paused, onSelect: run },
-      { id: "sim-step", label: "Advance One Step", icon: <SkipForward size={14} />, disabled: !simulationEnabled || paused, onSelect: step },
+      { id: "sim-step", label: "Advance One Step", icon: <SkipForward size={14} />, disabled: !simulationEnabled || paused || workspace.executionMode !== "simulation", onSelect: step },
       { id: "sim-advance", label: "Advance Time…", disabled: !simulationEnabled, onSelect: () => setAdvanceTimeOpen(true) },
       { id: "sim-pause", label: paused ? "Resume" : "Pause", icon: paused ? <Play size={14} /> : <Pause size={14} />, disabled: !simulationEnabled, onSelect: pause },
       { separator: true },
       { id: "sim-clear", label: "Clear Trace", icon: <Eraser size={14} />, disabled: !labOpen, onSelect: workspace.clearTraces },
+    ] },
+    { id: "tools", label: "Tools", items: [
+      { id: "tools-terminal", label: "Open Terminal", icon: <TerminalSquare size={14} />, disabled: !labOpen, onSelect: openTerminalFromMenu },
+      { id: "tools-arrange", label: "Auto Arrange Topology", icon: <Grid3X3 size={14} />, disabled: !editMode, onSelect: arrange },
+      { id: "tools-validate", label: "Validate Document", icon: <CheckCircle2 size={14} />, disabled: !labOpen, onSelect: validateDocument },
+      { separator: true },
+      { id: "tools-cli", label: "CLI Compatibility", icon: <Wrench size={14} />, onSelect: () => setCliCommandsOpen(true) },
     ] },
     { id: "help", label: "Help", items: [
       { id: "help-cli", label: "CLI Commands", icon: <TerminalSquare size={14} />, onSelect: () => setCliCommandsOpen(true) },
@@ -345,15 +358,29 @@ export function App({ client }: AppProps) {
         ready={ready}
         dirty={workspace.dirty}
         mode={workspace.mode}
-        theme={theme.preference}
+        executionMode={workspace.executionMode}
+        activeTool={workspace.activeTool}
+        canUndo={workspace.past.length > 0}
+        canRedo={workspace.future.length > 0}
+        canDelete={hasSelection}
         session={launchSession.state.status === "authenticated" ? launchSession.state.identity : undefined}
         sessionPending={launchSession.state.status === "checking" || launchSession.state.status === "exchanging"}
         onModeChange={changeMode}
+        onExecutionModeChange={changeExecutionMode}
+        onTool={workspace.setActiveTool}
+        onNew={newLab}
+        onOpen={importLab}
+        onSave={save}
+        onUndo={workspace.undo}
+        onRedo={workspace.redo}
+        onDelete={deleteSelection}
+        onZoomIn={workspace.requestZoomIn}
+        onZoomOut={workspace.requestZoomOut}
+        onFit={workspace.requestFit}
         onRun={run}
         onStep={step}
         onPause={pause}
         onReset={reset}
-        onThemeChange={theme.setPreference}
         onLogout={() => void launchSession.logout().catch((error) => reportError(error, "validation"))}
       />
       <input id="load-lab-file" className="visually-hidden" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) loadFile(file); event.target.value = ""; }} />
@@ -364,18 +391,6 @@ export function App({ client }: AppProps) {
       {workspace.error && <div className="workspace-error" role="alert"><AlertTriangle size={14} /><span>{workspace.error}</span><button type="button" onClick={() => workspace.setDockTab("problems")}>View problems</button><IconButton label="Dismiss error" icon={<X size={13} />} onClick={() => workspace.setError(undefined)} /></div>}
       {workspace.dirty && workspace.mode === "edit" && <div className="pending-banner"><span><i /> Topology changes pending</span><Button size="sm" variant="primary" onClick={() => { setPendingMode("edit"); setConfirmApply(true); }}>Apply &amp; Rebuild</Button></div>}
       <div className="workspace-body">
-        <ToolRail
-          mode={workspace.mode}
-          activeTool={workspace.activeTool}
-          dirty={workspace.dirty}
-          canDelete={Boolean(workspace.selectedNodeId || workspace.selectedLinkId)}
-          onTool={workspace.setActiveTool}
-          onDelete={deleteSelection}
-          onFit={workspace.requestFit}
-          onArrange={arrange}
-          onApply={() => { setPendingMode("edit"); setConfirmApply(true); }}
-        />
-        {workspace.paletteOpen && <DevicePalette disabled={!workspace.draft || workspace.mode !== "edit"} onAdd={addDevice} onClose={() => workspace.setPaletteOpen(false)} />}
         <PanelGroup orientation="vertical" className="workspace-resizable" id="workspace-layout">
           <ResizablePanel id="workspace-main" minSize="300px" defaultSize="68%">
             <div className="main-workspace">
@@ -393,7 +408,7 @@ export function App({ client }: AppProps) {
           </ResizablePanel>
           {labOpen && workspace.bottomDockOpen && <>
             <Separator className="resize-handle resize-handle--horizontal" />
-            <ResizablePanel id="bottom-dock" minSize="170px" maxSize="48%" defaultSize="270px">
+            <ResizablePanel id="bottom-dock" minSize="160px" maxSize="48%" defaultSize={narrowDesktop ? "220px" : "270px"}>
               <Suspense fallback={<DockLoading />}>
                 <BottomDock
                   client={client}
@@ -416,6 +431,13 @@ export function App({ client }: AppProps) {
             </ResizablePanel>
           </>}
         </PanelGroup>
+        {labOpen && <DevicePalette
+          disabled={!workspace.draft || workspace.mode !== "edit"}
+          selectedKind={workspace.pendingDeviceKind}
+          activeTool={workspace.activeTool}
+          onSelectKind={workspace.setPendingDeviceKind}
+          onTool={workspace.setActiveTool}
+        />}
       </div>
       <footer className="workspace-footer"><span>Mode: <strong>{workspace.mode}</strong></span><span>Virtual time <code>{((workspace.snapshot?.virtualTime ?? 0) / 1_000_000).toFixed(3)} ms</code></span><span>{workspace.snapshot?.nodes.length ?? 0} devices</span><span className="workspace-footer__right">Schema v{workspace.draft?.schemaVersion ?? 1} · deterministic runtime</span></footer>
 
@@ -447,6 +469,14 @@ export function App({ client }: AppProps) {
           <Shortcut keys="Escape" label="Close menus and dialogs" />
         </div>
       </WorkspaceDialog>}
+      {deviceWindowId && workspace.draft && workspace.snapshot?.nodes.find((node) => node.id === deviceWindowId) && <DeviceWindow
+        client={client}
+        document={workspace.draft}
+        node={workspace.snapshot.nodes.find((node) => node.id === deviceWindowId)!}
+        theme={theme.resolved}
+        onError={reportInspectionError}
+        onClose={() => setDeviceWindowId(undefined)}
+      />}
     </div>
   );
 
@@ -456,16 +486,21 @@ export function App({ client }: AppProps) {
       snapshot: workspace.snapshot,
       mode: workspace.mode,
       activeTool: workspace.activeTool,
+      pendingDeviceKind: workspace.pendingDeviceKind,
       selectedNodeId: workspace.selectedNodeId,
       selectedLinkId: workspace.selectedLinkId,
       terminalTabs: workspace.terminalTabs,
       showLinkLabels: workspace.showLinkLabels,
       fitRequest: workspace.fitRequest,
       zoomResetRequest: workspace.zoomResetRequest,
-      onSelectNode: workspace.selectNode,
+      zoomInRequest: workspace.zoomInRequest,
+      zoomOutRequest: workspace.zoomOutRequest,
+      onSelectNode: (id: string | undefined) => { workspace.selectNode(id); if (id) workspace.setInspectorOpen(true); },
       onSelectLink: workspace.selectLink,
       onOpenTerminal: openTerminal,
+      onOpenDevice: setDeviceWindowId,
       onInspect: (id: string) => { workspace.selectNode(id); workspace.setInspectorOpen(true); },
+      onPlacedDevice: () => workspace.setPendingDeviceKind(undefined),
       onShowLinkLabels: workspace.setShowLinkLabels,
       onChange: updateDraft,
       onLoadDemo: () => setDemoLabOpen(true),

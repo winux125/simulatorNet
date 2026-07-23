@@ -17,6 +17,7 @@ interface TerminalWorkspaceProps {
   nodes: LabUiNode[];
   mode: WorkspaceMode;
   theme: ResolvedTheme;
+  sessionNamespace?: string;
   onActivate(deviceId: string): void;
   onClose(deviceId: string): void;
   onError(message: string): void;
@@ -32,15 +33,18 @@ export function TerminalWorkspace(props: TerminalWorkspaceProps) {
     return <EmptyState icon={<TerminalSquare size={28} />} title="No terminal sessions" description="Open a device context menu or use Open CLI in the inspector. Type commands directly into the terminal — each session keeps its own history inside the worker." />;
   }
   return (
-    <div className="terminal-workspace">
+    <div className="terminal-workspace" data-overflow-boundary="hidden">
       <div className="terminal-tabs" role="tablist" aria-label="Device terminal sessions">
         {props.tabs.map((deviceId) => {
           const node = props.nodes.find((candidate) => candidate.id === deviceId);
           const active = props.activeDeviceId === deviceId;
+          const title = node?.type === "pc"
+            ? `${node.hostname} — Command Prompt`
+            : node?.type === "server" ? `${node.hostname} — Terminal` : `${node?.hostname ?? deviceId} — CLI`;
           return (
             <button key={deviceId} type="button" role="tab" aria-selected={active} aria-label={`${node?.hostname ?? deviceId} terminal${active ? ", active" : ""}`} className={active ? "is-active" : ""} onClick={() => props.onActivate(deviceId)}>
               <TerminalSquare size={13} aria-hidden="true" />
-              <span>{node?.hostname ?? deviceId}</span>
+              <span>{title}</span>
               <small>{deviceId}</small>
               <span className="terminal-tab-close" role="button" aria-label={`Close ${node?.hostname ?? deviceId} CLI`} tabIndex={0} onClick={(event) => { event.stopPropagation(); props.onClose(deviceId); }} onKeyDown={(event) => { if (event.key === "Enter") props.onClose(deviceId); }}><X size={12} /></span>
             </button>
@@ -60,6 +64,7 @@ export function TerminalWorkspace(props: TerminalWorkspaceProps) {
               active={props.activeDeviceId === deviceId}
               enabled={props.mode === "simulate" && node !== undefined}
               theme={props.theme}
+              sessionNamespace={props.sessionNamespace ?? "terminal"}
               onError={props.onError}
             />
           );
@@ -76,6 +81,7 @@ interface TerminalSessionProps {
   active: boolean;
   enabled: boolean;
   theme: ResolvedTheme;
+  sessionNamespace: string;
   onError(message: string): void;
 }
 
@@ -90,7 +96,7 @@ function terminalTheme() {
   };
 }
 
-function TerminalSession({ client, deviceId, hostname, active, enabled, theme, onError }: TerminalSessionProps) {
+function TerminalSession({ client, deviceId, hostname, active, enabled, theme, sessionNamespace, onError }: TerminalSessionProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XtermTerminal | undefined>(undefined);
   const fitRef = useRef<XtermFitAddon | undefined>(undefined);
@@ -104,7 +110,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, o
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    const sessionId = `terminal:${deviceId}`;
+    const sessionId = `${sessionNamespace}:${deviceId}`;
     let disposed = false;
     let dataDisposable: { dispose(): void } | undefined;
     let prompt = "";
@@ -215,7 +221,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, o
       fitRef.current = undefined;
       void client.request({ type: "CLOSE_CLI_SESSION", sessionId }).catch(() => undefined);
     };
-  }, [client, deviceId, hostname, onError]);
+  }, [client, deviceId, hostname, onError, sessionNamespace]);
 
   useEffect(() => {
     if (terminalRef.current) terminalRef.current.options.theme = terminalTheme();
@@ -246,6 +252,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, o
       <div
         ref={hostRef}
         className="xterm-host"
+        data-scroll-owner="xterm"
         aria-label={`${hostname} terminal`}
         onMouseDown={() => { if (active) focusRef.current(); }}
       />

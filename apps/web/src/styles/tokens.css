@@ -165,9 +165,9 @@
   --radius-lg: 7px;
   --border: 1px solid var(--color-border);
   --focus-ring: 0 0 0 2px var(--color-app), 0 0 0 4px var(--color-accent);
-  --app-bar-height: 48px;
-  --tool-rail-width: 46px;
-  --device-library-width: 238px;
+  --menu-bar-height: 40px;
+  --action-toolbar-height: 38px;
+  --device-palette-height: 112px;
   --footer-height: 22px;
   --z-canvas-overlay: 10;
   --z-drawer: 30;

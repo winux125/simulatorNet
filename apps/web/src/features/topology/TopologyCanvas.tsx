@@ -11,7 +11,7 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import { Cable, Eye, FilePlus2, FlaskConical, Maximize2, Monitor, Network, Router as RouterIcon, Tag, Upload } from "lucide-react";
-import { useEffect, useMemo, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import type { WorkspaceMode, WorkspaceTool } from "../../state/workspace-store";
 import { Button, StatusIndicator } from "../../ui";
 import {
@@ -30,16 +30,21 @@ interface TopologyCanvasProps {
   snapshot: LabUiSnapshot | undefined;
   mode: WorkspaceMode;
   activeTool: WorkspaceTool;
+  pendingDeviceKind: NodeSpec["kind"] | undefined;
   selectedNodeId: string | undefined;
   selectedLinkId: string | undefined;
   terminalTabs: string[];
   showLinkLabels: boolean;
   fitRequest: number;
   zoomResetRequest: number;
+  zoomInRequest: number;
+  zoomOutRequest: number;
   onSelectNode(id: string | undefined): void;
   onSelectLink(id: string | undefined): void;
   onOpenTerminal(id: string): void;
+  onOpenDevice(id: string): void;
   onInspect(id: string): void;
+  onPlacedDevice(): void;
   onShowLinkLabels(show: boolean): void;
   onChange(document: LabDocument): void;
   onLoadDemo(): void;
@@ -54,6 +59,10 @@ type ContextMenuState =
 
 const nodeTypes = { device: DeviceNode };
 
+export function reactFlowAttributionOptions(value = import.meta.env.VITE_HIDE_REACT_FLOW_ATTRIBUTION) {
+  return { hideAttribution: value === "true" };
+}
+
 function endpointKey(node: string, iface: string): string {
   return `${node}\u0000${iface}`;
 }
@@ -62,6 +71,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   const [instance, setInstance] = useState<ReactFlowInstance<DeviceFlowNode, Edge> | null>(null);
   const [zoom, setZoom] = useState(1);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>();
+  const recentDevicePointer = useRef<{ id: string; button: number; time: number; x: number; y: number } | undefined>(undefined);
   const status = useMemo(() => new Map(props.snapshot?.nodes.map((node) => [node.id, node])), [props.snapshot]);
   const editable = props.mode === "edit";
 
@@ -72,6 +82,14 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   useEffect(() => {
     if (props.zoomResetRequest > 0) void instance?.zoomTo(1, { duration: 200 });
   }, [instance, props.zoomResetRequest]);
+
+  useEffect(() => {
+    if (props.zoomInRequest > 0) void instance?.zoomIn({ duration: 160 });
+  }, [instance, props.zoomInRequest]);
+
+  useEffect(() => {
+    if (props.zoomOutRequest > 0) void instance?.zoomOut({ duration: 160 });
+  }, [instance, props.zoomOutRequest]);
 
   if (!props.document) {
     return (
@@ -133,6 +151,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         configurationChanged: changed,
         connectable: editable && props.activeTool === "add-link",
         onActivate: props.onSelectNode,
+        onOpen: props.onOpenDevice,
         onContextMenu: openNodeMenu,
       },
     };
@@ -232,21 +251,53 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     }
     setContextMenu(undefined);
   };
+  const deviceIdFromEvent = (event: ReactMouseEvent): string | undefined =>
+    (event.target as HTMLElement).closest<HTMLElement>("[data-device-id]")?.dataset.deviceId;
 
   return (
-    <section className={`topology-panel topology-panel--${props.mode}`} aria-label="Topology canvas" onContextMenu={(event) => event.preventDefault()}>
+    <section
+      className={`topology-panel topology-panel--${props.mode}`}
+      aria-label="Topology canvas"
+      onMouseDownCapture={(event) => {
+        const deviceId = deviceIdFromEvent(event);
+        const recent = recentDevicePointer.current;
+        if (deviceId) {
+          recentDevicePointer.current = { id: deviceId, button: event.button, time: event.timeStamp, x: event.clientX, y: event.clientY };
+          if (event.button === 2) openNodeMenu(deviceId, event);
+          if (event.button === 0 && event.detail >= 2) props.onOpenDevice(deviceId);
+          return;
+        }
+        if (
+          event.button === 0
+          && event.detail >= 2
+          && recent?.button === 0
+          && event.timeStamp - recent.time < 700
+          && Math.hypot(event.clientX - recent.x, event.clientY - recent.y) < 24
+        ) props.onOpenDevice(recent.id);
+      }}
+      onDoubleClickCapture={(event) => {
+        const recent = recentDevicePointer.current;
+        const deviceId = deviceIdFromEvent(event)
+          ?? (recent && event.timeStamp - recent.time < 700 ? recent.id : undefined);
+        if (deviceId) props.onOpenDevice(deviceId);
+      }}
+      onContextMenuCapture={(event) => {
+        const recent = recentDevicePointer.current;
+        const deviceId = deviceIdFromEvent(event)
+          ?? (recent?.button === 2 && event.timeStamp - recent.time < 700 ? recent.id : undefined);
+        if (deviceId) {
+          openNodeMenu(deviceId, event);
+          event.stopPropagation();
+        }
+      }}
+      onContextMenu={(event) => event.preventDefault()}
+    >
       <div className="canvas-statusbar">
         <StatusIndicator status={props.mode === "edit" ? "unsaved" : "ready"} label={props.mode === "edit" ? "Edit topology" : "Live simulation"} />
         <span>{document.topology.nodes.length} devices</span>
         <span>{document.topology.links.length} links</span>
         {props.activeTool === "add-link" && <strong><Cable size={12} /> Drag between interface endpoints</strong>}
         <button type="button" aria-label="Toggle link labels" aria-pressed={props.showLinkLabels} onClick={() => props.onShowLinkLabels(!props.showLinkLabels)}><Tag size={13} /> Port labels</button>
-      </div>
-      <div className="lab-information" aria-label="Lab information">
-        <small>Training laboratory</small>
-        <strong>{document.title}</strong>
-        <p>{document.description ?? "Build, inspect and validate a deterministic network topology."}</p>
-        <span>Seed {document.simulation.seed} · schema v{document.schemaVersion}</span>
       </div>
       <ReactFlow
         nodes={nodes}
@@ -262,13 +313,20 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           }
         }}
         onEdgeClick={(_, edge) => props.onSelectLink(edge.id)}
+        onNodeDoubleClick={(_, node) => props.onOpenDevice(node.id)}
+        onNodeContextMenu={(event, node) => openNodeMenu(node.id, event)}
         onEdgeContextMenu={(event, edge) => {
           event.preventDefault();
           props.onSelectLink(edge.id);
           setContextMenu({ kind: "link", id: edge.id, x: event.clientX, y: event.clientY });
         }}
-        onPaneClick={() => {
+        onPaneClick={(event) => {
           setContextMenu(undefined);
+          if (editable && props.pendingDeviceKind && instance) {
+            addAt(props.pendingDeviceKind, instance.screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+            props.onPlacedDevice();
+            return;
+          }
           props.onSelectNode(undefined);
           props.onSelectLink(undefined);
         }}
@@ -290,6 +348,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         nodesDraggable={editable && props.activeTool === "select"}
         nodesConnectable={editable && props.activeTool === "add-link"}
         deleteKeyCode={null}
+        proOptions={reactFlowAttributionOptions()}
       >
         <Background variant={BackgroundVariant.Dots} color="var(--color-canvas-grid)" gap={22} size={1} />
         <Controls showInteractive={false} />

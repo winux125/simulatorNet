@@ -6,8 +6,8 @@ async function chooseDemo(page: import("@playwright/test").Page, name: RegExp) {
 }
 
 async function openCli(page: import("@playwright/test").Page, hostname: string) {
-  await page.getByRole("button", { name: `Select ${hostname}` }).click({ button: "right" });
-  await page.getByRole("menuitem", { name: /Open CLI/ }).click();
+  await page.getByRole("button", { name: `Select ${hostname}` }).click();
+  await page.getByTestId("inspector").getByRole("button", { name: /Open CLI/ }).click();
   await expect(page.getByRole("tab", { name: new RegExp(hostname) })).toBeVisible();
 }
 
@@ -17,9 +17,14 @@ async function runCli(page: import("@playwright/test").Page, command: string) {
   await page.keyboard.press("Enter");
 }
 
-test("M8.3 desktop menus drive the browser lab with an xterm-native CLI", async ({ page }) => {
+async function chooseTheme(page: import("@playwright/test").Page, theme: "System" | "Dark" | "Light") {
+  await page.getByRole("menuitem", { name: "View", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Theme", exact: true }).click();
+  await page.getByRole("menuitemradio", { name: theme, exact: true }).click();
+}
+
+test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI", async ({ page }) => {
   const menu = (label: string) => page.getByRole("menuitem", { name: label, exact: true });
-  const theme = page.getByLabel("Color theme");
   const shell = page.locator(".app-shell");
 
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -27,7 +32,16 @@ test("M8.3 desktop menus drive the browser lab with an xterm-native CLI", async 
 
   // 1. Welcome workspace.
   await expect(page.getByRole("heading", { name: "SimulatorNet" })).toBeVisible();
-  await expect(theme).toHaveValue("system");
+  await expect(page.locator("html")).toHaveAttribute("data-theme-preference", "system");
+  await expect(page.getByLabel("Color theme")).toHaveCount(0);
+  for (const label of ["File", "Edit", "View", "Lab", "Simulation", "Tools", "Help"]) {
+    await expect(menu(label)).toBeVisible();
+  }
+  await expect(page.getByLabel("Workspace actions")).toBeVisible();
+  await chooseTheme(page, "Light");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await chooseTheme(page, "Dark");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 
   // 2. File → Load Demo Lab.
   await menu("File").click();
@@ -35,14 +49,26 @@ test("M8.3 desktop menus drive the browser lab with an xterm-native CLI", async 
   await page.getByRole("button", { name: /Router-on-a-stick \+ DHCP/ }).click();
   await expect(page.getByText("VLAN Routing Lab", { exact: true }).first()).toBeVisible();
   await expect(page.locator(".react-flow__minimap")).toHaveCount(0);
+  await expect(page.locator(".react-flow__attribution")).toBeVisible();
+  await expect(page.getByLabel("Device palette")).toHaveAttribute("data-region", "bottom");
 
   // 3. Lab menu → toggle Edit then Simulate mode.
   await menu("Lab").click();
-  await page.getByRole("menuitemradio", { name: "Edit Mode" }).click();
+  await page.getByRole("menuitemradio", { name: "Edit Topology" }).click();
   await expect(shell).toHaveAttribute("data-workspace-mode", "edit");
-  await menu("Lab").click();
-  await page.getByRole("menuitemradio", { name: "Simulate Mode" }).click();
+  await page.getByRole("button", { name: "Edit Topology" }).click();
   await expect(shell).toHaveAttribute("data-workspace-mode", "simulate");
+  await page.getByRole("button", { name: "Simulation", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Simulation", exact: true })).toHaveAttribute("aria-pressed", "true");
+
+  await page.getByRole("button", { name: "Select PC1" }).dblclick();
+  const deviceWindow = page.getByRole("dialog", { name: "PC1 device window" });
+  await expect(deviceWindow).toBeVisible();
+  for (const tab of ["Desktop", "Config", "Terminal", "Attributes"]) {
+    await expect(deviceWindow.getByRole("tab", { name: tab })).toBeVisible();
+  }
+  await expect(deviceWindow.getByRole("button", { name: "Web Browser" })).toBeVisible();
+  await deviceWindow.getByRole("button", { name: "Close device window" }).click();
 
   // 4. Device context menu → open the PC terminal.
   await page.getByRole("button", { name: "Select PC1" }).click({ button: "right" });
@@ -58,6 +84,9 @@ test("M8.3 desktop menus drive the browser lab with an xterm-native CLI", async 
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("terminal-transcript")).toContainText("ping 192.168.20.10");
   await expect(page.getByTestId("terminal-transcript")).toContainText("Success rate is 100 percent");
+  await expect(page.getByLabel("Workspace bottom panel")).toHaveCSS("overflow", "hidden");
+  await expect(page.locator(".terminal-workspace")).toHaveCSS("overflow", "hidden");
+  await expect(page.locator(".xterm-host")).toHaveCSS("overflow", "hidden");
 
   // 8. View menu → hide and restore the Inspector.
   await menu("View").click();
@@ -78,12 +107,21 @@ test("M8.3 desktop menus drive the browser lab with an xterm-native CLI", async 
   expect((await download).suggestedFilename()).toContain(".json");
 
   // Dark/light review screenshots.
-  await theme.selectOption("dark");
+  await chooseTheme(page, "Dark");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await page.screenshot({ path: "/tmp/m8-3-dark-1440x900.png", animations: "disabled" });
-  await theme.selectOption("light");
+  await page.screenshot({ path: "/tmp/packet-style-dark-1440x900.png", animations: "disabled" });
+  await chooseTheme(page, "Light");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-  await page.screenshot({ path: "/tmp/m8-3-light-1440x900.png", animations: "disabled" });
+  await page.screenshot({ path: "/tmp/packet-style-light-1440x900.png", animations: "disabled" });
+  await menu("View").click();
+  await page.getByRole("menuitem", { name: "Hide Inspector" }).click();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.getByRole("button", { name: "Fit topology" }).click();
+  await page.waitForTimeout(350);
+  await chooseTheme(page, "Dark");
+  await page.screenshot({ path: "/tmp/packet-style-dark-1280x720.png", animations: "disabled" });
+  await chooseTheme(page, "Light");
+  await page.screenshot({ path: "/tmp/packet-style-light-1280x720.png", animations: "disabled" });
 });
 
 test("M10.1 Hub and Bridge demos expose deterministic forwarding behavior", async ({ page }) => {
@@ -92,7 +130,7 @@ test("M10.1 Hub and Bridge demos expose deterministic forwarding behavior", asyn
 
   await chooseDemo(page, /Hub Ethernet Basics/);
   await expect(page.getByText("Hub Ethernet Basics", { exact: true }).first()).toBeVisible();
-  await page.getByLabel("Color theme").selectOption("dark");
+  await chooseTheme(page, "Dark");
   await page.screenshot({ path: "/tmp/m10-1-hub-dark-1440x900.png", animations: "disabled" });
   await openCli(page, "PC1");
   await runCli(page, "ping 192.168.10.20");
@@ -116,7 +154,7 @@ test("M10.1 L3 Switch CLI configures SVIs and routes inter-VLAN ping", async ({ 
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto("/");
   await chooseDemo(page, /L3 Switch Inter-VLAN Routing/);
-  await page.getByLabel("Color theme").selectOption("dark");
+  await chooseTheme(page, "Dark");
   await page.screenshot({ path: "/tmp/m10-1-l3-dark-1280x720.png", animations: "disabled" });
   await openCli(page, "DSW1");
 
@@ -153,7 +191,7 @@ test("M10.1 L3 Switch CLI configures SVIs and routes inter-VLAN ping", async ({ 
   await openCli(page, "PC1");
   await runCli(page, "ping 192.168.20.10");
   await expect(page.getByTestId("terminal-transcript").last()).toContainText("Success rate is 100 percent");
-  await page.getByLabel("Color theme").selectOption("light");
+  await chooseTheme(page, "Light");
   await page.screenshot({ path: "/tmp/m10-1-l3-light-1280x720.png", animations: "disabled" });
 });
 
@@ -178,9 +216,9 @@ test("M10.2 DNS and HTTP traverse UDP/TCP and expose Server service UI", async (
   await page.getByLabel("Packet trace protocol filter").selectOption("HTTP");
   await expect(page.locator('tr[data-event-type="http-response"]').first()).toBeVisible();
 
-  await page.getByLabel("Color theme").selectOption("dark");
+  await chooseTheme(page, "Dark");
   await page.screenshot({ path: "/tmp/m10-2-dns-http-dark-1440x900.png", animations: "disabled" });
-  await page.getByLabel("Color theme").selectOption("light");
+  await chooseTheme(page, "Light");
   await page.screenshot({ path: "/tmp/m10-2-dns-http-light-1440x900.png", animations: "disabled" });
 });
 
@@ -205,9 +243,9 @@ test("M10.2 TFTP, NTP, and Syslog workflows retain bounded runtime state", async
   await page.getByRole("tab", { name: "Runtime" }).click();
   await expect(page.getByText("Syslog messages")).toBeVisible();
   await expect(page.getByTestId("inspector").getByText("uplink changed", { exact: true })).toBeVisible();
-  await page.getByLabel("Color theme").selectOption("dark");
+  await chooseTheme(page, "Dark");
   await page.screenshot({ path: "/tmp/m10-2-services-dark-1280x720.png", animations: "disabled" });
-  await page.getByLabel("Color theme").selectOption("light");
+  await chooseTheme(page, "Light");
   await page.screenshot({ path: "/tmp/m10-2-services-light-1280x720.png", animations: "disabled" });
 });
 

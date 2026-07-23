@@ -15,6 +15,7 @@ export type DeviceNodeData = Record<string, unknown> & {
   configurationChanged: boolean;
   connectable: boolean;
   onActivate(id: string): void;
+  onOpen(id: string): void;
   onContextMenu(id: string, event: MouseEvent): void;
 };
 
@@ -56,7 +57,13 @@ export function DeviceNode({ id, data, selected }: NodeProps<DeviceFlowNode>) {
           isConnectable={data.connectable}
         />
       ))}
-      <button type="button" aria-label={`Select ${data.hostname}`} aria-pressed={selected} onClick={() => data.onActivate(id)}>
+      <button
+        type="button"
+        aria-label={`Select ${data.hostname}`}
+        aria-pressed={selected}
+        onClick={() => data.onActivate(id)}
+        onDoubleClick={() => data.onOpen(id)}
+      >
         <span className="device-node__icon" aria-hidden="true"><DeviceIcon size={23} strokeWidth={1.55} /></span>
         <span className="device-node__copy">
           <span><strong>{data.hostname}</strong>{data.terminalOpen && <TerminalSquare size={11} aria-label="CLI open" />}</span>

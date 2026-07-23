@@ -642,3 +642,31 @@ Known M10.2 limits: no real sockets or web fetches, no full RFC TCP semantics,
 no Router/L3-switch application hosting, no server-side filesystem, no service
 persistence beyond structured lab configuration, and no new routing or
 security protocols.
+
+## Milestone 10.2.1 — Packet Tracer-style workspace
+
+The browser now presents the simulator as a compact desktop learning tool. A
+seven-item application menu (`File`, `Edit`, `View`, `Lab`, `Simulation`,
+`Tools`, `Help`) sits above a separate action toolbar. The logical topology
+keeps the largest share of the window, while the two-level bottom palette
+groups Network Devices, End Devices and Connections. Devices support both
+drag-and-drop and click-then-place. Edit Topology remains distinct from the
+Realtime and Simulation execution modes.
+
+Double-clicking a device opens a profile-specific configuration window:
+Router and managed switching profiles expose Overview, Config, CLI,
+Interfaces and Attributes; PC exposes Desktop utilities and a Command Prompt;
+Server adds Services. These are views and controls over the canonical worker
+state, not independent configuration copies. The Inspector starts closed at
+the 1280 px desktop breakpoint and remains available from View or device
+selection.
+
+Theme selection is intentionally available only through **View → Theme**.
+Bottom-dock overflow is clipped at the panel boundary; tables own their inner
+scrolling and xterm owns terminal scrolling.
+
+React Flow attribution is controlled only through its supported
+`proOptions.hideAttribution` API. It remains visible by default. Set
+`VITE_HIDE_REACT_FLOW_ATTRIBUTION=true` only when the distribution satisfies
+the React Flow attribution requirements; SimulatorNet does not hide the
+attribution with CSS.

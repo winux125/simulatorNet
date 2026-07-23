@@ -22,6 +22,7 @@ import {
   TFTP_BACKUP_DEMO,
 } from "../fixtures/m10-demo-labs";
 import { THEME_STORAGE_KEY } from "../hooks/useTheme";
+import { reactFlowAttributionOptions } from "../features/topology/TopologyCanvas";
 import { App } from "./App";
 import type { SimulatorClient } from "./simulator-client";
 
@@ -36,6 +37,11 @@ interface MockXterm {
 }
 
 const xtermHarness = vi.hoisted(() => ({ instances: [] as MockXterm[] }));
+const flowHarness = vi.hoisted(() => ({
+  proOptions: undefined as { hideAttribution?: boolean } | undefined,
+  zoomIn: vi.fn(),
+  zoomOut: vi.fn(),
+}));
 
 vi.mock("@xterm/xterm", () => {
   class MockTerminal {
@@ -72,16 +78,26 @@ vi.mock("react-resizable-panels", async () => {
 vi.mock("@xyflow/react", async () => {
   const React = await import("react");
   function MockReactFlow(props: Record<string, unknown>) {
+    flowHarness.proOptions = props.proOptions as { hideAttribution?: boolean } | undefined;
     const nodes = props.nodes as Array<Record<string, unknown>>;
     const edges = props.edges as Array<Record<string, unknown>>;
     const nodeTypes = props.nodeTypes as Record<string, React.ComponentType<Record<string, unknown>>>;
     React.useEffect(() => {
       (props.onInit as ((instance: unknown) => void) | undefined)?.({
         fitView: vi.fn(),
+        zoomIn: flowHarness.zoomIn,
+        zoomOut: flowHarness.zoomOut,
         screenToFlowPosition: ({ x, y }: { x: number; y: number }) => ({ x, y }),
       });
     }, []);
-    return React.createElement("div", { "data-testid": "react-flow" }, [
+    return React.createElement("div", {
+      "data-testid": "react-flow",
+      onClick: (event: React.MouseEvent) => {
+        if (event.target === event.currentTarget) {
+          (props.onPaneClick as ((event: React.MouseEvent) => void) | undefined)?.(event);
+        }
+      },
+    }, [
       ...nodes.map((node) => {
         const Component = nodeTypes[String(node.type)];
         return Component ? React.createElement(Component, { key: String(node.id), ...node }) : null;
@@ -131,16 +147,25 @@ class RuntimeClient implements SimulatorClient {
 }
 
 let compactViewport = false;
+let narrowViewport = false;
 let prefersDark = true;
 
 beforeEach(() => {
   compactViewport = false;
+  narrowViewport = false;
   prefersDark = true;
   xtermHarness.instances.length = 0;
+  flowHarness.proOptions = undefined;
+  flowHarness.zoomIn.mockClear();
+  flowHarness.zoomOut.mockClear();
   window.localStorage.clear();
   useWorkspaceStore.getState().reset();
   Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn((query: string) => ({
-    matches: query.includes("max-width") ? compactViewport : query.includes("prefers-color-scheme: dark") ? prefersDark : false,
+    matches: query.includes("max-width: 999px")
+      ? compactViewport
+      : query.includes("max-width: 1299px")
+        ? narrowViewport
+        : query.includes("prefers-color-scheme: dark") ? prefersDark : false,
     media: query,
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
@@ -162,8 +187,19 @@ async function loadDemo(client: RuntimeClient) {
 }
 
 async function enterEditMode() {
-  await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+  await userEvent.click(screen.getByRole("button", { name: "Edit Topology" }));
   await waitFor(() => expect(useWorkspaceStore.getState().mode).toBe("edit"));
+}
+
+async function chooseTheme(label: "System" | "Dark" | "Light") {
+  await openMenu("View");
+  await userEvent.click(screen.getByRole("menuitem", { name: "Theme" }));
+  await userEvent.click(screen.getByRole("menuitemradio", { name: label }));
+}
+
+async function placeDevice(label: string) {
+  await userEvent.click(screen.getByRole("button", { name: `Add ${label}` }));
+  fireEvent.click(screen.getByTestId("react-flow"), { clientX: 320, clientY: 240 });
 }
 
 async function openMenu(label: string) {
@@ -189,7 +225,8 @@ describe("M6.1 simulator workspace", () => {
     const client = new RuntimeClient();
     render(<App client={client} />);
     expect(screen.getByRole("banner", { name: "Simulation toolbar" })).toBeTruthy();
-    expect(screen.getByRole("navigation", { name: "Topology tools" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Topology actions" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "File" })).toBeTruthy();
     expect(await screen.findByRole("heading", { name: "SimulatorNet" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "New Lab" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Import Lab" })).toBeTruthy();
@@ -242,8 +279,8 @@ describe("M6.1 simulator workspace", () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     await enterEditMode();
-    await userEvent.click(screen.getByRole("button", { name: "Add device" }));
-    await userEvent.click(screen.getByRole("button", { name: "Add PC" }));
+    await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
+    await placeDevice("PC");
     await openMenu("File");
     await userEvent.click(screen.getByRole("menuitem", { name: "Close Lab" }));
     expect(screen.getByRole("dialog", { name: "Close laboratory?" })).toBeTruthy();
@@ -261,27 +298,27 @@ describe("M6.1 simulator workspace", () => {
   it("defaults to System theme and switches Dark, Light and System immediately", async () => {
     const client = new RuntimeClient();
     render(<App client={client} />);
-    const control = screen.getByLabelText("Color theme") as HTMLSelectElement;
-    expect(control.value).toBe("system");
     expect(document.documentElement.dataset.themePreference).toBe("system");
     expect(document.documentElement.dataset.theme).toBe("dark");
-    await userEvent.selectOptions(control, "light");
+    expect(screen.queryByLabelText("Color theme")).toBeNull();
+    await chooseTheme("Light");
     expect(document.documentElement.dataset.theme).toBe("light");
-    await userEvent.selectOptions(control, "dark");
+    await chooseTheme("Dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
     prefersDark = false;
-    await userEvent.selectOptions(control, "system");
+    await chooseTheme("System");
     expect(document.documentElement.dataset.themePreference).toBe("system");
   });
 
   it("persists the selected theme in localStorage", async () => {
     const client = new RuntimeClient();
     render(<App client={client} />);
-    await userEvent.selectOptions(screen.getByLabelText("Color theme"), "light");
+    await chooseTheme("Light");
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
     cleanup();
     render(<App client={new RuntimeClient()} />);
-    expect((screen.getByLabelText("Color theme") as HTMLSelectElement).value).toBe("light");
+    expect(document.documentElement.dataset.themePreference).toBe("light");
+    expect(document.documentElement.dataset.theme).toBe("light");
   });
 
   it("keeps topology and terminal mounted in dark and light themes", async () => {
@@ -290,31 +327,38 @@ describe("M6.1 simulator workspace", () => {
     fireEvent.contextMenu(screen.getByRole("button", { name: "Select PC1" }));
     await userEvent.click(screen.getByRole("menuitem", { name: /Open CLI/ }));
     expect(await screen.findByLabelText("PC1 CLI")).toBeTruthy();
-    await userEvent.selectOptions(screen.getByLabelText("Color theme"), "light");
+    await chooseTheme("Light");
     expect(document.documentElement.dataset.theme).toBe("light");
     expect(screen.getByTestId("react-flow")).toBeTruthy();
     expect(screen.getByLabelText("PC1 CLI")).toBeTruthy();
-    await userEvent.selectOptions(screen.getByLabelText("Color theme"), "dark");
+    await chooseTheme("Dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
   });
 
-  it("activates tool rail actions", async () => {
+  it("exposes the two-level bottom device palette", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     await enterEditMode();
-    await userEvent.click(screen.getByRole("button", { name: "Add device" }));
-    expect(screen.getByRole("complementary", { name: "Device library" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Add device" }).getAttribute("aria-pressed")).toBe("true");
+    const palette = screen.getByLabelText("Device palette");
+    expect(palette.getAttribute("data-region")).toBe("bottom");
+    expect(within(palette).getByRole("tab", { name: "Network Devices" })).toBeTruthy();
+    expect(within(palette).getByRole("tab", { name: "End Devices" })).toBeTruthy();
+    expect(within(palette).getByRole("tab", { name: "Connections" })).toBeTruthy();
   });
 
-  it("filters the device library", async () => {
+  it("switches palette categories and selects click-then-place models", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     await enterEditMode();
-    await userEvent.click(screen.getByRole("button", { name: "Add device" }));
-    await userEvent.type(screen.getByLabelText("Filter devices"), "router");
     expect(screen.getByRole("button", { name: "Add Router" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Add PC" })).toBeNull();
+    await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
+    expect(screen.getByRole("button", { name: "Add PC" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add Server" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Add PC" }));
+    expect(useWorkspaceStore.getState().pendingDeviceKind).toBe("pc");
+    fireEvent.click(screen.getByTestId("react-flow"), { clientX: 300, clientY: 220 });
+    expect(useWorkspaceStore.getState().draft?.topology.nodes).toHaveLength(5);
+    expect(useWorkspaceStore.getState().pendingDeviceKind).toBeUndefined();
   });
 
   it("selects a topology device", async () => {
@@ -350,7 +394,7 @@ describe("M6.1 simulator workspace", () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     await enterEditMode();
-    await userEvent.click(screen.getByRole("button", { name: "Simulate" }));
+    await userEvent.click(screen.getByRole("button", { name: "Edit Topology" }));
     await waitFor(() => expect(useWorkspaceStore.getState().mode).toBe("simulate"));
     expect(client.requestTypes).toContain("SERIALIZE_LAB");
     expect(client.requestTypes).toContain("REBUILD_LAB");
@@ -360,8 +404,8 @@ describe("M6.1 simulator workspace", () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     await enterEditMode();
-    await userEvent.click(screen.getByRole("button", { name: "Add device" }));
-    await userEvent.click(screen.getByRole("button", { name: "Add PC" }));
+    await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
+    await placeDevice("PC");
     expect(screen.getByText("Topology changes pending")).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "Apply & Rebuild" }).length).toBeGreaterThanOrEqual(1);
   });
@@ -427,6 +471,137 @@ describe("M6.1 simulator workspace", () => {
     await userEvent.click(screen.getByRole("button", { name: "Select R1" }));
     expect(document.querySelector(".app-shell")?.getAttribute("data-responsive")).toBe("compact");
     expect(document.querySelector(".inspector-panel.is-drawer")).toBeTruthy();
+  });
+});
+
+describe("M10.2.1 Packet Tracer-style workspace", () => {
+  it("renders the seven desktop menus and a separate compact action toolbar", () => {
+    render(<App client={new RuntimeClient()} />);
+    for (const label of ["File", "Edit", "View", "Lab", "Simulation", "Tools", "Help"]) {
+      expect(screen.getByRole("menuitem", { name: label })).toBeTruthy();
+    }
+    const actions = screen.getByLabelText("Workspace actions");
+    for (const label of ["New lab", "Open lab", "Save lab", "Undo", "Redo", "Select tool", "Add link", "Delete selected", "Zoom in", "Zoom out", "Fit topology", "Run until idle", "Advance one step"]) {
+      expect(within(actions).getByRole("button", { name: label })).toBeTruthy();
+    }
+  });
+
+  it("keeps topology editing distinct from Realtime and Simulation execution modes", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const edit = screen.getByRole("button", { name: "Edit Topology" });
+    const realtime = screen.getByRole("button", { name: "Realtime" });
+    const simulation = screen.getByRole("button", { name: "Simulation" });
+    expect(edit.getAttribute("aria-pressed")).toBe("false");
+    expect(realtime.getAttribute("aria-pressed")).toBe("true");
+    await userEvent.click(simulation);
+    expect(useWorkspaceStore.getState().executionMode).toBe("simulation");
+    expect(simulation.getAttribute("aria-pressed")).toBe("true");
+    await userEvent.click(edit);
+    expect(useWorkspaceStore.getState().mode).toBe("edit");
+    expect(useWorkspaceStore.getState().executionMode).toBe("simulation");
+  });
+
+  it("offers network, end-device and connection sub-palettes", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await enterEditMode();
+    for (const label of ["Router", "L2 Switch", "L3 Switch", "Hub", "Bridge"]) {
+      expect(screen.getByRole("button", { name: `Add ${label}` })).toBeTruthy();
+    }
+    await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
+    expect(screen.getByRole("button", { name: "Add PC" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add Server" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("tab", { name: "Connections" }));
+    expect(screen.getByRole("button", { name: "Automatic Ethernet" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Ethernet Link" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Delete Link" })).toBeTruthy();
+  });
+
+  it("supports drag data for palette models", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await enterEditMode();
+    const setData = vi.fn();
+    fireEvent.dragStart(screen.getByRole("button", { name: "Add Router" }), {
+      dataTransfer: { effectAllowed: "none", setData },
+    });
+    expect(setData).toHaveBeenCalledWith("application/x-simulator-device", "router");
+  });
+
+  it("opens profile-specific Router and PC windows on double click", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    fireEvent.doubleClick(screen.getByRole("button", { name: "Select R1" }));
+    let dialog = await screen.findByRole("dialog", { name: "R1 device window" });
+    for (const tab of ["Overview", "Config", "CLI", "Interfaces", "Attributes"]) {
+      expect(within(dialog).getByRole("tab", { name: tab })).toBeTruthy();
+    }
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close device window" }));
+    fireEvent.doubleClick(screen.getByRole("button", { name: "Select PC1" }));
+    dialog = await screen.findByRole("dialog", { name: "PC1 device window" });
+    for (const tab of ["Desktop", "Config", "Terminal", "Attributes"]) {
+      expect(within(dialog).getByRole("tab", { name: tab })).toBeTruthy();
+    }
+    for (const tool of ["IP Configuration", "Command Prompt", "Web Browser", "TFTP Client", "NTP Client", "Syslog Tool", "Transport Viewer"]) {
+      expect(within(dialog).getByRole("button", { name: tool })).toBeTruthy();
+    }
+  });
+
+  it("opens the Server window with Services and Desktop tabs", async () => {
+    const client = new RuntimeClient();
+    await loadFocusedDemo(client, /DNS \+ Web Services/, DNS_WEB_DEMO.id);
+    fireEvent.doubleClick(screen.getByRole("button", { name: "Select SRV1" }));
+    const dialog = await screen.findByRole("dialog", { name: "SRV1 device window" });
+    for (const tab of ["Config", "Services", "Desktop", "Terminal", "Attributes"]) {
+      expect(within(dialog).getByRole("tab", { name: tab })).toBeTruthy();
+    }
+  });
+
+  it("uses only the official React Flow attribution option", async () => {
+    expect(reactFlowAttributionOptions("true")).toEqual({ hideAttribution: true });
+    expect(reactFlowAttributionOptions("false")).toEqual({ hideAttribution: false });
+    expect(reactFlowAttributionOptions(undefined)).toEqual({ hideAttribution: false });
+    await loadDemo(new RuntimeClient());
+    expect(flowHarness.proOptions).toEqual({ hideAttribution: false });
+    expect(document.querySelector(".react-flow__attribution")).toBeNull();
+  });
+
+  it("keeps the theme selector exclusively under View > Theme", async () => {
+    render(<App client={new RuntimeClient()} />);
+    expect(screen.queryByLabelText("Color theme")).toBeNull();
+    expect(document.querySelector(".theme-control")).toBeNull();
+    await openMenu("View");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Theme" }));
+    for (const label of ["System", "Dark", "Light"]) {
+      expect(screen.getByRole("menuitemradio", { name: label })).toBeTruthy();
+    }
+  });
+
+  it("routes compact toolbar zoom controls through React Flow", async () => {
+    await loadDemo(new RuntimeClient());
+    await userEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+    await userEvent.click(screen.getByRole("button", { name: "Zoom out" }));
+    expect(flowHarness.zoomIn).toHaveBeenCalled();
+    expect(flowHarness.zoomOut).toHaveBeenCalled();
+  });
+
+  it("starts with the inspector closed at the 1280-wide desktop breakpoint", async () => {
+    narrowViewport = true;
+    await loadDemo(new RuntimeClient());
+    expect(useWorkspaceStore.getState().inspectorOpen).toBe(false);
+    expect(document.querySelector(".inspector-panel")).toBeNull();
+    await openMenu("View");
+    expect(screen.getByRole("menuitem", { name: "Show Inspector" })).toBeTruthy();
+  });
+
+  it("marks the dock and terminal as bounded overflow regions", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    expect(screen.getByLabelText("Workspace bottom panel").getAttribute("data-overflow-boundary")).toBe("hidden");
+    await openDeviceTerminal("Select PC1");
+    expect(document.querySelector(".terminal-workspace")?.getAttribute("data-overflow-boundary")).toBe("hidden");
+    expect(screen.getByLabelText("PC1 terminal").getAttribute("data-scroll-owner")).toBe("xterm");
   });
 });
 
@@ -542,7 +717,7 @@ describe("M8.3 desktop menus and terminal", () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     await openMenu("Lab");
-    await userEvent.click(screen.getByRole("menuitemradio", { name: "Edit Mode" }));
+    await userEvent.click(screen.getByRole("menuitemradio", { name: "Edit Topology" }));
     await waitFor(() => expect(useWorkspaceStore.getState().mode).toBe("edit"));
   });
 
@@ -595,11 +770,13 @@ describe("M10.1 expanded device palette", () => {
     const client = new RuntimeClient();
     render(<App client={client} />);
     await userEvent.click(screen.getByRole("button", { name: "New Lab" }));
-    await userEvent.click(screen.getByRole("button", { name: "Add device" }));
-    for (const label of ["PC", "Server", "Hub", "Bridge", "L2 Switch", "L3 Switch", "Router"]) {
+    for (const label of ["Hub", "Bridge", "L2 Switch", "L3 Switch", "Router"]) {
       expect(screen.getByRole("button", { name: `Add ${label}` })).toBeTruthy();
     }
-    await userEvent.click(screen.getByRole("button", { name: "Add Hub" }));
+    await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
+    for (const label of ["PC", "Server"]) expect(screen.getByRole("button", { name: `Add ${label}` })).toBeTruthy();
+    await userEvent.click(screen.getByRole("tab", { name: "Network Devices" }));
+    await placeDevice("Hub");
     const hub = useWorkspaceStore.getState().draft?.topology.nodes.find((node) => node.kind === "hub");
     expect(hub).toMatchObject({ id: "hub-1", name: "HUB1" });
     expect(hub?.interfaces.map((iface) => iface.id)).toEqual(["Eth0/1", "Eth0/2", "Eth0/3", "Eth0/4", "Eth0/5", "Eth0/6", "Eth0/7", "Eth0/8"]);
