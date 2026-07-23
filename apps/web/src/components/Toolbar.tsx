@@ -112,8 +112,8 @@ export function Toolbar(props: ToolbarProps) {
           Edit Topology
         </button>
         <div className="execution-switch" role="group" aria-label="Execution mode">
-          <button type="button" className={props.executionMode === "realtime" ? "is-active" : ""} aria-pressed={props.executionMode === "realtime"} disabled={!props.ready} onClick={() => props.onExecutionModeChange("realtime")}>Realtime</button>
-          <button type="button" className={props.executionMode === "simulation" ? "is-active" : ""} aria-pressed={props.executionMode === "simulation"} disabled={!props.ready} onClick={() => props.onExecutionModeChange("simulation")}>Simulation</button>
+          <button type="button" title="Run protocol actions to completion automatically" className={props.executionMode === "realtime" ? "is-active" : ""} aria-pressed={props.executionMode === "realtime"} disabled={!props.ready} onClick={() => props.onExecutionModeChange("realtime")}>Realtime</button>
+          <button type="button" title="Inspect events and advance deterministic virtual time manually" className={props.executionMode === "simulation" ? "is-active" : ""} aria-pressed={props.executionMode === "simulation"} disabled={!props.ready} onClick={() => props.onExecutionModeChange("simulation")}>Simulation</button>
         </div>
         <ToolbarGroup label="Simulation controls">
           <IconButton label="Run until idle" icon={<Play size={15} />} disabled={!operating || props.engineState === "paused"} onClick={props.onRun} />

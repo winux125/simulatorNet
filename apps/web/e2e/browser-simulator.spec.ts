@@ -234,6 +234,25 @@ test("draft-only devices wait for worker rebuild without unknown-device errors",
   await expect(page.getByText(/Unknown device/)).toHaveCount(0);
 });
 
+test("deleting a device closes its CLI before the worker rebuild", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/");
+  await chooseDemo(page, /Router-on-a-stick \+ DHCP/);
+  await openCli(page, "SW1");
+  await expect(page.getByRole("tab", { name: /SW1/ })).toBeVisible();
+
+  const editTopology = page.getByRole("button", { name: "Edit Topology" });
+  await editTopology.click();
+  await expect(editTopology).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Select SW1" }).click();
+  await page.getByRole("button", { name: "Delete selected" }).click();
+  await expect(page.getByRole("tab", { name: /SW1/ })).toHaveCount(0);
+
+  await page.locator(".pending-banner").getByRole("button", { name: "Apply & Rebuild" }).click();
+  await page.getByRole("dialog", { name: "Apply topology changes?" }).getByRole("button", { name: "Apply & Rebuild" }).click();
+  await expect(page.getByText(/Unknown device/)).toHaveCount(0);
+});
+
 test("M10.1 Hub and Bridge demos expose deterministic forwarding behavior", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");

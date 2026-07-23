@@ -132,7 +132,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     return { draft: next, future: state.future.slice(1), past: [...state.past, state.draft], dirty: true };
   }),
   requestZoomReset: () => set((state) => ({ zoomResetRequest: state.zoomResetRequest + 1 })),
-  setSnapshot: (snapshot) => set({ snapshot, workerStatus: "ready" }),
+  setSnapshot: (snapshot) => set((state) => {
+    const deviceIds = new Set(snapshot.nodes.map((node) => node.id));
+    const terminalTabs = state.terminalTabs.filter((deviceId) => deviceIds.has(deviceId));
+    const activeTerminalDeviceId = state.activeTerminalDeviceId && deviceIds.has(state.activeTerminalDeviceId)
+      ? state.activeTerminalDeviceId
+      : terminalTabs.at(-1);
+    return { snapshot, workerStatus: "ready", terminalTabs, activeTerminalDeviceId };
+  }),
   appendTraces: (events) => set((state) => ({ traces: [...state.traces, ...events].slice(-500) })),
   clearTraces: () => set({ traces: [] }),
   selectNode: (id) => set({ selectedNodeId: id, selectedLinkId: undefined }),

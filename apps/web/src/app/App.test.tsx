@@ -408,6 +408,21 @@ describe("M6.1 simulator workspace", () => {
     expect(useWorkspaceStore.getState().terminalTabs).toEqual(["pc-1"]);
   });
 
+  it("closes a device CLI when that device is deleted", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await openDeviceTerminal("Select SW1");
+    expect(useWorkspaceStore.getState().terminalTabs).toContain("switch-1");
+
+    await enterEditMode();
+    await userEvent.click(screen.getByRole("button", { name: "Select SW1" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete selected" }));
+
+    expect(useWorkspaceStore.getState().terminalTabs).not.toContain("switch-1");
+    expect(screen.queryByRole("tab", { name: /SW1/ })).toBeNull();
+    expect(useWorkspaceStore.getState().problems).toHaveLength(0);
+  });
+
   it("transitions between Edit and Simulate through rebuild", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);
@@ -513,6 +528,8 @@ describe("M10.2.1 Packet Tracer-style workspace", () => {
     const simulation = screen.getByRole("button", { name: "Simulation" });
     expect(edit.getAttribute("aria-pressed")).toBe("false");
     expect(realtime.getAttribute("aria-pressed")).toBe("true");
+    expect(realtime.getAttribute("title")).toContain("automatically");
+    expect(simulation.getAttribute("title")).toContain("virtual time");
     await userEvent.click(simulation);
     expect(useWorkspaceStore.getState().executionMode).toBe("simulation");
     expect(simulation.getAttribute("aria-pressed")).toBe("true");

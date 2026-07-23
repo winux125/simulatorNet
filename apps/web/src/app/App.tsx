@@ -181,7 +181,10 @@ export function App({ client }: AppProps) {
     const state = useWorkspaceStore.getState();
     if (!state.draft || state.mode !== "edit") return;
     if (state.selectedNodeId) {
-      state.setDraft(removeDraftDevice(state.draft, state.selectedNodeId), true);
+      const removedDeviceId = state.selectedNodeId;
+      state.setDraft(removeDraftDevice(state.draft, removedDeviceId), true);
+      state.closeTerminal(removedDeviceId);
+      setDeviceWindowId((current) => current === removedDeviceId ? undefined : current);
       state.selectNode(undefined);
     } else if (state.selectedLinkId) {
       state.setDraft(removeDraftLink(state.draft, state.selectedLinkId), true);
