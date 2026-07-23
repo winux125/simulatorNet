@@ -213,6 +213,27 @@ test("M10.2.1 CLI profiles expose host and IOS-like learning flows", async ({ pa
   await expect(page.locator(".terminal-session.is-active .xterm-rows")).toContainText("R1# ping");
 });
 
+test("draft-only devices wait for worker rebuild without unknown-device errors", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "New Lab", exact: true }).click();
+  await page.getByRole("button", { name: "Add Device", exact: true }).click();
+  await page.getByRole("button", { name: "Add Bridge" }).click();
+  const canvas = page.locator(".react-flow");
+  const canvasBounds = await canvas.boundingBox();
+  expect(canvasBounds).not.toBeNull();
+  await canvas.click({ position: { x: Math.round(canvasBounds!.width * 0.45), y: Math.round(canvasBounds!.height * 0.4) } });
+  await page.getByRole("button", { name: "Select BR1" }).click();
+  const pendingMessage = page.getByText("Apply & Rebuild to create this device in the simulation worker.");
+  await expect(pendingMessage).toBeVisible();
+  await expect(page.getByText(/Unknown device/)).toHaveCount(0);
+
+  await page.locator(".pending-banner").getByRole("button", { name: "Apply & Rebuild" }).click();
+  await page.getByRole("dialog", { name: "Apply topology changes?" }).getByRole("button", { name: "Apply & Rebuild" }).click();
+  await expect(pendingMessage).toHaveCount(0);
+  await expect(page.getByText(/Unknown device/)).toHaveCount(0);
+});
+
 test("M10.1 Hub and Bridge demos expose deterministic forwarding behavior", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
@@ -361,10 +382,10 @@ test("M8 launch exchange strips the code and exposes organization session contro
       contentType: "application/json",
       headers: { "set-cookie": "simulatornet_session=opaque; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800" },
       body: JSON.stringify({
-        user: { id: "user-1", displayName: "KAI Student" },
-        organization: { id: "org-1", name: "KAI Development" },
+        user: { id: "user-1", displayName: "Demo Student" },
+        organization: { id: "org-1", name: "Demo Organization" },
         role: "student",
-        returnUrl: "https://academy.kai.kz/course/ccna",
+        returnUrl: "https://academy.example.test/course/ccna",
       }),
     });
   });
@@ -372,8 +393,8 @@ test("M8 launch exchange strips the code and exposes organization session contro
 
   await page.goto(`/launch?code=${launchCode}`);
   await expect(page).toHaveURL("http://127.0.0.1:4173/");
-  await expect(page.getByLabel("Authenticated organization session")).toContainText("KAI Student");
-  await expect(page.getByLabel("Authenticated organization session")).toContainText("KAI Development");
+  await expect(page.getByLabel("Authenticated organization session")).toContainText("Demo Student");
+  await expect(page.getByLabel("Authenticated organization session")).toContainText("Demo Organization");
   expect(page.url()).not.toContain(launchCode);
   await page.getByLabel("Log out organization session").click();
   await expect(page.getByText("Anonymous", { exact: true })).toBeVisible();

@@ -9,5 +9,5 @@ set -a
 # shellcheck disable=SC1091
 source .env
 set +a
-docker compose --env-file .env -f infra/compose.yaml up -d --build --wait
+docker compose up -d --build --wait
 node infra/smoke/m8-smoke.mjs

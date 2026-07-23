@@ -367,6 +367,18 @@ describe("M6.1 simulator workspace", () => {
     expect(useWorkspaceStore.getState().pendingDeviceKind).toBeUndefined();
   });
 
+  it("keeps draft-only devices out of worker inspection until Apply & Rebuild", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    await userEvent.click(screen.getByRole("button", { name: "New Lab" }));
+    await placeDevice("Bridge");
+    await userEvent.click(screen.getByRole("button", { name: "Select BR1" }));
+    expect(await screen.findByText("Pending rebuild")).toBeTruthy();
+    expect(screen.getByText("Apply & Rebuild to create this device in the simulation worker.")).toBeTruthy();
+    expect(client.requestTypes).not.toContain("GET_DEVICE_INSPECTION");
+    expect(useWorkspaceStore.getState().problems).toHaveLength(0);
+  });
+
   it("selects a topology device", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);

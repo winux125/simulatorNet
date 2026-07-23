@@ -313,7 +313,7 @@ Create `.env` from `.env.example`, then run:
 pnpm db:generate       # generate a committed migration after a schema change
 pnpm db:check          # validate migration history
 pnpm db:migrate        # apply committed migrations (never drizzle push)
-pnpm db:seed:dev       # safe, idempotent kai-dev development data
+pnpm db:seed:dev       # safe, idempotent demo-org development data
 pnpm db:test:integration
 ```
 
@@ -332,16 +332,16 @@ allowlist, and executes every repository call with the resulting tenant.
 
 ```mermaid
 sequenceDiagram
-  participant KAI as KAI backend
+  participant Platform as External platform
   participant KC as Keycloak
   participant API as SimulatorNet API
   participant Browser as Student browser
-  KAI->>KC: client_credentials + requested scopes
-  KC-->>KAI: signed access token
-  KAI->>API: upsert user + membership (Bearer token)
-  KAI->>API: create 60-second launch session
-  API-->>KAI: one-time launch URL
-  KAI-->>Browser: redirect to /launch?code=...
+  Platform->>KC: client_credentials + requested scopes
+  KC-->>Platform: signed access token
+  Platform->>API: upsert user + membership (Bearer token)
+  Platform->>API: create 60-second launch session
+  API-->>Platform: one-time launch URL
+  Platform-->>Browser: redirect to /launch?code=...
   Browser->>API: same-origin launch exchange
   API-->>Browser: HttpOnly session cookie
   Browser->>API: GET /v1/session/me
@@ -358,9 +358,9 @@ required scope is absent from either the token or local allowlist.
 
 The imported `simulatornet` realm contains a bearer-only resource client
 `simulatornet-api` and a confidential service-account client
-`kai-platform-dev`. Standard Authorization Code, implicit and Direct Access
+`external-platform-dev`. Standard Authorization Code, implicit and Direct Access
 Grant/password flows are disabled for the service client. Its secret is read
-from `KAI_PLATFORM_CLIENT_SECRET` during realm import and is never committed,
+from `EXTERNAL_PLATFORM_CLIENT_SECRET` during realm import and is never committed,
 sent to SimulatorNet, or exposed to the browser. These scopes are optional and
 must be requested explicitly:
 
@@ -378,7 +378,7 @@ output private):
 
 ```bash
 curl --fail --silent --show-error \
-  -u "kai-platform-dev:${KAI_PLATFORM_CLIENT_SECRET}" \
+  -u "external-platform-dev:${EXTERNAL_PLATFORM_CLIENT_SECRET}" \
   -d grant_type=client_credentials \
   --data-urlencode 'scope=users:read users:write memberships:write launch:write' \
   http://127.0.0.1:8080/realms/simulatornet/protocol/openid-connect/token
@@ -405,17 +405,17 @@ production unless `OPENAPI_ENABLED=true` is set deliberately.
 Example integration calls:
 
 ```bash
-curl -X PUT http://127.0.0.1:3000/v1/integrations/users/kai-user-123 \
+curl -X PUT http://127.0.0.1:3000/v1/integrations/users/external-user-123 \
   -H "Authorization: Bearer ${ACCESS_TOKEN}" -H 'Content-Type: application/json' \
   -d '{"email":"student@example.kz","displayName":"Student Name"}'
 
-curl -X PUT http://127.0.0.1:3000/v1/integrations/users/kai-user-123/membership \
+curl -X PUT http://127.0.0.1:3000/v1/integrations/users/external-user-123/membership \
   -H "Authorization: Bearer ${ACCESS_TOKEN}" -H 'Content-Type: application/json' \
   -d '{"role":"student"}'
 
 curl -X POST http://127.0.0.1:3000/v1/launch-sessions \
   -H "Authorization: Bearer ${ACCESS_TOKEN}" -H 'Content-Type: application/json' \
-  -d '{"externalUserId":"kai-user-123","returnUrl":"http://127.0.0.1:4173/course/ccna"}'
+  -d '{"externalUserId":"external-user-123","returnUrl":"http://127.0.0.1:4173/course/ccna"}'
 ```
 
 Launch codes live for 60 seconds and are atomically consumed once. The browser
@@ -444,16 +444,21 @@ Integration endpoints may assign only `student`, `instructor` and
 
 ### Local development and environment
 
-Copy `.env.example` to `.env`, replace every `change-me`, then run:
+Copy `.env.example` to `.env`, replace every `change-me`, then run from the
+repository root:
 
 ```bash
+docker compose up -d db
+docker compose up -d keycloak
+docker compose up -d db keycloak api
+
 pnpm infra:up       # build API and start both PostgreSQL services + Keycloak
 pnpm smoke:m8       # real Client Credentials → launch → cookie → logout smoke
 pnpm infra:down
 ```
 
 Important variables are `DATABASE_URL`, the two logical PostgreSQL credential
-sets, Keycloak bootstrap credentials, `KAI_PLATFORM_CLIENT_SECRET`,
+sets, Keycloak bootstrap credentials, `EXTERNAL_PLATFORM_CLIENT_SECRET`,
 `KEYCLOAK_ISSUER`, `KEYCLOAK_JWKS_URL`, `KEYCLOAK_AUDIENCE`, `WEB_ORIGIN`,
 `PUBLIC_WEB_URL`, `API_BASE_URL` and `OPENAPI_ENABLED`. Compose uses separate
 named volumes for SimulatorNet and Keycloak data. `db:migrate` runs committed

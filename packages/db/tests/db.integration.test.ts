@@ -77,8 +77,8 @@ integration("PostgreSQL tenant repository", () => {
   });
 
   it("enforces case-insensitive organization slug uniqueness", async () => {
-    await platform.createOrganization({ slug: "KAI", name: "KAI" });
-    await expect(platform.createOrganization({ slug: "kai", name: "Duplicate" })).rejects.toBeInstanceOf(DatabaseConflictError);
+    await platform.createOrganization({ slug: "ACME", name: "ACME" });
+    await expect(platform.createOrganization({ slug: "acme", name: "Duplicate" })).rejects.toBeInstanceOf(DatabaseConflictError);
   });
 
   it("enforces global Keycloak integration client uniqueness", async () => {

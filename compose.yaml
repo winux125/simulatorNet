@@ -1,7 +1,7 @@
 name: simulatornet
 
 services:
-  simulatornet-postgres:
+  db:
     image: postgres:18
     restart: unless-stopped
     environment:
@@ -16,7 +16,7 @@ services:
       timeout: 3s
       retries: 30
 
-  keycloak-postgres:
+  keycloak-db:
     image: postgres:18
     restart: unless-stopped
     environment:
@@ -37,18 +37,18 @@ services:
     command: ["start-dev", "--import-realm", "--health-enabled=true"]
     environment:
       KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://keycloak-postgres:5432/${KEYCLOAK_DB_NAME}
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/${KEYCLOAK_DB_NAME}
       KC_DB_USERNAME: ${KEYCLOAK_DB_USER}
       KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}
-      KAI_PLATFORM_CLIENT_SECRET: ${KAI_PLATFORM_CLIENT_SECRET}
+      EXTERNAL_PLATFORM_CLIENT_SECRET: ${EXTERNAL_PLATFORM_CLIENT_SECRET}
     volumes:
-      - ./keycloak/realm:/opt/keycloak/data/import:ro
+      - ./infra/keycloak/realm:/opt/keycloak/data/import:ro
     ports:
       - "8080:8080"
     depends_on:
-      keycloak-postgres:
+      keycloak-db:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/9000; printf \"GET /health/ready HTTP/1.0\\r\\n\\r\\n\" >&3; grep -q \"200 OK\" <&3'"]
@@ -58,12 +58,12 @@ services:
 
   api:
     build:
-      context: ..
+      context: .
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
     environment:
       NODE_ENV: development
-      DATABASE_URL: postgresql://${SIMULATORNET_DB_USER}:${SIMULATORNET_DB_PASSWORD}@simulatornet-postgres:5432/${SIMULATORNET_DB_NAME}
+      DATABASE_URL: postgresql://${SIMULATORNET_DB_USER}:${SIMULATORNET_DB_PASSWORD}@db:5432/${SIMULATORNET_DB_NAME}
       KEYCLOAK_ISSUER: ${KEYCLOAK_PUBLIC_URL}/realms/simulatornet
       KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/simulatornet/protocol/openid-connect/certs
       KEYCLOAK_AUDIENCE: simulatornet-api
@@ -73,7 +73,7 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      simulatornet-postgres:
+      db:
         condition: service_healthy
       keycloak:
         condition: service_healthy

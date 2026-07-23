@@ -285,10 +285,10 @@ integration("M9.2 academic API", () => {
     const { rows } = await client.pool.query("select id from integration_clients where organization_id = $1 limit 1", [tenant.organization.id]);
     const integrationClientId = rows[0]!.id as string;
     const repo = new TenantRepository(client.db);
-    const external = await repo.upsertExternalUser(sysContext(tenant.organization.id), integrationClientId, "kai-ext-1", { email: "ext@x.test", displayName: "Ext" });
+    const external = await repo.upsertExternalUser(sysContext(tenant.organization.id), integrationClientId, "external-1", { email: "ext@x.test", displayName: "Ext" });
     await addMembership(tenant.organization.id, external.userId, "student");
     // The organizationId in the body must be ignored — tenant comes from the principal.
-    const assign = await app.inject({ method: "PUT", url: `/v1/integrations/assignments/${assignment.id}/users/kai-ext-1`, headers: authHeaders(tenant.token), payload: { organizationId: "attacker" } });
+    const assign = await app.inject({ method: "PUT", url: `/v1/integrations/assignments/${assignment.id}/users/external-1`, headers: authHeaders(tenant.token), payload: { organizationId: "attacker" } });
     expect(assign.statusCode).toBe(200);
     expect(assign.json().studentUserId).toBe(external.userId);
     const students = (await app.inject({ method: "GET", url: `/v1/assignments/${assignment.id}/students`, headers: jsonHeaders(tenant.instructorCookie) })).json();

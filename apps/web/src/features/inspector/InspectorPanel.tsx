@@ -1,5 +1,5 @@
 import { getDeviceProfile, type DeviceCapability, type LabDocument } from "@sim/contracts";
-import type { DeviceInspection, LabUiSnapshot } from "@sim/sim-worker";
+import type { DeviceInspection, LabUiNode, LabUiSnapshot } from "@sim/sim-worker";
 import { Braces, CircleX, Cpu, ListTree, Network, TerminalSquare, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { SimulatorClient } from "../../app/simulator-client";
@@ -44,13 +44,25 @@ function stateLabel(adminUp: boolean, operationalUp: boolean): string {
 export function InspectorPanel(props: InspectorPanelProps) {
   const [inspection, setInspection] = useState<DeviceInspection>();
   const [loading, setLoading] = useState(false);
-  const node = props.snapshot?.nodes.find((candidate) => candidate.id === props.selectedNodeId);
+  const liveNode = props.snapshot?.nodes.find((candidate) => candidate.id === props.selectedNodeId);
+  const draftNode = props.document?.topology.nodes.find((candidate) => candidate.id === props.selectedNodeId);
+  const pendingRuntime = Boolean(draftNode && !liveNode);
+  const draftConfiguration = draftNode ? props.document?.configurations[draftNode.id] : undefined;
+  const node: LabUiNode | undefined = liveNode ?? (draftNode ? {
+    id: draftNode.id,
+    type: draftNode.kind,
+    hostname: draftConfiguration?.hostname ?? draftNode.name ?? draftNode.id,
+    position: draftNode.position ?? { x: 0, y: 0 },
+    status: "down",
+    interfaces: draftNode.interfaces.map((iface) => ({ id: iface.id, adminUp: false, operationalUp: false })),
+  } : undefined);
   const link = props.document?.topology.links.find((candidate) => candidate.id === props.selectedLinkId);
   const profile = node ? getDeviceProfile(node.type) : undefined;
 
   useEffect(() => {
-    if (!props.selectedNodeId || !props.snapshot) {
+    if (!props.selectedNodeId || !props.snapshot?.nodes.some((candidate) => candidate.id === props.selectedNodeId)) {
       setInspection(undefined);
+      setLoading(false);
       return;
     }
     let active = true;
@@ -90,7 +102,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
             <div className="device-summary">
               <span className="device-summary__icon"><Cpu size={22} /></span>
               <div><p>{node.type}</p><h3>{node.hostname}</h3></div>
-              <StatusIndicator status={node.status} label={node.status} />
+              <StatusIndicator status={pendingRuntime ? "unsaved" : node.status} label={pendingRuntime ? "Pending rebuild" : node.status} />
             </div>
             <dl className="property-list">
               <div><dt>Device ID</dt><dd><code>{node.id}</code></dd></div>
@@ -99,8 +111,9 @@ export function InspectorPanel(props: InspectorPanelProps) {
               <div><dt>Lab</dt><dd>{props.snapshot?.title}</dd></div>
               <div><dt>Virtual time</dt><dd><code>{((props.snapshot?.virtualTime ?? 0) / 1_000_000).toFixed(3)} ms</code></dd></div>
             </dl>
+            {pendingRuntime && <p className="section-note">Apply &amp; Rebuild to create this device in the simulation worker.</p>}
             {profile?.cliProfile
-              ? <Button variant="primary" icon={<TerminalSquare size={14} />} disabled={props.mode !== "simulate"} onClick={() => props.onOpenTerminal(node.id)}>Open CLI</Button>
+              ? <Button variant="primary" icon={<TerminalSquare size={14} />} disabled={pendingRuntime || props.mode !== "simulate"} onClick={() => props.onOpenTerminal(node.id)}>Open CLI</Button>
               : <p className="section-note">This device has no interactive CLI. Use the topology and runtime inspector.</p>}
           </div>
         )}
@@ -116,7 +129,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
                   const ipAddress = "ipAddress" in iface ? iface.ipAddress : undefined;
                   return <tr key={iface.id}>
                     <td><code>{iface.id}</code></td>
-                    <td><span className={`table-state ${iface.operationalUp ? "is-up" : ""}`}>{stateLabel(iface.adminUp, iface.operationalUp)}</span></td>
+                    <td><span className={`table-state ${iface.operationalUp ? "is-up" : ""}`}>{pendingRuntime ? "pending" : stateLabel(iface.adminUp, iface.operationalUp)}</span></td>
                     <td>{mode ?? "—"}</td>
                     <td><code>{ipAddress ? `${ipAddress}${detailed && "prefixLength" in detailed && detailed.prefixLength !== undefined ? `/${detailed.prefixLength}` : ""}` : vlan ? `VLAN ${vlan}` : "—"}</code></td>
                     <td><code>{connectedTo(props.document, node.id, iface.id)}</code></td>
@@ -128,7 +141,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
         )}
         {node && props.tab === "configuration" && (
           <div className="inspector-section">
-            {node.type === "server" && <ServerServicesPanel client={props.client} deviceId={node.id} refreshKey={props.snapshot?.virtualTime ?? 0} onError={props.onError} />}
+            {node.type === "server" && !pendingRuntime && <ServerServicesPanel client={props.client} deviceId={node.id} refreshKey={props.snapshot?.virtualTime ?? 0} onError={props.onError} />}
             <p className="section-eyebrow">Read-only structured configuration</p>
             <pre className="configuration-view">{JSON.stringify(props.document?.configurations[node.id] ?? {}, null, 2)}</pre>
             <p className="section-note">Use the device CLI to change configuration. Topology edits are applied through the rebuild boundary.</p>
@@ -136,6 +149,9 @@ export function InspectorPanel(props: InspectorPanelProps) {
         )}
         {node && props.tab === "runtime" && (
           <div className="runtime-inspection">
+            {pendingRuntime
+              ? <EmptyState icon={<CircleX size={24} />} title="Pending worker rebuild" description="Apply the topology changes before inspecting runtime state for this device." />
+              : <>
             {loading && <p className="loading-line">Reading worker runtime…</p>}
             {!loading && inspection && <>
               {hasAnyCapability(inspection.capabilities, ["ipv4-host", "ipv4-routing"])
@@ -167,6 +183,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
               </>}
             </>}
             {!loading && !inspection && <EmptyState icon={<CircleX size={24} />} title="Runtime unavailable" description="The worker did not return inspection data for this device." />}
+            </>}
           </div>
         )}
       </div>

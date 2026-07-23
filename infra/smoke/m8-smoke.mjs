@@ -1,8 +1,8 @@
 const keycloakBase = process.env.KEYCLOAK_PUBLIC_URL ?? "http://127.0.0.1:8080";
 const apiBase = process.env.API_BASE_URL ?? "http://127.0.0.1:3000";
 const webOrigin = process.env.WEB_ORIGIN ?? "http://127.0.0.1:4173";
-const secret = process.env.KAI_PLATFORM_CLIENT_SECRET;
-if (!secret) throw new Error("KAI_PLATFORM_CLIENT_SECRET is required");
+const secret = process.env.EXTERNAL_PLATFORM_CLIENT_SECRET;
+if (!secret) throw new Error("EXTERNAL_PLATFORM_CLIENT_SECRET is required");
 
 async function json(response, expected = 200) {
   const body = await response.json();
@@ -12,7 +12,7 @@ async function json(response, expected = 200) {
 
 const tokenBody = new URLSearchParams({
   grant_type: "client_credentials",
-  client_id: "kai-platform-dev",
+  client_id: "external-platform-dev",
   client_secret: secret,
   scope: "users:read users:write memberships:write launch:write labs:validate verifications:write",
 });
@@ -29,7 +29,7 @@ console.log("Keycloak client_credentials token acquired: [REDACTED]");
 await json(await fetch(`${apiBase}/v1/integrations/users/smoke-student`, {
   method: "PUT",
   headers: { authorization, "content-type": "application/json" },
-  body: JSON.stringify({ email: "smoke-student@kai.example", displayName: "Smoke Student" }),
+  body: JSON.stringify({ email: "smoke-student@example.test", displayName: "Smoke Student" }),
 }));
 await json(await fetch(`${apiBase}/v1/integrations/users/smoke-student/membership`, {
   method: "PUT",
@@ -55,7 +55,7 @@ if (exchange.role !== "student") throw new Error("requestedRole incorrectly elev
 const cookie = exchangeResponse.headers.get("set-cookie")?.split(";", 1)[0];
 if (!cookie) throw new Error("Exchange returned no session cookie");
 const me = await json(await fetch(`${apiBase}/v1/session/me`, { headers: { cookie } }));
-if (me.role !== "student" || me.organizationName !== "KAI Development") throw new Error("Session principal mismatch");
+if (me.role !== "student" || me.organizationName !== "Demo Organization") throw new Error("Session principal mismatch");
 await json(await fetch(`${apiBase}/v1/session/launch-exchange`, {
   method: "POST",
   headers: { origin: webOrigin, "content-type": "application/json" },

@@ -37,7 +37,7 @@ async function signedToken(azp: string, scopes = allScopes, overrides: { issuer?
     .sign(privateKey);
 }
 
-async function createTenant(slug: string, allowedScopes = allScopes, allowedReturnUrls = [webOrigin, "https://academy.kai.kz"]) {
+async function createTenant(slug: string, allowedScopes = allScopes, allowedReturnUrls = [webOrigin, "https://academy.example.test"]) {
   const organization = await new PlatformAdminRepository(client.db).createOrganization({ slug, name: `${slug} Organization` });
   const context: TenantContext = { organizationId: organization.id, actor: { kind: "system", id: "integration-test" } };
   const repository = new TenantRepository(client.db);
@@ -84,17 +84,17 @@ integration("M8 authenticated API", () => {
     const tenant = await createTenant("full-flow");
     const app = await buildApi({ database: client.db, serviceAuthenticator: authenticator, webOrigin, publicWebUrl: webOrigin });
     const upsert = await app.inject({
-      method: "PUT", url: "/v1/integrations/users/kai-user-123", headers: authHeader(tenant.token),
+      method: "PUT", url: "/v1/integrations/users/external-user-123", headers: authHeader(tenant.token),
       payload: { email: "student@example.kz", displayName: "Student Name", organizationId: "attacker-value" },
     });
     expect(upsert.statusCode).toBe(200);
     const membership = await app.inject({
-      method: "PUT", url: "/v1/integrations/users/kai-user-123/membership", headers: authHeader(tenant.token), payload: { role: "student" },
+      method: "PUT", url: "/v1/integrations/users/external-user-123/membership", headers: authHeader(tenant.token), payload: { role: "student" },
     });
     expect(membership.json()).toMatchObject({ role: "student" });
     const launch = await app.inject({
       method: "POST", url: "/v1/launch-sessions", headers: authHeader(tenant.token),
-      payload: { externalUserId: "kai-user-123", returnUrl: `${webOrigin}/course/ccna`, requestedRole: "organization_admin" },
+      payload: { externalUserId: "external-user-123", returnUrl: `${webOrigin}/course/ccna`, requestedRole: "organization_admin" },
     });
     expect(launch.statusCode).toBe(200);
     const code = new URL(launch.json().launchUrl).searchParams.get("code");
@@ -166,7 +166,7 @@ integration("M8 authenticated API", () => {
     const user = await tenant.repository.upsertExternalUser(tenant.context, tenant.integrationClient.id, "user", { email: "u@example.test", displayName: "User" });
     await tenant.repository.setOrganizationMembership(tenant.context, user.userId, "student");
     const app = await buildApi({ database: client.db, serviceAuthenticator: authenticator, production: true, publicWebUrl: "https://labs.example.test", webOrigin: "https://labs.example.test" });
-    for (const returnUrl of ["https://evil.example.test", "//academy.kai.kz/path", "https://user:pass@academy.kai.kz/path", "http://127.0.0.1:4173/path"]) {
+    for (const returnUrl of ["https://evil.example.test", "//academy.example.test/path", "https://user:pass@academy.example.test/path", "http://127.0.0.1:4173/path"]) {
       const response = await app.inject({
         method: "POST", url: "/v1/launch-sessions", headers: authHeader(tenant.token), payload: { externalUserId: "user", returnUrl },
       });
@@ -192,7 +192,7 @@ integration("M8 authenticated API", () => {
   });
 
   it("sets Secure in production and does not log tokens, codes or launch URLs", async () => {
-    const tenant = await createTenant("secure-cookie", allScopes, ["https://academy.kai.kz"]);
+    const tenant = await createTenant("secure-cookie", allScopes, ["https://academy.example.test"]);
     const user = await tenant.repository.upsertExternalUser(tenant.context, tenant.integrationClient.id, "user", { email: "u@example.test", displayName: "User" });
     await tenant.repository.setOrganizationMembership(tenant.context, user.userId, "student");
     let logs = "";
@@ -203,7 +203,7 @@ integration("M8 authenticated API", () => {
       logger: { level: "info", stream },
     });
     const launch = await app.inject({
-      method: "POST", url: "/v1/launch-sessions", headers: authHeader(tenant.token), payload: { externalUserId: "user", returnUrl: "https://academy.kai.kz/course" },
+      method: "POST", url: "/v1/launch-sessions", headers: authHeader(tenant.token), payload: { externalUserId: "user", returnUrl: "https://academy.example.test/course" },
     });
     const launchUrl = launch.json().launchUrl as string;
     const code = new URL(launchUrl).searchParams.get("code")!;

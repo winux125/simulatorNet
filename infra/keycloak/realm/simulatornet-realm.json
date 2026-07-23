@@ -44,13 +44,13 @@
       "serviceAccountsEnabled": false
     },
     {
-      "clientId": "kai-platform-dev",
-      "name": "KAI Platform Development",
+      "clientId": "external-platform-dev",
+      "name": "External Platform Development",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
       "clientAuthenticatorType": "client-secret",
-      "secret": "${KAI_PLATFORM_CLIENT_SECRET}",
+      "secret": "${EXTERNAL_PLATFORM_CLIENT_SECRET}",
       "standardFlowEnabled": false,
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,

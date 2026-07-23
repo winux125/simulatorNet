@@ -31,14 +31,14 @@ async function token(overrides: {
   scope?: string;
 } = {}) {
   const jwt = new SignJWT({
-    azp: overrides.azp ?? "kai-platform-dev",
+    azp: overrides.azp ?? "external-platform-dev",
     scope: overrides.scope ?? "users:read launch:write",
     typ: overrides.payloadType ?? "Bearer",
   })
     .setProtectedHeader({ alg: "RS256", kid: overrides.kid ?? "key-1", typ: overrides.typ ?? "JWT" })
     .setIssuer(overrides.issuer ?? issuer)
     .setAudience(overrides.audience ?? audience)
-    .setSubject("service-account-kai")
+    .setSubject("service-account-external-platform")
     .setIssuedAt()
     .setExpirationTime(overrides.expiration ?? "5m");
   if (overrides.notBefore !== undefined) jwt.setNotBefore(overrides.notBefore);
@@ -55,7 +55,7 @@ beforeAll(async () => {
 describe("OIDC service token verifier", () => {
   it("accepts a valid signed service token", async () => {
     await expect(verifier.verify(await token())).resolves.toMatchObject({
-      keycloakClientId: "kai-platform-dev",
+      keycloakClientId: "external-platform-dev",
       scopes: new Set(["users:read", "launch:write"]),
     });
   });
