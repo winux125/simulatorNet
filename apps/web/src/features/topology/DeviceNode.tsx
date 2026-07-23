@@ -1,10 +1,9 @@
-import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { getDeviceProfile, type DeviceType } from "@sim/contracts";
 import { GitMerge, Monitor, Network, Router as RouterIcon, Server, Share2, TerminalSquare, Waypoints, type LucideIcon } from "lucide-react";
 import type { MouseEvent } from "react";
 import { StatusIndicator } from "../../ui";
 
-export type DeviceNodeData = Record<string, unknown> & {
+export interface DeviceNodeData {
   hostname: string;
   deviceType: DeviceType;
   status: "up" | "down";
@@ -13,14 +12,18 @@ export type DeviceNodeData = Record<string, unknown> & {
   serviceBadges?: string[];
   terminalOpen: boolean;
   configurationChanged: boolean;
-  connectable: boolean;
   onActivate(id: string): void;
   onOpen(id: string): void;
   onContextMenu(id: string, event: MouseEvent): void;
-};
+}
 
-export type DeviceFlowNode = Node<DeviceNodeData, "device">;
-
+/**
+ * A single topology device. Rendered both by the X6 graph (via
+ * `@antv/x6-react-shape`) in the browser and directly by the test harness, so
+ * it stays framework-agnostic: no canvas-library imports, and interaction is a
+ * plain accessible button. X6 owns dragging and edge routing; this button owns
+ * select / open / context-menu so the same affordances work under jsdom.
+ */
 const icons: Record<DeviceType, LucideIcon> = {
   pc: Monitor,
   server: Server,
@@ -31,7 +34,7 @@ const icons: Record<DeviceType, LucideIcon> = {
   router: RouterIcon,
 };
 
-export function DeviceNode({ id, data, selected }: NodeProps<DeviceFlowNode>) {
+export function DeviceNode({ id, data, selected }: { id: string; data: DeviceNodeData; selected: boolean }) {
   const DeviceIcon = icons[data.deviceType];
   const profile = getDeviceProfile(data.deviceType);
   const nodeClass = [
@@ -41,22 +44,9 @@ export function DeviceNode({ id, data, selected }: NodeProps<DeviceFlowNode>) {
     data.configurationChanged ? "is-changed" : "",
     data.status === "down" ? "is-down" : "",
   ].filter(Boolean).join(" ");
-  const handleTop = (index: number) => `${22 + (index / Math.max(1, data.interfaces.length - 1)) * 56}%`;
 
   return (
     <div className={nodeClass} data-device-id={id} onContextMenu={(event) => data.onContextMenu(id, event)}>
-      {data.interfaces.map((iface, index) => (
-        <Handle
-          key={`target-${iface.id}`}
-          type="target"
-          position={Position.Left}
-          id={`target:${iface.id}`}
-          title={`${iface.id} input`}
-          className={iface.operationalUp ? "is-up" : ""}
-          style={{ top: handleTop(index) }}
-          isConnectable={data.connectable}
-        />
-      ))}
       <button
         type="button"
         aria-label={`Select ${data.hostname}`}
@@ -74,18 +64,6 @@ export function DeviceNode({ id, data, selected }: NodeProps<DeviceFlowNode>) {
       <span className="device-node__type" title={profile.description}>{profile.displayName}</span>
       {data.serviceBadges && data.serviceBadges.length > 0 && <span className="device-node__services" aria-label={`Enabled services: ${data.serviceBadges.join(", ")}`}>{data.serviceBadges.slice(0, 3).map((service) => <b key={service}>{service}</b>)}</span>}
       {data.configurationChanged && <span className="device-node__changed" title="Configuration changed">●</span>}
-      {data.interfaces.map((iface, index) => (
-        <Handle
-          key={`source-${iface.id}`}
-          type="source"
-          position={Position.Right}
-          id={iface.id}
-          title={`${iface.id} output`}
-          className={iface.operationalUp ? "is-up" : ""}
-          style={{ top: handleTop(index) }}
-          isConnectable={data.connectable}
-        />
-      ))}
     </div>
   );
 }

@@ -1,29 +1,20 @@
 import { DEVICE_TYPES, getDeviceProfile, type LabDocument, type NodeSpec } from "@sim/contracts";
 import type { LabUiSnapshot } from "@sim/sim-worker";
-import {
-  Background,
-  BackgroundVariant,
-  Controls,
-  ReactFlow,
-  type Connection,
-  type Edge,
-  type NodeChange,
-  type ReactFlowInstance,
-} from "@xyflow/react";
 import { Cable, Eye, FilePlus2, FlaskConical, Maximize2, Monitor, Network, Router as RouterIcon, Tag, Upload } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { WorkspaceMode, WorkspaceTool } from "../../state/workspace-store";
 import { Button, StatusIndicator } from "../../ui";
 import {
   addDraftDevice,
-  allocateId,
   duplicateDraftDevice,
   removeDraftDevice,
   removeDraftLink,
   renameDraftDevice,
   withNodePosition,
 } from "../lab/document";
-import { DeviceNode, type DeviceFlowNode } from "./DeviceNode";
+import { TopologyGraphSurface } from "./TopologyGraphSurface";
+import { createLink } from "./x6/lab-document-adapter";
+import type { Point, TopologyView } from "./x6/types";
 
 interface TopologyCanvasProps {
   document: LabDocument | undefined;
@@ -47,6 +38,7 @@ interface TopologyCanvasProps {
   onPlacedDevice(): void;
   onShowLinkLabels(show: boolean): void;
   onChange(document: LabDocument): void;
+  onError(message: string): void;
   onLoadDemo(): void;
   onNewLab(): void;
   onImportLab(): void;
@@ -57,39 +49,67 @@ type ContextMenuState =
   | { kind: "link"; id: string; x: number; y: number }
   | { kind: "pane"; x: number; y: number };
 
-const nodeTypes = { device: DeviceNode };
-
-export function reactFlowAttributionOptions(value = import.meta.env.VITE_HIDE_REACT_FLOW_ATTRIBUTION) {
-  return { hideAttribution: value === "true" };
-}
-
-function endpointKey(node: string, iface: string): string {
-  return `${node}\u0000${iface}`;
-}
-
 export function TopologyCanvas(props: TopologyCanvasProps) {
-  const [instance, setInstance] = useState<ReactFlowInstance<DeviceFlowNode, Edge> | null>(null);
-  const [zoom, setZoom] = useState(1);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>();
-  const recentDevicePointer = useRef<{ id: string; button: number; time: number; x: number; y: number } | undefined>(undefined);
+  const graphApi = useRef<{ clientToLocal(point: Point): Point; fit(): void } | undefined>(undefined);
   const status = useMemo(() => new Map(props.snapshot?.nodes.map((node) => [node.id, node])), [props.snapshot]);
   const editable = props.mode === "edit";
 
-  useEffect(() => {
-    if (props.fitRequest > 0) void instance?.fitView({ padding: 0.18, duration: 260 });
-  }, [instance, props.fitRequest]);
+  const openNodeMenu = useCallback((id: string, event: ReactMouseEvent) => {
+    event.preventDefault();
+    props.onSelectNode(id);
+    setContextMenu({ kind: "node", id, x: event.clientX, y: event.clientY });
+  }, [props]);
 
-  useEffect(() => {
-    if (props.zoomResetRequest > 0) void instance?.zoomTo(1, { duration: 200 });
-  }, [instance, props.zoomResetRequest]);
-
-  useEffect(() => {
-    if (props.zoomInRequest > 0) void instance?.zoomIn({ duration: 160 });
-  }, [instance, props.zoomInRequest]);
-
-  useEffect(() => {
-    if (props.zoomOutRequest > 0) void instance?.zoomOut({ duration: 160 });
-  }, [instance, props.zoomOutRequest]);
+  const view = useMemo<TopologyView>(() => {
+    const result: TopologyView = { nodes: {}, links: {} };
+    if (!props.document) return result;
+    for (const node of props.document.topology.nodes) {
+      const live = status.get(node.id);
+      const ip = live?.interfaces.find((iface) => iface.ipAddress)?.ipAddress;
+      const subtitle = node.kind === "pc" || node.kind === "server"
+        ? ip ?? "No IPv4 address"
+        : node.kind === "l2-switch" || node.kind === "l3-switch"
+          ? `${node.interfaces.length} ports`
+          : node.kind === "hub"
+            ? `${node.interfaces.length} shared ports`
+            : node.kind === "bridge"
+              ? "2 Ethernet segments"
+              : `${node.interfaces.length} interfaces`;
+      const original = props.snapshot?.nodes.find((candidate) => candidate.id === node.id);
+      const changed = !original || original.position.x !== node.position?.x || original.position.y !== node.position?.y;
+      result.nodes[node.id] = {
+        selected: props.selectedNodeId === node.id,
+        data: {
+          hostname: live?.hostname ?? props.document.configurations[node.id]?.hostname ?? node.name ?? node.id,
+          deviceType: node.kind,
+          status: live?.status ?? "down",
+          subtitle,
+          interfaces: node.interfaces.map((iface) => ({
+            id: iface.id,
+            operationalUp: live?.interfaces.find((candidate) => candidate.id === iface.id)?.operationalUp ?? false,
+          })),
+          serviceBadges: live?.serviceBadges,
+          terminalOpen: props.terminalTabs.includes(node.id),
+          configurationChanged: changed,
+          onActivate: props.onSelectNode,
+          onOpen: props.onOpenDevice,
+          onContextMenu: openNodeMenu,
+        },
+      };
+    }
+    for (const link of props.document.topology.links) {
+      const sourceInterface = status.get(link.a.node)?.interfaces.find((iface) => iface.id === link.a.iface);
+      const targetInterface = status.get(link.b.node)?.interfaces.find((iface) => iface.id === link.b.iface);
+      const selected = props.selectedLinkId === link.id;
+      result.links[link.id] = {
+        operational: Boolean(sourceInterface?.operationalUp && targetInterface?.operationalUp),
+        selected,
+        label: props.showLinkLabels || selected ? `${link.a.iface}  ↔  ${link.b.iface}` : undefined,
+      };
+    }
+    return result;
+  }, [props, status, openNodeMenu]);
 
   if (!props.document) {
     return (
@@ -111,124 +131,26 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   }
 
   const document = props.document;
-  const openNodeMenu = (id: string, event: ReactMouseEvent) => {
-    event.preventDefault();
-    props.onSelectNode(id);
-    setContextMenu({ kind: "node", id, x: event.clientX, y: event.clientY });
-  };
-  const nodes: DeviceFlowNode[] = document.topology.nodes.map((node) => {
-    const live = status.get(node.id);
-    const ip = live?.interfaces.find((iface) => iface.ipAddress)?.ipAddress;
-    const subtitle = node.kind === "pc" || node.kind === "server"
-      ? ip ?? "No IPv4 address"
-      : node.kind === "l2-switch" || node.kind === "l3-switch"
-        ? `${node.interfaces.length} ports`
-        : node.kind === "hub"
-          ? `${node.interfaces.length} shared ports`
-          : node.kind === "bridge"
-            ? "2 Ethernet segments"
-            : `${node.interfaces.length} interfaces`;
-    const original = props.snapshot?.nodes.find((candidate) => candidate.id === node.id);
-    const changed = !original || original.position.x !== node.position?.x || original.position.y !== node.position?.y;
-    return {
-      id: node.id,
-      type: "device",
-      position: node.position ?? { x: 0, y: 0 },
-      selected: props.selectedNodeId === node.id,
-      draggable: editable,
-      connectable: editable,
-      data: {
-        hostname: live?.hostname ?? document.configurations[node.id]?.hostname ?? node.name ?? node.id,
-        deviceType: node.kind,
-        status: live?.status ?? "down",
-        subtitle,
-        interfaces: node.interfaces.map((iface) => ({
-          id: iface.id,
-          operationalUp: live?.interfaces.find((candidate) => candidate.id === iface.id)?.operationalUp ?? false,
-        })),
-        serviceBadges: live?.serviceBadges,
-        terminalOpen: props.terminalTabs.includes(node.id),
-        configurationChanged: changed,
-        connectable: editable && props.activeTool === "add-link",
-        onActivate: props.onSelectNode,
-        onOpen: props.onOpenDevice,
-        onContextMenu: openNodeMenu,
-      },
-    };
-  });
-  const edges: Edge[] = document.topology.links.map((link) => {
-    const sourceInterface = status.get(link.a.node)?.interfaces.find((iface) => iface.id === link.a.iface);
-    const targetInterface = status.get(link.b.node)?.interfaces.find((iface) => iface.id === link.b.iface);
-    const operational = sourceInterface?.operationalUp && targetInterface?.operationalUp;
-    const selected = props.selectedLinkId === link.id;
-    return {
-      id: link.id,
-      source: link.a.node,
-      sourceHandle: link.a.iface,
-      target: link.b.node,
-      targetHandle: `target:${link.b.iface}`,
-      type: "smoothstep",
-      selected,
-      className: `topology-link ${operational ? "is-up" : "is-down"}`,
-      label: props.showLinkLabels && (zoom >= 0.72 || selected) ? `${link.a.iface}  ↔  ${link.b.iface}` : undefined,
-      labelStyle: { fill: "var(--color-link-label)", fontSize: 10, fontFamily: "var(--font-mono)" },
-      labelBgStyle: { fill: "var(--color-link-label-bg)", fillOpacity: 0.94 },
-      labelBgPadding: [5, 3] as [number, number],
-      labelBgBorderRadius: 3,
-    };
-  });
-
-  const handleNodesChange = (changes: NodeChange<DeviceFlowNode>[]) => {
-    if (!editable) return;
-    let next = document;
-    for (const change of changes) {
-      if (change.type === "position" && change.position) next = withNodePosition(next, change.id, change.position);
-      if (change.type === "remove") next = removeDraftDevice(next, change.id);
-      if (change.type === "select" && change.selected) props.onSelectNode(change.id);
-    }
-    if (next !== document) props.onChange(next);
-  };
-
-  const connect = (connection: Connection) => {
-    if (!editable || !connection.source || !connection.target || !connection.sourceHandle || !connection.targetHandle) return;
-    const sourceInterface = connection.sourceHandle;
-    const targetInterface = connection.targetHandle.replace(/^target:/, "");
-    if (connection.source === connection.target && sourceInterface === targetInterface) return;
-    const used = new Set(document.topology.links.flatMap((link) => [
-      endpointKey(link.a.node, link.a.iface),
-      endpointKey(link.b.node, link.b.iface),
-    ]));
-    if (used.has(endpointKey(connection.source, sourceInterface)) || used.has(endpointKey(connection.target, targetInterface))) return;
-    const id = allocateId("link", document.topology.links.map((link) => link.id));
-    props.onChange({
-      ...document,
-      topology: {
-        ...document.topology,
-        links: [...document.topology.links, {
-          id,
-          a: { node: connection.source, iface: sourceInterface },
-          b: { node: connection.target, iface: targetInterface },
-        }],
-      },
-    });
-  };
-
-  const addAt = (kind: NodeSpec["kind"], position?: { x: number; y: number }) => {
+  const addAt = (kind: NodeSpec["kind"], position?: Point) => {
     if (!editable) return;
     props.onChange(addDraftDevice(document, kind, position));
     setContextMenu(undefined);
   };
-  const dropDevice = (event: DragEvent) => {
-    event.preventDefault();
-    const kind = event.dataTransfer.getData("application/x-simulator-device") as NodeSpec["kind"];
-    if (!(DEVICE_TYPES as readonly string[]).includes(kind) || !instance) return;
-    addAt(kind, instance.screenToFlowPosition({ x: event.clientX, y: event.clientY }));
-  };
   const addFromPane = (kind: NodeSpec["kind"]) => {
-    const position = contextMenu?.kind === "pane" && instance
-      ? instance.screenToFlowPosition({ x: contextMenu.x, y: contextMenu.y })
+    const position = contextMenu?.kind === "pane" && graphApi.current
+      ? graphApi.current.clientToLocal({ x: contextMenu.x, y: contextMenu.y })
       : undefined;
     addAt(kind, position);
+  };
+  const paneClick = (local: Point) => {
+    setContextMenu(undefined);
+    if (editable && props.pendingDeviceKind) {
+      addAt(props.pendingDeviceKind, local);
+      props.onPlacedDevice();
+      return;
+    }
+    props.onSelectNode(undefined);
+    props.onSelectLink(undefined);
   };
 
   const contextAction = (action: string) => {
@@ -251,45 +173,11 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     }
     setContextMenu(undefined);
   };
-  const deviceIdFromEvent = (event: ReactMouseEvent): string | undefined =>
-    (event.target as HTMLElement).closest<HTMLElement>("[data-device-id]")?.dataset.deviceId;
 
   return (
     <section
       className={`topology-panel topology-panel--${props.mode}`}
       aria-label="Topology canvas"
-      onMouseDownCapture={(event) => {
-        const deviceId = deviceIdFromEvent(event);
-        const recent = recentDevicePointer.current;
-        if (deviceId) {
-          recentDevicePointer.current = { id: deviceId, button: event.button, time: event.timeStamp, x: event.clientX, y: event.clientY };
-          if (event.button === 2) openNodeMenu(deviceId, event);
-          if (event.button === 0 && event.detail >= 2) props.onOpenDevice(deviceId);
-          return;
-        }
-        if (
-          event.button === 0
-          && event.detail >= 2
-          && recent?.button === 0
-          && event.timeStamp - recent.time < 700
-          && Math.hypot(event.clientX - recent.x, event.clientY - recent.y) < 24
-        ) props.onOpenDevice(recent.id);
-      }}
-      onDoubleClickCapture={(event) => {
-        const recent = recentDevicePointer.current;
-        const deviceId = deviceIdFromEvent(event)
-          ?? (recent && event.timeStamp - recent.time < 700 ? recent.id : undefined);
-        if (deviceId) props.onOpenDevice(deviceId);
-      }}
-      onContextMenuCapture={(event) => {
-        const recent = recentDevicePointer.current;
-        const deviceId = deviceIdFromEvent(event)
-          ?? (recent?.button === 2 && event.timeStamp - recent.time < 700 ? recent.id : undefined);
-        if (deviceId) {
-          openNodeMenu(deviceId, event);
-          event.stopPropagation();
-        }
-      }}
       onContextMenu={(event) => event.preventDefault()}
     >
       <div className="canvas-statusbar">
@@ -299,60 +187,29 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         {props.activeTool === "add-link" && <strong><Cable size={12} /> Drag between interface endpoints</strong>}
         <button type="button" aria-label="Toggle link labels" aria-pressed={props.showLinkLabels} onClick={() => props.onShowLinkLabels(!props.showLinkLabels)}><Tag size={13} /> Port labels</button>
       </div>
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        onInit={setInstance}
-        onMove={(_, viewport) => setZoom(viewport.zoom)}
-        onNodesChange={handleNodesChange}
-        onConnect={connect}
-        onEdgesDelete={(deleted) => {
-          if (editable && deleted.length > 0) {
-            props.onChange(deleted.reduce((draft, edge) => removeDraftLink(draft, edge.id), document));
-          }
+      <TopologyGraphSurface
+        document={document}
+        view={view}
+        readonly={!editable}
+        draggable={editable && props.activeTool === "select"}
+        connectable={editable && props.activeTool === "add-link"}
+        fitRequest={props.fitRequest}
+        zoomResetRequest={props.zoomResetRequest}
+        zoomInRequest={props.zoomInRequest}
+        zoomOutRequest={props.zoomOutRequest}
+        onReady={(handle) => { graphApi.current = handle; }}
+        onNodeMoved={(id, position) => { if (editable) props.onChange(withNodePosition(document, id, position)); }}
+        onConnect={(source, sourcePort, target, targetPort) => {
+          if (!editable) return;
+          props.onChange(createLink(document, source, sourcePort, target, targetPort).document);
         }}
-        onEdgeClick={(_, edge) => props.onSelectLink(edge.id)}
-        onNodeDoubleClick={(_, node) => props.onOpenDevice(node.id)}
-        onNodeContextMenu={(event, node) => openNodeMenu(node.id, event)}
-        onEdgeContextMenu={(event, edge) => {
-          event.preventDefault();
-          props.onSelectLink(edge.id);
-          setContextMenu({ kind: "link", id: edge.id, x: event.clientX, y: event.clientY });
-        }}
-        onPaneClick={(event) => {
-          setContextMenu(undefined);
-          if (editable && props.pendingDeviceKind && instance) {
-            addAt(props.pendingDeviceKind, instance.screenToFlowPosition({ x: event.clientX, y: event.clientY }));
-            props.onPlacedDevice();
-            return;
-          }
-          props.onSelectNode(undefined);
-          props.onSelectLink(undefined);
-        }}
-        onPaneContextMenu={(event) => {
-          event.preventDefault();
-          setContextMenu({ kind: "pane", x: event.clientX, y: event.clientY });
-        }}
-        onDragOver={(event) => {
-          if (editable) {
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "copy";
-          }
-        }}
-        onDrop={dropDevice}
-        fitView
-        fitViewOptions={{ padding: 0.18 }}
-        minZoom={0.3}
-        maxZoom={1.8}
-        nodesDraggable={editable && props.activeTool === "select"}
-        nodesConnectable={editable && props.activeTool === "add-link"}
-        deleteKeyCode={null}
-        proOptions={reactFlowAttributionOptions()}
-      >
-        <Background variant={BackgroundVariant.Dots} color="var(--color-canvas-grid)" gap={22} size={1} />
-        <Controls showInteractive={false} />
-      </ReactFlow>
+        onConnectionRejected={props.onError}
+        onSelectLink={props.onSelectLink}
+        onLinkContextMenu={(id, x, y) => { props.onSelectLink(id); setContextMenu({ kind: "link", id, x, y }); }}
+        onPaneClick={paneClick}
+        onPaneContextMenu={(x, y) => setContextMenu({ kind: "pane", x, y })}
+        onDropDevice={(kind, local) => { if ((DEVICE_TYPES as readonly string[]).includes(kind)) addAt(kind as NodeSpec["kind"], local); }}
+      />
       {contextMenu && (
         <div className="context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
           {contextMenu.kind === "node" && <>
@@ -378,7 +235,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
               <button role="menuitem" type="button" onClick={() => addFromPane("router")}><RouterIcon size={14} /> Add router</button>
               <span className="context-menu__separator" />
             </>}
-            <button role="menuitem" type="button" onClick={() => { void instance?.fitView({ padding: 0.18 }); setContextMenu(undefined); }}><Maximize2 size={14} /> Fit view</button>
+            <button role="menuitem" type="button" onClick={() => { graphApi.current?.fit(); setContextMenu(undefined); }}><Maximize2 size={14} /> Fit view</button>
           </>}
         </div>
       )}

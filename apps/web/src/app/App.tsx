@@ -508,6 +508,7 @@ export function App({ client }: AppProps) {
       onPlacedDevice: () => workspace.setPendingDeviceKind(undefined),
       onShowLinkLabels: workspace.setShowLinkLabels,
       onChange: updateDraft,
+      onError: (message: string) => reportError(message, "validation"),
       onLoadDemo: () => setDemoLabOpen(true),
       onNewLab: newLab,
       onImportLab: importLab,

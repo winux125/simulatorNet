@@ -3,8 +3,8 @@ import { DeviceTypeSchema } from "./devices";
 
 /**
  * Serializable topology document. This is the vendor-neutral description of a
- * lab's wiring — shared by the React Flow editor, the API (stored as JSONB) and
- * the headless verifier. It intentionally contains no live simulation state.
+ * lab's wiring — shared by the browser topology editor, the API (stored as
+ * JSONB) and the headless verifier. It contains no live simulation state.
  */
 
 export const InterfaceSpecSchema = z.object({

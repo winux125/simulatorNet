@@ -9,16 +9,18 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@antv/x6": "^3.1.7",
+    "@antv/x6-react-shape": "^3.0.1",
     "@sim/contracts": "workspace:*",
     "@sim/lab-format": "workspace:*",
     "@sim/sim-worker": "workspace:*",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
-    "@xyflow/react": "^12.11.2",
     "lucide-react": "^1.25.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-resizable-panels": "^4.12.2",
+    "tslib": "^2.8.1",
     "zustand": "^5.0.14"
   },
   "devDependencies": {

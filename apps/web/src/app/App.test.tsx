@@ -22,7 +22,6 @@ import {
   TFTP_BACKUP_DEMO,
 } from "../fixtures/m10-demo-labs";
 import { THEME_STORAGE_KEY } from "../hooks/useTheme";
-import { reactFlowAttributionOptions } from "../features/topology/TopologyCanvas";
 import { App } from "./App";
 import type { SimulatorClient } from "./simulator-client";
 
@@ -37,8 +36,8 @@ interface MockXterm {
 }
 
 const xtermHarness = vi.hoisted(() => ({ instances: [] as MockXterm[] }));
-const flowHarness = vi.hoisted(() => ({
-  proOptions: undefined as { hideAttribution?: boolean } | undefined,
+const graphHarness = vi.hoisted(() => ({
+  fit: vi.fn(),
   zoomIn: vi.fn(),
   zoomOut: vi.fn(),
 }));
@@ -75,50 +74,48 @@ vi.mock("react-resizable-panels", async () => {
     Separator: ({ className }: { className?: string }) => React.createElement("div", { className }),
   };
 });
-vi.mock("@xyflow/react", async () => {
+// The real X6 graph needs DOM measurement that jsdom does not provide, so — as
+// with the previous React Flow integration — the canvas library is mocked at our
+// own React binding boundary. The mock renders the same accessible DeviceNode
+// buttons and link buttons so interaction tests drive the real components.
+vi.mock("../features/topology/TopologyGraphSurface", async () => {
   const React = await import("react");
-  function MockReactFlow(props: Record<string, unknown>) {
-    flowHarness.proOptions = props.proOptions as { hideAttribution?: boolean } | undefined;
-    const nodes = props.nodes as Array<Record<string, unknown>>;
-    const edges = props.edges as Array<Record<string, unknown>>;
-    const nodeTypes = props.nodeTypes as Record<string, React.ComponentType<Record<string, unknown>>>;
+  const { DeviceNode } = await import("../features/topology/DeviceNode");
+  function MockSurface(props: Record<string, unknown>) {
+    const view = props.view as {
+      nodes: Record<string, { selected: boolean; data: Record<string, unknown> }>;
+      links: Record<string, { label?: string }>;
+    };
     React.useEffect(() => {
-      (props.onInit as ((instance: unknown) => void) | undefined)?.({
-        fitView: vi.fn(),
-        zoomIn: flowHarness.zoomIn,
-        zoomOut: flowHarness.zoomOut,
-        screenToFlowPosition: ({ x, y }: { x: number; y: number }) => ({ x, y }),
+      (props.onReady as ((handle: { clientToLocal(p: { x: number; y: number }): { x: number; y: number }; fit(): void }) => void) | undefined)?.({
+        clientToLocal: ({ x, y }) => ({ x, y }),
+        fit: graphHarness.fit,
       });
     }, []);
+    React.useEffect(() => { if ((props.fitRequest as number) > 0) graphHarness.fit(); }, [props.fitRequest]);
+    React.useEffect(() => { if ((props.zoomInRequest as number) > 0) graphHarness.zoomIn(); }, [props.zoomInRequest]);
+    React.useEffect(() => { if ((props.zoomOutRequest as number) > 0) graphHarness.zoomOut(); }, [props.zoomOutRequest]);
     return React.createElement("div", {
-      "data-testid": "react-flow",
+      "data-testid": "topology-graph",
       onClick: (event: React.MouseEvent) => {
         if (event.target === event.currentTarget) {
-          (props.onPaneClick as ((event: React.MouseEvent) => void) | undefined)?.(event);
+          (props.onPaneClick as ((p: { x: number; y: number }) => void) | undefined)?.({ x: event.clientX, y: event.clientY });
         }
       },
     }, [
-      ...nodes.map((node) => {
-        const Component = nodeTypes[String(node.type)];
-        return Component ? React.createElement(Component, { key: String(node.id), ...node }) : null;
-      }),
-      ...edges.map((edge) => React.createElement("button", {
-        key: String(edge.id),
+      ...Object.entries(view.nodes).map(([id, node]) => React.createElement(DeviceNode as React.ComponentType<Record<string, unknown>>, {
+        key: id, id, data: node.data, selected: node.selected,
+      })),
+      ...Object.entries(view.links).map(([id, link]) => React.createElement("button", {
+        key: id,
         type: "button",
-        "aria-label": `Select link ${String(edge.id)}`,
-        onClick: (event: React.MouseEvent) => (props.onEdgeClick as ((event: React.MouseEvent, edge: unknown) => void))(event, edge),
-        onContextMenu: (event: React.MouseEvent) => (props.onEdgeContextMenu as ((event: React.MouseEvent, edge: unknown) => void))(event, edge),
-      }, String(edge.label ?? edge.id))),
+        "aria-label": `Select link ${id}`,
+        onClick: () => (props.onSelectLink as ((linkId: string) => void))(id),
+        onContextMenu: (event: React.MouseEvent) => { event.preventDefault(); (props.onLinkContextMenu as ((linkId: string, x: number, y: number) => void))(id, event.clientX, event.clientY); },
+      }, String(link.label ?? id))),
     ]);
   }
-  return {
-    ReactFlow: MockReactFlow,
-    Handle: () => React.createElement("span"),
-    Position: { Left: "left", Right: "right" },
-    BackgroundVariant: { Dots: "dots" },
-    Background: () => null,
-    Controls: () => null,
-  };
+  return { TopologyGraphSurface: MockSurface, default: MockSurface };
 });
 
 class RuntimeClient implements SimulatorClient {
@@ -155,9 +152,9 @@ beforeEach(() => {
   narrowViewport = false;
   prefersDark = true;
   xtermHarness.instances.length = 0;
-  flowHarness.proOptions = undefined;
-  flowHarness.zoomIn.mockClear();
-  flowHarness.zoomOut.mockClear();
+  graphHarness.fit.mockClear();
+  graphHarness.zoomIn.mockClear();
+  graphHarness.zoomOut.mockClear();
   window.localStorage.clear();
   useWorkspaceStore.getState().reset();
   Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn((query: string) => ({
@@ -202,7 +199,7 @@ async function placeDevice(label: string) {
     await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
   }
   await userEvent.click(screen.getByRole("button", { name: `Add ${label}` }));
-  fireEvent.click(screen.getByTestId("react-flow"), { clientX: 320, clientY: 240 });
+  fireEvent.click(screen.getByTestId("topology-graph"), { clientX: 320, clientY: 240 });
 }
 
 async function openMenu(label: string) {
@@ -293,10 +290,11 @@ describe("M6.1 simulator workspace", () => {
     expect(await screen.findByRole("heading", { name: "SimulatorNet" })).toBeTruthy();
   });
 
-  it("does not render a React Flow minimap", async () => {
+  it("does not render a topology minimap", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);
-    expect(document.querySelector(".react-flow__minimap")).toBeNull();
+    expect(document.querySelector(".x6-graph-minimap")).toBeNull();
+    expect(document.querySelector(".x6-widget-minimap")).toBeNull();
   });
 
   it("defaults to System theme and switches Dark, Light and System immediately", async () => {
@@ -333,7 +331,7 @@ describe("M6.1 simulator workspace", () => {
     expect(await screen.findByLabelText("PC1 CLI")).toBeTruthy();
     await chooseTheme("Light");
     expect(document.documentElement.dataset.theme).toBe("light");
-    expect(screen.getByTestId("react-flow")).toBeTruthy();
+    expect(screen.getByTestId("topology-graph")).toBeTruthy();
     expect(screen.getByLabelText("PC1 CLI")).toBeTruthy();
     await chooseTheme("Dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
@@ -362,7 +360,7 @@ describe("M6.1 simulator workspace", () => {
     expect(screen.getByRole("button", { name: "Add Server" })).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Add PC" }));
     expect(useWorkspaceStore.getState().pendingDeviceKind).toBe("pc");
-    fireEvent.click(screen.getByTestId("react-flow"), { clientX: 300, clientY: 220 });
+    fireEvent.click(screen.getByTestId("topology-graph"), { clientX: 300, clientY: 220 });
     expect(useWorkspaceStore.getState().draft?.topology.nodes).toHaveLength(5);
     expect(useWorkspaceStore.getState().pendingDeviceKind).toBeUndefined();
   });
@@ -596,13 +594,10 @@ describe("M10.2.1 Packet Tracer-style workspace", () => {
     }
   });
 
-  it("uses only the official React Flow attribution option", async () => {
-    expect(reactFlowAttributionOptions("true")).toEqual({ hideAttribution: true });
-    expect(reactFlowAttributionOptions("false")).toEqual({ hideAttribution: false });
-    expect(reactFlowAttributionOptions(undefined)).toEqual({ hideAttribution: false });
+  it("renders the topology graph without any third-party watermark", async () => {
     await loadDemo(new RuntimeClient());
-    expect(flowHarness.proOptions).toEqual({ hideAttribution: false });
-    expect(document.querySelector(".react-flow__attribution")).toBeNull();
+    expect(screen.getByTestId("topology-graph")).toBeTruthy();
+    expect(document.querySelector(".x6-graph-watermark")).toBeNull();
   });
 
   it("keeps the theme selector exclusively under View > Theme", async () => {
@@ -616,12 +611,12 @@ describe("M10.2.1 Packet Tracer-style workspace", () => {
     }
   });
 
-  it("routes compact toolbar zoom controls through React Flow", async () => {
+  it("routes compact toolbar zoom controls through the topology graph", async () => {
     await loadDemo(new RuntimeClient());
     await userEvent.click(screen.getByRole("button", { name: "Zoom in" }));
     await userEvent.click(screen.getByRole("button", { name: "Zoom out" }));
-    expect(flowHarness.zoomIn).toHaveBeenCalled();
-    expect(flowHarness.zoomOut).toHaveBeenCalled();
+    expect(graphHarness.zoomIn).toHaveBeenCalled();
+    expect(graphHarness.zoomOut).toHaveBeenCalled();
   });
 
   it("starts with the inspector closed at the 1280-wide desktop breakpoint", async () => {

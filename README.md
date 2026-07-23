@@ -682,11 +682,9 @@ Theme selection is intentionally available only through **View → Theme**.
 Bottom-dock overflow is clipped at the panel boundary; tables own their inner
 scrolling and xterm owns terminal scrolling.
 
-React Flow attribution is controlled only through its supported
-`proOptions.hideAttribution` API. It remains visible by default. Set
-`VITE_HIDE_REACT_FLOW_ATTRIBUTION=true` only when the distribution satisfies
-the React Flow attribution requirements; SimulatorNet does not hide the
-attribution with CSS.
+The topology canvas is rendered with the MIT-licensed [AntV X6](https://x6.antv.antgroup.com/)
+graph engine. It carries no third-party attribution or watermark, so there is
+no attribution flag or CSS override to configure.
 
 ### Device-aware CLI profiles
 

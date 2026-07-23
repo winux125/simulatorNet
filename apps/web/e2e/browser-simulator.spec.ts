@@ -48,14 +48,14 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   await page.getByRole("menuitem", { name: "Load Demo Lab" }).click();
   await page.getByRole("button", { name: /Router-on-a-stick \+ DHCP/ }).click();
   await expect(page.getByText("VLAN Routing Lab", { exact: true }).first()).toBeVisible();
-  await expect(page.locator(".react-flow__minimap")).toHaveCount(0);
-  await expect(page.locator(".react-flow__attribution")).toBeVisible();
+  await expect(page.locator(".x6-widget-minimap")).toHaveCount(0);
+  await expect(page.getByTestId("topology-graph")).toBeVisible();
   await expect(page.getByRole("button", { name: "Add Device", exact: true })).toBeVisible();
   await expect(page.getByRole("dialog", { name: "Add topology item" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Close bottom panel" })).toHaveCount(0);
   const chromeBounds = await page.locator(".desktop-chrome").boundingBox();
   const workspaceBounds = await page.locator(".workspace-resizable").boundingBox();
-  const topologyBounds = await page.locator(".react-flow").boundingBox();
+  const topologyBounds = await page.getByTestId("topology-graph").boundingBox();
   const dockBounds = await page.getByLabel("Workspace bottom panel").boundingBox();
   const footerBounds = await page.locator(".workspace-footer").boundingBox();
   expect(chromeBounds).not.toBeNull();
@@ -219,7 +219,7 @@ test("draft-only devices wait for worker rebuild without unknown-device errors",
   await page.getByRole("button", { name: "New Lab", exact: true }).click();
   await page.getByRole("button", { name: "Add Device", exact: true }).click();
   await page.getByRole("button", { name: "Add Bridge" }).click();
-  const canvas = page.locator(".react-flow");
+  const canvas = page.getByTestId("topology-graph");
   const canvasBounds = await canvas.boundingBox();
   expect(canvasBounds).not.toBeNull();
   await canvas.click({ position: { x: Math.round(canvasBounds!.width * 0.45), y: Math.round(canvasBounds!.height * 0.4) } });
