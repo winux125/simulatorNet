@@ -1,4 +1,10 @@
+import { existsSync } from "node:fs";
 import { defineConfig } from "drizzle-kit";
+
+const environmentFile = new URL("../../.env", import.meta.url);
+if (!process.env.DATABASE_URL && existsSync(environmentFile)) {
+  process.loadEnvFile(environmentFile);
+}
 
 export default defineConfig({
   dialect: "postgresql",

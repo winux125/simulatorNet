@@ -11,7 +11,7 @@
     }
   },
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "tsx watch --env-file=../../.env src/server.ts",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "build": "tsup"

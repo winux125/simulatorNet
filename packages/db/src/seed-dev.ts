@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createDatabase } from "./database";
 import { AuthenticationLookupRepository } from "./repositories/auth-lookup";
@@ -45,6 +46,10 @@ export async function seedDevelopmentDatabase(databaseUrl: string): Promise<void
 
 const invokedPath = process.argv[1];
 if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
+  const environmentFile = new URL("../../../.env", import.meta.url);
+  if (!process.env.DATABASE_URL && existsSync(environmentFile)) {
+    process.loadEnvFile(environmentFile);
+  }
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error("DATABASE_URL is required for db:seed:dev");
   await seedDevelopmentDatabase(databaseUrl);

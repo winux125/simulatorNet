@@ -457,6 +457,18 @@ pnpm smoke:m8       # real Client Credentials → launch → cookie → logout s
 pnpm infra:down
 ```
 
+For local API development, the API watcher automatically reads the root
+`.env`. Start its dependencies, apply migrations, and then run the watcher:
+
+```bash
+docker compose up -d db keycloak
+pnpm db:migrate
+pnpm db:seed:dev
+pnpm dev:api
+```
+
+Run `pnpm dev` in a second terminal for the web application.
+
 Important variables are `DATABASE_URL`, the two logical PostgreSQL credential
 sets, Keycloak bootstrap credentials, `EXTERNAL_PLATFORM_CLIENT_SECRET`,
 `KEYCLOAK_ISSUER`, `KEYCLOAK_JWKS_URL`, `KEYCLOAK_AUDIENCE`, `WEB_ORIGIN`,
