@@ -5,6 +5,25 @@ import { create } from "zustand";
 export type WorkspaceMode = "edit" | "simulate";
 export type ExecutionMode = "realtime" | "simulation";
 export type WorkspaceTool = "select" | "add-device" | "add-link" | "delete";
+
+// Lab power lifecycle — a concept distinct from the Edit/Operate workspace mode
+// and from the Realtime/Simulation execution mode. Topology may only be mutated
+// while "stopped".
+export type LabPowerState = "stopped" | "starting" | "running" | "stopping" | "error";
+
+export type LabLifecycleErrorCode =
+  | "LAB_NOT_STOPPED"
+  | "LAB_ALREADY_RUNNING"
+  | "LAB_ALREADY_STOPPED"
+  | "LAB_START_FAILED"
+  | "LAB_STOP_FAILED"
+  | "TOPOLOGY_LOCKED"
+  | "TOPOLOGY_MUTATION_REJECTED";
+
+/** True only when the physical topology may be edited. */
+export function isTopologyEditable(powerState: LabPowerState): boolean {
+  return powerState === "stopped";
+}
 export type InspectorTab = "overview" | "interfaces" | "configuration" | "runtime";
 export type DockTab = "terminal" | "events" | "packet-trace" | "problems";
 
@@ -29,6 +48,7 @@ interface WorkspaceState {
   terminalTabs: string[];
   activeTerminalDeviceId: string | undefined;
   workerStatus: "empty" | "loading" | "ready" | "error";
+  powerState: LabPowerState;
   mode: WorkspaceMode;
   executionMode: ExecutionMode;
   activeTool: WorkspaceTool;
@@ -62,6 +82,7 @@ interface WorkspaceState {
   closeTerminal(deviceId: string): void;
   setActiveTerminal(deviceId: string): void;
   setWorkerStatus(status: WorkspaceState["workerStatus"]): void;
+  setPowerState(state: LabPowerState): void;
   setMode(mode: WorkspaceMode): void;
   setExecutionMode(mode: ExecutionMode): void;
   setActiveTool(tool: WorkspaceTool): void;
@@ -89,6 +110,7 @@ const initialState = {
   terminalTabs: [],
   activeTerminalDeviceId: undefined,
   workerStatus: "empty" as const,
+  powerState: "stopped" as LabPowerState,
   mode: "simulate" as const,
   executionMode: "realtime" as const,
   activeTool: "select" as const,
@@ -158,6 +180,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   }),
   setActiveTerminal: (activeTerminalDeviceId) => set({ activeTerminalDeviceId, dockTab: "terminal" }),
   setWorkerStatus: (workerStatus) => set({ workerStatus }),
+  setPowerState: (powerState) => set({ powerState }),
   setMode: (mode) => set({ mode, activeTool: "select", pendingDeviceKind: undefined, paletteOpen: false }),
   setExecutionMode: (executionMode) => set({ executionMode }),
   setActiveTool: (activeTool) => set({ activeTool, pendingDeviceKind: undefined, paletteOpen: false }),

@@ -1,10 +1,10 @@
 import type { EngineUiState } from "@sim/sim-worker";
 import {
-  Cable, FilePlus2, FolderOpen, LogOut, Maximize2, MousePointer2, Pause, Play,
-  Redo2, RotateCcw, Save, SkipForward, Trash2, Undo2, UserRound, ZoomIn, ZoomOut,
+  Cable, FilePlus2, FolderOpen, Lock, LogOut, Maximize2, MousePointer2, Pause, Play,
+  Redo2, RotateCcw, Save, SkipForward, Square, Trash2, Undo2, Unlock, UserRound, ZoomIn, ZoomOut,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import type { ExecutionMode, WorkspaceMode, WorkspaceTool } from "../state/workspace-store";
+import type { ExecutionMode, LabPowerState, WorkspaceMode, WorkspaceTool } from "../state/workspace-store";
 import { IconButton, StatusIndicator } from "../ui";
 import { MenuBar, type MenuDef } from "./MenuBar";
 
@@ -17,6 +17,7 @@ interface ToolbarProps {
   engineState?: EngineUiState;
   ready: boolean;
   dirty: boolean;
+  powerState: LabPowerState;
   mode: WorkspaceMode;
   executionMode: ExecutionMode;
   activeTool: WorkspaceTool;
@@ -41,8 +42,14 @@ interface ToolbarProps {
   onStep(): void;
   onPause(): void;
   onReset(): void;
+  onStartLab(): void;
+  onStopLab(): void;
   onLogout(): void;
 }
+
+const POWER_LABEL: Record<LabPowerState, string> = {
+  stopped: "Stopped", starting: "Starting", running: "Running", stopping: "Stopping", error: "Error",
+};
 
 export function Toolbar(props: ToolbarProps) {
   const operating = props.ready && props.mode === "simulate";
@@ -102,11 +109,35 @@ export function Toolbar(props: ToolbarProps) {
         </ToolbarGroup>
 
         <div className="toolbar-spacer" />
+        <div className="lab-power" role="group" aria-label="Lab power">
+          <StatusIndicator
+            status={props.powerState === "running" ? "running" : props.powerState === "error" ? "error" : props.powerState === "stopped" ? "ready" : "loading"}
+            label={POWER_LABEL[props.powerState]}
+          />
+          {props.powerState === "running" || props.powerState === "stopping" ? (
+            <button type="button" className="lab-power__toggle is-running" disabled={!props.ready || props.powerState === "stopping"} onClick={props.onStopLab}>
+              <Square size={13} /> Stop Lab
+            </button>
+          ) : (
+            <button type="button" className="lab-power__toggle" disabled={!props.ready || props.powerState !== "stopped"} onClick={props.onStartLab}>
+              <Play size={13} /> Start Lab
+            </button>
+          )}
+          <span
+            className="lab-power__lock"
+            data-locked={props.powerState === "running"}
+            aria-label={props.powerState === "running" ? "Topology locked — stop the lab to edit" : "Topology unlocked"}
+            title={props.powerState === "running" ? "Topology locked — stop the lab to edit" : "Topology unlocked — devices and links are editable"}
+          >
+            {props.powerState === "running" ? <Lock size={13} /> : <Unlock size={13} />}
+          </span>
+        </div>
         <button
           type="button"
           className={`edit-topology-toggle${props.mode === "edit" ? " is-active" : ""}`}
           aria-pressed={props.mode === "edit"}
           disabled={!props.ready}
+          title={props.powerState === "running" ? "Stop the lab before changing devices or links." : undefined}
           onClick={() => props.onModeChange(props.mode === "edit" ? "simulate" : "edit")}
         >
           Edit Topology

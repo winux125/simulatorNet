@@ -1044,3 +1044,97 @@ describe("M10.2 transport and server applications", () => {
     expect((screen.getByLabelText("syslog enabled") as HTMLInputElement).checked).toBe(true);
   });
 });
+
+describe("M10.2.2c lab power lifecycle and topology lock", () => {
+  it("opens a loaded lab running with the topology locked", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    expect(useWorkspaceStore.getState().powerState).toBe("running");
+    expect(screen.getByRole("button", { name: "Stop Lab" })).toBeTruthy();
+    expect(screen.getByLabelText("Topology locked — stop the lab to edit")).toBeTruthy();
+  });
+
+  it("opens a new lab stopped with the topology unlocked", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New Lab" }));
+    await waitFor(() => expect(useWorkspaceStore.getState().powerState).toBe("stopped"));
+    expect(screen.getByRole("button", { name: "Start Lab" })).toBeTruthy();
+    expect(screen.getByLabelText("Topology unlocked")).toBeTruthy();
+  });
+
+  it("starts a stopped lab into the running state", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New Lab" }));
+    await waitFor(() => expect(useWorkspaceStore.getState().powerState).toBe("stopped"));
+    await userEvent.click(screen.getByRole("button", { name: "Start Lab" }));
+    await waitFor(() => expect(useWorkspaceStore.getState().powerState).toBe("running"));
+    expect(client.requestTypes).toContain("REBUILD_LAB");
+  });
+
+  it("stops a running lab without transient state and unlocks editing", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New Lab" }));
+    await waitFor(() => expect(useWorkspaceStore.getState().powerState).toBe("stopped"));
+    await userEvent.click(screen.getByRole("button", { name: "Start Lab" }));
+    await waitFor(() => expect(useWorkspaceStore.getState().powerState).toBe("running"));
+    // A freshly started empty lab has no transient runtime, so Stop needs no confirmation.
+    await userEvent.click(screen.getByRole("button", { name: "Stop Lab" }));
+    await waitFor(() => expect(useWorkspaceStore.getState().powerState).toBe("stopped"));
+    expect(useWorkspaceStore.getState().mode).toBe("edit");
+    const before = useWorkspaceStore.getState().draft?.topology.nodes.length ?? 0;
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
+    await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
+    await placeDevice("PC");
+    expect(useWorkspaceStore.getState().draft?.topology.nodes.length).toBe(before + 1);
+  });
+
+  it("confirms before stopping a lab that has transient runtime state", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await type(terminal, "ping 192.168.20.10");
+    await act(async () => { terminal.emit("\r"); });
+    await waitFor(() => expect((useWorkspaceStore.getState().snapshot?.virtualTime ?? 0)).toBeGreaterThan(0));
+    await userEvent.click(screen.getByRole("button", { name: "Stop Lab" }));
+    expect(screen.getByRole("dialog", { name: "Stop this lab?" })).toBeTruthy();
+    expect(useWorkspaceStore.getState().powerState).toBe("running");
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Stop this lab?" })).getByRole("button", { name: "Stop Lab" }));
+    await waitFor(() => expect(useWorkspaceStore.getState().powerState).toBe("stopped"));
+  });
+
+  it("rejects keyboard delete while the lab is running", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await userEvent.click(screen.getByRole("button", { name: "Select PC1" }));
+    const before = useWorkspaceStore.getState().draft?.topology.nodes.length ?? 0;
+    fireEvent.keyDown(window, { key: "Delete" });
+    expect(useWorkspaceStore.getState().draft?.topology.nodes.length).toBe(before);
+  });
+
+  it("keeps the CLI available while the lab runs and locks the topology", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await openDeviceTerminal("Select PC1");
+    expect(await screen.findByLabelText("PC1 CLI")).toBeTruthy();
+    expect(useWorkspaceStore.getState().powerState).toBe("running");
+  });
+
+  it("exposes Start and Stop in the Lab menu with correct enabled state", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await openMenu("Lab");
+    expect((screen.getByRole("menuitem", { name: "Start Lab" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("menuitem", { name: "Stop Lab" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("rejects a redundant start through the toolbar affordance", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    // Running: the Start control is not offered; only Stop is.
+    expect(screen.queryByRole("button", { name: "Start Lab" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop Lab" })).toBeTruthy();
+  });
+});

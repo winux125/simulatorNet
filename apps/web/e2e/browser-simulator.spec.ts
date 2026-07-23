@@ -253,6 +253,41 @@ test("deleting a device closes its CLI before the worker rebuild", async ({ page
   await expect(page.getByText(/Unknown device/)).toHaveCount(0);
 });
 
+test("lab power lifecycle locks the topology while running and unlocks after stop", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/");
+
+  // 1-3. New stopped lab with a couple of devices.
+  await page.getByRole("button", { name: "New Lab", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Start Lab" })).toBeVisible();
+  await expect(page.getByLabel("Topology unlocked")).toBeVisible();
+  await page.getByRole("button", { name: "Add Device", exact: true }).click();
+  await page.getByRole("tab", { name: "End Devices" }).click();
+  await page.getByRole("button", { name: "Add PC" }).click();
+  const canvas = page.getByTestId("topology-graph");
+  const bounds = await canvas.boundingBox();
+  await canvas.click({ position: { x: Math.round(bounds!.width * 0.4), y: Math.round(bounds!.height * 0.4) } });
+
+  // 4-5. Start the lab; topology becomes locked.
+  await page.getByRole("button", { name: "Start Lab" }).click();
+  await expect(page.getByLabel("Topology locked — stop the lab to edit")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Stop Lab" })).toBeVisible();
+
+  // 6-8. Editing is rejected while running (Add Device disabled).
+  await expect(page.getByRole("button", { name: "Add Router" })).toHaveCount(0);
+
+  // 12-14. Stop the lab and confirm the transient-state warning if shown.
+  await page.getByRole("button", { name: "Stop Lab" }).click();
+  const stopDialog = page.getByRole("dialog", { name: "Stop this lab?" });
+  if (await stopDialog.count()) await stopDialog.getByRole("button", { name: "Stop Lab" }).click();
+  await expect(page.getByRole("button", { name: "Start Lab" })).toBeVisible();
+  await expect(page.getByLabel("Topology unlocked")).toBeVisible();
+
+  // 15-16. Topology editing works again.
+  await page.getByRole("button", { name: "Add Device", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Add Router" })).toBeEnabled();
+});
+
 test("M10.1 Hub and Bridge demos expose deterministic forwarding behavior", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
