@@ -1,5 +1,5 @@
 import { allCommands } from "../commands";
-import { deviceMatches } from "../commands/helpers";
+import { deviceMatches, isEndHost } from "../commands/helpers";
 import type { CommandSpec, SessionApi } from "../types";
 
 const ROOT_DESCRIPTIONS: Record<string, string> = {
@@ -13,31 +13,32 @@ const ROOT_DESCRIPTIONS: Record<string, string> = {
   help: "Display available commands",
   hostname: "Set device hostname",
   interface: "Select an interface",
-  http: "Send an HTTP request",
   ip: "Configure IP parameters",
-  ipconfig: "Display or renew host IPv4 configuration",
+  ipconfig: "Display or manage host IPv4 configuration",
+  arp: "Display the host ARP cache",
+  netstat: "Display host transport connections",
   name: "Set VLAN name",
   nslookup: "Resolve a DNS hostname",
-  ntp: "Query a network time server",
   no: "Negate a command",
   ping: "Send ICMP echo requests",
+  sim: "SimulatorNet extensions (non-IOS)",
   show: "Display device information",
   shutdown: "Administratively disable an interface",
   switchport: "Configure Layer 2 interface settings",
-  syslog: "Send a Syslog message",
-  tftp: "Download a file with TFTP",
+  tracert: "Trace a route to an IPv4 destination",
   vlan: "Configure a VLAN",
 };
 
 const ARGUMENT_HELP: Record<string, string> = {
   ping: "<destination-ip>   IPv4 address to ping",
+  tracert: "<destination-ip>   IPv4 address to trace",
   interface: "<interface-name>   Interface to configure",
   "ip route": "<network> <mask> <next-hop>   Static route parameters",
   nslookup: "<hostname> [dns-server]   Resolve an IPv4 A record",
-  "http get": "<url>   HTTP URL with an IPv4 host",
-  "tftp get": "<server-ip> <filename>   Download a file",
-  "ntp query": "<server-ip>   Query virtual server time",
-  "syslog send": "<server-ip> <severity> <message>   Send a structured log message",
+  "sim http get": "<url>   HTTP URL with an IPv4 host",
+  "sim tftp get": "<server-ip> <filename>   Download a file",
+  "sim ntp query": "<server-ip>   Query virtual server time",
+  "sim syslog send": "<server-ip> <severity> <message>   Send a structured log message",
 };
 
 function available(session: SessionApi): CommandSpec[] {
@@ -55,7 +56,7 @@ function matchesPrefix(pattern: string, prefix: string[]): boolean {
   return prefix.every((token, index) => {
     const part = parts[index];
     if (!part) return false;
-    return part.startsWith("{") || part.toLowerCase() === token.toLowerCase();
+    return part.startsWith("{") || part.toLowerCase().startsWith(token.toLowerCase());
   });
 }
 
@@ -76,7 +77,30 @@ export function renderHelp(session: SessionApi, prefix: string[]): string {
     return lines([...roots].map((label) => ({ label, description: ROOT_DESCRIPTIONS[label] })));
   }
 
-  const key = prefix.join(" ").toLowerCase();
+  const matching = commands.filter((command) => matchesPrefix(command.pattern, prefix));
+  const canonical: string[] = [];
+  for (let index = 0; index < prefix.length; index++) {
+    const typed = prefix[index]!.toLowerCase();
+    const literals = new Set(
+      matching
+        .map((command) => patternParts(command.pattern)[index])
+        .filter((part): part is string => part !== undefined && !part.startsWith("{"))
+        .filter((part) => part.toLowerCase().startsWith(typed))
+        .map((part) => part.toLowerCase()),
+    );
+    if (literals.size > 1 && !literals.has(typed)) {
+      return `% Ambiguous command: "${prefix.join(" ")}"`;
+    }
+    canonical.push(literals.size === 1 ? [...literals][0]! : typed);
+  }
+
+  const key = canonical.join(" ");
+  if (isEndHost(session.device) && key === "ping") {
+    return lines([{ label: "<ip-or-hostname>", description: "IPv4 address or DNS hostname to ping" }]);
+  }
+  if (isEndHost(session.device) && key === "tracert") {
+    return lines([{ label: "<ip-or-hostname>", description: "IPv4 address or DNS hostname to trace" }]);
+  }
   if (key === "interface") {
     const entries = [...session.device.interfaces.keys()].map((label) => ({ label }));
     if (session.device.hasCapability("svi")) entries.push({ label: "vlan <1-4094>" });
@@ -90,8 +114,7 @@ export function renderHelp(session: SessionApi, prefix: string[]): string {
 
   const seen = new Set<string>();
   const entries: Array<{ label: string }> = [];
-  for (const command of commands) {
-    if (!matchesPrefix(command.pattern, prefix)) continue;
+  for (const command of matching) {
     const remainder = patternParts(command.pattern).slice(prefix.length);
     if (remainder.length === 0) continue;
     const label = helpLabel(remainder);

@@ -38,47 +38,54 @@ describe("transport and service CLI", () => {
     expect(lab.pcCli.execute("nslookup missing.lab")).toContain("NXDOMAIN");
   });
 
+  it("resolves hostnames for host ping and tracert", () => {
+    expect(lab.pcCli.execute("ping web.lab")).toContain("Success rate is 100 percent");
+    expect(lab.pcCli.execute("tracert web.lab")).toContain("Trace complete.");
+  });
+
   it("gets an HTTP resource", () => {
-    expect(lab.pcCli.execute("http get http://10.0.0.10/")).toContain("HTTP/1.1 200");
-    expect(lab.pcCli.execute("http get http://10.0.0.10/")).toContain("SimulatorNet");
+    expect(lab.pcCli.execute("sim http get http://10.0.0.10/")).toContain("HTTP/1.1 200");
+    expect(lab.pcCli.execute("sim http get http://10.0.0.10/")).toContain("SimulatorNet");
   });
 
   it("downloads a TFTP file into transient host storage", () => {
-    expect(lab.pcCli.execute("tftp get 10.0.0.10 backup.cfg")).toBe("Received 11 bytes as backup.cfg");
+    expect(lab.pcCli.execute("sim tftp get 10.0.0.10 backup.cfg")).toBe("Received 11 bytes as backup.cfg");
     expect(lab.pc.applications.downloadedFiles.get("backup.cfg")).toBe("hostname R1");
   });
 
   it("queries NTP and shows a virtual clock", () => {
-    expect(lab.pcCli.execute("ntp query 10.0.0.10")).toContain("NTP server time:");
-    expect(lab.pcCli.execute("show clock")).toContain("ns (virtual)");
+    expect(lab.pcCli.execute("sim ntp query 10.0.0.10")).toContain("NTP server time:");
+    expect(lab.pcCli.execute("sim show clock")).toContain("ns (virtual)");
   });
 
   it("sends and inspects structured Syslog", () => {
-    expect(lab.pcCli.execute("syslog send 10.0.0.10 warning link down")).toContain("message sent");
-    expect(lab.serverCli.execute("show syslog")).toContain("link down");
+    expect(lab.pcCli.execute("sim syslog send 10.0.0.10 warning link down")).toContain("message sent");
+    expect(lab.serverCli.execute("sim show syslog")).toContain("link down");
   });
 
   it("shows server service state and persistent content", () => {
-    expect(lab.serverCli.execute("show services")).toContain("dns");
-    expect(lab.serverCli.execute("show dns")).toContain("web.lab");
-    expect(lab.serverCli.execute("show http")).toContain("text/plain");
-    expect(lab.serverCli.execute("show tftp")).toContain("backup.cfg");
+    expect(lab.serverCli.execute("sim show services")).toContain("dns");
+    expect(lab.serverCli.execute("sim show dns")).toContain("web.lab");
+    expect(lab.serverCli.execute("sim show http")).toContain("text/plain");
+    expect(lab.serverCli.execute("sim show tftp")).toContain("backup.cfg");
   });
 
   it("shows UDP sockets and TCP listeners", () => {
-    expect(lab.serverCli.execute("show udp sockets")).toContain("dns");
-    expect(lab.serverCli.execute("show tcp connections")).toContain("LISTEN");
+    expect(lab.serverCli.execute("sim show udp sockets")).toContain("dns");
+    expect(lab.serverCli.execute("sim show tcp connections")).toContain("LISTEN");
   });
 
   it("renders contextual application help", () => {
     expect(lab.pcCli.execute("?")).toContain("nslookup");
     expect(lab.pcCli.execute("nslookup ?")).toContain("<hostname>");
-    expect(lab.pcCli.execute("http get ?")).toContain("<url>");
-    expect(lab.serverCli.execute("show ?")).toContain("services");
+    expect(lab.pcCli.execute("sim http get ?")).toContain("<url>");
+    expect(lab.serverCli.execute("sim show ?")).toContain("services");
+    expect(lab.pcCli.execute("?")).toContain("SimulatorNet extensions (non-IOS)");
   });
 
   it("distinguishes incomplete and validation errors", () => {
-    expect(lab.pcCli.execute("tftp get")).toContain("% Incomplete command.");
-    expect(lab.pcCli.execute("syslog send 10.0.0.10 banana message")).toContain("Syslog severity must be");
+    expect(lab.pcCli.execute("sim tftp get")).toContain("% Incomplete command.");
+    expect(lab.pcCli.execute("sim syslog send 10.0.0.10 banana message")).toContain("Syslog severity must be");
+    expect(lab.pcCli.execute("http get http://10.0.0.10/")).toContain("% Invalid input");
   });
 });

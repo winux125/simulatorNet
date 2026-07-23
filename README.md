@@ -519,7 +519,7 @@ DSW1(config)# ip routing
 
 Hub has no interactive CLI. Bridge exposes interface state, running
 configuration and `show mac address-table`. Server uses host commands including
-`ping`, `arp`, `ipconfig` and `ipconfig /renew`. L3 Switch combines switch and
+`ping`, `arp -a`, `ipconfig` and `ipconfig /renew`. L3 Switch combines switch and
 router show/config commands, including `show vlan brief`, `show mac
 address-table`, `show ip interface brief` and `show ip route`.
 
@@ -603,17 +603,17 @@ PC and Server host CLIs add:
 
 ```text
 nslookup <hostname> [dns-server]
-http get <http://server-ip[:port]/path>
-tftp get <server-ip> <filename>
-ntp query <server-ip>
-show clock
-syslog send <server-ip> <severity> <message>
-show udp sockets
-show tcp connections
+sim http get <http://server-ip[:port]/path>
+sim tftp get <server-ip> <filename>
+sim ntp query <server-ip>
+sim show clock
+sim syslog send <server-ip> <severity> <message>
+sim show udp sockets
+sim show tcp connections
 ```
 
-Server also exposes read-only `show services`, `show dns`, `show http`, `show
-tftp` and `show syslog`. The existing incomplete-command, validation and
+Server also exposes read-only `sim show services`, `sim show dns`, `sim show
+http`, `sim show tftp` and `sim show syslog`. The existing incomplete-command, validation and
 contextual `?` help rules apply. Commands drain only deterministic virtual
 events through the worker-owned engine.
 
@@ -670,3 +670,21 @@ React Flow attribution is controlled only through its supported
 `VITE_HIDE_REACT_FLOW_ATTRIBUTION=true` only when the distribution satisfies
 the React Flow attribution requirements; SimulatorNet does not hide the
 attribution with CSS.
+
+### Device-aware CLI profiles
+
+M10.2.1 separates PC, Server, Bridge, L2 Switch, L3 Switch and Router command
+profiles. PC opens with `C:\>` and Windows-like `ipconfig`, `ping`, `tracert`,
+`arp -a`, `nslookup` and `netstat`; Server keeps a named host prompt. Router and
+managed switches keep IOS-like modes. Hub deliberately has no CLI.
+
+Keywords accept only unique, case-insensitive prefixes. Common learning forms
+such as `conf t`, `show run`, `show ip int br`, `int gi0/1`, `shut` and
+`no shut` work; ambiguous input is reported without guessing, and misspellings
+are not fuzzy-matched. Help remains device-, mode- and prefix-aware. Router and
+L3 Switch bare `ping` prompt for a target; PC bare `ping` reports the required
+argument.
+
+Simulator-specific service helpers live under the explicit `sim` namespace and
+are labeled as non-IOS extensions. The full support matrix and deliberate
+omissions are documented in [docs/cli-compatibility.md](docs/cli-compatibility.md).

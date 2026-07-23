@@ -579,26 +579,26 @@ function CliCommandsDialog({ onClose }: { onClose(): void }) {
   return <WorkspaceDialog title="CLI commands" eyebrow="Implemented surface" onClose={onClose}>
     <div className="cli-command-reference">
       <section><h3>PC / Server</h3><ul>
-        <li><code>ping &lt;ip&gt;</code> — send ICMP echoes to a destination</li>
+        <li><code>ping &lt;ip-or-hostname&gt;</code> — send ICMP echoes to a destination</li>
         <li><code>ipconfig</code> — show interface addressing and DHCP lease</li>
-        <li><code>ipconfig /renew</code> — renew a DHCP client lease</li>
-        <li><code>arp</code> — display the ARP cache</li>
+        <li><code>ipconfig /all</code>, <code>ipconfig /renew</code>, <code>ipconfig /release</code></li>
+        <li><code>tracert &lt;ip-or-hostname&gt;</code>, <code>arp -a</code>, <code>netstat</code></li>
         <li><code>nslookup &lt;hostname&gt; [dns-server]</code> — resolve an A record</li>
-        <li><code>http get &lt;url&gt;</code>, <code>tftp get &lt;server-ip&gt; &lt;filename&gt;</code></li>
-        <li><code>ntp query &lt;server-ip&gt;</code>, <code>show clock</code></li>
-        <li><code>syslog send &lt;server-ip&gt; &lt;severity&gt; &lt;message&gt;</code></li>
-        <li><code>show udp sockets</code>, <code>show tcp connections</code></li>
+        <li><code>sim http get &lt;url&gt;</code>, <code>sim tftp get &lt;server-ip&gt; &lt;filename&gt;</code></li>
+        <li><code>sim ntp query &lt;server-ip&gt;</code>, <code>sim show clock</code></li>
+        <li><code>sim syslog send &lt;server-ip&gt; &lt;severity&gt; &lt;message&gt;</code></li>
+        <li><code>sim show udp sockets</code>, <code>sim show tcp connections</code></li>
       </ul></section>
       <section><h3>Server inspection</h3><ul>
-        <li><code>show services</code> — enabled state and listening ports</li>
-        <li><code>show dns</code>, <code>show http</code>, <code>show tftp</code>, <code>show syslog</code></li>
+        <li><code>sim show services</code> — enabled state and listening ports</li>
+        <li><code>sim show dns</code>, <code>sim show http</code>, <code>sim show tftp</code>, <code>sim show syslog</code></li>
       </ul></section>
       <section><h3>Bridge / Switch</h3><ul>
         <li><code>show mac address-table</code> — display learned forwarding entries</li>
         <li><code>enable</code> / <code>configure terminal</code> — enter privileged / global config</li>
         <li><code>vlan &lt;id&gt;</code>, <code>name &lt;text&gt;</code> — define VLANs</li>
         <li><code>interface &lt;id&gt;</code>, <code>switchport mode access|trunk</code>, <code>switchport access vlan &lt;id&gt;</code></li>
-        <li><code>show vlan brief</code>, <code>show mac address-table</code>, <code>show interfaces status</code></li>
+        <li><code>show vlan brief</code>, <code>show mac address-table</code>, <code>show interfaces</code></li>
       </ul></section>
       <section><h3>L3 Switch</h3><ul>
         <li><code>interface vlan &lt;id&gt;</code> — configure an SVI</li>
@@ -614,10 +614,10 @@ function CliCommandsDialog({ onClose }: { onClose(): void }) {
       </ul></section>
       <section><h3>Modes</h3><ul>
         <li>User EXEC <code>&gt;</code> → Privileged <code>#</code> (<code>enable</code>) → Global config (<code>configure terminal</code>) → Interface / VLAN sub-modes</li>
-        <li><code>end</code> / Ctrl-Z returns to privileged EXEC; <code>exit</code> steps up one mode</li>
+        <li><code>end</code> returns to privileged EXEC; <code>exit</code> steps up one mode</li>
       </ul></section>
     </div>
-    <p className="section-note">This is a Cisco-like teaching CLI, not Cisco IOS. Only the commands implemented by the deterministic engine are listed.</p>
+    <p className="section-note">SimulatorNet implements a deterministic educational subset of Cisco IOS-like network CLI and Packet Tracer-style host tools. Only implemented commands are listed.</p>
   </WorkspaceDialog>;
 }
 

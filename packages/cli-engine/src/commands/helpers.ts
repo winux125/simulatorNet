@@ -6,6 +6,7 @@ import {
   Layer3Switch,
   Pc,
   Router,
+  Server,
 } from "@sim/sim-core";
 import { ValidationError } from "../errors/errors";
 import type { DeviceFilter } from "../types";
@@ -31,6 +32,9 @@ export function isEndHost(d: Device): d is EndHost {
 export function isPc(d: Device): d is Pc {
   return d instanceof Pc;
 }
+export function isServer(d: Device): d is Server {
+  return d instanceof Server;
+}
 
 export function deviceMatches(filter: DeviceFilter | undefined, device: Device): boolean {
   if (!filter || filter === "any") return true;
@@ -38,7 +42,10 @@ export function deviceMatches(filter: DeviceFilter | undefined, device: Device):
   if (filter === "router") return isRoutingDevice(device);
   if (filter === "l3-switch") return isLayer3Switch(device);
   if (filter === "bridge") return isBridge(device);
-  return isEndHost(device);
+  if (filter === "pc") return isPc(device);
+  if (filter === "server") return isServer(device);
+  if (filter === "host") return isEndHost(device);
+  return !isEndHost(device);
 }
 
 /** Normalize a typed interface token for comparison (lowercase, no spaces). */

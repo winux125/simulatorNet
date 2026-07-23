@@ -3,7 +3,7 @@ export class TerminalCommandHistory {
   private cursor = 0;
 
   record(command: string): void {
-    if (!command) return;
+    if (!command || command.trimEnd().endsWith("?")) return;
     this.entries.push(command);
     this.cursor = this.entries.length;
   }

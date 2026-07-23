@@ -124,6 +124,43 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   await page.screenshot({ path: "/tmp/packet-style-light-1280x720.png", animations: "disabled" });
 });
 
+test("M10.2.1 CLI profiles expose host and IOS-like learning flows", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await chooseDemo(page, /Router-on-a-stick \+ DHCP/);
+
+  await openCli(page, "PC1");
+  await expect(page.getByRole("tab", { name: /PC1/ })).toContainText("PC1 — Command Prompt");
+  await expect(page.locator(".terminal-session.is-active .xterm-rows")).toContainText("C:\\>");
+  await runCli(page, "ping");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("% Incomplete command.");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Usage: ping <ip-or-hostname>");
+  await runCli(page, "?");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("ipconfig");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("SimulatorNet extensions (non-IOS)");
+  await expect(page.getByTestId("terminal-transcript")).not.toContainText("configure");
+  await runCli(page, "ipconfig");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Windows IP Configuration");
+  await runCli(page, "tracert 192.168.20.10");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Trace complete.");
+
+  await openCli(page, "R1");
+  for (const command of ["en", "conf t", "int gi0/0", "shut", "no shut", "end", "show run"]) {
+    await runCli(page, command);
+  }
+  await expect(page.getByTestId("terminal-transcript")).toContainText("R1(config-if)# shut");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("interface Gi0/0");
+
+  await runCli(page, "ping");
+  await expect(page.locator(".terminal-session.is-active .xterm-rows")).toContainText("Target IP address:");
+  await runCli(page, "192.168.10.10");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Success rate is");
+  await page.locator(".terminal-session.is-active .xterm-screen").click();
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowUp");
+  await expect(page.locator(".terminal-session.is-active .xterm-rows")).toContainText("R1# ping");
+});
+
 test("M10.1 Hub and Bridge demos expose deterministic forwarding behavior", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
@@ -204,10 +241,24 @@ test("M10.2 DNS and HTTP traverse UDP/TCP and expose Server service UI", async (
   await openCli(page, "PC1");
   await runCli(page, "nslookup portal.lab");
   await expect(page.getByTestId("terminal-transcript")).toContainText("Address: 172.20.10.10");
-  await runCli(page, "http get http://172.20.10.10/");
+  await runCli(page, "sim http get http://172.20.10.10/");
   await expect(page.getByTestId("terminal-transcript")).toContainText("HTTP/1.1 200");
   await expect(page.getByTestId("terminal-transcript")).toContainText("Welcome to SimulatorNet");
 
+  await page.getByRole("button", { name: "Select PC1" }).dblclick();
+  const pcWindow = page.getByRole("dialog", { name: "PC1 device window" });
+  await pcWindow.getByRole("button", { name: "Web Browser" }).click();
+  await pcWindow.getByRole("button", { name: "Go" }).click();
+  await expect(pcWindow.getByLabel("Web response preview")).toContainText("HTTP/1.1 200");
+  await expect(pcWindow.getByLabel("Web response preview")).toContainText("Welcome to SimulatorNet");
+  await pcWindow.getByRole("button", { name: "Close device window" }).click();
+
+  await page.getByRole("button", { name: "Select SRV1" }).dblclick();
+  const serverWindow = page.getByRole("dialog", { name: "SRV1 device window" });
+  await serverWindow.getByRole("tab", { name: "Services" }).click();
+  await expect(serverWindow.getByText("DNS", { exact: true }).first()).toBeVisible();
+  await expect(serverWindow.getByText("HTTP", { exact: true }).first()).toBeVisible();
+  await serverWindow.getByRole("button", { name: "Close device window" }).click();
   await page.getByRole("button", { name: "Select SRV1" }).click();
   await page.getByRole("tab", { name: "Configuration" }).click();
   await expect(page.getByLabel("Server services")).toBeVisible();
@@ -227,16 +278,16 @@ test("M10.2 TFTP, NTP, and Syslog workflows retain bounded runtime state", async
   await page.goto("/");
   await chooseDemo(page, /TFTP Configuration Backup/);
   await openCli(page, "PC1");
-  await runCli(page, "tftp get 172.20.10.10 branch-r1.cfg");
+  await runCli(page, "sim tftp get 172.20.10.10 branch-r1.cfg");
   await expect(page.getByTestId("terminal-transcript")).toContainText("branch-r1.cfg");
 
   await page.getByRole("menuitem", { name: "File", exact: true }).click();
   await page.getByRole("menuitem", { name: "Load Demo Lab" }).click();
   await page.getByRole("button", { name: /NTP \+ Syslog Operations/ }).click();
   await openCli(page, "PC1");
-  await runCli(page, "ntp query 172.20.10.10");
+  await runCli(page, "sim ntp query 172.20.10.10");
   await expect(page.getByTestId("terminal-transcript")).toContainText("NTP server time");
-  await runCli(page, "syslog send 172.20.10.10 warning uplink changed");
+  await runCli(page, "sim syslog send 172.20.10.10 warning uplink changed");
   await expect(page.getByTestId("terminal-transcript")).toContainText("message sent");
 
   await page.getByRole("button", { name: "Select SRV1" }).click();

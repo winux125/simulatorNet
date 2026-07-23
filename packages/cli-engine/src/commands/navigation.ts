@@ -8,26 +8,31 @@ export const navigationCommands: CommandSpec[] = [
   {
     pattern: "enable",
     modes: ["exec"],
+    device: "network",
     run: (s) => s.enter("privileged"),
   },
   {
     pattern: "disable",
     modes: ["privileged"],
+    device: "network",
     run: (s) => s.enter("exec"),
   },
   {
     pattern: "configure terminal",
     modes: ["privileged"],
+    device: "network",
     run: (s) => s.enter("config"),
   },
   {
     pattern: "exit",
     modes: ["privileged"],
+    device: "network",
     run: (s) => s.enter("exec"),
   },
   {
     pattern: "exit",
     modes: ["exec"],
+    device: "network",
     run: () => "",
   },
 
@@ -35,16 +40,19 @@ export const navigationCommands: CommandSpec[] = [
   {
     pattern: "exit",
     modes: ["config"],
+    device: "network",
     run: (s) => s.enter("privileged"),
   },
   {
     pattern: "exit",
     modes: ["config-if", "config-vlan"],
+    device: "network",
     run: (s) => s.enter("config"),
   },
   {
     pattern: "end",
     modes: ["config", "config-if", "config-vlan"],
+    device: "network",
     run: (s) => s.enter("privileged"),
   },
 
@@ -52,6 +60,7 @@ export const navigationCommands: CommandSpec[] = [
   {
     pattern: "hostname {name}",
     modes: ["config"],
+    device: "network",
     run: (s, p) => s.device.rename(p.name!),
   },
   {
@@ -79,9 +88,10 @@ export const navigationCommands: CommandSpec[] = [
     pattern: "interface {spec...}",
     usage: "interface <interface-name>",
     modes: ["config"],
+    device: "network",
     run: (s, p) => {
       const resolved = resolveInterface(s.device, p.spec!);
-      if (!resolved) throw new ValidationError(`Invalid interface ${p.spec}`);
+      if (!resolved) throw new ValidationError("Interface not found.");
       const isSub = resolved.subNumber !== undefined;
       if (isSub && !isRouter(s.device)) {
         throw new InvalidModeError("Subinterfaces are only supported on a router");

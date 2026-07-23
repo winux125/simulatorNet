@@ -29,6 +29,17 @@ export class SyntaxError extends CliError {
   }
 }
 
+/** More than one command remains after applying unique-prefix matching. */
+export class AmbiguousCommandError extends CliError {
+  constructor(readonly command: string) {
+    super(`Ambiguous command: "${command}"`);
+    this.name = "AmbiguousCommandError";
+  }
+  override render(): string {
+    return `% Ambiguous command: "${this.command}"`;
+  }
+}
+
 /** A command was recognised but is not valid for the device or mode/context. */
 export class InvalidModeError extends CliError {
   constructor(message: string) {

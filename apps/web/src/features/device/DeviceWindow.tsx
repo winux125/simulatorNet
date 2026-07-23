@@ -129,7 +129,7 @@ function Desktop({ client, node, onTerminal, onError }: { client: SimulatorClien
     setTool(next);
     if (next === "command") onTerminal();
     if (next === "ip") void execute("ipconfig");
-    if (next === "transport") void Promise.all([execute("show udp sockets"), execute("show tcp connections")]).then(([udp, tcp]) => setOutput(`${udp}\n\n${tcp}`));
+    if (next === "transport") void Promise.all([execute("sim show udp sockets"), execute("sim show tcp connections")]).then(([udp, tcp]) => setOutput(`${udp}\n\n${tcp}`));
   };
 
   return (
@@ -145,9 +145,9 @@ function Desktop({ client, node, onTerminal, onError }: { client: SimulatorClien
       </nav>
       <div className="desktop-tool-surface">
         {tool === "web" && <WebBrowser execute={execute} />}
-        {tool === "tftp" && <TwoFieldTool title="TFTP Client" firstLabel="Server IP" secondLabel="Filename" action="Get" onRun={(server, filename) => execute(`tftp get ${server} ${filename}`)} />}
-        {tool === "ntp" && <OneFieldTool title="NTP Client" label="Server IP" action="Query" onRun={(server) => execute(`ntp query ${server}`)} />}
-        {tool === "syslog" && <SyslogTool onRun={(server, severity, message) => execute(`syslog send ${server} ${severity} ${message}`)} />}
+        {tool === "tftp" && <TwoFieldTool title="TFTP Client" firstLabel="Server IP" secondLabel="Filename" action="Get" onRun={(server, filename) => execute(`sim tftp get ${server} ${filename}`)} />}
+        {tool === "ntp" && <OneFieldTool title="NTP Client" label="Server IP" action="Query" onRun={(server) => execute(`sim ntp query ${server}`)} />}
+        {tool === "syslog" && <SyslogTool onRun={(server, severity, message) => execute(`sim syslog send ${server} ${severity} ${message}`)} />}
         {!["web", "tftp", "ntp", "syslog"].includes(tool) && <pre className="desktop-tool-output">{output}</pre>}
       </div>
     </div>
@@ -170,7 +170,7 @@ function WebBrowser({ execute }: { execute(command: string): Promise<string> }) 
       if (!resolved) { setResult(dns || "% DNS resolution failed."); return; }
       requestAddress = address.replace(host, resolved);
     }
-    setResult(await execute(`http get ${requestAddress}`));
+    setResult(await execute(`sim http get ${requestAddress}`));
   };
   return <form className="desktop-form" onSubmit={(event) => { event.preventDefault(); void go(); }}><h3>Web Browser</h3><label>Address<div><input aria-label="Web address" value={address} onChange={(event) => setAddress(event.target.value)} /><Button type="submit" variant="primary">Go</Button></div></label><pre aria-label="Web response preview">{result}</pre><p>Rendered as safe text. HTML and JavaScript are never executed.</p></form>;
 }

@@ -36,8 +36,8 @@ describe("PC CLI guidance", () => {
     pc.addInterface("eth0", macFromIndex(1));
     pc.configure({ ip: "192.168.10.10", mask: 24, gateway: "192.168.10.1" });
     const session = createCliSession(pc, engine);
-    expect(session.execute("ping")).toBe("% Incomplete command.\nUsage: ping <destination-ip>");
-    expect(session.execute("ping ?")).toBe("  <destination-ip>   IPv4 address to ping");
+    expect(session.execute("ping")).toBe("% Incomplete command.\nUsage: ping <ip-or-hostname>");
+    expect(session.execute("ping ?")).toBe("  <ip-or-hostname>   IPv4 address or DNS hostname to ping");
     expect(session.execute("help")).toContain("ping");
     expect(session.execute("help")).toContain("Display available commands");
   });

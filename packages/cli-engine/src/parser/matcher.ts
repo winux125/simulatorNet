@@ -6,9 +6,9 @@
  *   "switchport access vlan {id}"   -> { id: "10" }
  *   "description {text...}"         -> { text: "uplink to core" }
  *
- * Literals match case-insensitively (Cisco keywords are case-insensitive).
+ * Literals match case-insensitively and accept a typed prefix. The session
+ * resolves that prefix only when it uniquely identifies a command.
  * `{name}` captures exactly one token; `{name...}` captures the rest of the line.
- * Command abbreviation and `?` help are intentionally out of scope for now.
  */
 export type Params = Record<string, string>;
 
@@ -16,6 +16,16 @@ export interface PatternProgress {
   status: "complete" | "incomplete" | "invalid";
   matchedTokens: number;
   invalidTokenIndex?: number;
+}
+
+export interface PatternMatch {
+  params: Params;
+  exactLiteralCount: number;
+  literalCount: number;
+}
+
+function literalMatches(part: string, token: string): boolean {
+  return part.toLowerCase().startsWith(token.toLowerCase());
 }
 
 export function analyzePattern(pattern: string, tokens: string[]): PatternProgress {
@@ -27,7 +37,7 @@ export function analyzePattern(pattern: string, tokens: string[]): PatternProgre
     const hole = part.startsWith("{") && part.endsWith("}");
     if (tokenIndex >= tokens.length) return { status: "incomplete", matchedTokens: tokenIndex };
     if (rest) return { status: "complete", matchedTokens: tokens.length };
-    if (!hole && tokens[tokenIndex]!.toLowerCase() !== part.toLowerCase()) {
+    if (!hole && !literalMatches(part, tokens[tokenIndex]!)) {
       return { status: "invalid", matchedTokens: tokenIndex, invalidTokenIndex: tokenIndex };
     }
     tokenIndex++;
@@ -41,9 +51,11 @@ export function usageFromPattern(pattern: string): string {
   return pattern.replace(/\{([^}.]+)(?:\.\.\.)?\}/g, "<$1>");
 }
 
-export function matchPattern(pattern: string, tokens: string[]): Params | null {
+export function matchPatternDetailed(pattern: string, tokens: string[]): PatternMatch | null {
   const parts = pattern.split(" ");
   const params: Params = {};
+  let exactLiteralCount = 0;
+  let literalCount = 0;
   let i = 0;
 
   for (let p = 0; p < parts.length; p++) {
@@ -56,7 +68,7 @@ export function matchPattern(pattern: string, tokens: string[]): Params | null {
       if (i >= tokens.length) return null; // needs at least one token
       params[name] = tokens.slice(i).join(" ");
       i = tokens.length;
-      return p === parts.length - 1 ? params : null;
+      return p === parts.length - 1 ? { params, exactLiteralCount, literalCount } : null;
     }
     if (single) {
       const name = part.slice(1, -1);
@@ -67,9 +79,15 @@ export function matchPattern(pattern: string, tokens: string[]): Params | null {
     }
     // literal keyword
     if (i >= tokens.length) return null;
-    if (tokens[i]!.toLowerCase() !== part.toLowerCase()) return null;
+    if (!literalMatches(part, tokens[i]!)) return null;
+    literalCount++;
+    if (tokens[i]!.toLowerCase() === part.toLowerCase()) exactLiteralCount++;
     i++;
   }
 
-  return i === tokens.length ? params : null; // no leftover tokens
+  return i === tokens.length ? { params, exactLiteralCount, literalCount } : null; // no leftover tokens
+}
+
+export function matchPattern(pattern: string, tokens: string[]): Params | null {
+  return matchPatternDetailed(pattern, tokens)?.params ?? null;
 }

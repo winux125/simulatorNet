@@ -1,10 +1,20 @@
 import type { Device, SimulationEngine } from "@sim/sim-core";
 import { allCommands } from "../commands";
-import { deviceMatches } from "../commands/helpers";
-import { CliError, IncompleteCommandError, SyntaxError, UnsupportedCapabilityError } from "../errors/errors";
+import { deviceMatches, isPc, isRoutingDevice } from "../commands/helpers";
+import {
+  AmbiguousCommandError,
+  CliError,
+  IncompleteCommandError,
+  SyntaxError,
+  UnsupportedCapabilityError,
+} from "../errors/errors";
 import { renderHelp } from "../help/help";
 import { tokenize } from "../lexer/lexer";
-import { analyzePattern, matchPattern, usageFromPattern } from "../parser/matcher";
+import {
+  analyzePattern,
+  matchPatternDetailed,
+  usageFromPattern,
+} from "../parser/matcher";
 import type { InterfaceContext, SessionApi } from "../types";
 import { type CliMode, promptSuffix } from "./mode";
 
@@ -17,6 +27,7 @@ export class CliSession implements SessionApi {
   mode: CliMode = "exec";
   ifaceCtx: InterfaceContext | undefined;
   vlanId: number | undefined;
+  private pendingInput: "ping-target" | undefined;
 
   constructor(
     readonly device: Device,
@@ -25,6 +36,8 @@ export class CliSession implements SessionApi {
 
   /** The prompt shown before the next command, e.g. "S1(config-if)#". */
   prompt(): string {
+    if (this.pendingInput === "ping-target") return "Target IP address:";
+    if (isPc(this.device)) return "C:\\>";
     return `${this.device.name}${promptSuffix(this.mode)}`;
   }
 
@@ -36,33 +49,75 @@ export class CliSession implements SessionApi {
 
   /** Execute one command line; returns its textual output ("" if none). */
   execute(line: string): string {
+    if (this.pendingInput === "ping-target") {
+      if (line.trim().length === 0) return "";
+      this.pendingInput = undefined;
+      return this.execute(`ping ${line.trim()}`);
+    }
+
     const tokens = tokenize(line);
     if (tokens.length === 0) return "";
 
     const lowered = tokens.map((token) => token.toLowerCase());
     if (lowered.length === 1 && (lowered[0] === "?" || lowered[0] === "help")) return renderHelp(this, []);
     if (tokens.at(-1) === "?") return renderHelp(this, tokens.slice(0, -1));
+    if (
+      lowered.length === 1
+      && "ping".startsWith(lowered[0]!)
+      && isRoutingDevice(this.device)
+      && (this.mode === "exec" || this.mode === "privileged")
+    ) {
+      this.pendingInput = "ping-target";
+      return "";
+    }
 
     const eligible = allCommands.filter((spec) =>
       spec.modes.includes(this.mode)
       && deviceMatches(spec.device, this.device));
-    for (const spec of eligible) {
-      const params = matchPattern(spec.pattern, tokens);
-      if (!params) continue;
-      const missingCapability = spec.capabilities?.find((capability) => !this.device.hasCapability(capability));
+    const progress = eligible.map((spec) => ({ spec, analysis: analyzePattern(spec.pattern, tokens) }));
+    const viable = progress.filter((candidate) => candidate.analysis.status !== "invalid");
+    for (let index = 0; index < tokens.length; index++) {
+      const token = tokens[index]!.toLowerCase();
+      const literalExpansions = new Set(
+        viable
+          .map((candidate) => candidate.spec.pattern.split(" ")[index])
+          .filter((part): part is string => part !== undefined && !part.startsWith("{"))
+          .filter((part) => part.toLowerCase().startsWith(token))
+          .map((part) => part.toLowerCase()),
+      );
+      if (literalExpansions.size > 1) return new AmbiguousCommandError(line.trim()).render();
+    }
+
+    const complete = eligible.flatMap((spec) => {
+      const match = matchPatternDetailed(spec.pattern, tokens);
+      return match ? [{ spec, match }] : [];
+    });
+    if (complete.length > 0) {
+      complete.sort((left, right) =>
+        right.match.exactLiteralCount - left.match.exactLiteralCount
+        || right.match.literalCount - left.match.literalCount
+        || right.spec.pattern.length - left.spec.pattern.length);
+      const best = complete[0]!;
+      const tied = complete.filter((candidate) =>
+        candidate.match.exactLiteralCount === best.match.exactLiteralCount
+        && candidate.match.literalCount === best.match.literalCount);
+      if (new Set(tied.map((candidate) => candidate.spec.pattern)).size > 1) {
+        return new AmbiguousCommandError(line.trim()).render();
+      }
+      const missingCapability = best.spec.capabilities?.find((capability) => !this.device.hasCapability(capability));
       if (missingCapability) return new UnsupportedCapabilityError(missingCapability).render();
       try {
-        return spec.run(this, params) ?? "";
+        return best.spec.run(this, best.match.params) ?? "";
       } catch (err) {
         if (err instanceof CliError) return err.render();
         throw err;
       }
     }
 
-    const progress = eligible.map((spec) => ({ spec, analysis: analyzePattern(spec.pattern, tokens) }));
-    const incomplete = progress
+    const incompleteCandidates = progress
       .filter((candidate) => candidate.analysis.status === "incomplete")
-      .sort((a, b) => b.analysis.matchedTokens - a.analysis.matchedTokens || a.spec.pattern.length - b.spec.pattern.length)[0];
+      .sort((a, b) => b.analysis.matchedTokens - a.analysis.matchedTokens || a.spec.pattern.length - b.spec.pattern.length);
+    const incomplete = incompleteCandidates[0];
     if (incomplete) return new IncompleteCommandError(incomplete.spec.usage ?? usageFromPattern(incomplete.spec.pattern)).render();
 
     const invalid = progress.sort((a, b) => b.analysis.matchedTokens - a.analysis.matchedTokens)[0];

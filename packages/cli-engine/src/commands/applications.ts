@@ -32,21 +32,21 @@ export const applicationCommands: CommandSpec[] = [
     pattern: "nslookup {hostname} {server}",
     usage: "nslookup <hostname> [dns-server]",
     modes: [...EXEC_MODES],
-    device: "pc",
+    device: "host",
     run: (session, params) => safely(() => runNslookup(session, params.hostname!, parseIpv4(params.server!))),
   },
   {
     pattern: "nslookup {hostname}",
     usage: "nslookup <hostname> [dns-server]",
     modes: [...EXEC_MODES],
-    device: "pc",
+    device: "host",
     run: (session, params) => safely(() => runNslookup(session, params.hostname!)),
   },
   {
-    pattern: "http get {url}",
-    usage: "http get <http://server-ip[:port]/path>",
+    pattern: "sim http get {url}",
+    usage: "sim http get <http://server-ip[:port]/path>",
     modes: [...EXEC_MODES],
-    device: "pc",
+    device: "host",
     run: (session, params) => safely(() => {
       const device = host(session);
       const requestId = device.applications.httpGet(params.url!);
@@ -59,10 +59,10 @@ export const applicationCommands: CommandSpec[] = [
     }),
   },
   {
-    pattern: "tftp get {server} {filename}",
-    usage: "tftp get <server-ip> <filename>",
+    pattern: "sim tftp get {server} {filename}",
+    usage: "sim tftp get <server-ip> <filename>",
     modes: [...EXEC_MODES],
-    device: "pc",
+    device: "host",
     run: (session, params) => safely(() => {
       const device = host(session);
       const requestId = device.applications.tftpGet(parseIpv4(params.server!), params.filename!);
@@ -74,10 +74,10 @@ export const applicationCommands: CommandSpec[] = [
     }),
   },
   {
-    pattern: "ntp query {server}",
-    usage: "ntp query <server-ip>",
+    pattern: "sim ntp query {server}",
+    usage: "sim ntp query <server-ip>",
     modes: [...EXEC_MODES],
-    device: "pc",
+    device: "host",
     run: (session, params) => safely(() => {
       const device = host(session);
       const requestId = device.applications.queryNtp(parseIpv4(params.server!));
@@ -89,16 +89,16 @@ export const applicationCommands: CommandSpec[] = [
     }),
   },
   {
-    pattern: "show clock",
+    pattern: "sim show clock",
     modes: [...EXEC_MODES],
-    device: "pc",
+    device: "host",
     run: (session) => `${host(session).applications.clockNow()} ns (virtual)`,
   },
   {
-    pattern: "syslog send {server} {severity} {message...}",
-    usage: "syslog send <server-ip> <severity> <message>",
+    pattern: "sim syslog send {server} {severity} {message...}",
+    usage: "sim syslog send <server-ip> <severity> <message>",
     modes: [...EXEC_MODES],
-    device: "pc",
+    device: "host",
     run: (session, params) => safely(() => {
       const severity = params.severity!.toLowerCase() as SyslogSeverity;
       if (!severities.has(severity)) throw new ValidationError("Syslog severity must be emergency, alert, critical, error, warning, notice, informational, or debug.");
@@ -108,9 +108,9 @@ export const applicationCommands: CommandSpec[] = [
     }),
   },
   {
-    pattern: "show udp sockets",
+    pattern: "sim show udp sockets",
     modes: [...EXEC_MODES],
-    device: "pc",
+    device: "host",
     run: (session) => formatRows(
       ["Local address", "Port", "Service", "State"],
       host(session).transport.udp.inspect().map((entry) => [entry.localAddress ?? "0.0.0.0", String(entry.localPort), entry.service, entry.state]),
@@ -118,9 +118,9 @@ export const applicationCommands: CommandSpec[] = [
     ),
   },
   {
-    pattern: "show tcp connections",
+    pattern: "sim show tcp connections",
     modes: [...EXEC_MODES],
-    device: "pc",
+    device: "host",
     run: (session) => formatRows(
       ["Local", "Remote", "State", "Service"],
       host(session).transport.tcp.inspect().map((entry) => [
@@ -133,9 +133,9 @@ export const applicationCommands: CommandSpec[] = [
     ),
   },
   {
-    pattern: "show services",
+    pattern: "sim show services",
     modes: [...EXEC_MODES],
-    device: "pc",
+    device: "server",
     capabilities: ["application-services"],
     run: (session) => formatRows(
       ["ID", "Type", "Enabled", "State", "Port"],
@@ -144,9 +144,9 @@ export const applicationCommands: CommandSpec[] = [
     ),
   },
   ...(["dns", "http", "tftp", "syslog"] as const).map((type): CommandSpec => ({
-    pattern: `show ${type}`,
+    pattern: `sim show ${type}`,
     modes: [...EXEC_MODES],
-    device: "pc",
+    device: "server",
     capabilities: ["application-services"],
     run: (session) => showService(server(session), type),
   })),

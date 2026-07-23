@@ -4,7 +4,16 @@ import type { Params } from "./parser/matcher";
 import type { CliMode } from "./session/mode";
 
 /** Which device kind a command applies to. */
-export type DeviceFilter = "switch" | "router" | "pc" | "bridge" | "l3-switch" | "any";
+export type DeviceFilter =
+  | "switch"
+  | "router"
+  | "pc"
+  | "server"
+  | "host"
+  | "network"
+  | "bridge"
+  | "l3-switch"
+  | "any";
 
 /** The interface-configuration context (`config-if`). */
 export interface InterfaceContext {

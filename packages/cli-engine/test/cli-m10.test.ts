@@ -43,7 +43,7 @@ describe("M10 capability-aware CLI", () => {
     expect(cli.prompt()).toBe("Server>");
     expect(cli.execute("?")).toContain("ipconfig");
     expect(cli.execute("ipconfig")).toContain("10.0.0.10");
-    expect(cli.execute("ping ?")).toContain("<destination-ip>");
+    expect(cli.execute("ping ?")).toContain("<ip-or-hostname>");
     expect(cli.execute("ping 10.0.0.20")).toContain("Success rate is 100 percent");
   });
 

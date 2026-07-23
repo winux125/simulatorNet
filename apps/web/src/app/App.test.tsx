@@ -941,7 +941,7 @@ describe("M10.2 transport and server applications", () => {
     const client = new RuntimeClient();
     await loadFocusedDemo(client, /DNS \+ Web Services/, DNS_WEB_DEMO.id);
     const terminal = await openDeviceTerminal("Select PC1");
-    await submitTerminal(terminal, "http get http://172.20.10.10/");
+    await submitTerminal(terminal, "sim http get http://172.20.10.10/");
     await waitFor(() => expect(terminal.output).toContain("HTTP/1.1 200"));
     expect(terminal.output).toContain("Welcome to SimulatorNet");
   });
@@ -950,7 +950,7 @@ describe("M10.2 transport and server applications", () => {
     const client = new RuntimeClient();
     await loadFocusedDemo(client, /TFTP Configuration Backup/, TFTP_BACKUP_DEMO.id);
     const terminal = await openDeviceTerminal("Select PC1");
-    await submitTerminal(terminal, "tftp get 172.20.10.10 branch-r1.cfg");
+    await submitTerminal(terminal, "sim tftp get 172.20.10.10 branch-r1.cfg");
     await waitFor(() => expect(terminal.output).toContain("Received"));
     expect(terminal.output).toContain("branch-r1.cfg");
   });
@@ -959,9 +959,9 @@ describe("M10.2 transport and server applications", () => {
     const client = new RuntimeClient();
     await loadFocusedDemo(client, /NTP \+ Syslog Operations/, NTP_SYSLOG_DEMO.id);
     const terminal = await openDeviceTerminal("Select PC1");
-    await submitTerminal(terminal, "ntp query 172.20.10.10");
+    await submitTerminal(terminal, "sim ntp query 172.20.10.10");
     await waitFor(() => expect(terminal.output).toContain("NTP server time"));
-    await submitTerminal(terminal, "syslog send 172.20.10.10 warning uplink changed");
+    await submitTerminal(terminal, "sim syslog send 172.20.10.10 warning uplink changed");
     await waitFor(() => expect(terminal.output).toContain("message sent"));
   });
 
@@ -981,7 +981,7 @@ describe("M10.2 transport and server applications", () => {
     const client = new RuntimeClient();
     await loadFocusedDemo(client, /NTP \+ Syslog Operations/, NTP_SYSLOG_DEMO.id);
     const terminal = await openDeviceTerminal("Select PC1");
-    await submitTerminal(terminal, "syslog send 172.20.10.10 notice ready");
+    await submitTerminal(terminal, "sim syslog send 172.20.10.10 notice ready");
     await waitFor(() => expect(terminal.output).toContain("message sent"));
     await userEvent.click(screen.getByRole("button", { name: "Select SRV1" }));
     await userEvent.click(screen.getByRole("tab", { name: "Configuration" }));

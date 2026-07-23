@@ -43,7 +43,7 @@ export interface InterfaceTemplate {
   readonly media: "ethernet";
 }
 
-export type DeviceCliProfile = "host" | "bridge" | "switch" | "layer3-switch" | "router";
+export type DeviceCliProfile = "pc-host" | "server-host" | "bridge" | "switch" | "layer3-switch" | "router";
 
 export interface DeviceProfile {
   readonly type: DeviceType;
@@ -78,7 +78,7 @@ export const DEVICE_PROFILES = {
     capabilities: ["ethernet-end-host", "ipv4-host", "dhcp-client"],
     interfaceTemplates: ethernet(["eth0"]),
     iconKey: "pc",
-    cliProfile: "host",
+    cliProfile: "pc-host",
     description: "An IPv4 end host for interactive client actions.",
   },
   server: {
@@ -88,7 +88,7 @@ export const DEVICE_PROFILES = {
     capabilities: ["ethernet-end-host", "ipv4-host", "dhcp-client", "application-services"],
     interfaceTemplates: ethernet(["eth0", "eth1"]),
     iconKey: "server",
-    cliProfile: "host",
+    cliProfile: "server-host",
     description: "An IPv4 end host prepared for network services.",
   },
   hub: {
