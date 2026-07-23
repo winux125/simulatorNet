@@ -4,7 +4,7 @@ import type { SimWorkerEvent } from "@sim/sim-worker";
 import { Group as PanelGroup, Panel as ResizablePanel, Separator } from "react-resizable-panels";
 import {
   AlertTriangle, CheckCircle2, Command, Download, Eraser, FilePlus2, FlaskConical, FolderOpen, FolderX,
-  Grid3X3, Info, Keyboard, Maximize2, Pause, PanelBottom, PanelRight, Play, Redo2, RotateCcw, SkipForward,
+  Grid3X3, Info, Keyboard, Maximize2, Pause, PanelRight, Play, Redo2, RotateCcw, SkipForward,
   SunMoon, Tag, TerminalSquare, Undo2, Wrench, X,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
@@ -286,7 +286,6 @@ export function App({ client }: AppProps) {
       { id: "view-zoom", label: "Reset Zoom", disabled: !labOpen, onSelect: workspace.requestZoomReset },
       { separator: true },
       { id: "view-inspector", label: workspace.inspectorOpen ? "Hide Inspector" : "Show Inspector", icon: <PanelRight size={14} />, onSelect: () => workspace.setInspectorOpen(!workspace.inspectorOpen) },
-      { id: "view-bottom", label: workspace.bottomDockOpen ? "Hide Bottom Panel" : "Show Bottom Panel", icon: <PanelBottom size={14} />, onSelect: () => workspace.setBottomDockOpen(!workspace.bottomDockOpen) },
       { id: "view-ports", label: workspace.showLinkLabels ? "Hide Port Labels" : "Show Port Labels", icon: <Tag size={14} />, onSelect: () => workspace.setShowLinkLabels(!workspace.showLinkLabels) },
       { id: "view-terminal", label: "Open Terminal", icon: <TerminalSquare size={14} />, disabled: !labOpen, onSelect: openTerminalFromMenu },
       { separator: true },
@@ -351,6 +350,17 @@ export function App({ client }: AppProps) {
     <div className="app-shell" data-workspace-mode={workspace.mode} data-responsive={compact ? "compact" : "desktop"}>
       <Toolbar
         menus={menus}
+        devicePicker={labOpen ? (
+          <DevicePalette
+            open={workspace.paletteOpen}
+            disabled={!workspace.draft || workspace.mode !== "edit"}
+            selectedKind={workspace.pendingDeviceKind}
+            activeTool={workspace.activeTool}
+            onOpenChange={workspace.setPaletteOpen}
+            onSelectKind={workspace.setPendingDeviceKind}
+            onTool={workspace.setActiveTool}
+          />
+        ) : undefined}
         labTitle={workspace.snapshot?.title}
         sessionScope={launchSession.state.status === "authenticated" ? "Organization" : "Local Lab"}
         workerStatus={workspace.workerStatus}
@@ -406,7 +416,7 @@ export function App({ client }: AppProps) {
               {compact && inspector}
             </div>
           </ResizablePanel>
-          {labOpen && workspace.bottomDockOpen && <>
+          {labOpen && <>
             <Separator className="resize-handle resize-handle--horizontal" />
             <ResizablePanel id="bottom-dock" minSize="160px" maxSize="48%" defaultSize={narrowDesktop ? "220px" : "270px"}>
               <Suspense fallback={<DockLoading />}>
@@ -425,19 +435,11 @@ export function App({ client }: AppProps) {
                   onCloseTerminal={workspace.closeTerminal}
                   onClearProblems={workspace.clearProblems}
                   onError={reportCliError}
-                  onClose={() => workspace.setBottomDockOpen(false)}
                 />
               </Suspense>
             </ResizablePanel>
           </>}
         </PanelGroup>
-        {labOpen && <DevicePalette
-          disabled={!workspace.draft || workspace.mode !== "edit"}
-          selectedKind={workspace.pendingDeviceKind}
-          activeTool={workspace.activeTool}
-          onSelectKind={workspace.setPendingDeviceKind}
-          onTool={workspace.setActiveTool}
-        />}
       </div>
       <footer className="workspace-footer"><span>Mode: <strong>{workspace.mode}</strong></span><span>Virtual time <code>{((workspace.snapshot?.virtualTime ?? 0) / 1_000_000).toFixed(3)} ms</code></span><span>{workspace.snapshot?.nodes.length ?? 0} devices</span><span className="workspace-footer__right">Schema v{workspace.draft?.schemaVersion ?? 1} · deterministic runtime</span></footer>
 

@@ -10,6 +10,7 @@ import { MenuBar, type MenuDef } from "./MenuBar";
 
 interface ToolbarProps {
   menus: MenuDef[];
+  devicePicker?: ReactNode;
   labTitle?: string;
   sessionScope: string;
   workerStatus: "empty" | "loading" | "ready" | "error";
@@ -88,6 +89,7 @@ export function Toolbar(props: ToolbarProps) {
           <IconButton label="Undo" icon={<Undo2 size={15} />} disabled={!props.canUndo} onClick={props.onUndo} />
           <IconButton label="Redo" icon={<Redo2 size={15} />} disabled={!props.canRedo} onClick={props.onRedo} />
         </ToolbarGroup>
+        {props.devicePicker && <ToolbarGroup label="Add topology item">{props.devicePicker}</ToolbarGroup>}
         <ToolbarGroup label="Topology actions">
           <IconButton label="Select tool" icon={<MousePointer2 size={15} />} active={props.activeTool === "select"} onClick={() => props.onTool("select")} />
           <IconButton label="Add link" icon={<Cable size={15} />} active={props.activeTool === "add-link"} disabled={props.mode !== "edit"} onClick={() => props.onTool("add-link")} />

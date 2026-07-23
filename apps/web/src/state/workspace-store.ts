@@ -41,7 +41,6 @@ interface WorkspaceState {
   dockTab: DockTab;
   paletteOpen: boolean;
   inspectorOpen: boolean;
-  bottomDockOpen: boolean;
   showLinkLabels: boolean;
   fitRequest: number;
   zoomResetRequest: number;
@@ -74,7 +73,6 @@ interface WorkspaceState {
   setDockTab(tab: DockTab): void;
   setPaletteOpen(open: boolean): void;
   setInspectorOpen(open: boolean): void;
-  setBottomDockOpen(open: boolean): void;
   setShowLinkLabels(show: boolean): void;
   requestFit(): void;
   requestZoomIn(): void;
@@ -103,7 +101,6 @@ const initialState = {
   dockTab: "terminal" as const,
   paletteOpen: false,
   inspectorOpen: true,
-  bottomDockOpen: true,
   showLinkLabels: true,
   fitRequest: 0,
   zoomResetRequest: 0,
@@ -144,7 +141,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     terminalTabs: state.terminalTabs.includes(deviceId) ? state.terminalTabs : [...state.terminalTabs, deviceId],
     activeTerminalDeviceId: deviceId,
     dockTab: "terminal",
-    bottomDockOpen: true,
   })),
   closeTerminal: (deviceId) => set((state) => {
     const terminalTabs = state.terminalTabs.filter((id) => id !== deviceId);
@@ -172,10 +168,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   clearProblems: () => set({ problems: [], error: undefined }),
   setFilter: (filter) => set((state) => ({ filters: { ...state.filters, ...filter } })),
   setInspectorTab: (inspectorTab) => set({ inspectorTab, inspectorOpen: true }),
-  setDockTab: (dockTab) => set({ dockTab, bottomDockOpen: true }),
+  setDockTab: (dockTab) => set({ dockTab }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
   setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
-  setBottomDockOpen: (bottomDockOpen) => set({ bottomDockOpen }),
   setShowLinkLabels: (showLinkLabels) => set({ showLinkLabels }),
   requestFit: () => set((state) => ({ fitRequest: state.fitRequest + 1 })),
   requestZoomIn: () => set((state) => ({ zoomInRequest: state.zoomInRequest + 1 })),

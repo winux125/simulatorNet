@@ -198,6 +198,9 @@ async function chooseTheme(label: "System" | "Dark" | "Light") {
 }
 
 async function placeDevice(label: string) {
+  if (!screen.queryByRole("dialog", { name: "Add topology item" })) {
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
+  }
   await userEvent.click(screen.getByRole("button", { name: `Add ${label}` }));
   fireEvent.click(screen.getByTestId("react-flow"), { clientX: 320, clientY: 240 });
 }
@@ -279,6 +282,7 @@ describe("M6.1 simulator workspace", () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     await enterEditMode();
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
     await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
     await placeDevice("PC");
     await openMenu("File");
@@ -335,21 +339,23 @@ describe("M6.1 simulator workspace", () => {
     expect(document.documentElement.dataset.theme).toBe("dark");
   });
 
-  it("exposes the two-level bottom device palette", async () => {
+  it("exposes the device palette as a toolbar dropdown", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     await enterEditMode();
-    const palette = screen.getByLabelText("Device palette");
-    expect(palette.getAttribute("data-region")).toBe("bottom");
-    expect(within(palette).getByRole("tab", { name: "Network Devices" })).toBeTruthy();
-    expect(within(palette).getByRole("tab", { name: "End Devices" })).toBeTruthy();
-    expect(within(palette).getByRole("tab", { name: "Connections" })).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Add topology item" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
+    const picker = screen.getByRole("dialog", { name: "Add topology item" });
+    expect(within(picker).getByRole("tab", { name: "Network Devices" })).toBeTruthy();
+    expect(within(picker).getByRole("tab", { name: "End Devices" })).toBeTruthy();
+    expect(within(picker).getByRole("tab", { name: "Connections" })).toBeTruthy();
   });
 
   it("switches palette categories and selects click-then-place models", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     await enterEditMode();
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
     expect(screen.getByRole("button", { name: "Add Router" })).toBeTruthy();
     await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
     expect(screen.getByRole("button", { name: "Add PC" })).toBeTruthy();
@@ -404,6 +410,7 @@ describe("M6.1 simulator workspace", () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     await enterEditMode();
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
     await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
     await placeDevice("PC");
     expect(screen.getByText("Topology changes pending")).toBeTruthy();
@@ -506,6 +513,7 @@ describe("M10.2.1 Packet Tracer-style workspace", () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     await enterEditMode();
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
     for (const label of ["Router", "L2 Switch", "L3 Switch", "Hub", "Bridge"]) {
       expect(screen.getByRole("button", { name: `Add ${label}` })).toBeTruthy();
     }
@@ -522,6 +530,7 @@ describe("M10.2.1 Packet Tracer-style workspace", () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     await enterEditMode();
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
     const setData = vi.fn();
     fireEvent.dragStart(screen.getByRole("button", { name: "Add Router" }), {
       dataTransfer: { effectAllowed: "none", setData },
@@ -645,13 +654,19 @@ describe("M8.3 desktop menus and terminal", () => {
     expect(useWorkspaceStore.getState().problems).toHaveLength(0);
   });
 
-  it("Ctrl+L clears the visible buffer but keeps the session open", async () => {
+  it("Ctrl+L clears the viewport idempotently and keeps the session open", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     const terminal = await openDeviceTerminal("Select PC1");
     await type(terminal, "arp");
-    await act(async () => { terminal.emit("\x0c"); });
-    expect(terminal.clears).toBeGreaterThanOrEqual(1);
+    await act(async () => {
+      terminal.emit("\x0c");
+      terminal.emit("\x0c");
+      terminal.emit("\x0c");
+      terminal.emit("\x0c");
+    });
+    expect(terminal.clears).toBeGreaterThanOrEqual(4);
+    expect(terminal.output.match(/C:\\>/g)).toHaveLength(1);
     expect(client.requestTypes).not.toContain("CLOSE_CLI_SESSION");
     expect(useWorkspaceStore.getState().terminalTabs).toEqual(["pc-1"]);
   });
@@ -770,6 +785,7 @@ describe("M10.1 expanded device palette", () => {
     const client = new RuntimeClient();
     render(<App client={client} />);
     await userEvent.click(screen.getByRole("button", { name: "New Lab" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
     for (const label of ["Hub", "Bridge", "L2 Switch", "L3 Switch", "Router"]) {
       expect(screen.getByRole("button", { name: `Add ${label}` })).toBeTruthy();
     }

@@ -50,26 +50,41 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   await expect(page.getByText("VLAN Routing Lab", { exact: true }).first()).toBeVisible();
   await expect(page.locator(".react-flow__minimap")).toHaveCount(0);
   await expect(page.locator(".react-flow__attribution")).toBeVisible();
-  await expect(page.getByLabel("Device palette")).toHaveAttribute("data-region", "bottom");
+  await expect(page.getByRole("button", { name: "Add Device", exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Add topology item" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Close bottom panel" })).toHaveCount(0);
   const chromeBounds = await page.locator(".desktop-chrome").boundingBox();
   const workspaceBounds = await page.locator(".workspace-resizable").boundingBox();
   const topologyBounds = await page.locator(".react-flow").boundingBox();
-  const paletteBounds = await page.getByLabel("Device palette").boundingBox();
+  const dockBounds = await page.getByLabel("Workspace bottom panel").boundingBox();
+  const footerBounds = await page.locator(".workspace-footer").boundingBox();
   expect(chromeBounds).not.toBeNull();
   expect(workspaceBounds).not.toBeNull();
   expect(topologyBounds).not.toBeNull();
-  expect(paletteBounds).not.toBeNull();
+  expect(dockBounds).not.toBeNull();
+  expect(footerBounds).not.toBeNull();
   expect(chromeBounds!.height).toBe(78);
   expect(chromeBounds!.width).toBe(1440);
   expect(topologyBounds!.y).toBeLessThan(100);
-  expect(paletteBounds!.width).toBe(1440);
-  expect(paletteBounds!.height).toBe(112);
-  expect(Math.abs(workspaceBounds!.y + workspaceBounds!.height - paletteBounds!.y)).toBeLessThanOrEqual(1);
+  expect(dockBounds!.width).toBe(1440);
+  expect(dockBounds!.y).toBeGreaterThan(topologyBounds!.y);
+  expect(Math.abs(dockBounds!.y + dockBounds!.height - footerBounds!.y)).toBeLessThanOrEqual(1);
+  expect(Math.abs(workspaceBounds!.y + workspaceBounds!.height - footerBounds!.y)).toBeLessThanOrEqual(1);
 
   // 3. Lab menu → toggle Edit then Simulate mode.
   await menu("Lab").click();
   await page.getByRole("menuitemradio", { name: "Edit Topology" }).click();
   await expect(shell).toHaveAttribute("data-workspace-mode", "edit");
+  await page.getByRole("button", { name: "Add Device", exact: true }).click();
+  const devicePicker = page.getByRole("dialog", { name: "Add topology item" });
+  await expect(devicePicker).toBeVisible();
+  await expect(devicePicker.getByRole("button", { name: "Add Router" })).toBeEnabled();
+  const pickerBounds = await devicePicker.boundingBox();
+  expect(pickerBounds).not.toBeNull();
+  expect(pickerBounds!.y).toBeLessThan(120);
+  await page.screenshot({ path: "/tmp/device-picker-dark-1440x900.png", animations: "disabled" });
+  await page.getByRole("button", { name: "Add Device", exact: true }).click();
+  await expect(devicePicker).toHaveCount(0);
   await page.getByRole("button", { name: "Edit Topology" }).click();
   await expect(shell).toHaveAttribute("data-workspace-mode", "simulate");
   await page.getByRole("button", { name: "Simulation", exact: true }).click();
@@ -101,6 +116,23 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   await expect(page.getByLabel("Workspace bottom panel")).toHaveCSS("overflow", "hidden");
   await expect(page.locator(".terminal-workspace")).toHaveCSS("overflow", "hidden");
   await expect(page.locator(".xterm-host")).toHaveCSS("overflow", "hidden");
+  const visibleRows = page.locator(".terminal-session.is-active .xterm-rows > div");
+  const rowsBeforeResize = await visibleRows.count();
+  const dockSeparator = page.locator(".resize-handle--horizontal");
+  const separatorBounds = await dockSeparator.boundingBox();
+  expect(separatorBounds).not.toBeNull();
+  await page.mouse.move(separatorBounds!.x + separatorBounds!.width / 2, separatorBounds!.y);
+  await page.mouse.down();
+  await page.mouse.move(separatorBounds!.x + separatorBounds!.width / 2, separatorBounds!.y - 100, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(() => visibleRows.count()).toBeGreaterThan(rowsBeforeResize);
+
+  await page.locator(".terminal-session.is-active .xterm-screen").click();
+  for (let index = 0; index < 4; index += 1) await page.keyboard.press("Control+L");
+  await expect.poll(async () => {
+    const text = await page.locator(".terminal-session.is-active .xterm-rows").innerText();
+    return text.match(/C:\\>/g)?.length ?? 0;
+  }).toBe(1);
 
   // 8. View menu → hide and restore the Inspector.
   await menu("View").click();
@@ -132,10 +164,12 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.getByRole("button", { name: "Fit topology" }).click();
   await page.waitForTimeout(350);
-  const compactPaletteBounds = await page.getByLabel("Device palette").boundingBox();
-  expect(compactPaletteBounds).not.toBeNull();
-  expect(compactPaletteBounds!.width).toBe(1280);
-  expect(compactPaletteBounds!.height).toBe(96);
+  const compactDockBounds = await page.getByLabel("Workspace bottom panel").boundingBox();
+  const compactFooterBounds = await page.locator(".workspace-footer").boundingBox();
+  expect(compactDockBounds).not.toBeNull();
+  expect(compactFooterBounds).not.toBeNull();
+  expect(compactDockBounds!.width).toBe(1280);
+  expect(Math.abs(compactDockBounds!.y + compactDockBounds!.height - compactFooterBounds!.y)).toBeLessThanOrEqual(1);
   await chooseTheme(page, "Dark");
   await page.screenshot({ path: "/tmp/packet-style-dark-1280x720.png", animations: "disabled" });
   await chooseTheme(page, "Light");

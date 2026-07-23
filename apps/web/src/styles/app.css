@@ -133,19 +133,23 @@ label.ui-icon-button { display: inline-grid; }
 .resize-handle--vertical::after { inset: 0 -3px; }.resize-handle--horizontal::after { inset: -3px 0; }
 .panel-loading { display: flex; width: 100%; height: 100%; align-items: center; justify-content: center; gap: 10px; background: var(--color-canvas); color: var(--color-text-muted); font-size: var(--font-size-11); }
 
-/* Bottom device palette */
-.device-palette { display: grid; width: 100%; height: var(--device-palette-height); min-height: 0; flex: none; grid-template-rows: 33px 1fr; overflow: hidden; border-top: var(--border); background: var(--color-panel); }
-.device-palette__categories { display: flex; min-width: 0; align-items: stretch; gap: 1px; padding: 0 7px; border-bottom: var(--border); background: var(--color-toolbar); }
-.device-palette__categories button { position: relative; display: inline-flex; min-width: 0; align-items: center; gap: 6px; padding: 0 10px; border-bottom: 2px solid transparent; background: transparent; color: var(--color-text-muted); cursor: pointer; font-size: var(--font-size-10); font-weight: 650; white-space: nowrap; }
-.device-palette__categories button:hover { background: var(--color-panel-hover); color: var(--color-text-soft); }
-.device-palette__categories button.is-active { border-bottom-color: var(--color-accent); color: var(--color-accent); }
-.device-palette__models { display: flex; min-width: 0; min-height: 0; align-items: center; gap: 5px; overflow-x: auto; overflow-y: hidden; padding: 6px 8px; scrollbar-color: var(--color-border-strong) var(--color-panel); }
-.palette-model { display: grid; width: 92px; height: 65px; min-width: 92px; flex: none; place-items: center; grid-template-rows: 39px 1fr; padding: 4px 5px 5px; border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; color: var(--color-text-muted); cursor: grab; font-size: 9px; line-height: 1.15; text-align: center; }
-.palette-model:hover:not(:disabled) { border-color: var(--color-border-strong); background: var(--color-panel-hover); color: var(--color-text); }
-.palette-model.is-active { border-color: var(--color-accent-strong); background: var(--color-accent-muted); color: var(--color-accent); }
-.palette-model__icon { display: grid; width: 39px; height: 35px; place-items: center; border: 1px solid var(--color-icon-border); border-radius: var(--radius-md); background: var(--color-panel-raised); color: var(--color-accent); }
-.palette-model--connection { width: 118px; min-width: 118px; cursor: pointer; }
-.device-palette__hint { max-width: 245px; flex: none; margin: 0 4px 0 auto; color: var(--color-text-faint); font-size: 9px; line-height: 1.35; }
+/* Toolbar device picker */
+.device-picker { position: relative; flex: none; }
+.device-picker__trigger { display: inline-flex; height: 27px; align-items: center; gap: 6px; padding: 0 8px; border: var(--border); border-radius: var(--radius-md); background: var(--color-panel-raised); color: var(--color-text-soft); cursor: pointer; font-size: var(--font-size-10); font-weight: 700; white-space: nowrap; }
+.device-picker__trigger:hover, .device-picker__trigger.is-open { border-color: var(--color-border-strong); background: var(--color-panel-hover); color: var(--color-text); }
+.device-picker__trigger.is-active { border-color: var(--color-accent-strong); background: var(--color-accent-muted); color: var(--color-accent); }
+.device-picker__menu { position: absolute; z-index: var(--z-menu); top: calc(100% + 7px); left: 0; display: grid; width: min(580px, calc(100vw - 24px)); grid-template-rows: 34px auto auto; overflow: hidden; border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); background: var(--color-menu); box-shadow: var(--elevation-menu); }
+.device-picker__categories { display: flex; min-width: 0; align-items: stretch; gap: 1px; padding: 0 6px; border-bottom: var(--border); background: var(--color-toolbar); }
+.device-picker__categories button { position: relative; display: inline-flex; min-width: 0; align-items: center; gap: 6px; padding: 0 10px; border-bottom: 2px solid transparent; background: transparent; color: var(--color-text-muted); cursor: pointer; font-size: var(--font-size-10); font-weight: 650; white-space: nowrap; }
+.device-picker__categories button:hover { background: var(--color-panel-hover); color: var(--color-text-soft); }
+.device-picker__categories button.is-active { border-bottom-color: var(--color-accent); color: var(--color-accent); }
+.device-picker__models { display: grid; min-width: 0; grid-template-columns: repeat(5, minmax(92px, 1fr)); gap: 6px; padding: 9px; }
+.device-picker-model { display: grid; height: 68px; min-width: 0; place-items: center; grid-template-rows: 40px 1fr; padding: 4px 5px 6px; border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; color: var(--color-text-muted); cursor: grab; font-size: 9px; line-height: 1.15; text-align: center; }
+.device-picker-model:hover:not(:disabled) { border-color: var(--color-border-strong); background: var(--color-panel-hover); color: var(--color-text); }
+.device-picker-model.is-active { border-color: var(--color-accent-strong); background: var(--color-accent-muted); color: var(--color-accent); }
+.device-picker-model__icon { display: grid; width: 39px; height: 35px; place-items: center; border: 1px solid var(--color-icon-border); border-radius: var(--radius-md); background: var(--color-panel-raised); color: var(--color-accent); }
+.device-picker-model--connection { cursor: pointer; }
+.device-picker__hint { margin: 0; padding: 7px 10px; border-top: var(--border); background: var(--color-panel); color: var(--color-text-faint); font-size: 9px; line-height: 1.35; }
 
 /* Tool rail and device library */
 .tool-rail { display: flex; width: var(--tool-rail-width); flex: none; align-items: center; flex-direction: column; gap: 5px; padding: 8px; border-right: var(--border); background: var(--color-rail); z-index: 25; }
@@ -251,7 +255,7 @@ label.ui-icon-button { display: inline-grid; }
 @media (max-width: 1300px) {
   .app-bar { gap: 8px; }.brand-copy { width: 135px; }.app-bar__identity { gap: 7px; }.simulation-controls { padding-left: 7px; }.ui-status span { display: none; }.app-bar__actions { gap: 0; }
   .app-bar__identity > .ui-status:last-child span { display: inline; }
-  .app-menu-row { gap: 8px; }.app-menu-row__context { gap: 6px; }.action-toolbar { gap: 4px; }.toolbar-group { padding-right: 4px; }.device-palette__hint { max-width: 190px; }
+  .app-menu-row { gap: 8px; }.app-menu-row__context { gap: 6px; }.action-toolbar { gap: 4px; }.toolbar-group { padding-right: 4px; }
   .inspector-panel > .ui-tabs { gap: 0; padding: 0 3px; }
   .inspector-panel > .ui-tabs button { gap: 0; padding: 0 6px; }
   .inspector-panel > .ui-tabs button > span { display: none; }
@@ -262,12 +266,12 @@ label.ui-icon-button { display: inline-grid; }
 
 @media (max-width: 999px) {
   .brand-copy { width: 108px; }.brand-copy span { display: none; }.simulation-controls .ui-button span:not(.ui-button__icon) { display: none; }.simulation-controls .ui-button { width: 29px; padding: 0; }
-  .brand-wordmark { display: none; }.app-menu-row__context .app-bar__scope, .session-anonymous { display: none; }.device-palette__hint { display: none; }
+  .brand-wordmark { display: none; }.app-menu-row__context .app-bar__scope, .session-anonymous { display: none; }
   .device-library { position: absolute; z-index: var(--z-drawer); top: 0; bottom: 0; left: var(--tool-rail-width); box-shadow: var(--elevation-drawer); }
   .inspector-panel.is-drawer { position: absolute; z-index: var(--z-drawer); top: 0; right: 0; bottom: 0; width: min(370px, calc(100% - 62px)); border-left: var(--border); box-shadow: var(--elevation-drawer-left); }
   .lab-information { display: none; }.canvas-statusbar > span { display: none; }
 }
 
 @media (max-height: 720px) {
-  .app-shell { min-height: 560px; --device-palette-height: 96px; }.app-bar { height: 48px; }.device-palette { grid-template-rows: 30px 1fr; }.device-palette__models { padding-block: 3px; }.palette-model { height: 58px; grid-template-rows: 34px 1fr; }.palette-model__icon { height: 31px; }.ui-empty-state { padding: 14px; }.lab-information { display: none; }
+  .app-shell { min-height: 560px; }.app-bar { height: 48px; }.ui-empty-state { padding: 14px; }.lab-information { display: none; }
 }

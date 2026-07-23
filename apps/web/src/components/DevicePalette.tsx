@@ -1,15 +1,17 @@
 import { DEVICE_PROFILE_LIST, type NodeSpec } from "@sim/contracts";
 import {
-  Cable, GitMerge, Monitor, Network, Router as RouterIcon, Server, Share2,
-  Sparkles, Trash2, Waypoints, type LucideIcon,
+  Cable, ChevronDown, GitMerge, Monitor, Network, Plus, Router as RouterIcon,
+  Server, Share2, Sparkles, Trash2, Waypoints, type LucideIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { WorkspaceTool } from "../state/workspace-store";
 
 interface DevicePaletteProps {
+  open: boolean;
   disabled: boolean;
   selectedKind: NodeSpec["kind"] | undefined;
   activeTool: WorkspaceTool;
+  onOpenChange(open: boolean): void;
   onSelectKind(kind: NodeSpec["kind"]): void;
   onTool(tool: WorkspaceTool): void;
 }
@@ -34,85 +36,121 @@ const categories: Array<{ id: PaletteCategory; label: string }> = [
 
 export function DevicePalette(props: DevicePaletteProps) {
   const [category, setCategory] = useState<PaletteCategory>("network");
+  const rootRef = useRef<HTMLDivElement>(null);
   const devices = useMemo(
     () => DEVICE_PROFILE_LIST.filter((profile) => profile.category === category),
     [category],
   );
 
+  useEffect(() => {
+    if (!props.open) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) props.onOpenChange(false);
+    };
+    document.addEventListener("mousedown", closeOutside);
+    return () => document.removeEventListener("mousedown", closeOutside);
+  }, [props.open, props.onOpenChange]);
+
+  const selectKind = (kind: NodeSpec["kind"]) => {
+    props.onSelectKind(kind);
+    props.onOpenChange(false);
+  };
+  const selectTool = (tool: WorkspaceTool) => {
+    props.onTool(tool);
+    props.onOpenChange(false);
+  };
+
   return (
-    <aside className="device-palette" aria-label="Device palette" data-region="bottom">
-      <div className="device-palette__categories" role="tablist" aria-label="Device categories">
-        {categories.map((entry) => (
-          <button
-            key={entry.id}
-            type="button"
-            role="tab"
-            aria-selected={category === entry.id}
-            className={category === entry.id ? "is-active" : ""}
-            onClick={() => setCategory(entry.id)}
-          >
-            {entry.id === "network" ? <Network size={15} /> : entry.id === "end-device" ? <Monitor size={15} /> : <Cable size={15} />}
-            <span>{entry.label}</span>
-          </button>
-        ))}
-      </div>
-      <div className="device-palette__models" role="tabpanel" aria-label={`${categories.find((entry) => entry.id === category)?.label} models`}>
-        {category !== "connections" && devices.map((profile) => {
-          const DeviceIcon = icons[profile.type];
-          const selected = props.selectedKind === profile.type;
-          return (
-            <button
-              key={profile.type}
-              type="button"
-              className={`palette-model${selected ? " is-active" : ""}`}
-              aria-label={`Add ${profile.displayName}`}
-              aria-pressed={selected}
-              title={`${profile.description} Click, then place on the logical workspace.`}
-              disabled={props.disabled}
-              draggable={!props.disabled}
-              data-device-kind={profile.type}
-              onDragStart={(event) => {
-                event.dataTransfer.effectAllowed = "copy";
-                event.dataTransfer.setData("application/x-simulator-device", profile.type);
-              }}
-              onClick={() => props.onSelectKind(profile.type)}
-            >
-              <span className="palette-model__icon"><DeviceIcon size={22} strokeWidth={1.55} /></span>
-              <span>{profile.displayName}</span>
-            </button>
-          );
-        })}
-        {category === "connections" && <>
-          <ConnectionTool
-            label="Automatic Ethernet"
-            description="Choose compatible free Ethernet ports"
-            icon={Sparkles}
-            active={props.activeTool === "add-link"}
-            disabled={props.disabled}
-            onClick={() => props.onTool("add-link")}
-          />
-          <ConnectionTool
-            label="Ethernet Link"
-            description="Drag between interface endpoints"
-            icon={Cable}
-            active={props.activeTool === "add-link"}
-            disabled={props.disabled}
-            onClick={() => props.onTool("add-link")}
-          />
-          <ConnectionTool
-            label="Delete Link"
-            description="Select a link, then delete it"
-            icon={Trash2}
-            active={props.activeTool === "delete"}
-            disabled={props.disabled}
-            onClick={() => props.onTool("delete")}
-          />
-        </>}
-        <p className="device-palette__hint">
-          {props.disabled ? "Enable Edit Topology to place devices and connections." : "Drag a model, or click it and place it on the canvas."}
-        </p>
-      </div>
-    </aside>
+    <div className="device-picker" ref={rootRef}>
+      <button
+        type="button"
+        className={`device-picker__trigger${props.open ? " is-open" : ""}${props.selectedKind ? " is-active" : ""}`}
+        aria-label="Add Device"
+        aria-haspopup="dialog"
+        aria-expanded={props.open}
+        onClick={() => props.onOpenChange(!props.open)}
+      >
+        <Plus size={14} />
+        <span>Add Device</span>
+        <ChevronDown size={12} />
+      </button>
+      {props.open && (
+        <div className="device-picker__menu" role="dialog" aria-label="Add topology item">
+          <div className="device-picker__categories" role="tablist" aria-label="Device categories">
+            {categories.map((entry) => (
+              <button
+                key={entry.id}
+                type="button"
+                role="tab"
+                aria-selected={category === entry.id}
+                className={category === entry.id ? "is-active" : ""}
+                onClick={() => setCategory(entry.id)}
+              >
+                {entry.id === "network" ? <Network size={15} /> : entry.id === "end-device" ? <Monitor size={15} /> : <Cable size={15} />}
+                <span>{entry.label}</span>
+              </button>
+            ))}
+          </div>
+          <div className="device-picker__models" role="tabpanel" aria-label={`${categories.find((entry) => entry.id === category)?.label} models`}>
+            {category !== "connections" && devices.map((profile) => {
+              const DeviceIcon = icons[profile.type];
+              const selected = props.selectedKind === profile.type;
+              return (
+                <button
+                  key={profile.type}
+                  type="button"
+                  className={`device-picker-model${selected ? " is-active" : ""}`}
+                  aria-label={`Add ${profile.displayName}`}
+                  aria-pressed={selected}
+                  title={`${profile.description} Click, then place on the logical workspace.`}
+                  disabled={props.disabled}
+                  draggable={!props.disabled}
+                  data-device-kind={profile.type}
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = "copy";
+                    event.dataTransfer.setData("application/x-simulator-device", profile.type);
+                  }}
+                  onDragEnd={() => props.onOpenChange(false)}
+                  onClick={() => selectKind(profile.type)}
+                >
+                  <span className="device-picker-model__icon"><DeviceIcon size={22} strokeWidth={1.55} /></span>
+                  <span>{profile.displayName}</span>
+                </button>
+              );
+            })}
+            {category === "connections" && <>
+              <ConnectionTool
+                label="Automatic Ethernet"
+                description="Choose compatible free Ethernet ports"
+                icon={Sparkles}
+                active={props.activeTool === "add-link"}
+                disabled={props.disabled}
+                onClick={() => selectTool("add-link")}
+              />
+              <ConnectionTool
+                label="Ethernet Link"
+                description="Drag between interface endpoints"
+                icon={Cable}
+                active={props.activeTool === "add-link"}
+                disabled={props.disabled}
+                onClick={() => selectTool("add-link")}
+              />
+              <ConnectionTool
+                label="Delete Link"
+                description="Select a link, then delete it"
+                icon={Trash2}
+                active={props.activeTool === "delete"}
+                disabled={props.disabled}
+                onClick={() => selectTool("delete")}
+              />
+            </>}
+          </div>
+          <p className="device-picker__hint">
+            {props.disabled ? "Enable Edit Topology to place devices and connections." : "Drag a model, or select it and place it on the canvas."}
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -134,14 +172,14 @@ function ConnectionTool({
   return (
     <button
       type="button"
-      className={`palette-model palette-model--connection${active ? " is-active" : ""}`}
+      className={`device-picker-model device-picker-model--connection${active ? " is-active" : ""}`}
       aria-label={label}
       aria-pressed={active}
       title={description}
       disabled={disabled}
       onClick={onClick}
     >
-      <span className="palette-model__icon"><ToolIcon size={21} /></span>
+      <span className="device-picker-model__icon"><ToolIcon size={21} /></span>
       <span>{label}</span>
     </button>
   );

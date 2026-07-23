@@ -1,10 +1,10 @@
 import type { LabUiSnapshot, SimulationTraceEvent } from "@sim/sim-worker";
-import { AlertTriangle, Braces, List, Network, TerminalSquare, X } from "lucide-react";
+import { AlertTriangle, Braces, List, Network, TerminalSquare } from "lucide-react";
 import type { SimulatorClient } from "../../app/simulator-client";
 import type { DockTab, WorkspaceMode, WorkspaceProblem } from "../../state/workspace-store";
 import type { ResolvedTheme } from "../../hooks/useTheme";
 import { useState } from "react";
-import { Button, EmptyState, IconButton, Tabs } from "../../ui";
+import { Button, EmptyState, Tabs } from "../../ui";
 import { TerminalWorkspace } from "../terminal/TerminalPanel";
 
 interface BottomDockProps {
@@ -22,7 +22,6 @@ interface BottomDockProps {
   onCloseTerminal(deviceId: string): void;
   onClearProblems(): void;
   onError(message: string): void;
-  onClose(): void;
 }
 
 function timeLabel(nanoseconds: number): string {
@@ -50,7 +49,6 @@ export function BottomDock(props: BottomDockProps) {
     <section className="bottom-dock" aria-label="Workspace bottom panel" data-overflow-boundary="hidden">
       <div className="bottom-dock__header">
         <Tabs label="Bottom panel sections" value={props.tab} options={options} onChange={props.onTab} />
-        <IconButton label="Close bottom panel" icon={<X size={14} />} onClick={props.onClose} />
       </div>
       <div className="bottom-dock__content" role="tabpanel">
         {props.tab === "terminal" && <TerminalWorkspace client={props.client} tabs={props.terminalTabs} activeDeviceId={props.activeTerminalDeviceId} nodes={props.snapshot?.nodes ?? []} mode={props.mode} theme={props.theme} onActivate={props.onActivateTerminal} onClose={props.onCloseTerminal} onError={props.onError} />}

@@ -101,11 +101,14 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
   const terminalRef = useRef<XtermTerminal | undefined>(undefined);
   const fitRef = useRef<XtermFitAddon | undefined>(undefined);
   const focusRef = useRef<() => void>(() => undefined);
+  const clearRef = useRef<() => void>(() => undefined);
   const enabledRef = useRef(enabled);
+  const activeRef = useRef(active);
   const [transcript, setTranscript] = useState("");
   const [ready, setReady] = useState(false);
 
   enabledRef.current = enabled;
+  activeRef.current = active;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -113,6 +116,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
     const sessionId = `${sessionNamespace}:${deviceId}`;
     let disposed = false;
     let dataDisposable: { dispose(): void } | undefined;
+    let fitFrame: number | undefined;
     let prompt = "";
     const buffer = new LineBuffer();
     const history = new TerminalCommandHistory();
@@ -150,6 +154,13 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
         if (buffer.tail > 0) terminal.write(`\x1b[${buffer.tail}D`);
         scrollToBottom();
       };
+      const clearViewport = () => {
+        terminal.clear();
+        terminal.write("\x1b[2J\x1b[H");
+        redraw();
+        setTranscript("");
+      };
+      clearRef.current = clearViewport;
       const execute = (value: string, alreadyEchoed = false) => {
         const submittedPrompt = prompt;
         if (!alreadyEchoed) terminal.write(`${terminalText(value)}\r\n`);
@@ -178,10 +189,10 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
           return;
         }
         if (key.kind === "clear") {
-          // Ctrl+L wipes the visible scrollback but keeps the CLI session/mode.
-          terminal.clear();
-          terminal.write(`${promptText()}${buffer.value}`);
-          if (buffer.tail > 0) terminal.write(`\x1b[${buffer.tail}D`);
+          // Clear both scrollback and the active viewport. xterm.clear() alone
+          // intentionally preserves the current line and would append prompts
+          // after repeated Ctrl+L presses.
+          clearViewport();
           return;
         }
         if (!enabledRef.current) return;
@@ -206,15 +217,31 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
         }
       });
       execute("");
-      window.requestAnimationFrame(() => { if (!disposed && active) { try { fit.fit(); } catch { /* zero-sized dock */ } } });
+      fitTerminal();
     }).catch(() => onError("Terminal component failed to load"));
 
-    const fitTerminal = () => { if (active) { try { fitRef.current?.fit(); } catch { /* zero-sized dock */ } } };
+    function fitTerminal() {
+      if (!activeRef.current || disposed) return;
+      if (fitFrame !== undefined) window.cancelAnimationFrame(fitFrame);
+      fitFrame = window.requestAnimationFrame(() => {
+        fitFrame = undefined;
+        if (!activeRef.current || disposed) return;
+        try {
+          fitRef.current?.fit();
+          terminalRef.current?.scrollToBottom();
+        } catch { /* zero-sized or transitioning dock */ }
+      });
+    }
+    const resizeObserver = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(fitTerminal);
+    resizeObserver?.observe(host);
     window.addEventListener("resize", fitTerminal);
     return () => {
       disposed = true;
       focusRef.current = () => undefined;
+      clearRef.current = () => undefined;
+      resizeObserver?.disconnect();
       window.removeEventListener("resize", fitTerminal);
+      if (fitFrame !== undefined) window.cancelAnimationFrame(fitFrame);
       dataDisposable?.dispose();
       terminalRef.current?.dispose();
       terminalRef.current = undefined;
@@ -229,7 +256,13 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
 
   useEffect(() => {
     // Restore keyboard focus (and layout) when this session's tab becomes active.
-    if (active) window.requestAnimationFrame(() => { try { fitRef.current?.fit(); } catch { /* dock transition */ } focusRef.current(); });
+    if (active) window.requestAnimationFrame(() => {
+      try {
+        fitRef.current?.fit();
+        terminalRef.current?.scrollToBottom();
+      } catch { /* dock transition */ }
+      focusRef.current();
+    });
   }, [active]);
 
   const copy = () => {
@@ -237,8 +270,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
     if (text) void navigator.clipboard?.writeText(text).catch(() => onError("Clipboard permission was denied"));
   };
   const clear = () => {
-    terminalRef.current?.clear();
-    setTranscript("");
+    clearRef.current();
     focusRef.current();
   };
 
