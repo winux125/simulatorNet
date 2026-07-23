@@ -1,6 +1,7 @@
 import { getDeviceProfile, type DeviceType } from "@sim/contracts";
-import { GitMerge, Monitor, Network, Router as RouterIcon, Server, Share2, TerminalSquare, Waypoints, type LucideIcon } from "lucide-react";
+import { TerminalSquare } from "lucide-react";
 import type { MouseEvent } from "react";
+import { DeviceIcon } from "../../components/DeviceIcon";
 import { StatusIndicator } from "../../ui";
 
 export interface DeviceNodeData {
@@ -24,18 +25,7 @@ export interface DeviceNodeData {
  * plain accessible button. X6 owns dragging and edge routing; this button owns
  * select / open / context-menu so the same affordances work under jsdom.
  */
-const icons: Record<DeviceType, LucideIcon> = {
-  pc: Monitor,
-  server: Server,
-  hub: Share2,
-  bridge: GitMerge,
-  "l2-switch": Network,
-  "l3-switch": Waypoints,
-  router: RouterIcon,
-};
-
 export function DeviceNode({ id, data, selected }: { id: string; data: DeviceNodeData; selected: boolean }) {
-  const DeviceIcon = icons[data.deviceType];
   const profile = getDeviceProfile(data.deviceType);
   const nodeClass = [
     "device-node",
@@ -54,7 +44,7 @@ export function DeviceNode({ id, data, selected }: { id: string; data: DeviceNod
         onClick={() => data.onActivate(id)}
         onDoubleClick={() => data.onOpen(id)}
       >
-        <span className="device-node__icon" aria-hidden="true"><DeviceIcon size={23} strokeWidth={1.55} /></span>
+        <span className="device-node__icon" aria-hidden="true"><DeviceIcon type={data.deviceType} size={22} state={data.status === "up" ? "running" : "stopped"} /></span>
         <span className="device-node__copy">
           <span><strong>{data.hostname}</strong>{data.terminalOpen && <TerminalSquare size={11} aria-label="CLI open" />}</span>
           <small>{data.subtitle}</small>

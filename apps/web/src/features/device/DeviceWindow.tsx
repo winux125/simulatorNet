@@ -1,12 +1,13 @@
 import { getDeviceProfile, type LabDocument } from "@sim/contracts";
 import type { LabUiNode } from "@sim/sim-worker";
 import {
-  Clock3, FileDown, Globe2, Monitor, Network, ScrollText, Server as ServerIcon,
+  Clock3, FileDown, Globe2, Network, ScrollText,
   Settings2, TerminalSquare, X, type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { SimulatorClient } from "../../app/simulator-client";
 import type { ResolvedTheme } from "../../hooks/useTheme";
+import { DeviceIcon } from "../../components/DeviceIcon";
 import { Button, IconButton } from "../../ui";
 import { ServerServicesPanel } from "../inspector/ServerServicesPanel";
 import { TerminalWorkspace } from "../terminal/TerminalPanel";
@@ -61,7 +62,7 @@ export function DeviceWindow(props: DeviceWindowProps) {
     <div className="device-window-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) props.onClose(); }}>
       <section className="device-window" role="dialog" aria-modal="true" aria-label={`${props.node.hostname} device window`}>
         <header className="device-window__titlebar">
-          <span className="device-window__icon" aria-hidden="true">{isServer ? <ServerIcon size={17} /> : isPc ? <Monitor size={17} /> : <Network size={17} />}</span>
+          <span className="device-window__icon" aria-hidden="true"><DeviceIcon type={props.node.type} size={18} state={props.node.status === "up" ? "running" : "stopped"} /></span>
           <div><strong>{props.node.hostname}</strong><small>{profile.displayName} · {props.node.id}</small></div>
           <IconButton label="Close device window" icon={<X size={15} />} onClick={props.onClose} />
         </header>

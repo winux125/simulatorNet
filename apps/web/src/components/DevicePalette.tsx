@@ -1,10 +1,8 @@
 import { DEVICE_PROFILE_LIST, type NodeSpec } from "@sim/contracts";
-import {
-  Cable, ChevronDown, GitMerge, Monitor, Network, Plus, Router as RouterIcon,
-  Server, Share2, Sparkles, Trash2, Waypoints, type LucideIcon,
-} from "lucide-react";
+import { Cable, ChevronDown, Monitor, Network, Plus, Sparkles, Trash2, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { WorkspaceTool } from "../state/workspace-store";
+import { DeviceIcon } from "./DeviceIcon";
 
 interface DevicePaletteProps {
   open: boolean;
@@ -17,16 +15,6 @@ interface DevicePaletteProps {
 }
 
 type PaletteCategory = "network" | "end-device" | "connections";
-
-const icons: Record<NodeSpec["kind"], LucideIcon> = {
-  pc: Monitor,
-  server: Server,
-  hub: Share2,
-  bridge: GitMerge,
-  "l2-switch": Network,
-  "l3-switch": Waypoints,
-  router: RouterIcon,
-};
 
 const categories: Array<{ id: PaletteCategory; label: string }> = [
   { id: "network", label: "Network Devices" },
@@ -93,7 +81,6 @@ export function DevicePalette(props: DevicePaletteProps) {
           </div>
           <div className="device-picker__models" role="tabpanel" aria-label={`${categories.find((entry) => entry.id === category)?.label} models`}>
             {category !== "connections" && devices.map((profile) => {
-              const DeviceIcon = icons[profile.type];
               const selected = props.selectedKind === profile.type;
               return (
                 <button
@@ -113,7 +100,7 @@ export function DevicePalette(props: DevicePaletteProps) {
                   onDragEnd={() => props.onOpenChange(false)}
                   onClick={() => selectKind(profile.type)}
                 >
-                  <span className="device-picker-model__icon"><DeviceIcon size={22} strokeWidth={1.55} /></span>
+                  <span className="device-picker-model__icon"><DeviceIcon type={profile.type} size={22} /></span>
                   <span>{profile.displayName}</span>
                 </button>
               );

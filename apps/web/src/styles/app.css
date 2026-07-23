@@ -202,6 +202,7 @@ label.ui-icon-button { display: inline-grid; }
 .device-node.has-terminal > button::after { position: absolute; top: -4px; right: 10px; width: 25px; height: 3px; border-radius: 2px; background: var(--color-accent); content: ""; }
 .device-node.is-down > button { border-style: dashed; }
 .device-node__icon { display: grid; width: 32px; height: 32px; place-items: center; border: 1px solid var(--color-icon-border); border-radius: var(--radius-md); background: var(--color-accent-muted); color: var(--color-accent); }
+.device-icon { display: block; color: currentColor; }
 .device-node__copy { display: grid; min-width: 0; }.device-node__copy > span { display: flex; min-width: 0; align-items: center; gap: 4px; }.device-node__copy strong { overflow: hidden; font-size: var(--font-size-12); text-overflow: ellipsis; white-space: nowrap; }.device-node__copy svg { flex: none; color: var(--color-accent); }.device-node__copy small { overflow: hidden; margin-top: 2px; color: var(--color-text-muted); font: 9px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .device-node__type { display: block; margin-top: 4px; color: var(--color-text-faint); font-size: 8px; letter-spacing: .08em; text-align: center; text-transform: uppercase; }
 .device-node__services { display: flex; justify-content: center; gap: 3px; margin-top: 3px; }.device-node__services b { padding: 1px 4px; border: 1px solid var(--color-border); border-radius: 3px; background: var(--color-accent-muted); color: var(--color-accent); font: 7px var(--font-mono); letter-spacing: .03em; }

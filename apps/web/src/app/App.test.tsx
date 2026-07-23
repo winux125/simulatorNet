@@ -584,6 +584,19 @@ describe("M10.2.1 Packet Tracer-style workspace", () => {
     }
   });
 
+  it("renders the shared DeviceIcon across topology nodes, device windows and the palette", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    expect(screen.getByRole("button", { name: "Select PC1" }).querySelector("svg[data-device-type='pc']")).toBeTruthy();
+    fireEvent.doubleClick(screen.getByRole("button", { name: "Select R1" }));
+    const router = await screen.findByRole("dialog", { name: "R1 device window" });
+    expect(router.querySelector("svg[data-device-type='router']")).toBeTruthy();
+    await userEvent.click(within(router).getByRole("button", { name: "Close device window" }));
+    await enterEditMode();
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
+    expect(screen.getByRole("button", { name: "Add Router" }).querySelector("svg[data-device-type='router']")).toBeTruthy();
+  });
+
   it("opens the Server window with Services and Desktop tabs", async () => {
     const client = new RuntimeClient();
     await loadFocusedDemo(client, /DNS \+ Web Services/, DNS_WEB_DEMO.id);

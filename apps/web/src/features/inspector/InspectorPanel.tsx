@@ -2,6 +2,7 @@ import { getDeviceProfile, type DeviceCapability, type LabDocument } from "@sim/
 import type { DeviceInspection, LabUiNode, LabUiSnapshot } from "@sim/sim-worker";
 import { Braces, CircleX, Cpu, ListTree, Network, TerminalSquare, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { DeviceIcon } from "../../components/DeviceIcon";
 import type { SimulatorClient } from "../../app/simulator-client";
 import type { InspectorTab } from "../../state/workspace-store";
 import { Button, EmptyState, IconButton, Panel, PanelHeader, StatusIndicator, Tabs } from "../../ui";
@@ -100,7 +101,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
         {node && props.tab === "overview" && (
           <div className="inspector-section">
             <div className="device-summary">
-              <span className="device-summary__icon"><Cpu size={22} /></span>
+              <span className="device-summary__icon"><DeviceIcon type={node.type} size={22} state={node.status === "up" ? "running" : "stopped"} /></span>
               <div><p>{node.type}</p><h3>{node.hostname}</h3></div>
               <StatusIndicator status={pendingRuntime ? "unsaved" : node.status} label={pendingRuntime ? "Pending rebuild" : node.status} />
             </div>

@@ -402,7 +402,7 @@ export function App({ client }: AppProps) {
       {launchSession.state.status === "error" && <div className="workspace-error" role="alert"><AlertTriangle size={14} /><span>{launchSession.state.message}</span></div>}
       {validation && <div className="workspace-notice" role="status"><CheckCircle2 size={14} /><span>{validation}</span><IconButton label="Dismiss notice" icon={<X size={13} />} onClick={() => setValidation(undefined)} /></div>}
       {workspace.error && <div className="workspace-error" role="alert"><AlertTriangle size={14} /><span>{workspace.error}</span><button type="button" onClick={() => workspace.setDockTab("problems")}>View problems</button><IconButton label="Dismiss error" icon={<X size={13} />} onClick={() => workspace.setError(undefined)} /></div>}
-      {workspace.dirty && workspace.mode === "edit" && <div className="pending-banner"><span><i /> Topology changes pending</span><Button size="sm" variant="primary" onClick={() => { setPendingMode("edit"); setConfirmApply(true); }}>Apply &amp; Rebuild</Button></div>}
+      {workspace.dirty && workspace.mode === "edit" && <div className="pending-banner"><span> Topology changes pending</span><Button size="sm" variant="primary" onClick={() => { setPendingMode("edit"); setConfirmApply(true); }}>Apply &amp; Rebuild</Button></div>}
       <div className="workspace-body">
         <PanelGroup orientation="vertical" className="workspace-resizable" id="workspace-layout">
           <ResizablePanel id="workspace-main" minSize="300px" defaultSize="68%">
