@@ -51,6 +51,20 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   await expect(page.locator(".react-flow__minimap")).toHaveCount(0);
   await expect(page.locator(".react-flow__attribution")).toBeVisible();
   await expect(page.getByLabel("Device palette")).toHaveAttribute("data-region", "bottom");
+  const chromeBounds = await page.locator(".desktop-chrome").boundingBox();
+  const workspaceBounds = await page.locator(".workspace-resizable").boundingBox();
+  const topologyBounds = await page.locator(".react-flow").boundingBox();
+  const paletteBounds = await page.getByLabel("Device palette").boundingBox();
+  expect(chromeBounds).not.toBeNull();
+  expect(workspaceBounds).not.toBeNull();
+  expect(topologyBounds).not.toBeNull();
+  expect(paletteBounds).not.toBeNull();
+  expect(chromeBounds!.height).toBe(78);
+  expect(chromeBounds!.width).toBe(1440);
+  expect(topologyBounds!.y).toBeLessThan(100);
+  expect(paletteBounds!.width).toBe(1440);
+  expect(paletteBounds!.height).toBe(112);
+  expect(Math.abs(workspaceBounds!.y + workspaceBounds!.height - paletteBounds!.y)).toBeLessThanOrEqual(1);
 
   // 3. Lab menu → toggle Edit then Simulate mode.
   await menu("Lab").click();
@@ -118,6 +132,10 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.getByRole("button", { name: "Fit topology" }).click();
   await page.waitForTimeout(350);
+  const compactPaletteBounds = await page.getByLabel("Device palette").boundingBox();
+  expect(compactPaletteBounds).not.toBeNull();
+  expect(compactPaletteBounds!.width).toBe(1280);
+  expect(compactPaletteBounds!.height).toBe(96);
   await chooseTheme(page, "Dark");
   await page.screenshot({ path: "/tmp/packet-style-dark-1280x720.png", animations: "disabled" });
   await chooseTheme(page, "Light");
