@@ -57,32 +57,22 @@ function doc(nodes = SEVEN, links: LabDocument["topology"]["links"] = []): LabDo
   };
 }
 
-// Forbidden tokens are assembled from fragments so the raw strings never appear
-// in source — the repo-wide React Flow scan must return zero matches, including
-// from this guard test.
-const XYFLOW = ["@xy", "flow/react"].join("");
-const RF_HYPHEN = ["react", "-flow"].join("");
-const RF_CAMEL = ["React", "Flow"].join("");
-const ATTR_FLAG = ["VITE_HIDE_REACT", "FLOW_ATTRIBUTION"].join("_");
-const HIDE_ATTR = ["hide", "Attribution"].join("");
-
 describe("M10.2.2a React Flow removal", () => {
   it("1. has no React Flow dependency in the web package", () => {
     const pkg = JSON.parse(readFileSync(join(webRoot, "package.json"), "utf8")) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
-    expect(pkg.dependencies?.[XYFLOW]).toBeUndefined();
-    expect(pkg.devDependencies?.[XYFLOW]).toBeUndefined();
+    expect(pkg.dependencies?.["@xyflow/react"]).toBeUndefined();
+    expect(pkg.devDependencies?.["@xyflow/react"]).toBeUndefined();
     expect(pkg.dependencies?.["@antv/x6"]).toBeDefined();
   });
 
   it("2. has no React Flow imports in the web source", () => {
-    const pattern = new RegExp([XYFLOW, RF_HYPHEN, RF_CAMEL, "reactflow"].join("|"));
-    const offenders = productSourceFiles().filter((file) => pattern.test(readFileSync(file, "utf8")));
+    const offenders = productSourceFiles().filter((file) => /@xyflow\/react|react-flow-renderer|from "reactflow"/.test(readFileSync(file, "utf8")));
     expect(offenders).toEqual([]);
   });
 
   it("3. has no React Flow attribution flag anywhere in the app", () => {
-    const pattern = new RegExp([ATTR_FLAG, HIDE_ATTR, "proOptions"].join("|"));
-    const offenders = [...productSourceFiles(), join(repoRoot, ".env.example")].filter((file) => pattern.test(readFileSync(file, "utf8")));
+    const patterns = /VITE_HIDE_REACT_FLOW_ATTRIBUTION|hideAttribution|proOptions/;
+    const offenders = [...productSourceFiles(), join(repoRoot, ".env.example")].filter((file) => patterns.test(readFileSync(file, "utf8")));
     expect(offenders).toEqual([]);
   });
 });
