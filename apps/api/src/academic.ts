@@ -1,5 +1,6 @@
 import { roleAllows, type AuthorizationAction, type ServiceScope } from "@sim/authz";
 import type { GradingSpec } from "@sim/contracts/grading";
+import { MAX_DIAGRAM_DOCUMENT_JSON_BYTES } from "@sim/contracts";
 import {
   AcademicRepository,
   DatabaseInvalidInputError,
@@ -63,6 +64,18 @@ const PatchAssignmentBody = z.object({
 }).strict();
 const SaveInstanceBody = z.object({ expectedRevision: z.number().int().nonnegative(), document: z.unknown() });
 const AssignExternalStudentBody = z.object({}).passthrough();
+
+function assertAcademicDocumentSize(document: unknown): void {
+  const size = new TextEncoder().encode(JSON.stringify(document)).byteLength;
+  if (size > MAX_DIAGRAM_DOCUMENT_JSON_BYTES) {
+    throw new AcademicApiError(
+      "ACADEMIC_DOCUMENT_TOO_LARGE",
+      `Academic LabDocument exceeds the ${MAX_DIAGRAM_DOCUMENT_JSON_BYTES}-byte limit`,
+      413,
+      { size, maximumBytes: MAX_DIAGRAM_DOCUMENT_JSON_BYTES },
+    );
+  }
+}
 
 function requireDatabase(database: SimulatorDatabase | undefined): SimulatorDatabase {
   if (!database) throw new Error("Database is not configured");
@@ -159,6 +172,7 @@ export function registerAcademicRoutes(app: FastifyInstance, deps: AcademicRoute
     const { context, session } = instructorContext(request);
     const { templateId } = request.params as { templateId: string };
     const body = CreateVersionBody.parse(request.body);
+    assertAcademicDocumentSize(body.labDocument);
     // validate -> migrate -> canonicalize -> hash -> persist immutable version (server owns the hash).
     const version = await academic().createLabTemplateVersion(context, templateId, { labDocument: body.labDocument, createdByUserId: session.userId }).catch(mapNotFoundToTemplate);
     await audit(requireDatabase(deps.database), context, request.id, "lab_template.version_created", "lab-template-version", version.id, { templateId, versionNumber: version.versionNumber, canonicalHash: version.canonicalHash });
@@ -389,6 +403,7 @@ export function registerAcademicRoutes(app: FastifyInstance, deps: AcademicRoute
     const { context, session } = instructorContext(request);
     const { instanceId } = request.params as { instanceId: string };
     const body = SaveInstanceBody.parse(request.body);
+    assertAcademicDocumentSize(body.document);
     const instance = await academic().saveStudentLabInstance(context, instanceId, session.userId, { expectedRevision: body.expectedRevision, document: body.document }).catch((error) => {
       if (error instanceof DatabaseRevisionConflictError) throw new AcademicApiError("LAB_INSTANCE_REVISION_CONFLICT", "The lab instance was modified since your last read", 409, { currentRevision: error.currentRevision });
       if (error instanceof DatabaseInvalidInputError) throw new AcademicApiError("invalid-request", error.message, 400, error.details);

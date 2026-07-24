@@ -1,11 +1,18 @@
 import type {
   DeviceConfig,
+  DiagramAsset,
+  DiagramAssetMime,
   Layer3SwitchDeviceConfig,
   LabDocument,
   NodeSpec,
   RouterDeviceConfig,
   SwitchDeviceConfig,
   ServerDeviceConfig,
+} from "@sim/contracts";
+import {
+  MAX_DIAGRAM_ASSET_BYTES,
+  MAX_DIAGRAM_ASSET_TOTAL_BYTES,
+  MAX_DIAGRAM_ASSETS,
 } from "@sim/contracts";
 import { ipToInt, maskToInt, normalizeDnsName, normalizeHttpPath, normalizeTftpFilename } from "@sim/sim-core";
 import { LabSemanticError } from "./errors";
@@ -25,6 +32,137 @@ function requireUnique(values: readonly string[], path: string, label: string): 
 function inSubnet(ip: string, network: string, prefixLength: number): boolean {
   const mask = maskToInt(prefixLength);
   return ((ipToInt(ip) & mask) >>> 0) === ((ipToInt(network) & mask) >>> 0);
+}
+
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function decodeBase64(value: string): Uint8Array {
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  const output = new Uint8Array((value.length / 4) * 3 - padding);
+  let offset = 0;
+  for (let index = 0; index < value.length; index += 4) {
+    const a = BASE64_ALPHABET.indexOf(value[index]!);
+    const b = BASE64_ALPHABET.indexOf(value[index + 1]!);
+    const c = value[index + 2] === "=" ? 0 : BASE64_ALPHABET.indexOf(value[index + 2]!);
+    const d = value[index + 3] === "=" ? 0 : BASE64_ALPHABET.indexOf(value[index + 3]!);
+    const bits = (a << 18) | (b << 12) | (c << 6) | d;
+    if (offset < output.length) output[offset++] = (bits >>> 16) & 0xff;
+    if (offset < output.length) output[offset++] = (bits >>> 8) & 0xff;
+    if (offset < output.length) output[offset++] = bits & 0xff;
+  }
+  return output;
+}
+
+function u16be(bytes: Uint8Array, offset: number): number {
+  return (bytes[offset]! << 8) | bytes[offset + 1]!;
+}
+
+function u32be(bytes: Uint8Array, offset: number): number {
+  return (((bytes[offset]! << 24) >>> 0)
+    | (bytes[offset + 1]! << 16)
+    | (bytes[offset + 2]! << 8)
+    | bytes[offset + 3]!) >>> 0;
+}
+
+function pngDimensions(bytes: Uint8Array): { width: number; height: number } | undefined {
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (bytes.length < 24 || !signature.every((byte, index) => bytes[index] === byte)
+    || String.fromCharCode(...bytes.slice(12, 16)) !== "IHDR") return undefined;
+  return { width: u32be(bytes, 16), height: u32be(bytes, 20) };
+}
+
+function jpegDimensions(bytes: Uint8Array): { width: number; height: number } | undefined {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return undefined;
+  let offset = 2;
+  while (offset + 8 < bytes.length) {
+    while (bytes[offset] === 0xff) offset++;
+    const marker = bytes[offset++]!;
+    if (marker === 0xd9 || marker === 0xda) break;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (offset + 1 >= bytes.length) break;
+    const length = u16be(bytes, offset);
+    if (length < 2 || offset + length > bytes.length) break;
+    const isStartOfFrame = marker >= 0xc0 && marker <= 0xcf
+      && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+    if (isStartOfFrame && length >= 7) {
+      return { width: u16be(bytes, offset + 5), height: u16be(bytes, offset + 3) };
+    }
+    offset += length;
+  }
+  return undefined;
+}
+
+function ascii(bytes: Uint8Array, start: number, end: number): string {
+  return String.fromCharCode(...bytes.slice(start, end));
+}
+
+function webpDimensions(bytes: Uint8Array): { width: number; height: number } | undefined {
+  if (bytes.length < 30 || ascii(bytes, 0, 4) !== "RIFF" || ascii(bytes, 8, 12) !== "WEBP") return undefined;
+  const kind = ascii(bytes, 12, 16);
+  if (kind === "VP8X") {
+    return {
+      width: 1 + bytes[24]! + (bytes[25]! << 8) + (bytes[26]! << 16),
+      height: 1 + bytes[27]! + (bytes[28]! << 8) + (bytes[29]! << 16),
+    };
+  }
+  if (kind === "VP8L" && bytes[20] === 0x2f) {
+    return {
+      width: 1 + bytes[21]! + ((bytes[22]! & 0x3f) << 8),
+      height: 1 + (bytes[22]! >>> 6) + (bytes[23]! << 2) + ((bytes[24]! & 0x0f) << 10),
+    };
+  }
+  if (kind === "VP8 " && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a) {
+    return {
+      width: (bytes[26]! | (bytes[27]! << 8)) & 0x3fff,
+      height: (bytes[28]! | (bytes[29]! << 8)) & 0x3fff,
+    };
+  }
+  return undefined;
+}
+
+function inspectImage(bytes: Uint8Array, mime: DiagramAssetMime): { width: number; height: number } | undefined {
+  if (mime === "image/png") return pngDimensions(bytes);
+  if (mime === "image/jpeg") return jpegDimensions(bytes);
+  return webpDimensions(bytes);
+}
+
+function validateDiagram(document: LabDocument): void {
+  const diagram = document.diagram;
+  if (!diagram) return;
+  const assets = diagram.assets ?? [];
+  if (assets.length > MAX_DIAGRAM_ASSETS) {
+    fail("diagram-asset-count-limit", "diagram.assets", `A lab may contain at most ${MAX_DIAGRAM_ASSETS} image assets`);
+  }
+  requireUnique(assets.map((asset) => asset.id), "diagram.assets", "diagram asset id");
+  requireUnique(diagram.annotations.map((annotation) => annotation.id), "diagram.annotations", "diagram annotation id");
+  const assetIds = new Set(assets.map((asset) => asset.id));
+  let totalBytes = 0;
+  assets.forEach((asset: DiagramAsset, index) => {
+    const path = `diagram.assets[${index}]`;
+    const bytes = decodeBase64(asset.dataBase64);
+    totalBytes += bytes.byteLength;
+    if (bytes.byteLength > MAX_DIAGRAM_ASSET_BYTES) {
+      fail("diagram-asset-size-limit", `${path}.dataBase64`, `Image asset exceeds ${MAX_DIAGRAM_ASSET_BYTES} bytes`);
+    }
+    const dimensions = inspectImage(bytes, asset.mime);
+    if (!dimensions) {
+      fail("diagram-asset-type-mismatch", `${path}.dataBase64`, `Image data does not match declared MIME type '${asset.mime}'`);
+    }
+    if (dimensions.width !== asset.width || dimensions.height !== asset.height) {
+      fail("diagram-asset-dimension-mismatch", path, "Declared image dimensions do not match the decoded image", {
+        declared: { width: asset.width, height: asset.height },
+        decoded: dimensions,
+      });
+    }
+  });
+  if (totalBytes > MAX_DIAGRAM_ASSET_TOTAL_BYTES) {
+    fail("diagram-assets-total-size-limit", "diagram.assets", `Embedded images exceed ${MAX_DIAGRAM_ASSET_TOTAL_BYTES} bytes`);
+  }
+  diagram.annotations.forEach((annotation, index) => {
+    if (annotation.type === "image" && !assetIds.has(annotation.assetId)) {
+      fail("unknown-diagram-asset", `diagram.annotations[${index}].assetId`, `Unknown diagram asset '${annotation.assetId}'`);
+    }
+  });
 }
 
 function validateSwitch(config: SwitchDeviceConfig, node: NodeSpec, path: string): void {
@@ -218,6 +356,7 @@ function validateConfiguration(config: DeviceConfig, node: NodeSpec, path: strin
 export function validateLabSemantics(document: LabDocument): void {
   requireUnique(document.topology.nodes.map((node) => node.id), "topology.nodes", "node id");
   requireUnique(document.topology.links.map((link) => link.id), "topology.links", "link id");
+  validateDiagram(document);
 
   const nodes = new Map<string, NodeSpec>();
   for (const [index, node] of document.topology.nodes.entries()) {

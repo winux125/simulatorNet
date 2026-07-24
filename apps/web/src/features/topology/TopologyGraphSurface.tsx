@@ -27,6 +27,7 @@ export interface TopologyGraphSurfaceProps {
   onSelectLink(id: string): void;
   onLinkContextMenu(id: string, clientX: number, clientY: number): void;
   onSelectAnnotation(id: string): void;
+  onEditAnnotation(id: string): void;
   onAnnotationMoved(id: string, position: Point): void;
   onPaneClick(local: Point): void;
   onPaneContextMenu(clientX: number, clientY: number): void;
@@ -54,6 +55,7 @@ export function TopologyGraphSurface(props: TopologyGraphSurfaceProps) {
         onSelectLink: (id) => propsRef.current.onSelectLink(id),
         onLinkContextMenu: (id, x, y) => propsRef.current.onLinkContextMenu(id, x, y),
         onSelectAnnotation: (id) => propsRef.current.onSelectAnnotation(id),
+        onEditAnnotation: (id) => propsRef.current.onEditAnnotation(id),
         onAnnotationMoved: (id, position) => propsRef.current.onAnnotationMoved(id, position),
         onPaneClick: (local) => propsRef.current.onPaneClick(local),
         onPaneContextMenu: (x, y) => propsRef.current.onPaneContextMenu(x, y),

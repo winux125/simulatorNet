@@ -1,7 +1,7 @@
 import cookie from "@fastify/cookie";
 import swagger from "@fastify/swagger";
 import type { ServiceScope } from "@sim/authz";
-import { LabDocumentSchema } from "@sim/contracts";
+import { LabDocumentSchema, MAX_DIAGRAM_DOCUMENT_JSON_BYTES } from "@sim/contracts";
 import {
   AuthenticationAuditRepository,
   AuthenticationLookupRepository,
@@ -168,7 +168,9 @@ export async function buildApi(options: ApiOptions = {}) {
 
   const app = Fastify({
     logger: options.logger ?? false,
-    bodyLimit: options.bodyLimit ?? limits.maximumJsonPayloadBytes,
+    // Academic LabDocuments may contain bounded embedded diagram images.
+    // Verification still applies its tighter, independent payload limit.
+    bodyLimit: options.bodyLimit ?? Math.max(limits.maximumJsonPayloadBytes, MAX_DIAGRAM_DOCUMENT_JSON_BYTES),
   });
   await app.register(cookie);
   if (openApiEnabled) {

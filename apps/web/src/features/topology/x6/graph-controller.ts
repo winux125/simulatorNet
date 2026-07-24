@@ -1,4 +1,4 @@
-import type { Node as X6Node } from "@antv/x6";
+import type { CellAttrs, Node as X6Node } from "@antv/x6";
 import type { DiagramAnnotation, LabDocument } from "@sim/contracts";
 import { createGraph } from "./create-graph";
 import { addLinkEdge, updateLinkEdge } from "./edge-registry";
@@ -14,6 +14,7 @@ import { registerDeviceNode, type DeviceCellData } from "./node-registry";
 import { buildPorts, portsMatch } from "./port-registry";
 import { NODE_HEIGHT, NODE_WIDTH, portBodyAttrs, SIM_DEVICE_SHAPE } from "./styles";
 import type { Point, TopologyGraphCallbacks, TopologyGraphController, TopologyView } from "./types";
+import { diagramAssetDataUrl } from "../diagram-image-assets";
 
 export interface CreateControllerOptions {
   container: HTMLElement;
@@ -59,7 +60,11 @@ export function createTopologyGraphController(options: CreateControllerOptions):
 
   const graph = createGraph({
     container: options.container,
-    isNodeMovable: () => state.draggable && !state.readonly,
+    isNodeMovable: (cellId) => {
+      if (!state.draggable || state.readonly) return false;
+      const id = annotationId(cellId);
+      return !id || !state.document?.diagram?.annotations.find((annotation) => annotation.id === id)?.locked;
+    },
     isConnectable: () => state.connectable && !state.readonly,
     validateConnection: (sourcePort, targetPort, sourceCell, targetCell) => {
       if (!sourceCell || !targetCell || !state.document) return false;
@@ -81,7 +86,9 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       if (diagramId) options.callbacks.onSelectAnnotation(diagramId);
     },
     onNodeDoubleClick: (id) => {
-      if (!annotationId(id)) options.callbacks.onOpenDevice(id);
+      const diagramId = annotationId(id);
+      if (diagramId) options.callbacks.onEditAnnotation(diagramId);
+      else options.callbacks.onOpenDevice(id);
     },
     onEdgeConnected: (edge) => {
       const sourceCell = edge.getSourceCell();
@@ -124,8 +131,30 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     }
   }
 
-  function annotationNodeAttrs(annotation: Exclude<DiagramAnnotation, { type: "line" | "arrow" }>) {
+  function annotationNodeAttrs(annotation: Exclude<DiagramAnnotation, { type: "line" | "arrow" }>): CellAttrs {
     const selected = state.view.annotations?.[annotation.id]?.selected ?? false;
+    if (annotation.type === "image") {
+      const asset = state.document?.diagram?.assets?.find((candidate) => candidate.id === annotation.assetId);
+      return {
+        body: {
+          fill: "transparent",
+          stroke: selected ? "var(--color-accent, #2563eb)" : "transparent",
+          strokeWidth: selected ? 1.5 : 0,
+          strokeDasharray: selected ? "4 3" : undefined,
+          refWidth: "100%",
+          refHeight: "100%",
+        },
+        image: {
+          x: 0,
+          y: 0,
+          refWidth: "100%",
+          refHeight: "100%",
+          opacity: annotation.opacity,
+          preserveAspectRatio: annotation.preserveAspectRatio ? "xMidYMid meet" : "none",
+          xlinkHref: asset ? diagramAssetDataUrl(asset) : "",
+        },
+      };
+    }
     if (annotation.type === "text") {
       return {
         body: {
@@ -187,7 +216,9 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       }
       return;
     }
-    const height = annotation.type === "text" ? Math.max(annotation.fontSize * 1.8, 30) : annotation.height;
+    const height = annotation.type === "text"
+      ? Math.max(annotation.fontSize * Math.max(1.8, annotation.content.split("\n").length * 1.25), 30)
+      : annotation.height;
     const shape = annotation.type === "ellipse" ? "ellipse" : "rect";
     const attrs = annotationNodeAttrs(annotation);
     if (existing?.isNode()) {
@@ -200,6 +231,12 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       graph.addNode({
         id,
         shape,
+        markup: annotation.type === "image"
+          ? [
+              { tagName: "rect", selector: "body" },
+              { tagName: "image", selector: "image" },
+            ]
+          : undefined,
         x: annotation.position.x,
         y: annotation.position.y,
         width: annotation.width,

@@ -3,6 +3,7 @@ import {
   type DeviceConfig,
   type DeviceType,
   type DiagramAnnotation,
+  type DiagramAsset,
   type DiagramLinkLabel,
   type HostIpConfiguration,
   type HostStaticConfiguration,
@@ -292,7 +293,23 @@ export function withNodePosition(document: LabDocument, nodeId: string, position
 }
 
 function diagram(document: LabDocument) {
-  return document.diagram ?? { annotations: [], linkLabels: [] };
+  return document.diagram ?? { assets: [], annotations: [], linkLabels: [] };
+}
+
+export function addDiagramImage(
+  document: LabDocument,
+  asset: DiagramAsset,
+  annotation: Extract<DiagramAnnotation, { type: "image" }>,
+): LabDocument {
+  const current = diagram(document);
+  return {
+    ...document,
+    diagram: {
+      ...current,
+      assets: [...(current.assets ?? []).filter((item) => item.id !== asset.id), asset],
+      annotations: [...current.annotations.filter((item) => item.id !== annotation.id), annotation],
+    },
+  };
 }
 
 export function addDiagramAnnotation(
@@ -325,11 +342,17 @@ export function updateDiagramAnnotation(
 
 export function removeDiagramAnnotation(document: LabDocument, annotationId: string): LabDocument {
   const current = diagram(document);
+  const removed = current.annotations.find((annotation) => annotation.id === annotationId);
+  const annotations = current.annotations.filter((annotation) => annotation.id !== annotationId);
+  const referencedAssets = new Set(annotations.flatMap((annotation) => annotation.type === "image" ? [annotation.assetId] : []));
   return {
     ...document,
     diagram: {
       ...current,
-      annotations: current.annotations.filter((annotation) => annotation.id !== annotationId),
+      assets: removed?.type === "image"
+        ? (current.assets ?? []).filter((asset) => referencedAssets.has(asset.id))
+        : current.assets,
+      annotations,
     },
   };
 }
@@ -340,8 +363,26 @@ export function moveDiagramAnnotation(
   position: { x: number; y: number },
 ): LabDocument {
   const annotation = document.diagram?.annotations.find((candidate) => candidate.id === annotationId);
-  if (!annotation || annotation.type === "line" || annotation.type === "arrow") return document;
+  if (!annotation || annotation.locked || annotation.type === "line" || annotation.type === "arrow") return document;
   return updateDiagramAnnotation(document, { ...annotation, position });
+}
+
+export function duplicateDiagramAnnotation(document: LabDocument, annotationId: string): LabDocument {
+  const source = document.diagram?.annotations.find((annotation) => annotation.id === annotationId);
+  if (!source) return document;
+  const id = allocateId("annotation", document.diagram?.annotations.map((annotation) => annotation.id) ?? []);
+  const zIndex = Math.max(0, ...(document.diagram?.annotations.map((annotation) => annotation.zIndex) ?? [])) + 1;
+  const duplicate: DiagramAnnotation = "position" in source
+    ? { ...source, id, position: { x: source.position.x + 24, y: source.position.y + 24 }, zIndex, locked: false }
+    : {
+        ...source,
+        id,
+        start: { x: source.start.x + 24, y: source.start.y + 24 },
+        end: { x: source.end.x + 24, y: source.end.y + 24 },
+        zIndex,
+        locked: false,
+      };
+  return addDiagramAnnotation(document, duplicate);
 }
 
 export function changeDiagramAnnotationZOrder(

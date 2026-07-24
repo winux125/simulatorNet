@@ -101,6 +101,28 @@ test("topology visual profiles and domain diagram tools persist", async ({ page 
   await page.getByRole("menuitem", { name: "Text", exact: true }).click();
   await page.getByTestId("topology-graph").click({ position: { x: 620, y: 180 } });
   await expect(page.getByLabel("Annotation formatting")).toBeVisible();
+  const textCell = page.locator('[data-cell-id^="diagram:"]').last();
+  await textCell.dblclick();
+  const textEditor = page.getByRole("dialog", { name: "Edit text annotation" });
+  await textEditor.getByLabel("Annotation text").fill("Core loopbacks\n10.255.0.0/24");
+  await textEditor.getByRole("button", { name: "Apply" }).click();
+  await expect(textCell).toContainText("Core loopbacks10.255.0.0/24");
+
+  const imageNodesBefore = await page.locator(".x6-node image").count();
+  await page.getByLabel("Choose diagram image").setInputFiles({
+    name: "topology-note.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", "base64"),
+  });
+  await expect(page.locator(".x6-node image")).toHaveCount(imageNodesBefore + 1);
+  await page.getByLabel("Image width").fill("180");
+  await page.getByLabel("Annotation rotation").fill("8");
+  await page.getByLabel("Image opacity").evaluate((element) => {
+    const input = element as HTMLInputElement;
+    input.value = "75";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.screenshot({ path: "/tmp/image-annotation-1440x900.png", animations: "disabled" });
 
   page.once("dialog", (dialog) => dialog.accept("Trunk VLAN 10,20"));
   await page.locator('[data-cell-id="core-wan"] path').last().click({ button: "right", force: true });
@@ -116,6 +138,7 @@ test("topology visual profiles and domain diagram tools persist", async ({ page 
   await page.locator("#load-lab-file").setInputFiles(exportPath!);
   await expect(page.locator(".canvas-statusbar").getByText("13 devices", { exact: true })).toBeVisible();
   await expect(page.getByText("Trunk VLAN 10,20", { exact: true })).toBeVisible();
+  await expect(page.locator(".x6-node image")).toHaveCount(imageNodesBefore + 1);
 });
 
 test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI", async ({ page }) => {

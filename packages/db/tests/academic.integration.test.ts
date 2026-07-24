@@ -20,6 +20,7 @@ import {
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const integration = describe.skipIf(!databaseUrl);
+const onePixelPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 
 let client: DatabaseClient;
 let platform: PlatformAdminRepository;
@@ -238,6 +239,34 @@ integration("PostgreSQL academic model", () => {
     const instance = await academic.getOrCreateStudentLabInstance(tenant.ctx, tenant.assignment.id, tenant.student.id);
     const saved = await academic.saveStudentLabInstance(tenant.ctx, instance.id, tenant.student.id, { expectedRevision: 1, document: labDocument("lab-a", { title: "Progress" }) });
     expect(saved.revision).toBe(2);
+  });
+
+  it("preserves embedded diagram images through autosave and immutable submission", async () => {
+    const tenant = await seedAssignedInstance("image-autosave");
+    const instance = await academic.getOrCreateStudentLabInstance(tenant.ctx, tenant.assignment.id, tenant.student.id);
+    const diagram = {
+      assets: [{ id: "asset-1", mime: "image/png", originalName: "note.png", dataBase64: onePixelPng, width: 1, height: 1 }],
+      annotations: [{
+        id: "annotation-1",
+        type: "image",
+        assetId: "asset-1",
+        position: { x: 100, y: 100 },
+        width: 120,
+        height: 120,
+        opacity: 1,
+        preserveAspectRatio: true,
+        rotation: 0,
+        zIndex: 1,
+      }],
+      linkLabels: [],
+    };
+    const saved = await academic.saveStudentLabInstance(tenant.ctx, instance.id, tenant.student.id, {
+      expectedRevision: 1,
+      document: labDocument("lab-a", { diagram }),
+    });
+    expect(saved.currentDocument.diagram?.assets?.[0]?.dataBase64).toBe(onePixelPng);
+    const submission = await academic.createSubmission(tenant.ctx, instance.id, tenant.student.id);
+    expect(submission.labDocument.diagram).toEqual(saved.currentDocument.diagram);
   });
 
   it("returns a revision conflict on a stale autosave", async () => {

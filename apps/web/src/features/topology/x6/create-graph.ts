@@ -5,7 +5,7 @@ import { Graph } from "@antv/x6";
 
 export interface CreateGraphOptions {
   container: HTMLElement;
-  isNodeMovable(): boolean;
+  isNodeMovable(cellId: string): boolean;
   isConnectable(): boolean;
   validateConnection(sourcePort: string | null, targetPort: string | null, sourceCell: string | null, targetCell: string | null): boolean;
 }
@@ -18,7 +18,11 @@ export function createGraph(options: CreateGraphOptions): Graph {
     grid: false,
     panning: { enabled: true, eventTypes: ["leftMouseDown", "mouseWheel"] },
     mousewheel: { enabled: true, modifiers: [], minScale: 0.3, maxScale: 1.8 },
-    interacting: () => ({ nodeMovable: options.isNodeMovable(), edgeMovable: false, edgeLabelMovable: false }),
+    interacting: (cellView) => ({
+      nodeMovable: options.isNodeMovable(cellView.cell.id),
+      edgeMovable: false,
+      edgeLabelMovable: false,
+    }),
     connecting: {
       allowBlank: false,
       allowLoop: false,

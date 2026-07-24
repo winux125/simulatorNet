@@ -654,6 +654,7 @@ export function App({ client }: AppProps) {
       onOpenDevice: setDeviceWindowId,
       onInspect: (id: string) => { workspace.selectNode(id); workspace.setInspectorOpen(true); },
       onPlacedDevice: () => workspace.setPendingDeviceKind(undefined),
+      onActiveTool: workspace.setActiveTool,
       onPortLabelMode: workspace.setPortLabelMode,
       onChange: updateDraft,
       onError: (message: string) => reportError(message, "validation"),

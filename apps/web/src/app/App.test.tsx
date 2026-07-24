@@ -514,6 +514,24 @@ describe("M6.1 simulator workspace", () => {
     expect(screen.getByRole("dialog", { name: "Configure connection" })).toBeTruthy();
   });
 
+  it("pastes plain text into the topology canvas but not into form fields", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New Lab" }));
+    const canvas = screen.getByRole("region", { name: "Topology canvas" });
+    fireEvent.paste(canvas, {
+      clipboardData: { items: [], getData: (type: string) => type === "text/plain" ? "Pasted subnet note" : "" },
+    });
+    expect(useWorkspaceStore.getState().draft?.diagram?.annotations)
+      .toContainEqual(expect.objectContaining({ type: "text", content: "Pasted subnet note" }));
+
+    const count = useWorkspaceStore.getState().draft?.diagram?.annotations.length;
+    fireEvent.paste(screen.getByLabelText("Text color"), {
+      clipboardData: { items: [], getData: () => "Must remain in the field" },
+    });
+    expect(useWorkspaceStore.getState().draft?.diagram?.annotations).toHaveLength(count!);
+  });
+
   it("toggles topology link labels", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);

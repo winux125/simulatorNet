@@ -209,6 +209,9 @@ export function canonicalizeLabDocument(document: LabDocument): LabDocument {
     diagram: parsed.diagram === undefined
       ? undefined
       : {
+          assets: parsed.diagram.assets === undefined
+            ? undefined
+            : [...parsed.diagram.assets].sort(byId).map((asset) => ({ ...asset })),
           annotations: [...parsed.diagram.annotations].sort(byId).map((annotation) => (
             "position" in annotation
               ? { ...annotation, position: { ...annotation.position } }

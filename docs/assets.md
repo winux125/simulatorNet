@@ -47,3 +47,22 @@ Design rules enforced by `DeviceIcon.test.tsx`:
 
 Licensing: Lucide is ISC-licensed; the SimulatorNet device SVGs are original
 repository assets covered by the repository license.
+
+## User-provided diagram images
+
+Diagram image annotations are user content embedded in the portable
+`LabDocument`; they are not repository artwork and never become device icons.
+Only decoded PNG, JPEG and WebP raster content is accepted. The importer checks
+the binary signature and decoded dimensions instead of trusting the file name
+or browser-provided MIME type.
+
+Security and resource boundaries:
+
+- 2 MiB decoded bytes per image, 8 MiB total, and at most 20 images per lab;
+- dimensions from 1×1 through 4096×4096 pixels;
+- no SVG, GIF, HTML, remote URL, filesystem path or executable content;
+- no `dangerouslySetInnerHTML`, network fetch, dynamic import or external image
+  reference;
+- images are rendered only from their local validated `data:` representation;
+- image assets and annotations participate in canonical ordering and hashing,
+  but simulation and grading ignore their visual content.

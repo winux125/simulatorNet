@@ -84,6 +84,7 @@ export interface TopologyGraphCallbacks {
   onSelectLink(id: string): void;
   onLinkContextMenu(id: string, clientX: number, clientY: number): void;
   onSelectAnnotation(id: string): void;
+  onEditAnnotation(id: string): void;
   onAnnotationMoved(id: string, position: Point): void;
   onPaneClick(local: Point): void;
   onPaneContextMenu(clientX: number, clientY: number): void;
