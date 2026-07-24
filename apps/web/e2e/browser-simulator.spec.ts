@@ -182,8 +182,9 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   await expect(devicePicker).toHaveCount(0);
   await page.getByRole("button", { name: "Edit Topology" }).click();
   await expect(shell).toHaveAttribute("data-workspace-mode", "simulate");
-  await page.getByRole("button", { name: "Simulation", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Simulation", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: /Packet execution mode: Auto/ })).toBeVisible();
+  await expect(page.getByText("Realtime", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Simulation Mode", { exact: true })).toHaveCount(0);
 
   await closeInspector(page);
   await page.getByRole("button", { name: "Select PC1" }).dblclick();
@@ -238,9 +239,12 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   await page.getByRole("menuitem", { name: "Show Inspector" }).click();
   await expect(page.locator(".inspector-panel").first()).toBeVisible();
 
-  // 9. Simulation menu → Run Until Idle.
+  // 9. Packet execution controls live in the Simulation menu and Packet Trace.
   await menu("Simulation").click();
-  await page.getByRole("menuitem", { name: /Run Until Idle/ }).click();
+  await expect(page.getByRole("menuitem", { name: "Step Next Event" })).toBeDisabled();
+  await expect(page.getByRole("menuitem", { name: /^Run All Queued Events/ })).toBeDisabled();
+  await expect(page.getByRole("menuitem", { name: "Clear Event List" })).toBeEnabled();
+  await page.keyboard.press("Escape");
 
   // 10. File menu → export the canonical lab (browser download).
   const download = page.waitForEvent("download");
@@ -377,6 +381,33 @@ test("two draft-configured PCs ping through an L2 switch after Start Lab", async
   await openCli(page, "PC1");
   await runCli(page, "ping 192.168.10.20");
   await expect(page.getByTestId("terminal-transcript")).toContainText("Success rate is 100 percent");
+
+  // Reset transient ARP/MAC state, then inspect the same operation event by
+  // event. Terminal sessions remain mounted while Packet Trace is open.
+  await page.getByRole("menuitem", { name: "Lab", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Reset Runtime" }).click();
+  const transcript = page.getByTestId("terminal-transcript");
+  const successesBeforeStep = ((await transcript.textContent())?.match(/Success rate is 100 percent/g) ?? []).length;
+  await page.getByRole("button", { name: /Packet execution mode: Auto/ }).click();
+  const execution = page.getByRole("combobox", { name: "Packet Execution" });
+  await execution.selectOption("step");
+  const firstUse = page.getByRole("dialog", { name: "Step mode" });
+  if (await firstUse.count()) await firstUse.getByRole("button", { name: "Got it" }).click();
+  await page.getByRole("tab", { name: /Terminal/ }).click();
+  await runCli(page, "ping 192.168.10.20");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Operation queued in Step mode.");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Open Packet Trace and use Step or Run All.");
+
+  await page.getByRole("tab", { name: /Packet trace/ }).click();
+  await expect(page.getByText(/Queued events:/).locator("strong")).not.toHaveText("0");
+  await page.screenshot({ path: "/tmp/auto-step-packet-trace-1440x900.png", animations: "disabled" });
+  await page.getByRole("button", { name: "Step", exact: true }).click();
+  await expect(page.locator('tr[data-event-type="arp-request"]').first()).toBeVisible();
+  await page.getByRole("button", { name: "Run All" }).click();
+  await expect.poll(async () => ((await transcript.textContent())?.match(/Success rate is 100 percent/g) ?? []).length).toBeGreaterThan(successesBeforeStep);
+  await expect(page.getByText(/Queued events:/).locator("strong")).toHaveText("0");
+  await execution.selectOption("auto");
+  await expect(page.getByRole("button", { name: /Packet execution mode: Auto/ })).toBeVisible();
 });
 
 test("deleting a device closes its CLI before the worker rebuild", async ({ page }) => {

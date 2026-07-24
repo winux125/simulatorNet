@@ -4,7 +4,7 @@ import type { LabUiNode, SimWorkerEvent } from "@sim/sim-worker";
 import { Group as PanelGroup, Panel as ResizablePanel, Separator } from "react-resizable-panels";
 import {
   AlertTriangle, CheckCircle2, Command, Download, Eraser, FilePlus2, FlaskConical, FolderOpen, FolderX,
-  Grid3X3, Info, Keyboard, Maximize2, Pause, PanelRight, Play, Redo2, RotateCcw, SkipForward,
+  Grid3X3, Info, Keyboard, Maximize2, PanelRight, Play, Redo2, RotateCcw, SkipForward,
   Square, SunMoon, Tag, TerminalSquare, Undo2, Wrench, X,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
@@ -36,6 +36,7 @@ import type { SimulatorClient } from "./simulator-client";
 
 const TopologyCanvas = lazy(() => import("../features/topology/TopologyCanvas"));
 const BottomDock = lazy(() => import("../features/dock/BottomDock"));
+const STEP_EXPLANATION_KEY = "simulatornet.stepModeExplained";
 
 interface AppProps { client: SimulatorClient }
 
@@ -115,11 +116,16 @@ export function App({ client }: AppProps) {
   const [cliCommandsOpen, setCliCommandsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [saveAsOpen, setSaveAsOpen] = useState(false);
-  const [advanceTimeOpen, setAdvanceTimeOpen] = useState(false);
   const [demoLabOpen, setDemoLabOpen] = useState(false);
+  const [stepExplanationOpen, setStepExplanationOpen] = useState(false);
+  const [packetModesOpen, setPacketModesOpen] = useState(false);
   const [validation, setValidation] = useState<string>();
   const [pendingMode, setPendingMode] = useState<WorkspaceMode>();
   const [deviceWindowId, setDeviceWindowId] = useState<string>();
+  const dismissStepExplanation = useCallback(() => {
+    window.localStorage.setItem(STEP_EXPLANATION_KEY, "true");
+    setStepExplanationOpen(false);
+  }, []);
 
   useEffect(() => client.onEvent((event: SimWorkerEvent) => {
     if (event.type === "LAB_READY" || event.type === "STATE_CHANGED") workspace.setSnapshot(event.snapshot);
@@ -224,16 +230,21 @@ export function App({ client }: AppProps) {
     else void rebuild("simulate").catch(reportError);
   };
 
-  const changeExecutionMode = (mode: ExecutionMode) => {
-    workspace.setExecutionMode(mode);
-    if (workspace.mode === "edit") changeMode("simulate");
-  };
+  const changeExecutionMode = useCallback((mode: ExecutionMode) => {
+    void client.request({ type: "SET_EXECUTION_MODE", mode }).then((result) => {
+      const state = useWorkspaceStore.getState();
+      state.setExecutionMode(mode);
+      state.setSnapshot(result.snapshot);
+      state.setDockTab("packet-trace");
+      if (mode === "step" && window.localStorage.getItem(STEP_EXPLANATION_KEY) !== "true") {
+        setStepExplanationOpen(true);
+      }
+    }).catch(reportError);
+  }, [client, reportError]);
 
   const run = useCallback(() => void client.request({ type: "RUN_UNTIL_IDLE" }).then((result) => useWorkspaceStore.getState().setSnapshot(result.snapshot)).catch(reportError), [client, reportError]);
-  const step = () => void client.request({ type: "ADVANCE_TIME", milliseconds: 10 }).then((result) => workspace.setSnapshot(result.snapshot)).catch(reportError);
-  const advanceTime = (milliseconds: number) => void client.request({ type: "ADVANCE_TIME", milliseconds }).then((result) => workspace.setSnapshot(result.snapshot)).catch(reportError);
+  const step = useCallback(() => void client.request({ type: "STEP_NEXT_EVENT" }).then((result) => useWorkspaceStore.getState().setSnapshot(result.snapshot)).catch(reportError), [client, reportError]);
   const reset = () => void client.request({ type: "RESET_RUNTIME" }).then((ready) => { workspace.clearTraces(); workspace.setSnapshot(ready); }).catch(reportError);
-  const pause = () => void client.request({ type: "SET_PAUSED", paused: workspace.snapshot?.engineState !== "paused" }).then((result) => workspace.setSnapshot(result.snapshot)).catch(reportError);
 
   // Third topology-lock enforcement layer (after the toolbar/action layer and
   // the X6 controller): reject any draft mutation while the lab is not stopped.
@@ -341,7 +352,7 @@ export function App({ client }: AppProps) {
       else if (event.key === "?") setShortcutsOpen(true);
       else if (event.key === "Escape") {
         setShortcutsOpen(false); setLabInfoOpen(false); setCliCommandsOpen(false); setAboutOpen(false);
-        setSaveAsOpen(false); setAdvanceTimeOpen(false); setDemoLabOpen(false); setConfirmApply(false); setConfirmStop(false); setValidation(undefined);
+        setSaveAsOpen(false); setDemoLabOpen(false); setStepExplanationOpen(false); setPacketModesOpen(false); setConfirmApply(false); setConfirmStop(false); setValidation(undefined);
         workspace.setPaletteOpen(false); workspace.selectNode(undefined); workspace.selectLink(undefined);
       }
     };
@@ -353,7 +364,6 @@ export function App({ client }: AppProps) {
   const labOpen = workspace.snapshot !== undefined;
   const ready = workspace.workerStatus === "ready" && labOpen;
   const simulationEnabled = ready && workspace.mode === "simulate";
-  const paused = workspace.snapshot?.engineState === "paused";
   const editMode = workspace.mode === "edit";
   const hasSelection = Boolean(workspace.selectedNodeId || workspace.selectedLinkId);
   const powerState = workspace.powerState;
@@ -414,15 +424,15 @@ export function App({ client }: AppProps) {
       { id: "lab-reset", label: "Reset Runtime", icon: <RotateCcw size={14} />, disabled: !simulationEnabled, onSelect: reset },
     ] },
     { id: "simulation", label: "Simulation", items: [
-      { id: "sim-realtime", label: "Realtime", checked: workspace.executionMode === "realtime", disabled: !ready, onSelect: () => changeExecutionMode("realtime") },
-      { id: "sim-mode", label: "Simulation Mode", checked: workspace.executionMode === "simulation", disabled: !ready, onSelect: () => changeExecutionMode("simulation") },
+      { id: "sim-execution-mode", label: "Execution Mode", submenu: [
+        { id: "sim-auto", label: "Auto", checked: workspace.executionMode === "auto", disabled: !ready, onSelect: () => changeExecutionMode("auto") },
+        { id: "sim-step-mode", label: "Step", checked: workspace.executionMode === "step", disabled: !ready, onSelect: () => changeExecutionMode("step") },
+      ] },
       { separator: true },
-      { id: "sim-run", label: "Run Until Idle", shortcut: "Ctrl ↵", icon: <Play size={14} />, disabled: !simulationEnabled || paused, onSelect: run },
-      { id: "sim-step", label: "Advance One Step", icon: <SkipForward size={14} />, disabled: !simulationEnabled || paused || workspace.executionMode !== "simulation", onSelect: step },
-      { id: "sim-advance", label: "Advance Time…", disabled: !simulationEnabled, onSelect: () => setAdvanceTimeOpen(true) },
-      { id: "sim-pause", label: paused ? "Resume" : "Pause", icon: paused ? <Play size={14} /> : <Pause size={14} />, disabled: !simulationEnabled, onSelect: pause },
+      { id: "sim-step", label: "Step Next Event", icon: <SkipForward size={14} />, disabled: !simulationEnabled || workspace.executionMode !== "step" || (workspace.snapshot?.queuedEvents ?? 0) === 0, onSelect: step },
+      { id: "sim-run", label: "Run All Queued Events", shortcut: "Ctrl ↵", icon: <Play size={14} />, disabled: !simulationEnabled || (workspace.snapshot?.queuedEvents ?? 0) === 0, onSelect: run },
       { separator: true },
-      { id: "sim-clear", label: "Clear Trace", icon: <Eraser size={14} />, disabled: !labOpen, onSelect: workspace.clearTraces },
+      { id: "sim-clear", label: "Clear Event List", icon: <Eraser size={14} />, disabled: !labOpen, onSelect: workspace.clearTraces },
     ] },
     { id: "tools", label: "Tools", items: [
       { id: "tools-terminal", label: "Open Terminal", icon: <TerminalSquare size={14} />, disabled: !labOpen, onSelect: openTerminalFromMenu },
@@ -439,6 +449,7 @@ export function App({ client }: AppProps) {
       { id: "tools-cli", label: "CLI Compatibility", icon: <Wrench size={14} />, onSelect: () => setCliCommandsOpen(true) },
     ] },
     { id: "help", label: "Help", items: [
+      { id: "help-packet-modes", label: "Packet Execution Modes", icon: <SkipForward size={14} />, onSelect: () => setPacketModesOpen(true) },
       { id: "help-cli", label: "CLI Commands", icon: <TerminalSquare size={14} />, onSelect: () => setCliCommandsOpen(true) },
       { id: "help-shortcuts", label: "Keyboard Shortcuts", shortcut: "?", icon: <Keyboard size={14} />, onSelect: () => setShortcutsOpen(true) },
       { id: "help-about", label: "About SimulatorNet", icon: <Info size={14} />, onSelect: () => setAboutOpen(true) },
@@ -504,7 +515,6 @@ export function App({ client }: AppProps) {
         session={launchSession.state.status === "authenticated" ? launchSession.state.identity : undefined}
         sessionPending={launchSession.state.status === "checking" || launchSession.state.status === "exchanging"}
         onModeChange={changeMode}
-        onExecutionModeChange={changeExecutionMode}
         onTool={workspace.setActiveTool}
         onNew={newLab}
         onOpen={importLab}
@@ -515,10 +525,7 @@ export function App({ client }: AppProps) {
         onZoomIn={workspace.requestZoomIn}
         onZoomOut={workspace.requestZoomOut}
         onFit={workspace.requestFit}
-        onRun={run}
-        onStep={step}
-        onPause={pause}
-        onReset={reset}
+        onOpenPacketTrace={() => workspace.setDockTab("packet-trace")}
         onStartLab={startLab}
         onStopLab={stopLab}
         onLogout={() => void launchSession.logout().catch((error) => reportError(error, "validation"))}
@@ -551,11 +558,16 @@ export function App({ client }: AppProps) {
                   terminalTabs={workspace.terminalTabs}
                   activeTerminalDeviceId={workspace.activeTerminalDeviceId}
                   mode={workspace.mode}
+                  executionMode={workspace.executionMode}
                   theme={theme.resolved}
                   onTab={workspace.setDockTab}
                   onActivateTerminal={workspace.setActiveTerminal}
                   onCloseTerminal={workspace.closeTerminal}
                   onClearProblems={workspace.clearProblems}
+                  onExecutionModeChange={changeExecutionMode}
+                  onStep={step}
+                  onRunAll={run}
+                  onClearTraces={workspace.clearTraces}
                   onError={reportCliError}
                 />
               </Suspense>
@@ -563,7 +575,7 @@ export function App({ client }: AppProps) {
           </>}
         </PanelGroup>
       </div>
-      <footer className="workspace-footer"><span>Mode: <strong>{workspace.mode}</strong></span><span>Virtual time <code>{((workspace.snapshot?.virtualTime ?? 0) / 1_000_000).toFixed(3)} ms</code></span><span>{workspace.snapshot?.nodes.length ?? 0} devices</span><span className="workspace-footer__right">Schema v{workspace.draft?.schemaVersion ?? 1} · deterministic runtime</span></footer>
+      <footer className="workspace-footer"><span>Workspace: <strong>{workspace.mode === "edit" ? "Edit" : "Operate"}</strong></span><span>Virtual time <code>{((workspace.snapshot?.virtualTime ?? 0) / 1_000_000).toFixed(3)} ms</code></span><span>{workspace.snapshot?.nodes.length ?? 0} devices</span><span className="workspace-footer__right">Schema v{workspace.draft?.schemaVersion ?? 1} · deterministic runtime</span></footer>
 
       {confirmApply && <WorkspaceDialog title="Apply topology changes?" eyebrow="Runtime rebuild" onClose={() => { setConfirmApply(false); setPendingMode(undefined); }}>
         <p>Applying the draft serializes the current device configuration, merges topology positions and rebuilds the worker runtime. Volatile ARP, MAC and event state will reset.</p>
@@ -578,11 +590,16 @@ export function App({ client }: AppProps) {
         <div className="dialog-actions"><Button variant="ghost" onClick={() => setConfirmClose(false)}>Keep Editing</Button><Button variant="danger" onClick={() => { setConfirmClose(false); workspace.reset(); }}>Discard &amp; Close</Button></div>
       </WorkspaceDialog>}
       {saveAsOpen && <SaveAsDialog defaultName={workspace.draft?.id ?? "lab"} onClose={() => setSaveAsOpen(false)} onSave={(name) => { exportLab(name); setSaveAsOpen(false); }} />}
-      {advanceTimeOpen && <AdvanceTimeDialog onClose={() => setAdvanceTimeOpen(false)} onAdvance={(ms) => { advanceTime(ms); setAdvanceTimeOpen(false); }} />}
       {demoLabOpen && <DemoLabDialog onClose={() => setDemoLabOpen(false)} onLoad={loadDemo} />}
       {labInfoOpen && workspace.draft && <LabInformationDialog document={workspace.draft} mode={workspace.mode} onClose={() => setLabInfoOpen(false)} />}
       {cliCommandsOpen && <CliCommandsDialog onClose={() => setCliCommandsOpen(false)} />}
       {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
+      {packetModesOpen && <PacketExecutionHelpDialog onClose={() => setPacketModesOpen(false)} />}
+      {stepExplanationOpen && <WorkspaceDialog title="Step mode" eyebrow="Packet execution" onClose={dismissStepExplanation}>
+        <p>Step mode lets you inspect ARP, ICMP, TCP and other network events one at a time.</p>
+        <p>Your device configurations are unchanged. Switch back to Auto for normal operation.</p>
+        <div className="dialog-actions"><Button variant="primary" onClick={dismissStepExplanation}>Got it</Button></div>
+      </WorkspaceDialog>}
       {shortcutsOpen && <WorkspaceDialog title="Keyboard shortcuts" eyebrow="Quick workflow" onClose={() => setShortcutsOpen(false)}>
         <div className="shortcut-list">
           <Shortcut keys="Ctrl / Cmd + N" label="New lab" />
@@ -590,7 +607,7 @@ export function App({ client }: AppProps) {
           <Shortcut keys="Ctrl / Cmd + S" label="Save / export JSON" />
           <Shortcut keys="Ctrl / Cmd + Shift + S" label="Save As…" />
           <Shortcut keys="Ctrl / Cmd + Z" label="Undo topology edit" />
-          <Shortcut keys="Ctrl / Cmd + Enter" label="Run until idle" />
+          <Shortcut keys="Ctrl / Cmd + Enter" label="Run all queued events" />
           <Shortcut keys="Delete" label="Delete selection in Edit mode" />
           <Shortcut keys="F" label="Fit topology" />
           <Shortcut keys="Ctrl + L" label="Clear focused terminal" />
@@ -683,20 +700,6 @@ function SaveAsDialog({ defaultName, onClose, onSave }: { defaultName: string; o
   </WorkspaceDialog>;
 }
 
-function AdvanceTimeDialog({ onClose, onAdvance }: { onClose(): void; onAdvance(ms: number): void }) {
-  const [value, setValue] = useState("100");
-  const ms = Number(value);
-  const valid = Number.isFinite(ms) && ms > 0;
-  return <WorkspaceDialog title="Advance virtual time" eyebrow="Deterministic clock" onClose={onClose}>
-    <p>Drain scheduled events up to a virtual-time horizon. This uses the deterministic clock — there is no wall-clock loop.</p>
-    <form className="dialog-form" onSubmit={(event) => { event.preventDefault(); if (valid) onAdvance(ms); }}>
-      <label htmlFor="advance-ms">Milliseconds</label>
-      <div className="dialog-field"><input id="advance-ms" type="number" min={1} value={value} autoFocus onChange={(event) => setValue(event.target.value)} /><span>ms</span></div>
-      <div className="dialog-actions"><Button variant="ghost" type="button" onClick={onClose}>Cancel</Button><Button variant="primary" type="submit" disabled={!valid}>Advance</Button></div>
-    </form>
-  </WorkspaceDialog>;
-}
-
 function LabInformationDialog({ document, mode, onClose }: { document: LabDocument; mode: WorkspaceMode; onClose(): void }) {
   return <WorkspaceDialog title="Lab information" eyebrow="Document metadata" onClose={onClose}>
     <dl className="property-list">
@@ -709,6 +712,22 @@ function LabInformationDialog({ document, mode, onClose }: { document: LabDocume
       <div><dt>Mode</dt><dd>{mode}</dd></div>
     </dl>
     {document.description && <p className="section-note">{document.description}</p>}
+  </WorkspaceDialog>;
+}
+
+function PacketExecutionHelpDialog({ onClose }: { onClose(): void }) {
+  return <WorkspaceDialog title="Packet execution modes" eyebrow="Deterministic event processing" onClose={onClose}>
+    <div className="cli-command-reference">
+      <section>
+        <h3>Auto</h3>
+        <p>Processes all network events required to complete an action automatically. Use this mode for normal configuration and connectivity testing.</p>
+      </section>
+      <section>
+        <h3>Step</h3>
+        <p>Pauses queued network events so you can inspect how packets move through the topology. Use Step to process the next event or Run All to finish the operation.</p>
+      </section>
+    </div>
+    <p className="section-note">Both modes use deterministic virtual time. They do not change performance speed and do not use real wall-clock time.</p>
   </WorkspaceDialog>;
 }
 

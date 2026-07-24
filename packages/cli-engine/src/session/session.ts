@@ -7,6 +7,7 @@ import {
   IncompleteCommandError,
   SyntaxError,
   UnsupportedCapabilityError,
+  ValidationError,
 } from "../errors/errors";
 import { renderHelp } from "../help/help";
 import { tokenize } from "../lexer/lexer";
@@ -18,6 +19,13 @@ import {
 import type { InterfaceContext, SessionApi } from "../types";
 import { type CliMode, promptSuffix } from "./mode";
 
+export type NetworkExecutionMode = "auto" | "step";
+
+export const STEP_OPERATION_QUEUED = [
+  "Operation queued in Step mode.",
+  "Open Packet Trace and use Step or Run All.",
+].join("\n");
+
 /**
  * A console session attached to a single device. It owns the CLI mode/context
  * and dispatches a typed line to the matching command handler. It contains no
@@ -28,6 +36,8 @@ export class CliSession implements SessionApi {
   ifaceCtx: InterfaceContext | undefined;
   vlanId: number | undefined;
   private pendingInput: "ping-target" | undefined;
+  private executionMode: NetworkExecutionMode = "auto";
+  private pendingOperation: (() => string | undefined) | undefined;
 
   constructor(
     readonly device: Device,
@@ -45,6 +55,57 @@ export class CliSession implements SessionApi {
     if (mode !== "config-if") this.ifaceCtx = undefined;
     if (mode !== "config-vlan") this.vlanId = undefined;
     this.mode = mode;
+  }
+
+  setExecutionMode(mode: NetworkExecutionMode): void {
+    this.executionMode = mode;
+  }
+
+  hasPendingOperation(): boolean {
+    return this.pendingOperation !== undefined;
+  }
+
+  runNetworkOperation(start: () => void, complete: () => string | undefined): string {
+    if (this.pendingOperation) {
+      throw new IncompleteCommandError("wait for the queued operation to complete");
+    }
+    start();
+    if (this.executionMode === "auto") {
+      for (let phase = 0; phase < 16; phase++) {
+        this.engine.runUntilIdle();
+        const output = complete();
+        if (output !== undefined) return output;
+        if (this.engine.pendingEventCount() === 0) {
+          throw new ValidationError("Network operation did not produce a final result.");
+        }
+      }
+      throw new ValidationError("Network operation exceeded its phase limit.");
+    }
+    this.pendingOperation = complete;
+    const immediate = this.completePendingOperation();
+    if (immediate !== undefined) return immediate;
+    return STEP_OPERATION_QUEUED;
+  }
+
+  /** Render a deferred operation after Step or Run All drains the queue. */
+  completePendingOperation(): string | undefined {
+    if (!this.pendingOperation || this.engine.pendingEventCount() > 0) return undefined;
+    try {
+      const output = this.pendingOperation();
+      if (output === undefined) {
+        if (this.engine.pendingEventCount() === 0) {
+          this.pendingOperation = undefined;
+          throw new ValidationError("Network operation did not produce a final result.");
+        }
+        return undefined;
+      }
+      this.pendingOperation = undefined;
+      return output;
+    } catch (error) {
+      this.pendingOperation = undefined;
+      if (error instanceof CliError) return error.render();
+      throw error;
+    }
   }
 
   /** Execute one command line; returns its textual output ("" if none). */

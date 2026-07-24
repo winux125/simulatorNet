@@ -43,6 +43,13 @@ export interface SessionApi {
   vlanId: number | undefined;
   /** Transition to another mode (clears context as appropriate). */
   enter(mode: CliMode): void;
+  /**
+   * Schedule a deterministic network operation. Automatic execution drains
+   * the engine before `complete`; step execution defers `complete` until the
+   * worker has processed the shared event queue. A staged operation may return
+   * `undefined` after scheduling its next bounded phase.
+   */
+  runNetworkOperation(start: () => void, complete: () => string | undefined): string;
 }
 
 export interface CommandSpec {

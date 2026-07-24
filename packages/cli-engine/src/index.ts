@@ -1,5 +1,10 @@
 // Session + factory
-export { CliSession, createCliSession } from "./session/session";
+export {
+  CliSession,
+  createCliSession,
+  STEP_OPERATION_QUEUED,
+  type NetworkExecutionMode,
+} from "./session/session";
 export { type CliMode, promptSuffix } from "./session/mode";
 
 // Types

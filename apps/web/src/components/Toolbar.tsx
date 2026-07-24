@@ -1,7 +1,7 @@
 import type { EngineUiState } from "@sim/sim-worker";
 import {
-  Cable, FilePlus2, FolderOpen, Lock, LogOut, Maximize2, MousePointer2, Pause, Play,
-  Redo2, RotateCcw, Save, SkipForward, Square, Trash2, Undo2, Unlock, UserRound, ZoomIn, ZoomOut,
+  Cable, FilePlus2, FolderOpen, Lock, LogOut, Maximize2, MousePointer2, Network, Play,
+  Redo2, Save, Square, Trash2, Undo2, Unlock, UserRound, ZoomIn, ZoomOut,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ExecutionMode, LabPowerState, WorkspaceMode, WorkspaceTool } from "../state/workspace-store";
@@ -27,7 +27,6 @@ interface ToolbarProps {
   session?: { displayName: string; organizationName: string; role: string };
   sessionPending: boolean;
   onModeChange(mode: WorkspaceMode): void;
-  onExecutionModeChange(mode: ExecutionMode): void;
   onTool(tool: WorkspaceTool): void;
   onNew(): void;
   onOpen(): void;
@@ -38,10 +37,7 @@ interface ToolbarProps {
   onZoomIn(): void;
   onZoomOut(): void;
   onFit(): void;
-  onRun(): void;
-  onStep(): void;
-  onPause(): void;
-  onReset(): void;
+  onOpenPacketTrace(): void;
   onStartLab(): void;
   onStopLab(): void;
   onLogout(): void;
@@ -52,8 +48,6 @@ const POWER_LABEL: Record<LabPowerState, string> = {
 };
 
 export function Toolbar(props: ToolbarProps) {
-  const operating = props.ready && props.mode === "simulate";
-  const stepEnabled = operating && props.executionMode === "simulation";
   const workerLabel = props.workerStatus === "ready"
     ? props.engineState === "paused" ? "Paused" : props.engineState === "running" ? "Running" : "Ready"
     : props.workerStatus === "loading" ? "Loading" : props.workerStatus === "error" ? "Error" : "Offline";
@@ -142,16 +136,18 @@ export function Toolbar(props: ToolbarProps) {
         >
           Edit Topology
         </button>
-        <div className="execution-switch" role="group" aria-label="Execution mode">
-          <button type="button" title="Run protocol actions to completion automatically" className={props.executionMode === "realtime" ? "is-active" : ""} aria-pressed={props.executionMode === "realtime"} disabled={!props.ready} onClick={() => props.onExecutionModeChange("realtime")}>Realtime</button>
-          <button type="button" title="Inspect events and advance deterministic virtual time manually" className={props.executionMode === "simulation" ? "is-active" : ""} aria-pressed={props.executionMode === "simulation"} disabled={!props.ready} onClick={() => props.onExecutionModeChange("simulation")}>Simulation</button>
-        </div>
-        <ToolbarGroup label="Simulation controls">
-          <IconButton label="Run until idle" icon={<Play size={15} />} disabled={!operating || props.engineState === "paused"} onClick={props.onRun} />
-          <IconButton label="Advance one step" icon={<SkipForward size={15} />} disabled={!stepEnabled || props.engineState === "paused"} onClick={props.onStep} />
-          <IconButton label={props.engineState === "paused" ? "Resume simulation" : "Pause simulation"} icon={props.engineState === "paused" ? <Play size={15} /> : <Pause size={15} />} active={props.engineState === "paused"} disabled={!operating} onClick={props.onPause} />
-          <IconButton label="Reset runtime" icon={<RotateCcw size={15} />} disabled={!operating} onClick={props.onReset} />
-        </ToolbarGroup>
+        <button
+          type="button"
+          className="execution-mode-indicator"
+          aria-label={`Packet execution mode: ${props.executionMode === "auto" ? "Auto" : "Step"}. Open Packet Trace`}
+          title="Open Packet Trace controls"
+          disabled={!props.ready}
+          onClick={props.onOpenPacketTrace}
+        >
+          <Network size={13} aria-hidden="true" />
+          <span>Packet execution</span>
+          <strong>{props.executionMode === "auto" ? "Auto" : "Step"}</strong>
+        </button>
       </div>
     </header>
   );

@@ -49,13 +49,17 @@ export const applicationCommands: CommandSpec[] = [
     device: "host",
     run: (session, params) => safely(() => {
       const device = host(session);
-      const requestId = device.applications.httpGet(params.url!);
-      session.engine.runUntilIdle();
-      const result = device.applications.httpResults.find((candidate) => candidate.requestId === requestId);
-      if (!result) return "% HTTP request did not complete.";
-      if (result.status !== "completed") return `% HTTP ${result.status}.`;
-      const headers = Object.entries(result.headers ?? {}).map(([name, value]) => `${name}: ${value}`);
-      return [`HTTP/1.1 ${result.statusCode}`, ...headers, "", result.body ?? ""].join("\n").trimEnd();
+      let requestId = -1;
+      return session.runNetworkOperation(
+        () => { requestId = device.applications.httpGet(params.url!); },
+        () => {
+          const result = device.applications.httpResults.find((candidate) => candidate.requestId === requestId);
+          if (!result) return "% HTTP request did not complete.";
+          if (result.status !== "completed") return `% HTTP ${result.status}.`;
+          const headers = Object.entries(result.headers ?? {}).map(([name, value]) => `${name}: ${value}`);
+          return [`HTTP/1.1 ${result.statusCode}`, ...headers, "", result.body ?? ""].join("\n").trimEnd();
+        },
+      );
     }),
   },
   {
@@ -65,12 +69,16 @@ export const applicationCommands: CommandSpec[] = [
     device: "host",
     run: (session, params) => safely(() => {
       const device = host(session);
-      const requestId = device.applications.tftpGet(parseIpv4(params.server!), params.filename!);
-      session.engine.runUntilIdle();
-      const result = device.applications.tftpResults.find((candidate) => candidate.requestId === requestId);
-      if (!result) return "% TFTP transfer did not complete.";
-      if (result.status !== "completed") return `% TFTP ${result.status}: ${result.message ?? result.filename}`;
-      return `Received ${result.content?.length ?? 0} bytes as ${result.filename}`;
+      let requestId = -1;
+      return session.runNetworkOperation(
+        () => { requestId = device.applications.tftpGet(parseIpv4(params.server!), params.filename!); },
+        () => {
+          const result = device.applications.tftpResults.find((candidate) => candidate.requestId === requestId);
+          if (!result) return "% TFTP transfer did not complete.";
+          if (result.status !== "completed") return `% TFTP ${result.status}: ${result.message ?? result.filename}`;
+          return `Received ${result.content?.length ?? 0} bytes as ${result.filename}`;
+        },
+      );
     }),
   },
   {
@@ -80,12 +88,16 @@ export const applicationCommands: CommandSpec[] = [
     device: "host",
     run: (session, params) => safely(() => {
       const device = host(session);
-      const requestId = device.applications.queryNtp(parseIpv4(params.server!));
-      session.engine.runUntilIdle();
-      const result = device.applications.ntpResults.find((candidate) => candidate.requestId === requestId);
-      return result?.status === "completed"
-        ? `NTP server time: ${result.serverTimeNs} ns\nClock offset: ${result.offsetNs} ns`
-        : "% NTP request timed out.";
+      let requestId = -1;
+      return session.runNetworkOperation(
+        () => { requestId = device.applications.queryNtp(parseIpv4(params.server!)); },
+        () => {
+          const result = device.applications.ntpResults.find((candidate) => candidate.requestId === requestId);
+          return result?.status === "completed"
+            ? `NTP server time: ${result.serverTimeNs} ns\nClock offset: ${result.offsetNs} ns`
+            : "% NTP request timed out.";
+        },
+      );
     }),
   },
   {
@@ -102,9 +114,10 @@ export const applicationCommands: CommandSpec[] = [
     run: (session, params) => safely(() => {
       const severity = params.severity!.toLowerCase() as SyslogSeverity;
       if (!severities.has(severity)) throw new ValidationError("Syslog severity must be emergency, alert, critical, error, warning, notice, informational, or debug.");
-      host(session).applications.sendSyslog(parseIpv4(params.server!), severity, params.message!);
-      session.engine.runUntilIdle();
-      return `Syslog ${severity} message sent to ${params.server}.`;
+      return session.runNetworkOperation(
+        () => host(session).applications.sendSyslog(parseIpv4(params.server!), severity, params.message!),
+        () => `Syslog ${severity} message sent to ${params.server}.`,
+      );
     }),
   },
   {
@@ -154,13 +167,17 @@ export const applicationCommands: CommandSpec[] = [
 
 function runNslookup(session: SessionApi, hostname: string, dnsServer?: string): string {
   const device = host(session);
-  const requestId = device.applications.resolveDns(hostname, dnsServer);
-  session.engine.runUntilIdle();
-  const result = device.applications.dnsResults.find((candidate) => candidate.requestId === requestId);
-  if (!result || result.status === "timeout") return `Server: ${dnsServer ?? device.applications.dnsServer ?? "unconfigured"}\n*** Request timed out.`;
-  if (result.status === "nxdomain") return `Server: ${result.serverAddress}\n*** ${result.hostname}: NXDOMAIN`;
-  if (result.status !== "success") return `Server: ${result.serverAddress}\n*** Malformed DNS response.`;
-  return `Server: ${result.serverAddress}\nName: ${result.hostname}\nAddress: ${result.address}`;
+  let requestId = -1;
+  return session.runNetworkOperation(
+    () => { requestId = device.applications.resolveDns(hostname, dnsServer); },
+    () => {
+      const result = device.applications.dnsResults.find((candidate) => candidate.requestId === requestId);
+      if (!result || result.status === "timeout") return `Server: ${dnsServer ?? device.applications.dnsServer ?? "unconfigured"}\n*** Request timed out.`;
+      if (result.status === "nxdomain") return `Server: ${result.serverAddress}\n*** ${result.hostname}: NXDOMAIN`;
+      if (result.status !== "success") return `Server: ${result.serverAddress}\n*** Malformed DNS response.`;
+      return `Server: ${result.serverAddress}\nName: ${result.hostname}\nAddress: ${result.address}`;
+    },
+  );
 }
 
 function showService(device: Server, type: "dns" | "http" | "tftp" | "syslog"): string {

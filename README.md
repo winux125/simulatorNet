@@ -145,8 +145,9 @@ renaming and auto-arrange. Changes remain a draft and are marked visibly.
 **Apply & Rebuild** serializes the current worker configuration, merges it with
 the edited topology through `lab-format`, then performs the existing safe
 worker rebuild. Moving back to **Simulate** therefore preserves CLI
-configuration while deliberately resetting transient runtime state. Simulate
-enables Run, Step, Pause, Reset, CLI commands and packet operations.
+configuration while deliberately resetting transient runtime state. The
+running lab supports CLI commands and deterministic packet operations; packet
+execution is controlled separately through Auto or Step.
 
 ### Topology, terminals and keyboard
 
@@ -154,7 +155,7 @@ Click a device or link to inspect it; right-click a device to open its CLI or
 Inspector. The terminal dock keeps one deterministic worker session per device
 and supports switching, closing, copying and clearing without discarding other
 open sessions. Useful shortcuts include `Ctrl/Cmd+O` for Import, `Ctrl/Cmd+S`
-for Export, `Ctrl/Cmd+Enter` for Run until idle, `Ctrl/Cmd+K` for the command
+for Export, `Ctrl/Cmd+Enter` for Run All, `Ctrl/Cmd+K` for the command
 palette, `Delete` for the selection, `F` for Fit, `Escape` to clear/close and
 `?` for the shortcut reference. Shortcuts are suppressed while typing in
 inputs or CLI.
@@ -668,7 +669,7 @@ seven-item application menu (`File`, `Edit`, `View`, `Lab`, `Simulation`,
 keeps the largest share of the window, while the two-level bottom palette
 groups Network Devices, End Devices and Connections. Devices support both
 drag-and-drop and click-then-place. Edit Topology remains distinct from the
-Realtime and Simulation execution modes.
+Auto and Step packet execution modes.
 
 Double-clicking a device opens a profile-specific configuration window:
 Router and managed switching profiles expose Overview, Config, CLI,
@@ -703,3 +704,23 @@ argument.
 Simulator-specific service helpers live under the explicit `sim` namespace and
 are labeled as non-IOS extensions. The full support matrix and deliberate
 omissions are documented in [docs/cli-compatibility.md](docs/cli-compatibility.md).
+
+## Milestone 10.2.2 — Auto and Step packet execution
+
+Packet execution defaults to **Auto**. A CLI or application operation schedules
+deterministic virtual events and the worker processes them to bounded
+completion before returning the final result. This is the normal mode for
+configuration and connectivity testing.
+
+**Step** leaves scheduled events in the worker-owned engine queue. The Packet
+Trace dock shows the current mode, virtual time and queued-event count.
+**Step** processes exactly one deterministic event; **Run All** drains the
+remaining queue; **Clear** removes retained UI trace records without changing
+device configuration or closing terminal sessions. A network command explains
+that it is queued, and its terminal receives the final result when the queue
+finishes. Switching from Step back to Auto safely drains existing queued work.
+
+Auto/Step is local workspace state and resets to Auto on a fresh application
+session. It is not part of `LabDocument`, submissions or trusted grading input.
+The verifier always runs its own deterministic actions under server resource
+limits. Neither mode represents performance speed or wall-clock time.

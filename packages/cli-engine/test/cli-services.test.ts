@@ -43,6 +43,21 @@ describe("transport and service CLI", () => {
     expect(lab.pcCli.execute("tracert web.lab")).toContain("Trace complete.");
   });
 
+  it("keeps DNS and ICMP phases queued together in Step mode", () => {
+    lab.pcCli.setExecutionMode("step");
+    expect(lab.pcCli.execute("ping web.lab")).toBe(
+      "Operation queued in Step mode.\nOpen Packet Trace and use Step or Run All.",
+    );
+    let final: string | undefined;
+    for (let event = 0; event < 10_000 && final === undefined; event++) {
+      expect(lab.engine.runNextEvent()).toBe(true);
+      final = lab.pcCli.completePendingOperation();
+    }
+    expect(final).toContain("Sending 5, 100-byte ICMP Echos to 10.0.0.10");
+    expect(final).toContain("Success rate is 100 percent");
+    expect(lab.engine.pendingEventCount()).toBe(0);
+  });
+
   it("gets an HTTP resource", () => {
     expect(lab.pcCli.execute("sim http get http://10.0.0.10/")).toContain("HTTP/1.1 200");
     expect(lab.pcCli.execute("sim http get http://10.0.0.10/")).toContain("SimulatorNet");

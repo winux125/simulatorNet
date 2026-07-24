@@ -1,4 +1,4 @@
-import type { LabUiNode } from "@sim/sim-worker";
+import type { CliExecutionResult, LabUiNode } from "@sim/sim-worker";
 import { Clipboard, Eraser, TerminalSquare, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Terminal as XtermTerminal } from "@xterm/xterm";
@@ -116,8 +116,10 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
     const sessionId = `${sessionNamespace}:${deviceId}`;
     let disposed = false;
     let dataDisposable: { dispose(): void } | undefined;
+    let eventUnsubscribe: (() => void) | undefined;
     let fitFrame: number | undefined;
     let prompt = "";
+    let awaitingDeferredOutput = false;
     const buffer = new LineBuffer();
     const history = new TerminalCommandHistory();
 
@@ -161,15 +163,30 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
         setTranscript("");
       };
       clearRef.current = clearViewport;
+      const renderResult = (result: CliExecutionResult, fromDeferredEvent = false) => {
+        if (result.output) terminal.write(`${terminalText(result.output)}\r\n`);
+        if (result.deferred) {
+          awaitingDeferredOutput = true;
+        } else {
+          awaitingDeferredOutput = false;
+          prompt = result.prompt;
+          terminal.write(promptText());
+        }
+        scrollToBottom();
+        if (fromDeferredEvent && result.output) {
+          setTranscript((current) => `${current}${result.output}\n`);
+        }
+      };
+      eventUnsubscribe = client.onEvent((event) => {
+        if (event.type !== "CLI_OUTPUT" || event.sessionId !== sessionId || event.deviceId !== deviceId) return;
+        renderResult(event, true);
+      });
       const execute = (value: string, alreadyEchoed = false) => {
         const submittedPrompt = prompt;
         if (!alreadyEchoed) terminal.write(`${terminalText(value)}\r\n`);
         void client.request({ type: "EXECUTE_CLI", sessionId, deviceId, input: value }).then((result) => {
           if (disposed) return;
-          if (result.output) terminal.write(`${terminalText(result.output)}\r\n`);
-          prompt = result.prompt;
-          terminal.write(promptText());
-          scrollToBottom();
+          renderResult(result);
           if (value || result.output) setTranscript((current) => `${current}${submittedPrompt} ${value}\n${result.output ? `${result.output}\n` : ""}`);
         }).catch((error: unknown) => onError(error instanceof Error ? error.message : "CLI request failed"));
       };
@@ -196,6 +213,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
           return;
         }
         if (!enabledRef.current) return;
+        if (awaitingDeferredOutput) return;
         switch (key.kind) {
           case "enter": {
             const submitted = buffer.value;
@@ -243,6 +261,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
       window.removeEventListener("resize", fitTerminal);
       if (fitFrame !== undefined) window.cancelAnimationFrame(fitFrame);
       dataDisposable?.dispose();
+      eventUnsubscribe?.();
       terminalRef.current?.dispose();
       terminalRef.current = undefined;
       fitRef.current = undefined;

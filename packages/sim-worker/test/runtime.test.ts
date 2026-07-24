@@ -131,6 +131,79 @@ describe("SimulationWorkerRuntime", () => {
     expect(run()).toEqual(run());
   });
 
+  it("defaults to Auto and runs a network operation to completion", () => {
+    const { runtime } = initialize();
+    const ping = request(runtime, {
+      type: "EXECUTE_CLI",
+      sessionId: "auto-pc",
+      deviceId: "pc-1",
+      input: "ping 192.168.20.10",
+    });
+    expect(ping).toMatchObject({
+      deferred: false,
+      output: expect.stringContaining("Success rate is 100 percent"),
+    });
+    const snapshot = request(runtime, { type: "GET_SNAPSHOT" }) as LabUiSnapshot;
+    expect(snapshot.queuedEvents).toBe(0);
+  });
+
+  it("queues network work in Step and processes exactly one deterministic event", () => {
+    const events: SimWorkerEvent[] = [];
+    const { runtime } = initialize(events);
+    request(runtime, { type: "SET_EXECUTION_MODE", mode: "step" });
+    const ping = request(runtime, {
+      type: "EXECUTE_CLI",
+      sessionId: "step-pc",
+      deviceId: "pc-1",
+      input: "ping 192.168.20.10",
+    });
+    expect(ping).toMatchObject({
+      deferred: true,
+      output: "Operation queued in Step mode.\nOpen Packet Trace and use Step or Run All.",
+    });
+    const queued = request(runtime, { type: "GET_SNAPSHOT" }) as LabUiSnapshot;
+    expect(queued.queuedEvents).toBeGreaterThan(0);
+
+    const stepped = request(runtime, { type: "STEP_NEXT_EVENT" }) as {
+      processedEvents: number;
+      snapshot: LabUiSnapshot;
+    };
+    expect(stepped.processedEvents).toBe(1);
+    expect(stepped.snapshot.queuedEvents).toBeGreaterThan(0);
+    expect(events.some((event) => event.type === "CLI_OUTPUT")).toBe(false);
+
+    const completed = request(runtime, { type: "RUN_UNTIL_IDLE" }) as {
+      snapshot: LabUiSnapshot;
+    };
+    expect(completed.snapshot.queuedEvents).toBe(0);
+    expect(events.find((event) => event.type === "CLI_OUTPUT")).toMatchObject({
+      type: "CLI_OUTPUT",
+      sessionId: "step-pc",
+      deferred: false,
+      output: expect.stringContaining("Success rate is 100 percent"),
+    });
+  });
+
+  it("drains queued work safely when switching Step back to Auto", () => {
+    const events: SimWorkerEvent[] = [];
+    const { runtime } = initialize(events);
+    request(runtime, { type: "SET_EXECUTION_MODE", mode: "step" });
+    request(runtime, {
+      type: "EXECUTE_CLI",
+      sessionId: "mode-pc",
+      deviceId: "pc-1",
+      input: "ping 192.168.20.10",
+    });
+    const switched = request(runtime, { type: "SET_EXECUTION_MODE", mode: "auto" }) as {
+      snapshot: LabUiSnapshot;
+    };
+    expect(switched.snapshot.queuedEvents).toBe(0);
+    expect(events.find((event) => event.type === "CLI_OUTPUT")).toMatchObject({
+      sessionId: "mode-pc",
+      output: expect.stringContaining("Success rate is 100 percent"),
+    });
+  });
+
   it("handles unknown request types as typed failures", () => {
     const runtime = createSimulationWorkerRuntime();
     const response = runtime.handleRequest({ type: "DO_SOMETHING_UNSAFE", requestId: "unknown" });

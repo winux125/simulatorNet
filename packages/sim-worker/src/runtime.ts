@@ -35,6 +35,7 @@ import type {
   LabUiInterface,
   LabUiNode,
   LabUiSnapshot,
+  PacketExecutionMode,
   SimWorkerEvent,
   SimWorkerOutboundMessage,
   SimWorkerPayload,
@@ -80,6 +81,7 @@ export class SimulationWorkerRuntime {
   private readonly sessions = new Map<string, CliSessionEntry>();
   private traceCursor = 0;
   private engineState: EngineUiState = "idle";
+  private executionMode: PacketExecutionMode = "auto";
 
   constructor(private readonly emit: EmitMessage = () => undefined) {}
 
@@ -110,6 +112,10 @@ export class SimulationWorkerRuntime {
         return { closed: this.sessions.delete(requireString(request, "sessionId")) };
       case "RUN_UNTIL_IDLE":
         return this.runUntilIdle();
+      case "STEP_NEXT_EVENT":
+        return this.stepNextEvent();
+      case "SET_EXECUTION_MODE":
+        return this.setExecutionMode(request.mode);
       case "ADVANCE_TIME":
         return this.advanceTime(request.milliseconds);
       case "SET_PAUSED":
@@ -167,6 +173,7 @@ export class SimulationWorkerRuntime {
       expectedOutcome: canonical.expectedOutcome,
       diagram: canonical.diagram,
     };
+    if (isInitial) this.executionMode = "auto";
     this.rebuildEngine(canonical);
     const snapshot = this.snapshot();
     this.emit({ type: isInitial ? "LAB_READY" : "STATE_CHANGED", snapshot });
@@ -204,16 +211,18 @@ export class SimulationWorkerRuntime {
       throw new SimulationWorkerError("cli-not-supported", `${device.profile.displayName} does not provide an interactive CLI`);
     }
     const entry = existing ?? { deviceId, session: createCliSession(device, built.engine) };
+    entry.session.setExecutionMode(this.executionMode);
     this.sessions.set(sessionId, entry);
     const output = entry.session.execute(input);
+    const deferred = entry.session.hasPendingOperation();
     const result = {
       sessionId,
       deviceId,
       output,
       prompt: entry.session.prompt(),
       mode: entry.session.mode,
+      deferred,
     };
-    this.emit({ type: "CLI_OUTPUT", ...result });
     this.emitStateChanged();
     this.flushTrace();
     return result;
@@ -222,12 +231,48 @@ export class SimulationWorkerRuntime {
   private runUntilIdle(): SimulationRunResult {
     const built = this.requireRunnable();
     this.engineState = "running";
-    const processedEvents = built.engine.runUntilIdle();
-    this.engineState = "idle";
+    let processedEvents = 0;
+    try {
+      for (let phase = 0; phase < 16; phase++) {
+        processedEvents += built.engine.runUntilIdle();
+        this.emitCompletedCliOperations();
+        if (built.engine.pendingEventCount() === 0) break;
+        if (phase === 15) {
+          throw new SimulationWorkerError("operation-phase-limit", "Queued operation exceeded its deterministic phase limit");
+        }
+      }
+    } finally {
+      this.engineState = "idle";
+    }
     const snapshot = this.snapshot();
     this.emit({ type: "STATE_CHANGED", snapshot });
     this.flushTrace();
     return { processedEvents, virtualTime: built.engine.now(), snapshot };
+  }
+
+  private stepNextEvent(): SimulationRunResult {
+    const built = this.requireRunnable();
+    this.engineState = "running";
+    const processedEvents = built.engine.runNextEvent() ? 1 : 0;
+    this.engineState = "idle";
+    this.emitCompletedCliOperations();
+    const snapshot = this.snapshot();
+    this.emit({ type: "STATE_CHANGED", snapshot });
+    this.flushTrace();
+    return { processedEvents, virtualTime: built.engine.now(), snapshot };
+  }
+
+  private setExecutionMode(input: unknown): SimulationRunResult {
+    if (input !== "auto" && input !== "step") {
+      throw new SimulationWorkerError("invalid-execution-mode", "Execution mode must be 'auto' or 'step'");
+    }
+    this.executionMode = input;
+    for (const entry of this.sessions.values()) entry.session.setExecutionMode(input);
+    if (input === "auto") return this.runUntilIdle();
+    const built = this.requireBuiltLab();
+    const snapshot = this.snapshot();
+    this.emit({ type: "STATE_CHANGED", snapshot });
+    return { processedEvents: 0, virtualTime: built.engine.now(), snapshot };
   }
 
   private advanceTime(milliseconds: unknown): SimulationRunResult {
@@ -239,6 +284,7 @@ export class SimulationWorkerRuntime {
     const target = built.engine.now() + Math.round(milliseconds * 1_000_000);
     const processedEvents = built.engine.advanceTo(target);
     this.engineState = "idle";
+    this.emitCompletedCliOperations();
     const snapshot = this.snapshot();
     this.emit({ type: "STATE_CHANGED", snapshot });
     this.flushTrace();
@@ -280,6 +326,7 @@ export class SimulationWorkerRuntime {
       title: document.title,
       engineState: this.engineState,
       virtualTime: built.engine.now(),
+      queuedEvents: built.engine.pendingEventCount(),
       nodes: document.topology.nodes.map((node, index) => this.nodeSnapshot(node, index)),
       links: document.topology.links.map((link) => ({
         id: link.id,
@@ -708,6 +755,22 @@ export class SimulationWorkerRuntime {
 
   private emitStateChanged(): void {
     this.emit({ type: "STATE_CHANGED", snapshot: this.snapshot() });
+  }
+
+  private emitCompletedCliOperations(): void {
+    for (const [sessionId, entry] of this.sessions) {
+      const output = entry.session.completePendingOperation();
+      if (output === undefined) continue;
+      this.emit({
+        type: "CLI_OUTPUT",
+        sessionId,
+        deviceId: entry.deviceId,
+        output,
+        prompt: entry.session.prompt(),
+        mode: entry.session.mode,
+        deferred: false,
+      });
+    }
   }
 
   private requireRunnable(): BuiltLab {

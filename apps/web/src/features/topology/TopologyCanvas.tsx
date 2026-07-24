@@ -286,7 +286,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       onContextMenu={(event) => event.preventDefault()}
     >
       <div className="canvas-statusbar">
-        <StatusIndicator status={props.mode === "edit" ? "unsaved" : "ready"} label={props.mode === "edit" ? "Edit topology" : "Live simulation"} />
+        <StatusIndicator status={props.mode === "edit" ? "unsaved" : "ready"} label={props.mode === "edit" ? "Edit topology" : "Lab running"} />
         <span>{document.topology.nodes.length} devices</span>
         <span>{document.topology.links.length} links</span>
         {props.activeTool === "add-link" && <strong><Cable size={12} /> Drag between interface endpoints</strong>}

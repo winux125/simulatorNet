@@ -1,4 +1,4 @@
-import { type Device, EndHost, intToIp, Layer3Switch, Router } from "@sim/sim-core";
+import { EndHost, intToIp, Layer3Switch, Router } from "@sim/sim-core";
 import { InvalidModeError, ValidationError } from "../errors/errors";
 import {
   showArp,
@@ -12,7 +12,7 @@ import {
   showVlanBrief,
 } from "../formatter/show";
 import type { CliMode } from "../session/mode";
-import type { CommandSpec } from "../types";
+import type { CommandSpec, SessionApi } from "../types";
 import { isBridge, isEndHost, isRoutingDevice, isSwitch, parseIpv4 } from "./helpers";
 
 const SHOW_MODES: CliMode[] = ["exec", "privileged"];
@@ -91,7 +91,7 @@ export const showCommands: CommandSpec[] = [
     device: "host",
     run: (s, p) => {
       if (!isEndHost(s.device)) return "";
-      return runPing(s.device, s.engine, resolveHostTarget(s.device, s.engine, p.target!));
+      return runHostPing(s, p.target!);
     },
   },
   {
@@ -99,7 +99,7 @@ export const showCommands: CommandSpec[] = [
     usage: "ping <destination-ip>",
     modes: SHOW_MODES,
     device: "router",
-    run: (s, p) => runPing(s.device, s.engine, parseIpv4(p.target!)),
+    run: (s, p) => runPing(s, parseIpv4(p.target!)),
   },
   {
     pattern: "ipconfig",
@@ -122,9 +122,11 @@ export const showCommands: CommandSpec[] = [
     capabilities: ["dhcp-client"],
     run: (s) => {
       if (!isEndHost(s.device)) return "";
-      s.device.requestDhcp();
-      s.engine.runUntilIdle();
-      return showIpconfig(s.device, false);
+      const device = s.device;
+      return s.runNetworkOperation(
+        () => device.requestDhcp(),
+        () => showIpconfig(device, false),
+      );
     },
   },
   {
@@ -153,7 +155,7 @@ export const showCommands: CommandSpec[] = [
     capabilities: ["ipv4-host"],
     run: (s, p) => {
       if (!isEndHost(s.device)) return "";
-      return runTracert(s.device, s.engine, resolveHostTarget(s.device, s.engine, p.target!));
+      return runHostTracert(s, p.target!);
     },
   },
   {
@@ -167,44 +169,77 @@ export const showCommands: CommandSpec[] = [
 
 const PING_COUNT = 5;
 
-function runPing(device: Device, engine: { runUntilIdle(): number }, target: string): string {
+function runPing(session: SessionApi, target: string): string {
+  const device = session.device;
   if (!(device instanceof EndHost || device instanceof Router || device instanceof Layer3Switch)) {
     throw new InvalidModeError("ping is not supported by this device");
   }
   if (device instanceof EndHost && device.ip === undefined) {
     throw new InvalidModeError("no IP address configured on this host");
   }
+  let baseSeq = device.pingResults.length;
+  return session.runNetworkOperation(
+    () => { baseSeq = schedulePings(device, target); },
+    () => formatPing(device, target, baseSeq),
+  );
+}
+
+function runHostPing(session: SessionApi, target: string): string {
+  const device = session.device;
+  if (!(device instanceof EndHost)) throw new InvalidModeError("ping requires an end host");
+  let parsedTarget: string | undefined;
+  try {
+    parsedTarget = parseIpv4(target);
+  } catch (error) {
+    if (!(error instanceof ValidationError)) throw error;
+  }
+  if (parsedTarget) return runPing(session, parsedTarget);
+  let requestId = -1;
+  let resolvedAddress: string | undefined;
+  let baseSeq = device.pingResults.length;
+  return session.runNetworkOperation(
+    () => { requestId = device.applications.resolveDns(target); },
+    () => {
+      if (!resolvedAddress) {
+        const result = device.applications.dnsResults.find((candidate) => candidate.requestId === requestId);
+        if (result?.status !== "success" || !result.address) throw new ValidationError(`Could not find host ${target}.`);
+        resolvedAddress = result.address;
+        baseSeq = schedulePings(device, resolvedAddress);
+        return undefined;
+      }
+      return formatPing(device, resolvedAddress, baseSeq);
+    },
+  );
+}
+
+function schedulePings(
+  device: EndHost | Router | Layer3Switch,
+  target: string,
+): number {
   const baseSeq = device.pingResults.length;
   try {
     for (let i = 0; i < PING_COUNT; i++) device.ping(target, baseSeq + i);
   } catch (error) {
     throw new ValidationError(error instanceof Error ? error.message : "Ping could not be started.");
   }
-  engine.runUntilIdle();
+  return baseSeq;
+}
 
+function formatPing(
+  device: EndHost | Router | Layer3Switch,
+  target: string,
+  baseSeq: number,
+): string {
   const results = device.pingResults.slice(baseSeq, baseSeq + PING_COUNT);
-  const marks = results.map((r) => (r.success ? "!" : ".")).join("");
-  const ok = results.filter((r) => r.success).length;
+  const marks = results.map((result) => (result.success ? "!" : ".")).join("");
+  const ok = results.filter((result) => result.success).length;
   const rate = Math.round((ok / PING_COUNT) * 100);
   return [
-    `Type escape sequence to abort.`,
+    "Type escape sequence to abort.",
     `Sending ${PING_COUNT}, 100-byte ICMP Echos to ${target}, timeout is 2 seconds:`,
     marks,
     `Success rate is ${rate} percent (${ok}/${PING_COUNT})`,
   ].join("\n");
-}
-
-function resolveHostTarget(device: EndHost, engine: { runUntilIdle(): number }, target: string): string {
-  try {
-    return parseIpv4(target);
-  } catch (error) {
-    if (!(error instanceof ValidationError)) throw error;
-  }
-  const requestId = device.applications.resolveDns(target);
-  engine.runUntilIdle();
-  const result = device.applications.dnsResults.find((candidate) => candidate.requestId === requestId);
-  if (result?.status === "success" && result.address) return result.address;
-  throw new ValidationError(`Could not find host ${target}.`);
 }
 
 function showIpconfig(device: EndHost, all: boolean): string {
@@ -230,12 +265,59 @@ function showIpconfig(device: EndHost, all: boolean): string {
   return lines.join("\n");
 }
 
-function runTracert(device: Device, engine: { runUntilIdle(): number }, target: string): string {
+function runTracert(session: SessionApi, target: string): string {
+  const device = session.device;
   if (!(device instanceof EndHost)) throw new InvalidModeError("tracert requires an end host");
   if (device.ip === undefined) throw new InvalidModeError("no IP address configured on this host");
-  const sequence = device.pingResults.length;
-  device.ping(target, sequence);
-  engine.runUntilIdle();
+  let sequence = device.pingResults.length;
+  return session.runNetworkOperation(
+    () => {
+      sequence = device.pingResults.length;
+      device.ping(target, sequence);
+    },
+    () => {
+      const success = device.pingResults.slice(sequence).some((result) => result.sequence === sequence && result.success);
+      return [
+        `Tracing route to ${target} over a maximum of 30 hops`,
+        "",
+        success ? `  1    <1 ms    <1 ms    <1 ms  ${target}` : "  1     *        *        *     Request timed out.",
+        "",
+        "Trace complete.",
+      ].join("\n");
+    },
+  );
+}
+
+function runHostTracert(session: SessionApi, target: string): string {
+  const device = session.device;
+  if (!(device instanceof EndHost)) throw new InvalidModeError("tracert requires an end host");
+  let parsedTarget: string | undefined;
+  try {
+    parsedTarget = parseIpv4(target);
+  } catch (error) {
+    if (!(error instanceof ValidationError)) throw error;
+  }
+  if (parsedTarget) return runTracert(session, parsedTarget);
+  let requestId = -1;
+  let resolvedAddress: string | undefined;
+  let sequence = device.pingResults.length;
+  return session.runNetworkOperation(
+    () => { requestId = device.applications.resolveDns(target); },
+    () => {
+      if (!resolvedAddress) {
+        const result = device.applications.dnsResults.find((candidate) => candidate.requestId === requestId);
+        if (result?.status !== "success" || !result.address) throw new ValidationError(`Could not find host ${target}.`);
+        resolvedAddress = result.address;
+        sequence = device.pingResults.length;
+        device.ping(resolvedAddress, sequence);
+        return undefined;
+      }
+      return formatTracert(device, resolvedAddress, sequence);
+    },
+  );
+}
+
+function formatTracert(device: EndHost, target: string, sequence: number): string {
   const success = device.pingResults.slice(sequence).some((result) => result.sequence === sequence && result.success);
   return [
     `Tracing route to ${target} over a maximum of 30 hops`,

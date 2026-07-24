@@ -3,7 +3,7 @@ import type { LabUiSnapshot, SimulationTraceEvent } from "@sim/sim-worker";
 import { create } from "zustand";
 
 export type WorkspaceMode = "edit" | "simulate";
-export type ExecutionMode = "realtime" | "simulation";
+export type ExecutionMode = "auto" | "step";
 export type WorkspaceTool =
   | "select"
   | "add-device"
@@ -17,7 +17,7 @@ export type WorkspaceTool =
 export type PortLabelMode = "always" | "selected" | "hidden";
 
 // Lab power lifecycle — a concept distinct from the Edit/Operate workspace mode
-// and from the Realtime/Simulation execution mode. Topology may only be mutated
+// and from the Auto/Step packet execution mode. Topology may only be mutated
 // while "stopped".
 export type LabPowerState = "stopped" | "starting" | "running" | "stopping" | "error";
 
@@ -124,7 +124,7 @@ const initialState = {
   workerStatus: "empty" as const,
   powerState: "stopped" as LabPowerState,
   mode: "simulate" as const,
-  executionMode: "realtime" as const,
+  executionMode: "auto" as const,
   activeTool: "select" as const,
   pendingDeviceKind: undefined,
   dirty: false,

@@ -20,6 +20,7 @@ import type {
 export type { ServerServiceRuntimeSnapshot } from "@sim/sim-core";
 
 export type EngineUiState = "idle" | "running" | "paused" | "error";
+export type PacketExecutionMode = "auto" | "step";
 
 export interface LabUiInterface {
   id: string;
@@ -52,6 +53,7 @@ export interface LabUiSnapshot {
   title: string;
   engineState: EngineUiState;
   virtualTime: number;
+  queuedEvents: number;
   nodes: LabUiNode[];
   links: LabUiLink[];
 }
@@ -80,6 +82,8 @@ export interface CliExecutionResult {
   output: string;
   prompt: string;
   mode: CliMode;
+  /** True while the terminal is waiting for Step or Run All to finish it. */
+  deferred: boolean;
 }
 
 export interface SimulationRunResult {
@@ -206,6 +210,8 @@ export type SimWorkerRequest =
   | { type: "EXECUTE_CLI"; requestId: string; sessionId: string; deviceId: string; input: string }
   | { type: "CLOSE_CLI_SESSION"; requestId: string; sessionId: string }
   | { type: "RUN_UNTIL_IDLE"; requestId: string }
+  | { type: "STEP_NEXT_EVENT"; requestId: string }
+  | { type: "SET_EXECUTION_MODE"; requestId: string; mode: PacketExecutionMode }
   | { type: "ADVANCE_TIME"; requestId: string; milliseconds: number }
   | { type: "SET_PAUSED"; requestId: string; paused: boolean }
   | { type: "RESET_RUNTIME"; requestId: string }
@@ -264,6 +270,8 @@ export interface SimWorkerPayloadByType {
   EXECUTE_CLI: CliExecutionResult;
   CLOSE_CLI_SESSION: { closed: boolean };
   RUN_UNTIL_IDLE: SimulationRunResult;
+  STEP_NEXT_EVENT: SimulationRunResult;
+  SET_EXECUTION_MODE: SimulationRunResult;
   ADVANCE_TIME: SimulationRunResult;
   SET_PAUSED: { paused: boolean; snapshot: LabUiSnapshot };
   RESET_RUNTIME: LabUiSnapshot;

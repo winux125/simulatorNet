@@ -513,27 +513,32 @@ describe("M10.2.1 Packet Tracer-style workspace", () => {
       expect(screen.getByRole("menuitem", { name: label })).toBeTruthy();
     }
     const actions = screen.getByLabelText("Workspace actions");
-    for (const label of ["New lab", "Open lab", "Save lab", "Undo", "Redo", "Select tool", "Add link", "Delete selected", "Zoom in", "Zoom out", "Fit topology", "Run until idle", "Advance one step"]) {
+    for (const label of ["New lab", "Open lab", "Save lab", "Undo", "Redo", "Select tool", "Add link", "Delete selected", "Zoom in", "Zoom out", "Fit topology"]) {
       expect(within(actions).getByRole("button", { name: label })).toBeTruthy();
     }
+    expect(within(actions).getByRole("button", { name: /Packet execution mode: Auto/ })).toBeTruthy();
+    expect(within(actions).queryByRole("button", { name: "Run until idle" })).toBeNull();
+    expect(within(actions).queryByRole("button", { name: "Advance one step" })).toBeNull();
   });
 
-  it("keeps topology editing distinct from Realtime and Simulation execution modes", async () => {
+  it("keeps topology editing distinct from Auto and Step execution modes", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     const edit = screen.getByRole("button", { name: "Edit Topology" });
-    const realtime = screen.getByRole("button", { name: "Realtime" });
-    const simulation = screen.getByRole("button", { name: "Simulation" });
     expect(edit.getAttribute("aria-pressed")).toBe("false");
-    expect(realtime.getAttribute("aria-pressed")).toBe("true");
-    expect(realtime.getAttribute("title")).toContain("automatically");
-    expect(simulation.getAttribute("title")).toContain("virtual time");
-    await userEvent.click(simulation);
-    expect(useWorkspaceStore.getState().executionMode).toBe("simulation");
-    expect(simulation.getAttribute("aria-pressed")).toBe("true");
+    expect(useWorkspaceStore.getState().executionMode).toBe("auto");
+    expect(screen.queryByText("Realtime")).toBeNull();
+    expect(screen.queryByText("Simulation Mode")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: /Packet execution mode: Auto/ }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Packet Execution" }), "step");
+    await waitFor(() => expect(useWorkspaceStore.getState().executionMode).toBe("step"));
+    expect(screen.getByRole("dialog", { name: "Step mode" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Got it" }));
+    expect(window.localStorage.getItem("simulatornet.stepModeExplained")).toBe("true");
     await userEvent.click(edit);
     expect(useWorkspaceStore.getState().mode).toBe("edit");
-    expect(useWorkspaceStore.getState().executionMode).toBe("simulation");
+    expect(useWorkspaceStore.getState().executionMode).toBe("step");
   });
 
   it("offers network, end-device and connection sub-palettes", async () => {
@@ -720,6 +725,47 @@ describe("M8.3 desktop menus and terminal", () => {
     expect(sw.output).not.toContain("arp");
   });
 
+  it("queues a terminal operation in Step and delivers its final output after Run All", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+
+    await userEvent.click(screen.getByRole("button", { name: /Packet execution mode: Auto/ }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Packet Execution" }), "step");
+    await userEvent.click(await screen.findByRole("button", { name: "Got it" }));
+    await waitFor(() => expect(useWorkspaceStore.getState().executionMode).toBe("step"));
+
+    act(() => useWorkspaceStore.getState().setDockTab("terminal"));
+    await waitFor(() => expect(useWorkspaceStore.getState().dockTab).toBe("terminal"));
+    await type(terminal, "ping 192.168.20.10");
+    await act(async () => { terminal.emit("\r"); });
+    await waitFor(() => expect(terminal.output).toContain("Operation queued in Step mode."));
+    expect(terminal.output).toContain("Open Packet Trace and use Step or Run All.");
+    expect(useWorkspaceStore.getState().snapshot?.queuedEvents).toBeGreaterThan(0);
+    expect(terminal.output).not.toContain("Success rate is 100 percent");
+
+    act(() => useWorkspaceStore.getState().setDockTab("packet-trace"));
+    await waitFor(() => expect(useWorkspaceStore.getState().dockTab).toBe("packet-trace"));
+    await userEvent.click(screen.getByRole("button", { name: "Step" }));
+    expect(client.requestTypes).toContain("STEP_NEXT_EVENT");
+    expect(useWorkspaceStore.getState().snapshot?.queuedEvents).toBeGreaterThan(0);
+
+    await userEvent.click(screen.getByRole("button", { name: "Run All" }));
+    await waitFor(() => expect(terminal.output).toContain("Success rate is 100 percent"));
+    expect(useWorkspaceStore.getState().snapshot?.queuedEvents).toBe(0);
+  });
+
+  it("explains Auto and Step as deterministic virtual-time modes", async () => {
+    await loadDemo(new RuntimeClient());
+    await openMenu("Help");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Packet Execution Modes" }));
+    const dialog = screen.getByRole("dialog", { name: "Packet execution modes" });
+    expect(within(dialog).getByRole("heading", { name: "Auto" })).toBeTruthy();
+    expect(within(dialog).getByRole("heading", { name: "Step" })).toBeTruthy();
+    expect(within(dialog).getByText(/deterministic virtual time/i)).toBeTruthy();
+    expect(within(dialog).getByText(/do not use real wall-clock time/i)).toBeTruthy();
+  });
+
   it("opens the File menu on click", async () => {
     const client = new RuntimeClient();
     render(<App client={client} />);
@@ -780,12 +826,17 @@ describe("M8.3 desktop menus and terminal", () => {
     expect((screen.getByRole("menuitem", { name: "Apply & Rebuild" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("runs Run Until Idle from the Simulation menu", async () => {
+  it("offers Auto/Step and deterministic queue controls from the Simulation menu", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     await openMenu("Simulation");
-    await userEvent.click(screen.getByRole("menuitem", { name: /Run Until Idle/ }));
-    expect(client.requestTypes).toContain("RUN_UNTIL_IDLE");
+    expect(screen.getByRole("menuitem", { name: "Step Next Event" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /^Run All Queued Events/ })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Clear Event List" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("menuitem", { name: "Execution Mode" }));
+    expect(screen.getByRole("menuitemradio", { name: "Auto" })).toBeTruthy();
+    expect(screen.getByRole("menuitemradio", { name: "Step" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "Realtime" })).toBeNull();
   });
 
   it("navigates dropdown items with the keyboard", async () => {

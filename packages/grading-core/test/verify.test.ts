@@ -146,6 +146,16 @@ describe("deterministic grading checks", () => {
     expect(verifySubmission(request).score).toBe(100);
   });
 
+  it("ignores browser Auto/Step workspace state", () => {
+    const baseline = verificationRequest("instructor");
+    const untrusted = {
+      ...clone(baseline),
+      executionMode: "step",
+      submission: { ...clone(baseline.submission), executionMode: "step" },
+    };
+    expect(verifySubmission(untrusted)).toEqual(verifySubmission(baseline));
+  });
+
   it("rejects an invalid submission before build", () => {
     expect(() => verifySubmission({ ...verificationRequest(), submission: {} })).toThrowError(VerificationError);
     try {

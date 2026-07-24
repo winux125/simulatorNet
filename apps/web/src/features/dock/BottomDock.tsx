@@ -1,7 +1,7 @@
 import type { LabUiSnapshot, SimulationTraceEvent } from "@sim/sim-worker";
 import { AlertTriangle, Braces, List, Network, TerminalSquare } from "lucide-react";
 import type { SimulatorClient } from "../../app/simulator-client";
-import type { DockTab, WorkspaceMode, WorkspaceProblem } from "../../state/workspace-store";
+import type { DockTab, ExecutionMode, WorkspaceMode, WorkspaceProblem } from "../../state/workspace-store";
 import type { ResolvedTheme } from "../../hooks/useTheme";
 import { useState } from "react";
 import { Button, EmptyState, Tabs } from "../../ui";
@@ -16,11 +16,16 @@ interface BottomDockProps {
   terminalTabs: string[];
   activeTerminalDeviceId: string | undefined;
   mode: WorkspaceMode;
+  executionMode: ExecutionMode;
   theme: ResolvedTheme;
   onTab(tab: DockTab): void;
   onActivateTerminal(deviceId: string): void;
   onCloseTerminal(deviceId: string): void;
   onClearProblems(): void;
+  onExecutionModeChange(mode: ExecutionMode): void;
+  onStep(): void;
+  onRunAll(): void;
+  onClearTraces(): void;
   onError(message: string): void;
 }
 
@@ -51,25 +56,77 @@ export function BottomDock(props: BottomDockProps) {
         <Tabs label="Bottom panel sections" value={props.tab} options={options} onChange={props.onTab} />
       </div>
       <div className="bottom-dock__content" role="tabpanel">
-        {props.tab === "terminal" && <TerminalWorkspace client={props.client} tabs={props.terminalTabs} activeDeviceId={props.activeTerminalDeviceId} nodes={props.snapshot?.nodes ?? []} mode={props.mode} theme={props.theme} onActivate={props.onActivateTerminal} onClose={props.onCloseTerminal} onError={props.onError} />}
+        <div className="dock-terminal-layer" hidden={props.tab !== "terminal"}>
+          <TerminalWorkspace client={props.client} tabs={props.terminalTabs} activeDeviceId={props.activeTerminalDeviceId} nodes={props.snapshot?.nodes ?? []} mode={props.mode} theme={props.theme} onActivate={props.onActivateTerminal} onClose={props.onCloseTerminal} onError={props.onError} />
+        </div>
         {props.tab === "events" && <EventTable events={props.traces} />}
-        {props.tab === "packet-trace" && <PacketTable events={packetEvents} />}
+        {props.tab === "packet-trace" && <div className="packet-trace-view">
+          <PacketExecutionControls
+            mode={props.executionMode}
+            virtualTime={props.snapshot?.virtualTime ?? 0}
+            queuedEvents={props.snapshot?.queuedEvents ?? 0}
+            onMode={props.onExecutionModeChange}
+            onStep={props.onStep}
+            onRunAll={props.onRunAll}
+            onClear={props.onClearTraces}
+          />
+          <PacketTable events={packetEvents} />
+        </div>}
         {props.tab === "problems" && <Problems problems={props.problems} onClear={props.onClearProblems} />}
       </div>
     </section>
   );
 }
 
+function PacketExecutionControls({
+  mode,
+  virtualTime,
+  queuedEvents,
+  onMode,
+  onStep,
+  onRunAll,
+  onClear,
+}: {
+  mode: ExecutionMode;
+  virtualTime: number;
+  queuedEvents: number;
+  onMode(mode: ExecutionMode): void;
+  onStep(): void;
+  onRunAll(): void;
+  onClear(): void;
+}) {
+  return <div className="packet-execution" aria-label="Packet execution controls">
+    <label>
+      <span>Packet Execution</span>
+      <select aria-label="Packet Execution" value={mode} onChange={(event) => onMode(event.target.value as ExecutionMode)}>
+        <option value="auto">Auto</option>
+        <option value="step">Step</option>
+      </select>
+    </label>
+    {mode === "auto"
+      ? <p>Events are processed automatically.</p>
+      : <div className="packet-execution__step">
+        <Button size="sm" variant="primary" disabled={queuedEvents === 0} onClick={onStep}>Step</Button>
+        <Button size="sm" variant="ghost" disabled={queuedEvents === 0} onClick={onRunAll}>Run All</Button>
+        <Button size="sm" variant="ghost" onClick={onClear}>Clear</Button>
+      </div>}
+    <div className="packet-execution__metrics">
+      <span>Virtual time: <code>{timeLabel(virtualTime)}</code></span>
+      <span>Queued events: <strong>{queuedEvents}</strong></span>
+    </div>
+  </div>;
+}
+
 function EventTable({ events }: { events: SimulationTraceEvent[] }) {
   if (events.length === 0) return <EmptyState icon={<List size={26} />} title="No simulation events" description="Run the lab or issue a CLI packet operation to populate the deterministic event stream." />;
-  return <div className="dock-table-wrap"><table className="data-table event-table"><thead><tr><th>Time</th><th>Device</th><th>Interface</th><th>Event</th><th>Details</th></tr></thead><tbody>{events.slice(-300).reverse().map((event) => <tr key={event.sequence} data-event-type={event.type}><td><code>{timeLabel(event.virtualTime)}</code></td><td>{event.deviceId}</td><td><code>{event.interfaceId ?? "—"}</code></td><td><span className="event-type">{event.type}</span></td><td><code>{event.description}</code></td></tr>)}</tbody></table></div>;
+  return <div className="dock-table-wrap"><table className="data-table event-table"><thead><tr><th>Time</th><th>Device</th><th>Interface</th><th>Event</th><th>Details</th></tr></thead><tbody>{events.slice(-300).reverse().map((event, index) => <tr key={`${event.sequence}-${index}`} data-event-type={event.type}><td><code>{timeLabel(event.virtualTime)}</code></td><td>{event.deviceId}</td><td><code>{event.interfaceId ?? "—"}</code></td><td><span className="event-type">{event.type}</span></td><td><code>{event.description}</code></td></tr>)}</tbody></table></div>;
 }
 
 function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
   const [filter, setFilter] = useState("ALL");
   if (events.length === 0) return <EmptyState icon={<Network size={26} />} title="No packet trace" description="ARP, ICMP and forwarding events will appear here without inventing protocol data the engine does not expose." />;
   const visible = events.filter((event) => filter === "ALL" || traceProtocol(event) === filter);
-  return <div className="dock-table-wrap"><div className="trace-filter"><label>Protocol filter <select aria-label="Packet trace protocol filter" value={filter} onChange={(event) => setFilter(event.target.value)}>{["ALL", "ARP", "ICMP", "UDP", "TCP", "DNS", "HTTP", "TFTP", "NTP", "SYSLOG"].map((protocol) => <option key={protocol}>{protocol}</option>)}</select></label><span>{visible.length} records</span></div><table className="data-table packet-table"><thead><tr><th>Time</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Ports</th><th>Event</th><th>Result</th></tr></thead><tbody>{visible.slice(-300).reverse().map((event) => {
+  return <div className="dock-table-wrap"><div className="trace-filter"><label>Protocol filter <select aria-label="Packet trace protocol filter" value={filter} onChange={(event) => setFilter(event.target.value)}>{["ALL", "ARP", "ICMP", "UDP", "TCP", "DNS", "HTTP", "TFTP", "NTP", "SYSLOG"].map((protocol) => <option key={protocol}>{protocol}</option>)}</select></label><span>{visible.length} records</span></div><table className="data-table packet-table"><thead><tr><th>Time</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Ports</th><th>Event</th><th>Result</th></tr></thead><tbody>{visible.slice(-300).reverse().map((event, index) => {
     const detail = event.detail ?? {};
     const source = String(detail.src ?? detail.sourceAddress ?? detail.localAddress ?? event.deviceId);
     const destination = String(detail.dst ?? detail.destinationAddress ?? detail.remoteAddress ?? detail.targetIp ?? "—");
@@ -78,7 +135,7 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
     const destinationPort = detail.destinationPort ?? detail.remotePort;
     const ports = sourcePort === undefined && destinationPort === undefined ? "—" : `${String(sourcePort ?? "*")} → ${String(destinationPort ?? "*")}`;
     const result = event.type.includes("success") || event.type.includes("response") || event.type.includes("received") || event.type.includes("established") ? "success" : event.type.includes("error") || event.type.includes("timeout") || event.type.includes("reset") || event.type.includes("unreachable") ? "error" : "observed";
-    return <tr key={event.sequence} data-event-type={event.type}><td><code>{timeLabel(event.virtualTime)}</code></td><td><code>{source}</code></td><td><code>{destination}</code></td><td>{protocol}</td><td><code>{ports}</code></td><td>{event.type}</td><td><span className={`trace-result trace-result--${result}`}>{result}</span></td></tr>;
+    return <tr key={`${event.sequence}-${index}`} data-event-type={event.type}><td><code>{timeLabel(event.virtualTime)}</code></td><td><code>{source}</code></td><td><code>{destination}</code></td><td>{protocol}</td><td><code>{ports}</code></td><td>{event.type}</td><td><span className={`trace-result trace-result--${result}`}>{result}</span></td></tr>;
   })}</tbody></table></div>;
 }
 
