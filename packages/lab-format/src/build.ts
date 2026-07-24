@@ -4,6 +4,7 @@ import {
   type DeviceId,
   type LabDocument,
   type LabMetadata,
+  type Ipv4AclConfig,
   type NodeSpec,
   type PhysicalInterfaceConfig,
   type Layer3SwitchDeviceConfig,
@@ -131,6 +132,16 @@ function applyPhysical(device: Device, config: PhysicalInterfaceConfig): void {
   else iface.noShutdown();
 }
 
+function applyAclConfiguration(
+  device: Pick<Router, "defineAcl" | "applyAcl"> | Pick<Layer3Switch, "defineAcl" | "applyAcl">,
+  config: Pick<Layer3SwitchDeviceConfig, "acls" | "aclBindings">,
+): void {
+  for (const acl of config.acls) device.defineAcl(acl);
+  for (const binding of config.aclBindings) {
+    device.applyAcl(binding.interfaceName, binding.direction, binding.aclId);
+  }
+}
+
 function applyConfiguration(device: Device, config: DeviceConfig): void {
   device.rename(config.hostname ?? device.name);
   if (device instanceof Pc && config.kind === "pc") {
@@ -175,6 +186,7 @@ function applyConfiguration(device: Device, config: DeviceConfig): void {
       });
     }
     if (config.dhcpEnabled) device.setDhcpEnabled(true);
+    for (const flow of config.flows) device.configureFlow(flow);
     return;
   }
   if (device instanceof Hub && config.kind === "hub") {
@@ -226,6 +238,19 @@ function applyConfiguration(device: Device, config: DeviceConfig): void {
         leaseSeconds: pool.leaseSeconds,
       });
     }
+    applyAclConfiguration(device, config);
+    for (const pool of config.natPools) device.defineNatPool(pool);
+    for (const role of config.natInterfaceRoles) device.setNatRole(role.interfaceName, role.role);
+    for (const rule of config.natRules) device.defineNatRule(rule);
+    if (device instanceof Firewall && config.kind === "firewall") {
+      for (const zone of config.zones) device.setZone(zone.interfaceName, zone.zone);
+      for (const policy of config.firewallPolicies) device.definePolicy(policy);
+      device.setDefaultPolicy(config.defaultPolicy);
+    }
+    if (device instanceof IspCloud && config.kind === "cloud") {
+      for (const impairment of config.impairments) device.configureImpairment(impairment);
+      device.validateInterfaceCount();
+    }
   }
 }
 
@@ -252,6 +277,7 @@ function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3Swit
   }
   for (const route of config.staticRoutes) device.addStaticRoute(route.network, route.prefixLength, route.nextHop);
   device.setIpRouting(config.ipRoutingEnabled);
+  applyAclConfiguration(device, config);
 }
 
 export function buildLabFromDocument(document: LabDocument): BuiltLab {
@@ -297,6 +323,26 @@ function physicalConfiguration(device: Device, id: string): PhysicalInterfaceCon
   };
 }
 
+function serializeAcls(
+  device: Pick<Router, "aclConfigurations"> | Pick<Layer3Switch, "aclConfigurations">,
+): Ipv4AclConfig[] {
+  return device.aclConfigurations().map((acl) => acl.type === "standard"
+    ? {
+        ...acl,
+        rules: acl.rules.map((rule) => ({ ...rule, source: { ...rule.source } })),
+      }
+    : {
+        ...acl,
+        rules: acl.rules.map((rule) => ({
+          ...rule,
+          source: { ...rule.source },
+          destination: { ...rule.destination },
+          sourcePort: rule.sourcePort ? { ...rule.sourcePort } : undefined,
+          destinationPort: rule.destinationPort ? { ...rule.destinationPort } : undefined,
+        })),
+      });
+}
+
 function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
   if (device instanceof Server) {
     const state = device.configurationSnapshot();
@@ -339,6 +385,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
         : { address: state.ip, prefixLength: prefixLength(state.maskInt), defaultGateway: state.gateway },
       dhcpEnabled: state.dhcpEnabled,
       dnsServer: state.dnsServer,
+      flows: device.flowConfigurations(),
     };
   }
   if (device instanceof Hub) {
@@ -395,6 +442,8 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
         nextHop: route.nextHop,
       })),
       ipRoutingEnabled: device.ipRoutingEnabled,
+      acls: serializeAcls(device),
+      aclBindings: device.aclBindings(),
     };
   }
   if (device instanceof L2Switch) {
@@ -454,9 +503,39 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       rangeEnd: pool.rangeEnd,
       leaseSeconds: pool.leaseSeconds,
     })),
+    acls: serializeAcls(device),
+    aclBindings: device.aclBindings(),
+    natPools: device.natPoolConfigurations(),
+    natRules: device.natRuleConfigurations(),
+    natInterfaceRoles: device.interfaceSummaries()
+      .flatMap((iface) => {
+        const role = device.natRole(iface.name);
+        return role ? [{ interfaceName: iface.name, role }] : [];
+      }),
   };
-  if (device instanceof Firewall) return { kind: "firewall", ...routed };
-  if (device instanceof IspCloud) return { kind: "cloud", ...routed };
+  if (device instanceof Firewall) {
+    return {
+      kind: "firewall",
+      ...routed,
+      zones: device.zoneConfigurations(),
+      firewallPolicies: device.policyConfigurations().map((policy) => ({
+        ...policy,
+        source: policy.source ? { ...policy.source } : undefined,
+        destination: policy.destination ? { ...policy.destination } : undefined,
+        sourcePort: policy.sourcePort ? { ...policy.sourcePort } : undefined,
+        destinationPort: policy.destinationPort ? { ...policy.destinationPort } : undefined,
+        states: policy.states ? [...policy.states] : undefined,
+      })),
+      defaultPolicy: device.defaultPolicy,
+    };
+  }
+  if (device instanceof IspCloud) {
+    return {
+      kind: "cloud",
+      ...routed,
+      impairments: device.impairmentConfigurations().map((impairment) => ({ ...impairment })),
+    };
+  }
   return { kind: "router", ...routed };
 }
 

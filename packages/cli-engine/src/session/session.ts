@@ -16,7 +16,7 @@ import {
   matchPatternDetailed,
   usageFromPattern,
 } from "../parser/matcher";
-import type { InterfaceContext, SessionApi } from "../types";
+import type { AclContext, InterfaceContext, SessionApi } from "../types";
 import { type CliMode, promptSuffix } from "./mode";
 
 export type NetworkExecutionMode = "auto" | "step";
@@ -35,6 +35,7 @@ export class CliSession implements SessionApi {
   mode: CliMode = "exec";
   ifaceCtx: InterfaceContext | undefined;
   vlanId: number | undefined;
+  aclCtx: AclContext | undefined;
   private pendingInput: "ping-target" | undefined;
   private executionMode: NetworkExecutionMode = "auto";
   private pendingOperation: (() => string | undefined) | undefined;
@@ -54,6 +55,7 @@ export class CliSession implements SessionApi {
   enter(mode: CliMode): void {
     if (mode !== "config-if") this.ifaceCtx = undefined;
     if (mode !== "config-vlan") this.vlanId = undefined;
+    if (mode !== "config-acl") this.aclCtx = undefined;
     this.mode = mode;
   }
 

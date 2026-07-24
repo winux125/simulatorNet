@@ -129,6 +129,50 @@ function switchConfiguration(node: NodeSpec, config: SwitchDeviceConfig | undefi
   };
 }
 
+function canonicalAcls(config: Pick<RouterDeviceConfig, "acls" | "aclBindings"> | undefined) {
+  return {
+    acls: [...(config?.acls ?? [])]
+      .sort(byId)
+      .map((acl) => acl.type === "standard"
+        ? {
+            ...acl,
+            rules: [...acl.rules]
+              .sort((a, b) => a.sequence - b.sequence)
+              .map((rule) => ({ ...rule, source: { ...rule.source } })),
+          }
+        : {
+            ...acl,
+            rules: [...acl.rules]
+              .sort((a, b) => a.sequence - b.sequence)
+              .map((rule) => ({
+                ...rule,
+                source: { ...rule.source },
+                destination: { ...rule.destination },
+                sourcePort: rule.sourcePort ? { ...rule.sourcePort } : undefined,
+                destinationPort: rule.destinationPort ? { ...rule.destinationPort } : undefined,
+              })),
+          }),
+    aclBindings: [...(config?.aclBindings ?? [])]
+      .sort((a, b) =>
+        a.interfaceName.localeCompare(b.interfaceName)
+        || a.direction.localeCompare(b.direction)
+        || a.aclId.localeCompare(b.aclId))
+      .map((binding) => ({ ...binding })),
+  };
+}
+
+function canonicalNat(config: RouterDeviceConfig | undefined) {
+  return {
+    natPools: [...(config?.natPools ?? [])].sort(byId).map((pool) => ({ ...pool })),
+    natRules: [...(config?.natRules ?? [])]
+      .sort((a, b) => a.sequence - b.sequence || a.id.localeCompare(b.id))
+      .map((rule) => rule.kind === "static" ? { ...rule } : { ...rule, source: { ...rule.source } }),
+    natInterfaceRoles: [...(config?.natInterfaceRoles ?? [])]
+      .sort((a, b) => a.interfaceName.localeCompare(b.interfaceName) || a.role.localeCompare(b.role))
+      .map((role) => ({ ...role })),
+  };
+}
+
 function routerConfiguration(node: NodeSpec, config: RouterDeviceConfig | undefined): RouterDeviceConfig {
   const interfaces = new Map(config?.interfaces.map((iface) => [iface.id, iface]));
   return {
@@ -147,6 +191,8 @@ function routerConfiguration(node: NodeSpec, config: RouterDeviceConfig | undefi
       .sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || a.prefixLength - b.prefixLength || a.nextHop.localeCompare(b.nextHop))
       .map((route) => ({ ...route })),
     dhcpPools: [...(config?.dhcpPools ?? [])].sort(byId).map((pool) => ({ ...pool })),
+    ...canonicalAcls(config),
+    ...canonicalNat(config),
   };
 }
 
@@ -157,7 +203,24 @@ function firewallConfiguration(
   const router = routerConfiguration(node, config
     ? { ...config, kind: "router" }
     : undefined);
-  return { ...router, kind: "firewall" };
+  return {
+    ...router,
+    kind: "firewall",
+    zones: [...(config?.zones ?? [])]
+      .sort((a, b) => a.interfaceName.localeCompare(b.interfaceName))
+      .map((zone) => ({ ...zone })),
+    firewallPolicies: [...(config?.firewallPolicies ?? [])]
+      .sort((a, b) => a.sequence - b.sequence || a.id.localeCompare(b.id))
+      .map((policy) => ({
+        ...policy,
+        source: policy.source ? { ...policy.source } : undefined,
+        destination: policy.destination ? { ...policy.destination } : undefined,
+        sourcePort: policy.sourcePort ? { ...policy.sourcePort } : undefined,
+        destinationPort: policy.destinationPort ? { ...policy.destinationPort } : undefined,
+        states: policy.states ? [...policy.states] : undefined,
+      })),
+    defaultPolicy: config?.defaultPolicy ?? "deny",
+  };
 }
 
 function cloudConfiguration(
@@ -167,7 +230,13 @@ function cloudConfiguration(
   const router = routerConfiguration(node, config
     ? { ...config, kind: "router" }
     : undefined);
-  return { ...router, kind: "cloud" };
+  return {
+    ...router,
+    kind: "cloud",
+    impairments: [...(config?.impairments ?? [])]
+      .sort((a, b) => a.interfaceName.localeCompare(b.interfaceName))
+      .map((impairment) => ({ ...impairment })),
+  };
 }
 
 function trafficGeneratorConfiguration(
@@ -177,7 +246,11 @@ function trafficGeneratorConfiguration(
   const pc = pcConfiguration(node, config
     ? { ...config, kind: "pc" }
     : undefined);
-  return { ...pc, kind: "traffic-generator" };
+  return {
+    ...pc,
+    kind: "traffic-generator",
+    flows: [...(config?.flows ?? [])].sort(byId).map((flow) => ({ ...flow })),
+  };
 }
 
 function layer3SwitchConfiguration(
@@ -209,6 +282,7 @@ function layer3SwitchConfiguration(
       .sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || a.prefixLength - b.prefixLength || a.nextHop.localeCompare(b.nextHop))
       .map((route) => ({ ...route })),
     ipRoutingEnabled: config?.ipRoutingEnabled ?? false,
+    ...canonicalAcls(config),
   };
 }
 

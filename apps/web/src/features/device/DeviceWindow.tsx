@@ -13,8 +13,15 @@ import { Button, IconButton } from "../../ui";
 import { ServerServicesPanel } from "../inspector/ServerServicesPanel";
 import { TerminalWorkspace } from "../terminal/TerminalPanel";
 import { HostIpConfigurationPanel } from "./HostIpConfigurationPanel";
+import {
+  SecurityConfigurationPanel,
+  type SecuritySection,
+} from "./SecurityConfigurationPanel";
 
-type DeviceWindowTab = "overview" | "desktop" | "config" | "services" | "terminal" | "interfaces" | "attributes";
+type DeviceWindowTab =
+  | "overview" | "desktop" | "config" | "services" | "terminal" | "interfaces" | "attributes"
+  | "routing" | "routes" | "vlans" | "svis" | "acl" | "nat" | "runtime"
+  | "zones" | "policies" | "connections" | "impairments" | "flows" | "run" | "results";
 type DesktopTool = "ip" | "command" | "web" | "tftp" | "ntp" | "syslog" | "transport";
 
 interface DeviceWindowProps {
@@ -47,6 +54,44 @@ export function DeviceWindow(props: DeviceWindowProps) {
       { id: "terminal", label: "Terminal" },
       { id: "attributes", label: "Attributes" },
     ];
+    if (props.node.type === "router") return [
+      { id: "interfaces", label: "Interfaces" },
+      { id: "routing", label: "Routing" },
+      { id: "acl", label: "ACL" },
+      { id: "nat", label: "NAT" },
+      { id: "terminal", label: "CLI" },
+      { id: "runtime", label: "Runtime" },
+    ];
+    if (props.node.type === "l3-switch") return [
+      { id: "interfaces", label: "Interfaces" },
+      { id: "vlans", label: "VLANs" },
+      { id: "svis", label: "SVI" },
+      { id: "routing", label: "Routing" },
+      { id: "acl", label: "ACL" },
+      { id: "terminal", label: "CLI" },
+      { id: "runtime", label: "Runtime" },
+    ];
+    if (props.node.type === "firewall") return [
+      { id: "overview", label: "Overview" },
+      { id: "interfaces", label: "Interfaces" },
+      { id: "zones", label: "Zones" },
+      { id: "policies", label: "Policies" },
+      { id: "nat", label: "NAT" },
+      { id: "routes", label: "Routes" },
+      { id: "connections", label: "Connections" },
+      { id: "terminal", label: "CLI" },
+    ];
+    if (props.node.type === "cloud") return [
+      { id: "overview", label: "Overview" },
+      { id: "interfaces", label: "Interfaces" },
+      { id: "routes", label: "Routes" },
+      { id: "impairments", label: "Impairments" },
+    ];
+    if (props.node.type === "traffic-generator") return [
+      { id: "flows", label: "Flows" },
+      { id: "run", label: "Run" },
+      { id: "results", label: "Results" },
+    ];
     return [
       { id: "overview", label: "Overview" },
       { id: "config", label: "Config" },
@@ -54,7 +99,7 @@ export function DeviceWindow(props: DeviceWindowProps) {
       { id: "interfaces", label: "Interfaces" },
       { id: "attributes", label: "Attributes" },
     ];
-  }, [isPc, isServer, profile.cliProfile]);
+  }, [isPc, isServer, profile.cliProfile, props.node.type]);
   const [tab, setTab] = useState<DeviceWindowTab>(tabs[0]!.id);
 
   useEffect(() => {
@@ -103,11 +148,27 @@ export function DeviceWindow(props: DeviceWindowProps) {
             onError={props.onError}
           /> : <DraftRuntimeNotice />)}
           {tab === "interfaces" && <Interfaces node={props.node} />}
+          {isSecuritySection(tab) && (props.runtimeAvailable
+            ? <SecurityConfigurationPanel
+                client={props.client}
+                deviceId={props.node.id}
+                section={tab}
+                onConfigurationChanged={props.onConfigurationChanged}
+                onError={props.onError}
+              />
+            : <DraftRuntimeNotice />)}
           {tab === "attributes" && <Attributes node={props.node} description={profile.description} capabilities={profile.capabilities} />}
         </div>
       </section>
     </div>
   );
+}
+
+function isSecuritySection(tab: DeviceWindowTab): tab is SecuritySection {
+  return [
+    "routing", "routes", "vlans", "svis", "acl", "nat", "runtime", "zones",
+    "policies", "connections", "impairments", "flows", "run", "results",
+  ].includes(tab);
 }
 
 function Overview({ node, description }: { node: LabUiNode; description: string }) {

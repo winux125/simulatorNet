@@ -31,6 +31,11 @@ export interface InterfaceContext {
   sviVlan: number | undefined;
 }
 
+export interface AclContext {
+  id: string;
+  type: "standard" | "extended";
+}
+
 /**
  * The surface a command handler is given. Implemented by `CliSession`; commands
  * depend on this interface (not the class) so there is no import cycle.
@@ -41,6 +46,7 @@ export interface SessionApi {
   mode: CliMode;
   ifaceCtx: InterfaceContext | undefined;
   vlanId: number | undefined;
+  aclCtx: AclContext | undefined;
   /** Transition to another mode (clears context as appropriate). */
   enter(mode: CliMode): void;
   /**

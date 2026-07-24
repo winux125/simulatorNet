@@ -12,7 +12,17 @@ import {
   VerificationResultSchema,
 } from "@sim/contracts/grading";
 import { buildLabFromDocument, parseLabDocument, type BuiltLab } from "@sim/lab-format";
-import { EndHost, ipToInt, Layer3Switch, maskToInt, normalizeDnsName, Router, TcpState } from "@sim/sim-core";
+import {
+  EndHost,
+  Firewall,
+  ipToInt,
+  Layer3Switch,
+  maskToInt,
+  normalizeDnsName,
+  Router,
+  TcpState,
+  TrafficGenerator,
+} from "@sim/sim-core";
 import type { SimulationEngine } from "@sim/sim-core";
 import type { ZodIssue } from "zod";
 import { VerificationError, VerificationResourceLimitError } from "./errors";
@@ -150,6 +160,39 @@ function result(
 
 function errorResult(check: GradingCheck, message: string): InternalCheckResult {
   return result(check, false, message, { reason: message }, "error");
+}
+
+function executePing(
+  runtime: VerificationRuntime,
+  sourceDeviceId: string,
+  destinationIp: string,
+): {
+  source: EndHost | Router | Layer3Switch;
+  success: boolean;
+  trace: SimulationEngine["traceLog"];
+  failure?: string;
+} | undefined {
+  const candidate = runtime.built.getDevice(sourceDeviceId);
+  const source = candidate instanceof EndHost || candidate instanceof Router || candidate instanceof Layer3Switch
+    ? candidate
+    : undefined;
+  if (!source) return undefined;
+  const sequence = runtime.nextPingSequence();
+  const traceStart = runtime.built.engine.traceLog.length;
+  let failure: string | undefined;
+  try {
+    source.ping(destinationIp, sequence);
+    runtime.runUntil(() => source.pingResults.some((entry) => entry.sequence === sequence));
+  } catch (error) {
+    if (error instanceof VerificationResourceLimitError) throw error;
+    failure = error instanceof Error ? error.message : "Ping execution failed";
+  }
+  return {
+    source,
+    success: source.pingResults.find((entry) => entry.sequence === sequence)?.success ?? false,
+    trace: runtime.built.engine.traceLog.slice(traceStart),
+    failure,
+  };
 }
 
 function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCheckResult {
@@ -381,6 +424,153 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
         listening: !!listener,
         service: listener?.service,
         port: check.configuration.port,
+      });
+    }
+    case "acl-rule": {
+      const candidate = built.getDevice(check.configuration.deviceId);
+      const device = candidate instanceof Router || candidate instanceof Layer3Switch ? candidate : undefined;
+      if (!device) return errorResult(check, "ACL-capable routing device was not found");
+      const acl = device.aclConfigurations().find((entry) => entry.id === check.configuration.aclId);
+      const rule = acl?.rules.find((entry) => entry.sequence === check.configuration.sequence);
+      const passed = rule?.action === check.configuration.expectedAction;
+      return result(check, passed, `ACL ${check.configuration.aclId} sequence ${check.configuration.sequence} ${passed ? "matches" : "does not match"} the expected action`, {
+        actualAction: rule?.action,
+        expectedAction: check.configuration.expectedAction,
+        aclType: acl?.type,
+      });
+    }
+    case "acl-binding": {
+      const candidate = built.getDevice(check.configuration.deviceId);
+      const device = candidate instanceof Router || candidate instanceof Layer3Switch ? candidate : undefined;
+      if (!device) return errorResult(check, "ACL-capable routing device was not found");
+      const binding = device.aclBindings().find((entry) =>
+        entry.interfaceName === check.configuration.interfaceId
+        && entry.direction === check.configuration.direction);
+      const passed = binding?.aclId === check.configuration.aclId;
+      return result(check, passed, `ACL ${check.configuration.aclId} is ${passed ? "bound" : "not bound"} to ${check.configuration.interfaceId} ${check.configuration.direction}`, {
+        actualAclId: binding?.aclId,
+        expectedAclId: check.configuration.aclId,
+      });
+    }
+    case "packet-permitted":
+    case "packet-denied": {
+      const execution = executePing(
+        runtime,
+        check.configuration.sourceDeviceId,
+        check.configuration.destinationIp,
+      );
+      if (!execution) return errorResult(check, "Packet source device was not found");
+      const permits = execution.trace.filter((entry) =>
+        entry.type === "acl-permitted" || entry.type === "firewall-permitted");
+      const denies = execution.trace.filter((entry) =>
+        entry.type === "acl-denied"
+        || entry.type === "acl-implicit-deny"
+        || entry.type === "firewall-denied"
+        || entry.type === "nat-no-translation");
+      const permitted = permits.length > 0 && denies.length === 0;
+      const passed = check.type === "packet-permitted" ? permitted : denies.length > 0;
+      return result(check, passed, `Packet was ${denies.length > 0 ? "denied" : permitted ? "permitted" : "not decided by policy"}`, {
+        pingSuccess: execution.success,
+        permitEvents: permits.map((entry) => entry.type),
+        denyEvents: denies.map((entry) => entry.type),
+        failure: execution.failure,
+      });
+    }
+    case "nat-rule": {
+      const device = built.getRouter(check.configuration.deviceId);
+      if (!device) return errorResult(check, "NAT device was not found");
+      const rule = device.natRuleConfigurations().find((entry) => entry.id === check.configuration.ruleId);
+      const passed = rule?.kind === check.configuration.expectedKind;
+      return result(check, passed, `NAT rule ${check.configuration.ruleId} is ${rule?.kind ?? "missing"}`, {
+        actualKind: rule?.kind,
+        expectedKind: check.configuration.expectedKind,
+      });
+    }
+    case "nat-translation": {
+      const device = built.getRouter(check.configuration.deviceId);
+      if (!device) return errorResult(check, "NAT device was not found");
+      const execution = executePing(
+        runtime,
+        check.configuration.sourceDeviceId,
+        check.configuration.destinationIp,
+      );
+      if (!execution) return errorResult(check, "NAT test source was not found");
+      const translations = device.natTranslations();
+      const translation = translations.find((entry) =>
+        check.configuration.expectedInsideGlobalAddress === undefined
+        || entry.insideGlobalAddress === check.configuration.expectedInsideGlobalAddress);
+      return result(check, !!translation, `NAT translation ${translation ? "was created" : "was not created"}`, {
+        translationCount: translations.length,
+        actualInsideGlobalAddress: translation?.insideGlobalAddress,
+        expectedInsideGlobalAddress: check.configuration.expectedInsideGlobalAddress,
+        pingSuccess: execution.success,
+      });
+    }
+    case "firewall-rule": {
+      const device = built.getFirewall(check.configuration.deviceId);
+      if (!device) return errorResult(check, "Firewall was not found");
+      const rule = device.policyConfigurations().find((entry) => entry.id === check.configuration.ruleId);
+      const passed = rule?.action === check.configuration.expectedAction;
+      return result(check, passed, `Firewall rule ${check.configuration.ruleId} ${passed ? "matches" : "does not match"} the expected action`, {
+        actualAction: rule?.action,
+        expectedAction: check.configuration.expectedAction,
+      });
+    }
+    case "firewall-session": {
+      const device = built.getFirewall(check.configuration.deviceId);
+      if (!(device instanceof Firewall)) return errorResult(check, "Firewall was not found");
+      const execution = executePing(
+        runtime,
+        check.configuration.sourceDeviceId,
+        check.configuration.destinationIp,
+      );
+      if (!execution) return errorResult(check, "Firewall test source was not found");
+      const session = device.connectionTable().find((entry) =>
+        entry.destinationAddress === check.configuration.destinationIp);
+      return result(check, !!session, `Firewall session ${session ? "was created" : "was not created"}`, {
+        connectionId: session?.id,
+        state: session?.state,
+        pingSuccess: execution.success,
+      });
+    }
+    case "external-connectivity": {
+      const execution = executePing(
+        runtime,
+        check.configuration.sourceDeviceId,
+        check.configuration.destinationIp,
+      );
+      if (!execution) return errorResult(check, "External connectivity source was not found");
+      const passed = check.configuration.expected === "success"
+        ? execution.success
+        : !execution.success;
+      return result(check, passed, `External connectivity ${execution.success ? "succeeded" : "failed"}`, {
+        actual: execution.success ? "success" : "failure",
+        expected: check.configuration.expected,
+        failure: execution.failure,
+      });
+    }
+    case "traffic-flow-result": {
+      const device = built.getTrafficGenerator(check.configuration.deviceId);
+      if (!(device instanceof TrafficGenerator)) return errorResult(check, "Traffic Generator was not found");
+      device.startFlow(check.configuration.flowId);
+      runtime.runUntil(() =>
+        device.flowResults().some((entry) =>
+          entry.flowId === check.configuration.flowId && entry.status === "completed"));
+      const flow = device.flowResults().find((entry) => entry.flowId === check.configuration.flowId);
+      if (!flow) return errorResult(check, "Traffic flow did not produce a result");
+      const passed = flow.received >= check.configuration.minimumReceived
+        && (check.configuration.maximumDropped === undefined
+          || flow.dropped <= check.configuration.maximumDropped);
+      return result(check, passed, `Traffic flow ${check.configuration.flowId} received ${flow.received} and dropped ${flow.dropped}`, {
+        sent: flow.sent,
+        received: flow.received,
+        dropped: flow.dropped,
+        permitted: flow.permitted,
+        denied: flow.denied,
+        translated: flow.translated,
+        timedOut: flow.timedOut,
+        minimumReceived: check.configuration.minimumReceived,
+        maximumDropped: check.configuration.maximumDropped,
       });
     }
   }

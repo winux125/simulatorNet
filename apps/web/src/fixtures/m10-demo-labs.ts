@@ -1,5 +1,6 @@
 import type { LabDocument } from "@sim/contracts";
 import { DEMO_LAB } from "./demo-lab";
+import { SECURITY_DEMO_LABS } from "./security-demo-labs";
 
 function ports(prefix: string, count: number): Array<{ id: string }> {
   return Array.from({ length: count }, (_, index) => ({ id: `${prefix}${index + 1}` }));
@@ -89,6 +90,8 @@ export const L3_SWITCH_DEMO: LabDocument = {
       ],
       staticRoutes: [],
       ipRoutingEnabled: true,
+      acls: [],
+      aclBindings: [],
     },
     "pc-2": { kind: "pc", hostname: "PC2", interfaces: [], ipv4: { address: "192.168.20.10", prefixLength: 24, defaultGateway: "192.168.20.1" }, dhcpEnabled: false },
   },
@@ -242,10 +245,22 @@ export const LARGE_TOPOLOGY_DEMO: LabDocument = {
     ],
   },
   configurations: {
-    "router-1": { kind: "router", hostname: "CORE-R1", interfaces: [], subinterfaces: [], staticRoutes: [], dhcpPools: [] },
-    "router-2": { kind: "router", hostname: "CORE-R2", interfaces: [], subinterfaces: [], staticRoutes: [], dhcpPools: [] },
-    "l3-switch-1": { kind: "l3-switch", hostname: "DIST-A", interfaces: [], vlans: [], svis: [], staticRoutes: [], ipRoutingEnabled: false },
-    "l3-switch-2": { kind: "l3-switch", hostname: "DIST-B", interfaces: [], vlans: [], svis: [], staticRoutes: [], ipRoutingEnabled: false },
+    "router-1": {
+      kind: "router", hostname: "CORE-R1", interfaces: [], subinterfaces: [], staticRoutes: [], dhcpPools: [],
+      acls: [], aclBindings: [], natPools: [], natRules: [], natInterfaceRoles: [],
+    },
+    "router-2": {
+      kind: "router", hostname: "CORE-R2", interfaces: [], subinterfaces: [], staticRoutes: [], dhcpPools: [],
+      acls: [], aclBindings: [], natPools: [], natRules: [], natInterfaceRoles: [],
+    },
+    "l3-switch-1": {
+      kind: "l3-switch", hostname: "DIST-A", interfaces: [], vlans: [], svis: [], staticRoutes: [],
+      ipRoutingEnabled: false, acls: [], aclBindings: [],
+    },
+    "l3-switch-2": {
+      kind: "l3-switch", hostname: "DIST-B", interfaces: [], vlans: [], svis: [], staticRoutes: [],
+      ipRoutingEnabled: false, acls: [], aclBindings: [],
+    },
     "switch-1": { kind: "l2-switch", hostname: "ACCESS-A1", interfaces: [], vlans: [] },
     "switch-2": { kind: "l2-switch", hostname: "ACCESS-A2", interfaces: [], vlans: [] },
     "switch-3": { kind: "l2-switch", hostname: "ACCESS-B1", interfaces: [], vlans: [] },
@@ -289,6 +304,7 @@ export const DEMO_LABS = [
   { id: "dns-web", label: DNS_WEB_DEMO.title, document: DNS_WEB_DEMO },
   { id: "tftp-backup", label: TFTP_BACKUP_DEMO.title, document: TFTP_BACKUP_DEMO },
   { id: "ntp-syslog", label: NTP_SYSLOG_DEMO.title, document: NTP_SYSLOG_DEMO },
+  ...SECURITY_DEMO_LABS,
 ] as const;
 
 export type DemoLabId = (typeof DEMO_LABS)[number]["id"];

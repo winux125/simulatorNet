@@ -252,6 +252,11 @@ function validateLayer3Switch(config: Layer3SwitchDeviceConfig, node: NodeSpec, 
       fail("unreachable-static-next-hop", `${path}.staticRoutes[${index}].nextHop`, `Next hop '${route.nextHop}' is not directly connected`);
     }
   });
+  const l3Interfaces = new Set([
+    ...config.interfaces.filter((iface) => iface.mode === "routed").map((iface) => iface.id),
+    ...config.svis.map((svi) => `Vlan${svi.vlanId}`),
+  ]);
+  validateAclConfiguration(config, l3Interfaces, path);
 }
 
 function validateRouter(config: RouterDeviceConfig, node: NodeSpec, path: string): void {
@@ -326,6 +331,79 @@ function validateRouter(config: RouterDeviceConfig, node: NodeSpec, path: string
     }
     ranges.push({ start, end, id: pool.id, index });
   });
+
+  const l3Interfaces = new Set([
+    ...config.interfaces.filter((iface) => iface.routed || iface.ipv4 !== undefined).map((iface) => iface.id),
+    ...config.subinterfaces.map((iface) => iface.id),
+  ]);
+  validateAclConfiguration(config, l3Interfaces, path);
+  requireUnique(config.natPools.map((pool) => pool.id), `${path}.natPools`, "NAT pool id");
+  requireUnique(config.natRules.map((rule) => rule.id), `${path}.natRules`, "NAT rule id");
+  requireUnique(config.natRules.map((rule) => String(rule.sequence)), `${path}.natRules`, "NAT sequence");
+  requireUnique(config.natInterfaceRoles.map((role) => role.interfaceName), `${path}.natInterfaceRoles`, "NAT interface role");
+  const poolIds = new Set(config.natPools.map((pool) => pool.id));
+  const aclIds = new Set(config.acls.map((acl) => acl.id));
+  config.natPools.forEach((pool, index) => {
+    if (ipToInt(pool.startAddress) > ipToInt(pool.endAddress)) {
+      fail("invalid-nat-pool", `${path}.natPools[${index}]`, `NAT pool '${pool.id}' start exceeds its end`);
+    }
+    if (ipToInt(pool.endAddress) - ipToInt(pool.startAddress) + 1 > 256) {
+      fail("nat-pool-limit", `${path}.natPools[${index}]`, `NAT pool '${pool.id}' exceeds 256 addresses`);
+    }
+  });
+  config.natRules.forEach((rule, index) => {
+    if (rule.kind === "dynamic" && !poolIds.has(rule.poolId)) {
+      fail("unknown-nat-pool", `${path}.natRules[${index}].poolId`, `Unknown NAT pool '${rule.poolId}'`);
+    }
+    if (rule.kind !== "static" && rule.source.kind === "acl" && !aclIds.has(rule.source.aclId)) {
+      fail("unknown-nat-acl", `${path}.natRules[${index}].source.aclId`, `Unknown NAT ACL '${rule.source.aclId}'`);
+    }
+  });
+  config.natInterfaceRoles.forEach((role, index) => {
+    if (!l3Interfaces.has(role.interfaceName)) {
+      fail("unknown-nat-interface", `${path}.natInterfaceRoles[${index}].interfaceName`, `Unknown L3 interface '${role.interfaceName}'`);
+    }
+  });
+  if (config.natRules.length > 0) {
+    const roles = new Set(config.natInterfaceRoles.map((role) => role.role));
+    if (!roles.has("inside") || !roles.has("outside")) {
+      fail("missing-nat-role", `${path}.natInterfaceRoles`, "NAT requires inside and outside interface roles");
+    }
+  }
+}
+
+function validateAclConfiguration(
+  config: Pick<RouterDeviceConfig, "acls" | "aclBindings">,
+  l3Interfaces: ReadonlySet<string>,
+  path: string,
+): void {
+  requireUnique(config.acls.map((acl) => acl.id), `${path}.acls`, "ACL id");
+  const aclIds = new Set(config.acls.map((acl) => acl.id));
+  config.acls.forEach((acl, index) => {
+    requireUnique(acl.rules.map((rule) => String(rule.sequence)), `${path}.acls[${index}].rules`, "ACL sequence");
+    if (acl.type === "extended") {
+      acl.rules.forEach((rule, ruleIndex) => {
+        [rule.sourcePort, rule.destinationPort].forEach((matcher) => {
+          if (matcher?.kind === "range" && matcher.start > matcher.end) {
+            fail("invalid-acl-port-range", `${path}.acls[${index}].rules[${ruleIndex}]`, "ACL port range start exceeds end");
+          }
+        });
+      });
+    }
+  });
+  requireUnique(
+    config.aclBindings.map((binding) => `${binding.interfaceName}\u0000${binding.direction}`),
+    `${path}.aclBindings`,
+    "ACL binding",
+  );
+  config.aclBindings.forEach((binding, index) => {
+    if (!aclIds.has(binding.aclId)) {
+      fail("unknown-acl", `${path}.aclBindings[${index}].aclId`, `Unknown ACL '${binding.aclId}'`);
+    }
+    if (!l3Interfaces.has(binding.interfaceName)) {
+      fail("unknown-acl-interface", `${path}.aclBindings[${index}].interfaceName`, `Unknown L3 interface '${binding.interfaceName}'`);
+    }
+  });
 }
 
 function validateConfiguration(config: DeviceConfig, node: NodeSpec, path: string): void {
@@ -338,8 +416,48 @@ function validateConfiguration(config: DeviceConfig, node: NodeSpec, path: strin
   if (config.kind === "firewall" || config.kind === "cloud") {
     validateRouter({ ...config, kind: "router" }, node, path);
   }
+  if (config.kind === "firewall") {
+    requireUnique(config.zones.map((zone) => zone.interfaceName), `${path}.zones`, "firewall zone interface");
+    requireUnique(config.firewallPolicies.map((policy) => policy.id), `${path}.firewallPolicies`, "firewall policy id");
+    requireUnique(
+      config.firewallPolicies.map((policy) => String(policy.sequence)),
+      `${path}.firewallPolicies`,
+      "firewall policy sequence",
+    );
+    const l3Interfaces = new Set([
+      ...config.interfaces.filter((iface) => iface.routed || iface.ipv4 !== undefined).map((iface) => iface.id),
+      ...config.subinterfaces.map((iface) => iface.id),
+    ]);
+    const zones = new Set(config.zones.map((zone) => zone.zone.toLowerCase()));
+    config.zones.forEach((zone, index) => {
+      if (!l3Interfaces.has(zone.interfaceName)) {
+        fail("unknown-firewall-interface", `${path}.zones[${index}].interfaceName`, `Unknown L3 interface '${zone.interfaceName}'`);
+      }
+    });
+    config.firewallPolicies.forEach((policy, index) => {
+      for (const [field, zone] of [["sourceZone", policy.sourceZone], ["destinationZone", policy.destinationZone]] as const) {
+        if (zone !== "*" && !zones.has(zone.toLowerCase())) {
+          fail("unknown-firewall-zone", `${path}.firewallPolicies[${index}].${field}`, `Unknown firewall zone '${zone}'`);
+        }
+      }
+      for (const matcher of [policy.sourcePort, policy.destinationPort]) {
+        if (matcher?.kind === "range" && matcher.start > matcher.end) {
+          fail("invalid-firewall-port-range", `${path}.firewallPolicies[${index}]`, "Firewall port range start exceeds end");
+        }
+      }
+    });
+  }
   if (config.kind === "cloud" && (node.interfaces.length < 2 || node.interfaces.length > 8)) {
     fail("invalid-cloud-interface-count", `${path}.interfaces`, "Cloud / ISP requires 2-8 Ethernet interfaces");
+  }
+  if (config.kind === "cloud") {
+    requireUnique(config.impairments.map((entry) => entry.interfaceName), `${path}.impairments`, "cloud impairment interface");
+    const physical = new Set(node.interfaces.map((iface) => iface.id));
+    config.impairments.forEach((entry, index) => {
+      if (!physical.has(entry.interfaceName)) {
+        fail("unknown-cloud-interface", `${path}.impairments[${index}].interfaceName`, `Unknown cloud interface '${entry.interfaceName}'`);
+      }
+    });
   }
   if (config.kind === "server") validateServer(config, node, path);
   if (config.kind === "hub") validatePhysicalInterfaces(config.interfaces, node, path);
@@ -363,6 +481,7 @@ function validateConfiguration(config: DeviceConfig, node: NodeSpec, path: strin
     if (config.dhcpEnabled && config.ipv4) {
       fail("traffic-address-mode-conflict", path, "A Traffic Generator cannot have static IPv4 and DHCP enabled together");
     }
+    requireUnique(config.flows.map((flow) => flow.id), `${path}.flows`, "traffic flow id");
   }
 }
 

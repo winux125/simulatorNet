@@ -55,11 +55,26 @@ function defaultConfiguration(node: NodeSpec): DeviceConfig {
     case "hub": return { kind: "hub", hostname, interfaces: [] };
     case "bridge": return { kind: "bridge", hostname, interfaces: [], agingTimeNs: 300_000_000_000 };
     case "l2-switch": return { kind: "l2-switch", hostname, interfaces: [], vlans: [] };
-    case "l3-switch": return { kind: "l3-switch", hostname, interfaces: [], vlans: [], svis: [], staticRoutes: [], ipRoutingEnabled: false };
-    case "router": return { kind: "router", hostname, interfaces: [], subinterfaces: [], staticRoutes: [], dhcpPools: [] };
-    case "firewall": return { kind: "firewall", hostname, interfaces: [], subinterfaces: [], staticRoutes: [], dhcpPools: [] };
-    case "cloud": return { kind: "cloud", hostname, interfaces: [], subinterfaces: [], staticRoutes: [], dhcpPools: [] };
-    case "traffic-generator": return { kind: "traffic-generator", hostname, interfaces: [], dhcpEnabled: false };
+    case "l3-switch": return {
+      kind: "l3-switch", hostname, interfaces: [], vlans: [], svis: [], staticRoutes: [],
+      ipRoutingEnabled: false, acls: [], aclBindings: [],
+    };
+    case "router": return {
+      kind: "router", hostname, interfaces: [], subinterfaces: [], staticRoutes: [], dhcpPools: [],
+      acls: [], aclBindings: [], natPools: [], natRules: [], natInterfaceRoles: [],
+    };
+    case "firewall": return {
+      kind: "firewall", hostname, interfaces: [], subinterfaces: [], staticRoutes: [], dhcpPools: [],
+      acls: [], aclBindings: [], natPools: [], natRules: [], natInterfaceRoles: [],
+      zones: [], firewallPolicies: [], defaultPolicy: "deny",
+    };
+    case "cloud": return {
+      kind: "cloud", hostname, interfaces: [], subinterfaces: [], staticRoutes: [], dhcpPools: [],
+      acls: [], aclBindings: [], natPools: [], natRules: [], natInterfaceRoles: [], impairments: [],
+    };
+    case "traffic-generator": return {
+      kind: "traffic-generator", hostname, interfaces: [], dhcpEnabled: false, flows: [],
+    };
   }
 }
 

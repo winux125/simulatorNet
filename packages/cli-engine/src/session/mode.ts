@@ -4,7 +4,8 @@ export type CliMode =
   | "privileged" // privileged EXEC: Switch#
   | "config" // global config: Switch(config)#
   | "config-if" // interface config: Switch(config-if)#
-  | "config-vlan"; // VLAN config: Switch(config-vlan)#
+  | "config-vlan" // VLAN config: Switch(config-vlan)#
+  | "config-acl"; // named IPv4 ACL config
 
 /** The prompt suffix for a mode, appended after the device hostname. */
 export function promptSuffix(mode: CliMode): string {
@@ -19,5 +20,7 @@ export function promptSuffix(mode: CliMode): string {
       return "(config-if)#";
     case "config-vlan":
       return "(config-vlan)#";
+    case "config-acl":
+      return "(config-acl)#";
   }
 }

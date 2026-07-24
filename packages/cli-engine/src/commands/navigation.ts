@@ -45,13 +45,13 @@ export const navigationCommands: CommandSpec[] = [
   },
   {
     pattern: "exit",
-    modes: ["config-if", "config-vlan"],
+    modes: ["config-if", "config-vlan", "config-acl"],
     device: "network",
     run: (s) => s.enter("config"),
   },
   {
     pattern: "end",
-    modes: ["config", "config-if", "config-vlan"],
+    modes: ["config", "config-if", "config-vlan", "config-acl"],
     device: "network",
     run: (s) => s.enter("privileged"),
   },

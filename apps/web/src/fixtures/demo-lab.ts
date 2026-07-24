@@ -74,6 +74,11 @@ export const DEMO_LAB: LabDocument = {
           leaseSeconds: 3600,
         },
       ],
+      acls: [],
+      aclBindings: [],
+      natPools: [],
+      natRules: [],
+      natInterfaceRoles: [],
     },
   },
 };

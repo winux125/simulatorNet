@@ -32,7 +32,7 @@ packages/
   db/          Node-only PostgreSQL schema, migrations and tenant repositories
   authz/       Framework-independent role and service-scope policies
 apps/
-  web/         React/Vite browser simulator (React Flow + xterm.js)
+  web/         React/Vite browser simulator (AntV X6 + xterm.js)
   verifier/    Headless Node adapter and JSON fixture CLI
   api/         Minimal internal Fastify validation/verification API
 infra/         PostgreSQL 18, Keycloak 26.7.0 and API development Compose stack
@@ -824,3 +824,71 @@ Traffic Generator SVGs (30 source symbols total). They use `currentColor`,
 contain no raster/external references and remain visual-only. Baseline
 schema-v1 device records are backward-compatible; detailed ACL/NAT/firewall,
 impairment and flow persistence is added by the following integration slice.
+
+## Milestone 10.3d — security configuration, CLI, grading and demos
+
+The M10.3 security data plane is now connected end to end. Schema-v1
+`LabDocument` configuration stores ordered ACLs and interface bindings, NAT
+pools/rules/interface roles, Firewall zones and policies, Cloud routes and
+impairments, and finite Traffic Generator flows. `lab-format` validates
+cross-references and limits, canonicalizes stable ordering, rebuilds the core,
+and serializes the current structured configuration. Old schema-v1 documents
+remain valid through defaults.
+
+Runtime evidence remains deliberately transient: ACL counters, NAT
+translations, Firewall connections, Traffic Generator results and individual
+packet-loss decisions are rebuilt and are never serialized into a lab or
+trusted from a browser submission.
+
+### CLI and device windows
+
+Router and L3 Switch expose the educational IOS-like ACL subset:
+
+```text
+access-list 10 permit 192.168.10.0 0.0.0.255
+access-list 10 deny any
+ip access-list extended WEB
+ permit tcp any host 203.0.113.10 eq 80
+ deny ip any any
+interface Gi0/0
+ ip access-group WEB in
+show access-lists
+show ip interface
+```
+
+Router and Firewall add `ip nat inside`, `ip nat outside`, static mappings,
+bounded dynamic pools, ACL-selected dynamic NAT, PAT overload,
+`show ip nat translations`, `show ip nat statistics`, and
+`clear ip nat translation *`. NAT on an L3 Switch returns a domain validation
+error rather than silently accepting unsupported configuration. Firewall uses
+its own SimulatorNet profile and does not claim Cisco ASA compatibility.
+
+Profile-specific device windows expose Router Interfaces/Routing/ACL/NAT/CLI/
+Runtime; L3 Switch Interfaces/VLANs/SVI/Routing/ACL/CLI/Runtime; Firewall
+Overview/Interfaces/Zones/Policies/NAT/Routes/Connections/CLI; Cloud
+Overview/Interfaces/Routes/Impairments; and Traffic Generator Flows/Run/
+Results. Edits go through typed worker requests and update the worker-owned
+device without rebuilding physical topology. Packet Trace adds ACL, NAT,
+Firewall, Cloud and Traffic filters for rule decisions, translations,
+stateful returns, deterministic loss and flow completion.
+
+### Server verification and focused labs
+
+`grading-core` adds `acl-rule`, `acl-binding`, `packet-permitted`,
+`packet-denied`, `nat-rule`, `nat-translation`, `firewall-rule`,
+`firewall-session`, `external-connectivity` and `traffic-flow-result`.
+Verification always rebuilds the submitted persistent document and performs
+fresh bounded actions in the server-owned engine. Hidden titles, expected
+values and diagnostics remain redacted from student results.
+
+Five explicit, non-auto-loaded examples cover Standard ACL Admin/Guest,
+Extended ACL Web Only, two-client PAT Internet Access, a stateful DMZ Firewall,
+and seeded Cloud packet loss with a Traffic Generator. Each includes an
+objective, addressing guidance, instructions, expected outcome and
+troubleshooting hints.
+
+Known M10.3 limits are no hairpin NAT, IPv6, stateful inspection beyond the
+implemented TCP/UDP/ICMP model, dynamic routing, real Internet access,
+bandwidth shaping, arbitrary grading code or vendor-image emulation. Traffic
+and security tables are intentionally bounded and reset with transient runtime
+state.

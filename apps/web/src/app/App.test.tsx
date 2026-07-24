@@ -670,7 +670,7 @@ describe("M10.2.1 Packet Tracer-style workspace", () => {
     await loadDemo(client);
     fireEvent.doubleClick(screen.getByRole("button", { name: "Select R1" }));
     let dialog = await screen.findByRole("dialog", { name: "R1 device window" });
-    for (const tab of ["Overview", "Config", "CLI", "Interfaces", "Attributes"]) {
+    for (const tab of ["Interfaces", "Routing", "ACL", "NAT", "CLI", "Runtime"]) {
       expect(within(dialog).getByRole("tab", { name: tab })).toBeTruthy();
     }
     await userEvent.click(within(dialog).getByRole("button", { name: "Close device window" }));

@@ -40,6 +40,11 @@ const packetTypes = new Set([
   "dns-query", "dns-response", "dns-service-query", "http-request", "http-response", "http-service-request",
   "tftp-rrq", "tftp-block", "tftp-complete", "tftp-service-block", "tftp-service-complete", "tftp-service-timeout",
   "ntp-query", "ntp-response", "ntp-service-query", "syslog-sent", "syslog-received",
+  "acl-evaluated", "acl-permitted", "acl-denied", "acl-implicit-deny",
+  "nat-translated", "nat-no-translation",
+  "firewall-permitted", "firewall-denied", "firewall-connection-expired",
+  "cloud-packet-dropped", "cloud-packet-delayed",
+  "traffic-flow-queued", "traffic-flow-completed",
 ]);
 
 export function BottomDock(props: BottomDockProps) {
@@ -126,7 +131,7 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
   const [filter, setFilter] = useState("ALL");
   if (events.length === 0) return <EmptyState icon={<Network size={26} />} title="No packet trace" description="ARP, ICMP and forwarding events will appear here without inventing protocol data the engine does not expose." />;
   const visible = events.filter((event) => filter === "ALL" || traceProtocol(event) === filter);
-  return <div className="dock-table-wrap"><div className="trace-filter"><label>Protocol filter <select aria-label="Packet trace protocol filter" value={filter} onChange={(event) => setFilter(event.target.value)}>{["ALL", "ARP", "ICMP", "UDP", "TCP", "DNS", "HTTP", "TFTP", "NTP", "SYSLOG"].map((protocol) => <option key={protocol}>{protocol}</option>)}</select></label><span>{visible.length} records</span></div><table className="data-table packet-table"><thead><tr><th>Time</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Ports</th><th>Event</th><th>Result</th></tr></thead><tbody>{visible.slice(-300).reverse().map((event, index) => {
+  return <div className="dock-table-wrap"><div className="trace-filter"><label>Protocol filter <select aria-label="Packet trace protocol filter" value={filter} onChange={(event) => setFilter(event.target.value)}>{["ALL", "ARP", "ICMP", "UDP", "TCP", "DNS", "HTTP", "TFTP", "NTP", "SYSLOG", "ACL", "NAT", "FIREWALL", "CLOUD", "TRAFFIC"].map((protocol) => <option key={protocol}>{protocol}</option>)}</select></label><span>{visible.length} records</span></div><table className="data-table packet-table"><thead><tr><th>Time</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Ports</th><th>Event</th><th>Result</th></tr></thead><tbody>{visible.slice(-300).reverse().map((event, index) => {
     const detail = event.detail ?? {};
     const source = String(detail.src ?? detail.sourceAddress ?? detail.localAddress ?? event.deviceId);
     const destination = String(detail.dst ?? detail.destinationAddress ?? detail.remoteAddress ?? detail.targetIp ?? "—");
@@ -134,13 +139,18 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
     const sourcePort = detail.sourcePort ?? detail.localPort;
     const destinationPort = detail.destinationPort ?? detail.remotePort;
     const ports = sourcePort === undefined && destinationPort === undefined ? "—" : `${String(sourcePort ?? "*")} → ${String(destinationPort ?? "*")}`;
-    const result = event.type.includes("success") || event.type.includes("response") || event.type.includes("received") || event.type.includes("established") ? "success" : event.type.includes("error") || event.type.includes("timeout") || event.type.includes("reset") || event.type.includes("unreachable") ? "error" : "observed";
+    const result = event.type.includes("success") || event.type.includes("response") || event.type.includes("received") || event.type.includes("established") || event.type.includes("permitted") || event.type.includes("completed") ? "success" : event.type.includes("error") || event.type.includes("timeout") || event.type.includes("reset") || event.type.includes("unreachable") || event.type.includes("denied") || event.type.includes("dropped") || event.type.includes("no-translation") ? "error" : "observed";
     return <tr key={`${event.sequence}-${index}`} data-event-type={event.type}><td><code>{timeLabel(event.virtualTime)}</code></td><td><code>{source}</code></td><td><code>{destination}</code></td><td>{protocol}</td><td><code>{ports}</code></td><td>{event.type}</td><td><span className={`trace-result trace-result--${result}`}>{result}</span></td></tr>;
   })}</tbody></table></div>;
 }
 
 function traceProtocol(event: SimulationTraceEvent): string {
   const type = event.type.toLowerCase();
+  if (type.startsWith("acl-")) return "ACL";
+  if (type.startsWith("nat-")) return "NAT";
+  if (type.startsWith("firewall-")) return "FIREWALL";
+  if (type.startsWith("cloud-")) return "CLOUD";
+  if (type.startsWith("traffic-")) return "TRAFFIC";
   if (type.includes("dns")) return "DNS";
   if (type.includes("http")) return "HTTP";
   if (type.includes("tftp")) return "TFTP";

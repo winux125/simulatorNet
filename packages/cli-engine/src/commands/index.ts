@@ -4,6 +4,7 @@ import { navigationCommands } from "./navigation";
 import { showCommands } from "./show";
 import { vlanCommands } from "./vlan";
 import { applicationCommands } from "./applications";
+import { securityCommands } from "./security";
 
 /** Every command the CLI understands, across all modes. */
 export const allCommands: CommandSpec[] = [
@@ -12,4 +13,5 @@ export const allCommands: CommandSpec[] = [
   ...vlanCommands,
   ...showCommands,
   ...applicationCommands,
+  ...securityCommands,
 ];

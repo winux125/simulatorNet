@@ -51,6 +51,31 @@ const document: LabDocument = {
         { id: "Eth0/2" },
         { id: "Eth0/3" },
       ],
+      acls: [{
+        id: "INSIDE",
+        type: "standard",
+        rules: [{ sequence: 10, action: "permit", source: { kind: "network", address: "10.0.0.0", wildcard: "0.0.0.255" } }],
+      }],
+      aclBindings: [{ interfaceName: "Eth0/0", direction: "in", aclId: "INSIDE" }],
+      natPools: [],
+      natRules: [{ id: "WEB-STATIC", sequence: 10, kind: "static", insideLocal: "10.0.0.10", insideGlobal: "203.0.113.10" }],
+      natInterfaceRoles: [
+        { interfaceName: "Eth0/0", role: "inside" },
+        { interfaceName: "Eth0/1", role: "outside" },
+      ],
+      zones: [
+        { interfaceName: "Eth0/0", zone: "inside" },
+        { interfaceName: "Eth0/1", zone: "outside" },
+      ],
+      firewallPolicies: [{
+        id: "inside-out",
+        sequence: 10,
+        sourceZone: "inside",
+        destinationZone: "outside",
+        action: "permit",
+        protocol: "ip",
+      }],
+      defaultPolicy: "deny",
     },
     isp: {
       kind: "cloud",
@@ -61,11 +86,24 @@ const document: LabDocument = {
         { id: "Eth0/2" },
         { id: "Eth0/3" },
       ],
+      impairments: [{
+        interfaceName: "Eth0/1",
+        additionalLatencyNs: 1_000,
+        packetLossRate: 0.1,
+        note: "Deterministic provider impairment",
+      }],
     },
     tg: {
       kind: "traffic-generator",
       hostname: "TG1",
       ipv4: { address: "10.0.0.10", prefixLength: 24, defaultGateway: "10.0.0.1" },
+      flows: [{
+        id: "ping",
+        protocol: "icmp",
+        destination: "10.0.0.1",
+        count: 1,
+        intervalNs: 0,
+      }],
     },
   },
 };
@@ -85,29 +123,28 @@ describe("M10.3 security/infrastructure devices", () => {
     expect(canonicalizeLabDocument(serialized)).toEqual(canonical);
   });
 
-  it("never serializes runtime sessions, impairments, flow results, or packet-loss decisions", () => {
+  it("persists structured security/tool configuration but excludes transient runtime", () => {
     const built = buildLabFromDocument(canonicalizeLabDocument(document));
-    built.getFirewall("fw")?.definePolicy({
-      id: "inside-out",
-      sequence: 10,
-      sourceZone: "inside",
-      destinationZone: "outside",
-      action: "permit",
-      protocol: "ip",
+    built.getTrafficGenerator("tg")?.startFlow("ping");
+    built.engine.runUntilIdle();
+    expect(built.getTrafficGenerator("tg")?.flowResults()).not.toHaveLength(0);
+
+    const serialized = serializeLabDocument(built, { id: "security-devices", title: "Security devices" });
+    expect(serialized.configurations.fw).toMatchObject({
+      kind: "firewall",
+      acls: [{ id: "INSIDE" }],
+      natRules: [{ id: "WEB-STATIC" }],
+      firewallPolicies: [{ id: "inside-out" }],
     });
-    built.getCloud("isp")?.configureImpairment({
-      interfaceName: "Eth0/1",
-      additionalLatencyNs: 1_000,
-      packetLossRate: 0.1,
+    expect(serialized.configurations.isp).toMatchObject({
+      kind: "cloud",
+      impairments: [{ interfaceName: "Eth0/1", packetLossRate: 0.1 }],
     });
-    built.getTrafficGenerator("tg")?.configureFlow({
-      id: "ping",
-      protocol: "icmp",
-      destination: "10.0.0.1",
-      count: 1,
-      intervalNs: 0,
+    expect(serialized.configurations.tg).toMatchObject({
+      kind: "traffic-generator",
+      flows: [{ id: "ping" }],
     });
-    const json = JSON.stringify(serializeLabDocument(built, { id: "security-devices", title: "Security devices" }));
-    expect(json).not.toMatch(/inside-out|packetLossRate|traffic-flow|flowId|connectionTable|packet-loss/i);
+    const json = JSON.stringify(serialized);
+    expect(json).not.toMatch(/aclCounters|natTranslations|connectionTable|trafficResults|packet-loss-decision/i);
   });
 });

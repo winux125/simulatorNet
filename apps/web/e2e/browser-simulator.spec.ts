@@ -5,6 +5,12 @@ async function chooseDemo(page: import("@playwright/test").Page, name: RegExp) {
   await page.getByRole("button", { name }).click();
 }
 
+async function loadDemoFromMenu(page: import("@playwright/test").Page, name: RegExp) {
+  await page.getByRole("menuitem", { name: "File", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Load Demo Lab", exact: true }).click();
+  await page.getByRole("button", { name }).click();
+}
+
 async function closeInspector(page: import("@playwright/test").Page) {
   const openInspector = page.getByRole("region", { name: "Inspector" });
   if (await openInspector.isVisible()) {
@@ -412,6 +418,90 @@ test("security and infrastructure devices build with every visual profile", asyn
     path: "/tmp/m10-3c-security-infrastructure-1440x900.png",
     animations: "disabled",
   });
+});
+
+test("M10.3d ACL NAT Firewall and Traffic Generator workflows", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+
+  await chooseDemo(page, /Standard ACL: Admin and Guest/);
+  await chooseTheme(page, "Light");
+  await openCli(page, "ADMIN");
+  await runCli(page, "ping 172.16.0.10");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Success rate is 100 percent");
+  await openCli(page, "GUEST");
+  await runCli(page, "ping 172.16.0.10");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Success rate is 0 percent");
+  await openCli(page, "R1");
+  await runCli(page, "show access-lists");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Standard IP access list 10");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("matches");
+  await page.getByRole("tab", { name: /Packet trace/ }).click();
+  await page.getByLabel("Packet trace protocol filter").selectOption("ACL");
+  await expect(page.locator('tr[data-event-type^="acl-"]').first()).toBeVisible();
+
+  await loadDemoFromMenu(page, /PAT Internet Access/);
+  await openCli(page, "PC1");
+  await runCli(page, "ping 203.0.113.10");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Success rate is 100 percent");
+  await openCli(page, "R1");
+  await runCli(page, "show ip nat translations");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Inside global");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("10.0.0.10");
+  await page.getByRole("tab", { name: /Packet trace/ }).click();
+  await page.getByLabel("Packet trace protocol filter").selectOption("NAT");
+  await expect(page.locator('tr[data-event-type="nat-translated"]').first()).toBeVisible();
+
+  await loadDemoFromMenu(page, /DMZ Stateful Firewall/);
+  await closeInspector(page);
+  await page.getByRole("button", { name: "Select FW1" }).dblclick();
+  const firewallWindow = page.getByRole("dialog", { name: "FW1 device window" });
+  for (const tab of ["Overview", "Interfaces", "Zones", "Policies", "NAT", "Routes", "Connections", "CLI"]) {
+    await expect(firewallWindow.getByRole("tab", { name: tab, exact: true })).toBeVisible();
+  }
+  await firewallWindow.getByRole("tab", { name: "Policies", exact: true }).click();
+  await expect(firewallWindow.getByRole("heading", { name: "Firewall Policies" })).toBeVisible();
+  await expect(firewallWindow.getByLabel("Firewall Policies JSON")).toContainText("inside-out");
+  await page.screenshot({
+    path: "/tmp/m10-3d-firewall-light-1440x900.png",
+    animations: "disabled",
+  });
+  await firewallWindow.getByRole("button", { name: "Close device window" }).click();
+  await openCli(page, "INSIDE");
+  await runCli(page, "ping 203.0.113.10");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Success rate is 100 percent");
+  await closeInspector(page);
+  await page.getByRole("button", { name: "Select FW1" }).dblclick();
+  const connectionWindow = page.getByRole("dialog", { name: "FW1 device window" });
+  await connectionWindow.getByRole("tab", { name: "Connections", exact: true }).click();
+  await expect(connectionWindow.getByText("inside", { exact: false })).toBeVisible();
+  await connectionWindow.getByRole("button", { name: "Close device window" }).click();
+
+  await loadDemoFromMenu(page, /Packet Loss Troubleshooting/);
+  await chooseTheme(page, "Dark");
+  await closeInspector(page);
+  await page.getByRole("button", { name: "Select TG1" }).dblclick();
+  const trafficWindow = page.getByRole("dialog", { name: "TG1 device window" });
+  for (const tab of ["Flows", "Run", "Results"]) {
+    await expect(trafficWindow.getByRole("tab", { name: tab, exact: true })).toBeVisible();
+  }
+  await trafficWindow.getByRole("tab", { name: "Run", exact: true }).click();
+  await trafficWindow.getByRole("button", { name: "Run", exact: true }).click();
+  await trafficWindow.getByRole("tab", { name: "Results", exact: true }).click();
+  await expect(trafficWindow.getByText("WAN-ICMP", { exact: false })).toBeVisible();
+  await expect(trafficWindow.getByText("completed", { exact: false })).toBeVisible();
+  await page.screenshot({
+    path: "/tmp/m10-3d-traffic-dark-1440x900.png",
+    animations: "disabled",
+  });
+  await trafficWindow.getByRole("button", { name: "Close device window" }).click();
+  await page.getByRole("tab", { name: /Packet trace/ }).click();
+  await page.getByLabel("Packet trace protocol filter").selectOption("CLOUD");
+  await expect(page.locator('tr[data-event-type^="cloud-"]').first()).toBeVisible();
+  await page.getByLabel("Packet trace protocol filter").selectOption("TRAFFIC");
+  await expect(page.locator('tr[data-event-type="traffic-flow-completed"]').first()).toBeVisible();
+  await expect(page.getByText(/Unknown device/)).toHaveCount(0);
 });
 
 test("two draft-configured PCs ping through an L2 switch after Start Lab", async ({ page }) => {

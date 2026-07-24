@@ -14,6 +14,7 @@ network CLI and Packet Tracer-style host tools.
 | --- | --- | --- | --- |
 | Router | IOS-like router | `R1>`, `R1#`, `R1(config)#`, `R1(config-if)#` | IPv4 interfaces, subinterfaces, static routes, DHCP server, show/ping |
 | L3 Switch | IOS-like multilayer switch | `DSW1>`, `DSW1#`, `DSW1(config)#`, `DSW1(config-if)#` | L2 VLAN/trunk commands, SVIs, routed ports, static routes |
+| Firewall | SimulatorNet firewall | `FW1>`, `FW1#`, `FW1(config)#`, `FW1(config-if)#` | Routed interfaces, ACL, NAT/PAT and deterministic diagnostics; not an ASA profile |
 | L2 Switch | IOS-like switch | `SW1>`, `SW1#`, `SW1(config)#`, `SW1(config-if)#` | VLANs, access/trunk ports, MAC learning |
 | Bridge | Managed bridge subset | `BR1>`, `BR1#`, `BR1(config-if)#` | Interface state/description and MAC table |
 | PC | Windows-like host | `C:\>` | `ipconfig`, `ping`, `tracert`, `arp -a`, `nslookup`, `netstat` |
@@ -59,6 +60,9 @@ same deterministic end-host stack.
 | `show mac address-table` | No | Yes | Yes | Yes |
 | `show arp` | Yes | Yes | No | No |
 | `ping` | Yes | Yes | No | No |
+| standard/extended IPv4 ACL configuration | Yes | Yes | No | No |
+| `ip access-group`, `show access-lists`, `show ip interface` | Yes | Yes | No | No |
+| NAT/PAT configuration and show commands | Yes | No | No | No |
 
 ## Consolidated compatibility matrix
 
@@ -112,11 +116,56 @@ Server adds `sim show services`, `sim show dns`, `sim show http`,
 `sim show tftp`, and `sim show syslog`. The PC/Server Desktop tools call these
 same deterministic commands through the worker adapter.
 
+Firewall accepts the Router security command shapes through its distinct
+SimulatorNet firewall profile. L3 Switch accepts ACLs on routed ports and SVIs,
+but rejects NAT with a direct domain error.
+
+## IPv4 ACL and NAT/PAT subset
+
+```text
+access-list 10 permit 192.168.10.0 0.0.0.255
+access-list 10 deny any
+access-list 100 permit tcp 192.168.10.0 0.0.0.255 any eq 80
+
+ip access-list standard USERS
+ permit 192.168.10.0 0.0.0.255
+ deny any
+
+ip access-list extended WEB
+ permit tcp any host 203.0.113.10 eq 80
+ deny ip any any
+
+interface Gi0/0
+ ip access-group USERS in
+ ip nat inside
+
+interface Gi0/1
+ ip nat outside
+
+ip nat inside source static 192.168.10.10 203.0.113.10
+ip nat pool PUBLIC 203.0.113.100 203.0.113.110 netmask 255.255.255.0
+ip nat inside source list 10 pool PUBLIC
+ip nat inside source list 10 interface Gi0/1 overload
+
+show access-lists
+show ip interface
+show ip nat translations
+show ip nat statistics
+clear ip nat translation *
+```
+
+ACL matching is ordered and first-match with an implicit deny. The policy
+engine supports IPv4, ICMP, TCP/UDP and bounded `eq`/`range` port matches; the
+current CLI creation subset exposes `eq`, while structured configuration may
+use either matcher. NAT supports static one-to-one, bounded dynamic pools and
+PAT; it does not support hairpin NAT.
+
 ## Deliberate omissions
 
 The following familiar IOS operations are not implemented and are omitted from
 contextual help: startup configuration, `copy`, `write`, `erase`, `reload`,
 `no ip address`, `no ip route`, dynamic routing, STP/RSTP, EtherChannel, CDP,
-LLDP, port security, ACLs, NAT and IPv6. There is no Tab completion, fuzzy
-matching, network-device `traceroute`, arbitrary command scripting, real
-DNS/network access or full Cisco contextual-help parity.
+LLDP, port security, reflexive/time-based ACLs, NAT hairpinning and IPv6. There
+is no Tab completion, fuzzy matching, network-device `traceroute`, arbitrary
+command scripting, real DNS/network access or full Cisco contextual-help
+parity.

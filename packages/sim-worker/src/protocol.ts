@@ -4,6 +4,7 @@ import type {
   HostIpConfiguration,
   HostStaticConfiguration,
   LabDocument,
+  DeviceConfig,
   ServerServiceConfig,
 } from "@sim/contracts";
 import type { CliMode } from "@sim/cli-engine";
@@ -16,6 +17,10 @@ import type {
   TcpConnectionInspection,
   TftpClientResult,
   UdpSocketInspection,
+  AclCounter,
+  FirewallConnection,
+  NatTranslation,
+  TrafficFlowResult,
 } from "@sim/sim-core";
 export type { ServerServiceRuntimeSnapshot } from "@sim/sim-core";
 
@@ -204,6 +209,23 @@ export interface HostNetworkStatus {
   guidance?: string;
 }
 
+export type SecurityDeviceConfiguration = Extract<
+  DeviceConfig,
+  { kind: "router" | "l3-switch" | "firewall" | "cloud" | "traffic-generator" }
+>;
+
+export interface SecurityConfigurationView {
+  deviceId: string;
+  configuration: SecurityDeviceConfiguration;
+  document: LabDocument;
+  runtime: {
+    aclCounters: AclCounter[];
+    natTranslations: NatTranslation[];
+    firewallConnections: FirewallConnection[];
+    trafficResults: TrafficFlowResult[];
+  };
+}
+
 export type SimWorkerRequest =
   | { type: "INITIALIZE_LAB"; requestId: string; document: LabDocument }
   | { type: "REBUILD_LAB"; requestId: string; document: LabDocument }
@@ -229,6 +251,10 @@ export type SimWorkerRequest =
   | { type: "DISABLE_SERVER_SERVICE"; requestId: string; deviceId: string; serviceId: string }
   | { type: "GET_SERVER_SERVICE_RUNTIME"; requestId: string; deviceId: string }
   | { type: "CLEAR_SYSLOG_RUNTIME"; requestId: string; deviceId: string }
+  | { type: "GET_SECURITY_CONFIGURATION"; requestId: string; deviceId: string }
+  | { type: "SET_SECURITY_CONFIGURATION"; requestId: string; deviceId: string; configuration: SecurityDeviceConfiguration }
+  | { type: "RUN_TRAFFIC_FLOW"; requestId: string; deviceId: string; flowId: string }
+  | { type: "CLEAR_SECURITY_RUNTIME"; requestId: string; deviceId: string }
   | { type: "SERIALIZE_LAB"; requestId: string };
 
 export type SimWorkerPayload =
@@ -240,6 +266,7 @@ export type SimWorkerPayload =
   | HostNetworkStatus
   | ServerServicesView
   | ServerServiceRuntimeSnapshot
+  | SecurityConfigurationView
   | LabDocument
   | { closed: boolean }
   | { paused: boolean; snapshot: LabUiSnapshot };
@@ -289,6 +316,10 @@ export interface SimWorkerPayloadByType {
   DISABLE_SERVER_SERVICE: ServerServicesView;
   GET_SERVER_SERVICE_RUNTIME: ServerServiceRuntimeSnapshot;
   CLEAR_SYSLOG_RUNTIME: ServerServiceRuntimeSnapshot;
+  GET_SECURITY_CONFIGURATION: SecurityConfigurationView;
+  SET_SECURITY_CONFIGURATION: SecurityConfigurationView;
+  RUN_TRAFFIC_FLOW: SecurityConfigurationView;
+  CLEAR_SECURITY_RUNTIME: SecurityConfigurationView;
   SERIALIZE_LAB: LabDocument;
 }
 

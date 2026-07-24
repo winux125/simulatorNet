@@ -156,6 +156,95 @@ export const TcpListenerGradingCheckSchema = CheckIdentitySchema.extend({
   }),
 });
 
+export const AclRuleGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("acl-rule"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    aclId: z.string().min(1),
+    sequence: z.number().int().nonnegative(),
+    expectedAction: z.enum(["permit", "deny"]),
+  }),
+});
+
+export const AclBindingGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("acl-binding"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    interfaceId: z.string().min(1),
+    direction: z.enum(["in", "out"]),
+    aclId: z.string().min(1),
+  }),
+});
+
+const PacketPolicyActionSchema = z.object({
+  sourceDeviceId: z.string().min(1),
+  destinationIp: Ipv4Schema,
+});
+
+export const PacketPermittedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("packet-permitted"),
+  configuration: PacketPolicyActionSchema,
+});
+
+export const PacketDeniedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("packet-denied"),
+  configuration: PacketPolicyActionSchema,
+});
+
+export const NatRuleGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("nat-rule"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    ruleId: z.string().min(1),
+    expectedKind: z.enum(["static", "dynamic", "pat"]),
+  }),
+});
+
+export const NatTranslationGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("nat-translation"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    sourceDeviceId: z.string().min(1),
+    destinationIp: Ipv4Schema,
+    expectedInsideGlobalAddress: Ipv4Schema.optional(),
+  }),
+});
+
+export const FirewallRuleGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("firewall-rule"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    ruleId: z.string().min(1),
+    expectedAction: z.enum(["permit", "deny"]),
+  }),
+});
+
+export const FirewallSessionGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("firewall-session"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    sourceDeviceId: z.string().min(1),
+    destinationIp: Ipv4Schema,
+  }),
+});
+
+export const ExternalConnectivityGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("external-connectivity"),
+  configuration: PacketPolicyActionSchema.extend({
+    expected: z.enum(["success", "failure"]).default("success"),
+  }),
+});
+
+export const TrafficFlowResultGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("traffic-flow-result"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    flowId: z.string().min(1),
+    minimumReceived: z.number().int().nonnegative().default(1),
+    maximumDropped: z.number().int().nonnegative().optional(),
+  }),
+});
+
 export const GradingCheckSchema = z.discriminatedUnion("type", [
   PingGradingCheckSchema,
   InterfaceStateGradingCheckSchema,
@@ -174,6 +263,16 @@ export const GradingCheckSchema = z.discriminatedUnion("type", [
   NtpResponseGradingCheckSchema,
   SyslogReceivedGradingCheckSchema,
   TcpListenerGradingCheckSchema,
+  AclRuleGradingCheckSchema,
+  AclBindingGradingCheckSchema,
+  PacketPermittedGradingCheckSchema,
+  PacketDeniedGradingCheckSchema,
+  NatRuleGradingCheckSchema,
+  NatTranslationGradingCheckSchema,
+  FirewallRuleGradingCheckSchema,
+  FirewallSessionGradingCheckSchema,
+  ExternalConnectivityGradingCheckSchema,
+  TrafficFlowResultGradingCheckSchema,
 ]);
 export type GradingCheck = z.infer<typeof GradingCheckSchema>;
 

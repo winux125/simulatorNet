@@ -49,6 +49,10 @@ export class IspCloud extends Router {
       .map((configuration) => ({ ...configuration }));
   }
 
+  clearImpairments(): void {
+    this.impairments.clear();
+  }
+
   validateInterfaceCount(): void {
     if (this.interfaces.size < CLOUD_RESOURCE_LIMITS.minimumInterfaces
       || this.interfaces.size > CLOUD_RESOURCE_LIMITS.maximumInterfaces) {

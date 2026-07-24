@@ -1,7 +1,9 @@
 import { createCliSession, type CliSession } from "@sim/cli-engine";
 import {
   HostStaticConfigurationSchema,
+  DeviceConfigSchema,
   ServerServiceConfigSchema,
+  type DeviceConfig,
   type HostIpConfiguration,
   type LabDocument,
   type LabMetadata,
@@ -26,6 +28,9 @@ import {
   Router,
   Server,
   TrafficGenerator,
+  Firewall,
+  IspCloud,
+  type Device,
   type TraceEntry,
 } from "@sim/sim-core";
 import { SimulationWorkerError, serializeWorkerError } from "./errors";
@@ -45,6 +50,8 @@ import type {
   SimulationRunResult,
   SimulationTraceEvent,
   ServerServicesView,
+  SecurityConfigurationView,
+  SecurityDeviceConfiguration,
 } from "./protocol";
 
 interface CliSessionEntry {
@@ -154,6 +161,14 @@ export class SimulationWorkerRuntime {
         server.services.clearSyslog();
         return server.serviceRuntimeSnapshot();
       }
+      case "GET_SECURITY_CONFIGURATION":
+        return this.securityConfiguration(requireString(request, "deviceId"));
+      case "SET_SECURITY_CONFIGURATION":
+        return this.setSecurityConfiguration(requireString(request, "deviceId"), request.configuration);
+      case "RUN_TRAFFIC_FLOW":
+        return this.runTrafficFlow(requireString(request, "deviceId"), requireString(request, "flowId"));
+      case "CLEAR_SECURITY_RUNTIME":
+        return this.clearSecurityRuntime(requireString(request, "deviceId"));
       case "SERIALIZE_LAB":
         return this.serialize();
       default:
@@ -316,6 +331,74 @@ export class SimulationWorkerRuntime {
     const document = serializeLabDocument(built, this.metadata);
     this.document = document;
     return document;
+  }
+
+  private securityConfiguration(deviceId: string): SecurityConfigurationView {
+    const built = this.requireBuiltLab();
+    const device = built.getDevice(deviceId);
+    if (!device) throw new SimulationWorkerError("unknown-device", `Unknown device '${deviceId}'`);
+    const document = this.serialize();
+    const configuration = document.configurations[deviceId];
+    if (!configuration || !isSecurityConfiguration(configuration)) {
+      throw new SimulationWorkerError("security-not-supported", `Device '${deviceId}' has no security/tool configuration`);
+    }
+    return {
+      deviceId,
+      configuration,
+      document,
+      runtime: {
+        aclCounters: device instanceof Router || device instanceof Layer3Switch ? device.aclCounters() : [],
+        natTranslations: device instanceof Router ? device.natTranslations() : [],
+        firewallConnections: device instanceof Firewall ? device.connectionTable() : [],
+        trafficResults: device instanceof TrafficGenerator ? device.flowResults() : [],
+      },
+    };
+  }
+
+  private setSecurityConfiguration(deviceId: string, input: unknown): SecurityConfigurationView {
+    const parsed = DeviceConfigSchema.safeParse(input);
+    if (!parsed.success || !isSecurityConfiguration(parsed.data)) {
+      throw new SimulationWorkerError("invalid-security-configuration", "Security/tool configuration validation failed");
+    }
+    const device = this.requireBuiltLab().getDevice(deviceId);
+    if (!device) throw new SimulationWorkerError("unknown-device", `Unknown device '${deviceId}'`);
+    if (device.deviceType !== parsed.data.kind) {
+      throw new SimulationWorkerError(
+        "configuration-type-mismatch",
+        `Configuration kind '${parsed.data.kind}' does not match '${device.deviceType}'`,
+      );
+    }
+    replaceSecurityConfiguration(device, parsed.data);
+    this.emitStateChanged();
+    this.flushTrace();
+    return this.securityConfiguration(deviceId);
+  }
+
+  private runTrafficFlow(deviceId: string, flowId: string): SecurityConfigurationView {
+    const device = this.requireBuiltLab().getDevice(deviceId);
+    if (!(device instanceof TrafficGenerator)) {
+      throw new SimulationWorkerError("traffic-generator-required", `Device '${deviceId}' is not a Traffic Generator`);
+    }
+    device.startFlow(flowId);
+    if (this.executionMode === "auto") this.runUntilIdle();
+    else {
+      this.emitStateChanged();
+      this.flushTrace();
+    }
+    return this.securityConfiguration(deviceId);
+  }
+
+  private clearSecurityRuntime(deviceId: string): SecurityConfigurationView {
+    const device = this.requireBuiltLab().getDevice(deviceId);
+    if (!device) throw new SimulationWorkerError("unknown-device", `Unknown device '${deviceId}'`);
+    if (device instanceof Firewall) device.resetSecurityRuntime();
+    else {
+      if (device instanceof Router || device instanceof Layer3Switch) device.resetAclCounters();
+      if (device instanceof Router) device.resetNatRuntime();
+      if (device instanceof TrafficGenerator) device.resetFlowRuntime();
+    }
+    this.emitStateChanged();
+    return this.securityConfiguration(deviceId);
   }
 
   private snapshot(): LabUiSnapshot {
@@ -808,6 +891,63 @@ export class SimulationWorkerRuntime {
   private requireBuiltLab(): BuiltLab {
     if (!this.builtLab) throw new SimulationWorkerError("lab-not-initialized", "Initialize a lab first");
     return this.builtLab;
+  }
+}
+
+function isSecurityConfiguration(config: DeviceConfig): config is SecurityDeviceConfiguration {
+  return config.kind === "router"
+    || config.kind === "l3-switch"
+    || config.kind === "firewall"
+    || config.kind === "cloud"
+    || config.kind === "traffic-generator";
+}
+
+function replaceAclConfiguration(
+  device: Router | Layer3Switch,
+  config: Extract<SecurityDeviceConfiguration, { kind: "router" | "l3-switch" | "firewall" | "cloud" }>,
+): void {
+  for (const acl of device.aclConfigurations()) device.removeAcl(acl.id);
+  for (const acl of config.acls) device.defineAcl(acl);
+  for (const binding of config.aclBindings) {
+    device.applyAcl(binding.interfaceName, binding.direction, binding.aclId);
+  }
+}
+
+function replaceSecurityConfiguration(device: Device, config: SecurityDeviceConfiguration): void {
+  if (device instanceof TrafficGenerator && config.kind === "traffic-generator") {
+    for (const flow of device.flowConfigurations()) device.removeFlow(flow.id);
+    device.resetFlowRuntime();
+    for (const flow of config.flows) device.configureFlow(flow);
+    return;
+  }
+  if (device instanceof Layer3Switch && config.kind === "l3-switch") {
+    replaceAclConfiguration(device, config);
+    return;
+  }
+  if (!(device instanceof Router)
+    || (config.kind !== "router" && config.kind !== "firewall" && config.kind !== "cloud")) {
+    throw new SimulationWorkerError("security-not-supported", `Device '${device.id}' has no routed security configuration`);
+  }
+
+  replaceAclConfiguration(device, config);
+  for (const rule of device.natRuleConfigurations()) device.removeNatRule(rule.id);
+  for (const pool of device.natPoolConfigurations()) device.removeNatPool(pool.id);
+  for (const iface of device.interfaceSummaries()) device.setNatRole(iface.name, undefined);
+  for (const pool of config.natPools) device.defineNatPool(pool);
+  for (const role of config.natInterfaceRoles) device.setNatRole(role.interfaceName, role.role);
+  for (const rule of config.natRules) device.defineNatRule(rule);
+
+  if (device instanceof Firewall && config.kind === "firewall") {
+    for (const policy of device.policyConfigurations()) device.removePolicy(policy.id);
+    for (const zone of device.zoneConfigurations()) device.removeZone(zone.interfaceName);
+    device.resetSecurityRuntime();
+    for (const zone of config.zones) device.setZone(zone.interfaceName, zone.zone);
+    for (const policy of config.firewallPolicies) device.definePolicy(policy);
+    device.setDefaultPolicy(config.defaultPolicy);
+  }
+  if (device instanceof IspCloud && config.kind === "cloud") {
+    device.clearImpairments();
+    for (const impairment of config.impairments) device.configureImpairment(impairment);
   }
 }
 
