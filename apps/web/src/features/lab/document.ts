@@ -1,5 +1,6 @@
 import {
   getDeviceProfile,
+  type ConsoleAccessConfiguration,
   type DeviceConfig,
   type DeviceType,
   type DiagramAnnotation,
@@ -11,6 +12,34 @@ import {
   type NodeSpec,
 } from "@sim/contracts";
 import { canonicalizeLabDocument, parseLabDocument } from "@sim/lab-format";
+
+/** Device kinds that expose a simulated login console. */
+export const CONSOLE_CAPABLE_KINDS = new Set<DeviceType>([
+  "router", "l2-switch", "l3-switch", "firewall", "bridge", "server",
+]);
+
+/** Read the console-access configuration for a device, if any. */
+export function consoleAccessOf(document: LabDocument, nodeId: string): ConsoleAccessConfiguration | undefined {
+  const config = document.configurations[nodeId];
+  return config && "consoleAccess" in config ? config.consoleAccess : undefined;
+}
+
+/** Set (or clear) console access on a console-capable device in the draft. */
+export function withConsoleAccess(
+  document: LabDocument,
+  nodeId: string,
+  access: ConsoleAccessConfiguration | undefined,
+): LabDocument {
+  const config = document.configurations[nodeId];
+  if (!config || !CONSOLE_CAPABLE_KINDS.has(config.kind)) return document;
+  return {
+    ...document,
+    configurations: {
+      ...document.configurations,
+      [nodeId]: { ...config, consoleAccess: access } as DeviceConfig,
+    },
+  };
+}
 
 export function loadLabDocumentText(text: string): LabDocument {
   return canonicalizeLabDocument(parseLabDocument(text));

@@ -12,6 +12,8 @@ import { DeviceIcon } from "../../components/DeviceIcon";
 import { Button, IconButton } from "../../ui";
 import { ServerServicesPanel } from "../inspector/ServerServicesPanel";
 import { TerminalWorkspace } from "../terminal/TerminalPanel";
+import { CONSOLE_CAPABLE_KINDS, consoleAccessOf } from "../lab/document";
+import { ConsoleAccessPanel } from "./ConsoleAccessPanel";
 import { HostIpConfigurationPanel } from "./HostIpConfigurationPanel";
 import {
   SecurityConfigurationPanel,
@@ -19,7 +21,7 @@ import {
 } from "./SecurityConfigurationPanel";
 
 type DeviceWindowTab =
-  | "overview" | "desktop" | "config" | "services" | "terminal" | "interfaces" | "attributes"
+  | "overview" | "desktop" | "config" | "console" | "services" | "terminal" | "interfaces" | "attributes"
   | "routing" | "routes" | "vlans" | "svis" | "acl" | "nat" | "runtime"
   | "zones" | "policies" | "connections" | "impairments" | "flows" | "run" | "results";
 type DesktopTool = "ip" | "command" | "web" | "tftp" | "ntp" | "syslog" | "transport";
@@ -41,6 +43,7 @@ export function DeviceWindow(props: DeviceWindowProps) {
   const isServer = props.node.type === "server";
   const isPc = props.node.type === "pc";
   const tabs = useMemo<Array<{ id: DeviceWindowTab; label: string }>>(() => {
+    const base = ((): Array<{ id: DeviceWindowTab; label: string }> => {
     if (isServer) return [
       { id: "config", label: "Config" },
       { id: "services", label: "Services" },
@@ -99,6 +102,10 @@ export function DeviceWindow(props: DeviceWindowProps) {
       { id: "interfaces", label: "Interfaces" },
       { id: "attributes", label: "Attributes" },
     ];
+    })();
+    return CONSOLE_CAPABLE_KINDS.has(props.node.type)
+      ? [...base, { id: "console" as const, label: "Console Access" }]
+      : base;
   }, [isPc, isServer, profile.cliProfile, props.node.type]);
   const [tab, setTab] = useState<DeviceWindowTab>(tabs[0]!.id);
 
@@ -132,6 +139,12 @@ export function DeviceWindow(props: DeviceWindowProps) {
             onError={props.onError}
           />}
           {tab === "config" && <StructuredConfiguration document={props.document} node={props.node} />}
+          {tab === "console" && <ConsoleAccessPanel
+            document={props.document}
+            node={props.node}
+            onConfigurationChanged={props.onConfigurationChanged}
+            onError={props.onError}
+          />}
           {tab === "services" && (props.runtimeAvailable
             ? <ServerServicesPanel client={props.client} deviceId={props.node.id} refreshKey={props.node.interfaces.length} onError={props.onError} />
             : <DraftRuntimeNotice />)}
@@ -143,6 +156,7 @@ export function DeviceWindow(props: DeviceWindowProps) {
             mode="simulate"
             theme={props.theme}
             sessionNamespace="device-window"
+            consoleAccessFor={(id) => consoleAccessOf(props.document, id)}
             onActivate={() => undefined}
             onClose={props.onClose}
             onError={props.onError}

@@ -1,4 +1,6 @@
+import type { ConsoleAccessConfiguration } from "@sim/contracts";
 import type { CliExecutionResult, LabUiNode } from "@sim/sim-worker";
+import { ConsoleAuthSession } from "@sim/console-auth";
 import { Clipboard, Eraser, TerminalSquare, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Terminal as XtermTerminal } from "@xterm/xterm";
@@ -18,6 +20,8 @@ interface TerminalWorkspaceProps {
   mode: WorkspaceMode;
   theme: ResolvedTheme;
   sessionNamespace?: string;
+  /** Simulated console-access config for a device, if it requires a login. */
+  consoleAccessFor?(deviceId: string): ConsoleAccessConfiguration | undefined;
   onActivate(deviceId: string): void;
   onClose(deviceId: string): void;
   onError(message: string): void;
@@ -65,6 +69,7 @@ export function TerminalWorkspace(props: TerminalWorkspaceProps) {
               enabled={props.mode === "simulate" && node !== undefined}
               theme={props.theme}
               sessionNamespace={props.sessionNamespace ?? "terminal"}
+              consoleAccess={props.consoleAccessFor?.(deviceId)}
               onError={props.onError}
             />
           );
@@ -82,6 +87,7 @@ interface TerminalSessionProps {
   enabled: boolean;
   theme: ResolvedTheme;
   sessionNamespace: string;
+  consoleAccess?: ConsoleAccessConfiguration;
   onError(message: string): void;
 }
 
@@ -96,7 +102,7 @@ function terminalTheme() {
   };
 }
 
-function TerminalSession({ client, deviceId, hostname, active, enabled, theme, sessionNamespace, onError }: TerminalSessionProps) {
+function TerminalSession({ client, deviceId, hostname, active, enabled, theme, sessionNamespace, consoleAccess, onError }: TerminalSessionProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XtermTerminal | undefined>(undefined);
   const fitRef = useRef<XtermFitAddon | undefined>(undefined);
@@ -104,6 +110,9 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
   const clearRef = useRef<() => void>(() => undefined);
   const enabledRef = useRef(enabled);
   const activeRef = useRef(active);
+  // Captured at mount: reopening the terminal starts a fresh login.
+  const consoleAccessRef = useRef(consoleAccess);
+  consoleAccessRef.current = consoleAccess;
   const [transcript, setTranscript] = useState("");
   const [ready, setReady] = useState(false);
 
@@ -191,6 +200,31 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
         }).catch((error: unknown) => onError(error instanceof Error ? error.message : "CLI request failed"));
       };
 
+      // --- Console login gate: async credential check in front of the worker CLI.
+      // Commands never reach the CLI parser until authentication succeeds; the
+      // gate handles the enable secret and drives the device prompt afterwards.
+      const access = consoleAccessRef.current;
+      let forwardAfterGate: string | undefined;
+      const gate = access && access.mode !== "none"
+        ? new ConsoleAuthSession(access, { execute: (line) => { forwardAfterGate = line; return ""; } })
+        : undefined;
+      const writeGate = (text: string) => { if (text) terminal.write(`${terminalText(text)}\r\n`); };
+      const syncDevicePrompt = (privileged: boolean) => execute(privileged ? "enable" : "", true);
+      const isPrivileged = () => (gate!.state as string) === "privileged-exec";
+      const submitGate = (line: string) => {
+        if (!gate) return;
+        forwardAfterGate = undefined;
+        const wasAuthenticated = gate.isAuthenticated();
+        const wasPrivileged = isPrivileged();
+        void gate.submit(line).then((outcome) => {
+          if (disposed) return;
+          writeGate(outcome.output);
+          if (forwardAfterGate !== undefined) { history.record(forwardAfterGate); execute(forwardAfterGate, true); }
+          else if (!wasAuthenticated && gate.isAuthenticated()) syncDevicePrompt(isPrivileged());
+          else if (wasAuthenticated && !wasPrivileged && isPrivileged()) syncDevicePrompt(true);
+        }).catch((error: unknown) => onError(error instanceof Error ? error.message : "Console login failed"));
+      };
+
       dataDisposable = terminal.onData((data) => {
         const key = classifyTerminalKey(data);
         if (!key) return;
@@ -214,27 +248,31 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
         }
         if (!enabledRef.current) return;
         if (awaitingDeferredOutput) return;
+        // While the gate is waiting for a password, input is never echoed and is
+        // kept out of the line editor's visible state and history.
+        const secret = gate?.expectsSecret() ?? false;
         switch (key.kind) {
           case "enter": {
             const submitted = buffer.value;
-            history.record(submitted);
             buffer.clear();
             terminal.write("\r\n");
-            execute(submitted, true);
+            if (gate) submitGate(submitted);
+            else { history.record(submitted); execute(submitted, true); }
             break;
           }
-          case "insert": buffer.insert(key.text); redraw(); break;
-          case "backspace": if (buffer.backspace()) redraw(); break;
-          case "delete": if (buffer.deleteForward()) redraw(); break;
-          case "left": if (buffer.left()) terminal.write("\x1b[D"); break;
-          case "right": if (buffer.right()) terminal.write("\x1b[C"); break;
-          case "home": buffer.home(); redraw(); break;
-          case "end": buffer.end(); redraw(); break;
-          case "history-prev": buffer.replace(history.previous()); redraw(); break;
-          case "history-next": buffer.replace(history.next()); redraw(); break;
+          case "insert": buffer.insert(key.text); if (!secret) redraw(); break;
+          case "backspace": if (buffer.backspace() && !secret) redraw(); break;
+          case "delete": if (buffer.deleteForward() && !secret) redraw(); break;
+          case "left": if (!secret && buffer.left()) terminal.write("\x1b[D"); break;
+          case "right": if (!secret && buffer.right()) terminal.write("\x1b[C"); break;
+          case "home": if (!secret) { buffer.home(); redraw(); } break;
+          case "end": if (!secret) { buffer.end(); redraw(); } break;
+          case "history-prev": if (!secret) { buffer.replace(history.previous()); redraw(); } break;
+          case "history-next": if (!secret) { buffer.replace(history.next()); redraw(); } break;
         }
       });
-      execute("");
+      if (gate) writeGate(gate.begin().output);
+      else execute("");
       fitTerminal();
     }).catch(() => onError("Terminal component failed to load"));
 

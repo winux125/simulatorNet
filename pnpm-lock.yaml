@@ -103,9 +103,15 @@ importers:
       '@antv/x6-react-shape':
         specifier: ^3.0.1
         version: 3.0.1(@antv/x6@3.1.7)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@sim/console-auth':
+        specifier: workspace:*
+        version: link:../../packages/console-auth
       '@sim/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@sim/importers':
+        specifier: workspace:*
+        version: link:../../packages/importers
       '@sim/lab-format':
         specifier: workspace:*
         version: link:../../packages/lab-format

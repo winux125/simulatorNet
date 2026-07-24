@@ -11,7 +11,9 @@
   "dependencies": {
     "@antv/x6": "^3.1.7",
     "@antv/x6-react-shape": "^3.0.1",
+    "@sim/console-auth": "workspace:*",
     "@sim/contracts": "workspace:*",
+    "@sim/importers": "workspace:*",
     "@sim/lab-format": "workspace:*",
     "@sim/sim-worker": "workspace:*",
     "@xterm/addon-fit": "^0.11.0",
