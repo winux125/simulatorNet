@@ -33,6 +33,7 @@ import {
   setDeviceIconProfile,
   useDeviceIconProfile,
 } from "../hooks/useDeviceIconProfile";
+import { applyTerminalAppearance, getTerminalAppearance, type TerminalAppearance } from "../features/terminal/terminal-appearance";
 import { isTopologyEditable, useWorkspaceStore, type ExecutionMode, type WorkspaceMode } from "../state/workspace-store";
 import { Button, IconButton, Kbd } from "../ui";
 import type { SimulatorClient } from "./simulator-client";
@@ -113,6 +114,8 @@ export function App({ client }: AppProps) {
   const narrowDesktop = useMediaQuery("(max-width: 1299px)");
   const theme = useTheme();
   const deviceIconProfile = useDeviceIconProfile();
+  const [terminalAppearance, setTerminalAppearanceState] = useState<TerminalAppearance>(getTerminalAppearance());
+  const chooseTerminalAppearance = (id: TerminalAppearance) => { applyTerminalAppearance(id); setTerminalAppearanceState(id); };
   const launchSession = useLaunchSession();
   const [confirmApply, setConfirmApply] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
@@ -421,6 +424,11 @@ export function App({ client }: AppProps) {
         { id: "icons-classic", label: "Classic Lab", checked: deviceIconProfile === "classic", onSelect: () => setDeviceIconProfile("classic") },
         { id: "icons-education", label: "Education Flat", checked: deviceIconProfile === "education", onSelect: () => setDeviceIconProfile("education") },
         { id: "icons-minimal", label: "Minimal Network", checked: deviceIconProfile === "minimal", onSelect: () => setDeviceIconProfile("minimal") },
+      ] },
+      { id: "view-terminal-appearance", label: "Terminal Appearance", submenu: [
+        { id: "term-appliance", label: "Appliance Console", checked: terminalAppearance === "appliance", onSelect: () => chooseTerminalAppearance("appliance") },
+        { id: "term-modern", label: "Modern Dark", checked: terminalAppearance === "modern-dark", onSelect: () => chooseTerminalAppearance("modern-dark") },
+        { id: "term-light", label: "Light Console", checked: terminalAppearance === "light", onSelect: () => chooseTerminalAppearance("light") },
       ] },
       { id: "view-ports", label: "Port Labels", icon: <Tag size={14} />, submenu: [
         { id: "ports-always", label: "Always", checked: workspace.portLabelMode === "always", onSelect: () => workspace.setPortLabelMode("always") },

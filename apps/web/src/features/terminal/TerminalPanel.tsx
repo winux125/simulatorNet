@@ -1,6 +1,7 @@
 import type { ConsoleAccessConfiguration } from "@sim/contracts";
 import type { CliExecutionResult, LabUiNode } from "@sim/sim-worker";
 import { ConsoleAuthSession } from "@sim/console-auth";
+import { stripControlSequences } from "@sim/importers";
 import { Clipboard, Eraser, TerminalSquare, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Terminal as XtermTerminal } from "@xterm/xterm";
@@ -11,6 +12,13 @@ import type { ResolvedTheme } from "../../hooks/useTheme";
 import { EmptyState, IconButton } from "../../ui";
 import { TerminalCommandHistory } from "./terminal-history";
 import { LineBuffer, classifyTerminalKey } from "./terminal-line-editor";
+import {
+  getTerminalAppearance,
+  terminalAppearanceProfile,
+  TERMINAL_APPEARANCE_EVENT,
+  type TerminalAppearance,
+} from "./terminal-appearance";
+import { TerminalPager } from "./terminal-pager";
 
 interface TerminalWorkspaceProps {
   client: SimulatorClient;
@@ -19,6 +27,7 @@ interface TerminalWorkspaceProps {
   nodes: LabUiNode[];
   mode: WorkspaceMode;
   theme: ResolvedTheme;
+  appearance?: TerminalAppearance;
   sessionNamespace?: string;
   /** Simulated console-access config for a device, if it requires a login. */
   consoleAccessFor?(deviceId: string): ConsoleAccessConfiguration | undefined;
@@ -68,6 +77,7 @@ export function TerminalWorkspace(props: TerminalWorkspaceProps) {
               active={props.activeDeviceId === deviceId}
               enabled={props.mode === "simulate" && node !== undefined}
               theme={props.theme}
+              appearance={props.appearance}
               sessionNamespace={props.sessionNamespace ?? "terminal"}
               consoleAccess={props.consoleAccessFor?.(deviceId)}
               onError={props.onError}
@@ -86,23 +96,13 @@ interface TerminalSessionProps {
   active: boolean;
   enabled: boolean;
   theme: ResolvedTheme;
+  appearance?: TerminalAppearance;
   sessionNamespace: string;
   consoleAccess?: ConsoleAccessConfiguration;
   onError(message: string): void;
 }
 
-function terminalTheme() {
-  const styles = getComputedStyle(document.documentElement);
-  const token = (name: string) => styles.getPropertyValue(name).trim();
-  return {
-    background: token("--terminal-bg"),
-    foreground: token("--terminal-text"),
-    cursor: token("--terminal-cursor"),
-    selectionBackground: token("--terminal-selection"),
-  };
-}
-
-function TerminalSession({ client, deviceId, hostname, active, enabled, theme, sessionNamespace, consoleAccess, onError }: TerminalSessionProps) {
+function TerminalSession({ client, deviceId, hostname, active, enabled, theme, appearance, sessionNamespace, consoleAccess, onError }: TerminalSessionProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XtermTerminal | undefined>(undefined);
   const fitRef = useRef<XtermFitAddon | undefined>(undefined);
@@ -113,6 +113,8 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
   // Captured at mount: reopening the terminal starts a fresh login.
   const consoleAccessRef = useRef(consoleAccess);
   consoleAccessRef.current = consoleAccess;
+  const appearanceRef = useRef(appearance);
+  appearanceRef.current = appearance;
   const [transcript, setTranscript] = useState("");
   const [ready, setReady] = useState(false);
 
@@ -129,19 +131,26 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
     let fitFrame: number | undefined;
     let prompt = "";
     let awaitingDeferredOutput = false;
+    let pager: TerminalPager | undefined;
+    let pendingPromptResult: CliExecutionResult | undefined;
     const buffer = new LineBuffer();
     const history = new TerminalCommandHistory();
 
     void Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit")]).then(([xterm, addon]) => {
       if (disposed) return;
+      const profile = terminalAppearanceProfile(appearanceRef.current ?? getTerminalAppearance());
       const terminal = new xterm.Terminal({
-        cursorBlink: true,
+        cursorBlink: profile.cursorBlink,
+        cursorStyle: profile.cursorStyle,
         convertEol: true,
-        fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
-        fontSize: 13,
-        lineHeight: 1.25,
-        scrollback: 2000,
-        theme: terminalTheme(),
+        fontFamily: profile.fontFamily,
+        fontSize: profile.fontSize,
+        fontWeight: profile.fontWeight,
+        fontWeightBold: profile.fontWeightBold,
+        lineHeight: profile.lineHeight,
+        letterSpacing: profile.letterSpacing,
+        scrollback: profile.scrollback,
+        theme: profile.theme,
       });
       const fit = new addon.FitAddon();
       terminal.loadAddon(fit);
@@ -172,19 +181,33 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
         setTranscript("");
       };
       clearRef.current = clearViewport;
-      const renderResult = (result: CliExecutionResult, fromDeferredEvent = false) => {
-        if (result.output) terminal.write(`${terminalText(result.output)}\r\n`);
-        if (result.deferred) {
-          awaitingDeferredOutput = true;
-        } else {
-          awaitingDeferredOutput = false;
-          prompt = result.prompt;
-          terminal.write(promptText());
-        }
+      const finishPrompt = (result: CliExecutionResult) => {
+        awaitingDeferredOutput = false;
+        prompt = result.prompt;
+        terminal.write(promptText());
         scrollToBottom();
-        if (fromDeferredEvent && result.output) {
-          setTranscript((current) => `${current}${result.output}\n`);
+      };
+      const writePagerPage = (page: { text: string; more: boolean }) => {
+        if (page.text) terminal.write(`${terminalText(page.text)}\r\n`);
+        if (page.more) terminal.write("\x1b[7m--More--\x1b[0m");
+        scrollToBottom();
+      };
+      const renderResult = (result: CliExecutionResult, fromDeferredEvent = false) => {
+        // Sanitize CLI output: strip any escape sequence an imported config might
+        // carry, so only the terminal's own generated sequences ever run.
+        const output = result.output ? stripControlSequences(result.output) : "";
+        const rows = Math.max(1, (terminal.rows || 24) - 1);
+        if (output && !result.deferred && TerminalPager.needed(output, rows)) {
+          pager = new TerminalPager(output, rows);
+          pendingPromptResult = result;
+          writePagerPage(pager.page());
+          if (fromDeferredEvent) setTranscript((current) => `${current}${output}\n`);
+          return;
         }
+        if (output) terminal.write(`${terminalText(output)}\r\n`);
+        if (result.deferred) { awaitingDeferredOutput = true; scrollToBottom(); }
+        else finishPrompt(result);
+        if (fromDeferredEvent && output) setTranscript((current) => `${current}${output}\n`);
       };
       eventUnsubscribe = client.onEvent((event) => {
         if (event.type !== "CLI_OUTPUT" || event.sessionId !== sessionId || event.deviceId !== deviceId) return;
@@ -226,6 +249,18 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
       };
 
       dataDisposable = terminal.onData((data) => {
+        if (pager) {
+          terminal.write("\x1b[2K\r"); // erase the --More-- prompt line
+          if (data === " " || data === "\r") {
+            const page = data === " " ? pager.page() : pager.line();
+            writePagerPage(page);
+            if (!page.more) { pager = undefined; if (pendingPromptResult) { finishPrompt(pendingPromptResult); pendingPromptResult = undefined; } }
+          } else if (data === "q" || data === "\x1b" || data === "\x03") {
+            pager = undefined;
+            if (pendingPromptResult) { finishPrompt(pendingPromptResult); pendingPromptResult = undefined; }
+          }
+          return;
+        }
         const key = classifyTerminalKey(data);
         if (!key) return;
         if (key.kind === "interrupt") {
@@ -308,8 +343,21 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, s
   }, [client, deviceId, hostname, onError, sessionNamespace]);
 
   useEffect(() => {
-    if (terminalRef.current) terminalRef.current.options.theme = terminalTheme();
-  }, [theme]);
+    const apply = () => {
+      const term = terminalRef.current;
+      if (!term) return;
+      const profile = terminalAppearanceProfile(appearanceRef.current ?? getTerminalAppearance());
+      term.options.theme = profile.theme;
+      term.options.fontFamily = profile.fontFamily;
+      term.options.fontSize = profile.fontSize;
+      term.options.lineHeight = profile.lineHeight;
+      term.options.cursorBlink = profile.cursorBlink;
+      try { fitRef.current?.fit(); } catch { /* transitioning */ }
+    };
+    apply();
+    window.addEventListener(TERMINAL_APPEARANCE_EVENT, apply);
+    return () => window.removeEventListener(TERMINAL_APPEARANCE_EVENT, apply);
+  }, [appearance, theme]);
 
   useEffect(() => {
     // Restore keyboard focus (and layout) when this session's tab becomes active.
