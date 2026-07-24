@@ -29,6 +29,9 @@ export * from "./packets/udp";
 export * from "./packets/tcp";
 export * from "./packets/dhcp";
 
+// Reusable L3 packet policy (Router, L3 switch, and future Firewall)
+export * from "./policy/packet-policy-engine";
+
 // Host transport
 export * from "./transport/errors";
 export * from "./transport/udp";

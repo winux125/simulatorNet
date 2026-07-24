@@ -726,3 +726,30 @@ Auto/Step is local workspace state and resets to Auto on a fresh application
 session. It is not part of `LabDocument`, submissions or trusted grading input.
 The verifier always runs its own deterministic actions under server resource
 limits. Neither mode represents performance speed or wall-clock time.
+
+## Milestone 10.3 — IPv4 packet policy foundation
+
+The first M10.3 security slice adds a reusable, pure-TypeScript
+`PacketPolicyEngine`. Router physical interfaces and dot1Q subinterfaces use it
+directly; L3 Switch routed ports and SVIs use the same composed routing plane.
+Ordinary Layer-2 switching does not evaluate IP ACLs.
+
+Standard ACLs match a source expressed as `any`, `host`, or an IPv4
+address/wildcard pair. Extended ACLs additionally match IPv4 protocol,
+destination and optional TCP/UDP `eq` or inclusive port ranges. Rules are
+evaluated by ascending sequence, first match wins, and every bound ACL ends
+with an implicit deny. Wildcards are bit masks and may be non-contiguous.
+
+The routed packet pipeline is:
+
+```text
+receive IPv4 → inbound ACL → local delivery or route lookup
+             → [NAT policy slot] → outbound ACL → ARP/transmit
+```
+
+Trace records distinguish `acl-evaluated`, `acl-permitted`, `acl-denied` and
+`acl-implicit-deny`. Match counters are deterministic runtime inspection state:
+they reset on rebuild and are never persistent lab configuration. Limits are
+64 ACLs per routed device, 256 rules per ACL and 2,048 rules across one
+simulation engine. The browser worker and server verifier both consume this
+same core implementation; neither side evaluates user-provided JavaScript.

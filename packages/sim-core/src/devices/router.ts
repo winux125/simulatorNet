@@ -14,6 +14,15 @@ import type { IcmpMessage } from "../packets/icmp";
 import type { Ipv4Packet } from "../packets/ipv4";
 import type { UdpDatagram } from "../packets/udp";
 import {
+  type AclBinding,
+  type AclCounter,
+  type AclDirection,
+  type AclRuleBudget,
+  type Ipv4Acl,
+  PacketPolicyEngine,
+  PacketPolicyError,
+} from "../policy/packet-policy-engine";
+import {
   BROADCAST_IP,
   intToIp,
   type Ipv4,
@@ -112,6 +121,7 @@ export interface DhcpPoolConfig {
  */
 export class Router extends Device {
   readonly deviceType = "router" as const;
+  readonly packetPolicy = new PacketPolicyEngine();
   private readonly l3 = new Map<string, L3Interface>();
   private readonly staticRoutes: StaticRoute[] = [];
   private readonly dhcpPools: DhcpPool[] = [];
@@ -124,6 +134,53 @@ export class Router extends Device {
   private readonly arpPending = new Map<Ipv4, { packet: Ipv4Packet; egress: L3Interface }[]>();
 
   // --- configuration -----------------------------------------------------
+
+  override onAddedToEngine(): void {
+    this.packetPolicy.useRuleBudget(this.engine.aclRuleBudget);
+  }
+
+  /** Used by composed routing planes, such as an L3 switch SVI data plane. */
+  useAclRuleBudget(budget: AclRuleBudget): void {
+    this.packetPolicy.useRuleBudget(budget);
+  }
+
+  defineAcl(acl: Ipv4Acl): void {
+    this.packetPolicy.defineAcl(acl);
+  }
+
+  removeAcl(aclId: string): void {
+    this.packetPolicy.removeAcl(aclId);
+  }
+
+  applyAcl(interfaceName: string, direction: AclDirection, aclId: string): void {
+    if (!this.l3.has(interfaceName)) {
+      throw new PacketPolicyError(
+        "ACL_INVALID_CONFIGURATION",
+        `Router ${this.id} has no L3 interface ${interfaceName}.`,
+      );
+    }
+    this.packetPolicy.bind({ interfaceName, direction, aclId });
+  }
+
+  removeAclBinding(interfaceName: string, direction: AclDirection): void {
+    this.packetPolicy.unbind(interfaceName, direction);
+  }
+
+  aclConfigurations(): Ipv4Acl[] {
+    return this.packetPolicy.aclConfigurations();
+  }
+
+  aclBindings(): AclBinding[] {
+    return this.packetPolicy.bindingConfigurations();
+  }
+
+  aclCounters(): AclCounter[] {
+    return this.packetPolicy.counterSummaries();
+  }
+
+  resetAclCounters(): void {
+    this.packetPolicy.resetCounters();
+  }
 
   /** Assign an IP/mask directly to a physical port (a routed interface). */
   configureInterface(physicalName: string, config: L3Config): L3Interface {
@@ -420,6 +477,8 @@ export class Router extends Device {
   // --- IPv4 / ICMP -------------------------------------------------------
 
   private handleIpv4(packet: Ipv4Packet, frame: EthernetFrame, ingress: L3Interface): void {
+    if (!this.permitByAcl(packet, ingress, "in")) return;
+
     // Opportunistically cache the L2 address of the L3 source.
     this.arpTable.set(packet.src, normalizeMac(frame.src));
 
@@ -526,6 +585,7 @@ export class Router extends Device {
 
   private egressSend(packet: Ipv4Packet, egress: L3Interface, nextHopIp: Ipv4): void {
     if (egress.ip === undefined) return;
+    if (!this.permitByAcl(packet, egress, "out")) return;
     const mac = this.arpTable.get(nextHopIp);
     if (mac !== undefined) {
       this.transmit(egress, mac, EtherType.IPv4, packet);
@@ -585,6 +645,39 @@ export class Router extends Device {
       if (iface.ip === ip) return true;
     }
     return false;
+  }
+
+  private permitByAcl(packet: Ipv4Packet, iface: L3Interface, direction: AclDirection): boolean {
+    const decision = this.packetPolicy.evaluate(iface.name, direction, packet);
+    if (!decision) return true;
+    const detail = {
+      aclId: decision.aclId,
+      interface: decision.interfaceName,
+      direction: decision.direction,
+      sequence: decision.sequence ?? null,
+      action: decision.action,
+      implicit: decision.implicit,
+      source: packet.src,
+      destination: packet.dst,
+      protocol: packet.protocol,
+    };
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "acl-evaluated",
+      device: this.id,
+      detail,
+    });
+    this.engine.trace({
+      time: this.engine.now(),
+      type: decision.implicit
+        ? "acl-implicit-deny"
+        : decision.action === "permit"
+          ? "acl-permitted"
+          : "acl-denied",
+      device: this.id,
+      detail,
+    });
+    return decision.action === "permit";
   }
 
   // --- DHCP server -------------------------------------------------------
@@ -687,14 +780,17 @@ export class Router extends Device {
       detail: { messageType, yourIp, clientMac: normalizeMac(request.clientMac) },
     });
     // Client has no address yet, so the reply is broadcast within the segment.
-    this.transmit(iface, BROADCAST_MAC, EtherType.IPv4, {
+    const packet: Ipv4Packet = {
       kind: "ipv4",
       src: iface.ip,
       dst: BROADCAST_IP,
       protocol: IpProtocol.UDP,
       ttl: DEFAULT_IP_TTL,
       payload: udp,
-    });
+    };
+    if (this.permitByAcl(packet, iface, "out")) {
+      this.transmit(iface, BROADCAST_MAC, EtherType.IPv4, packet);
+    }
   }
 
   // --- transmit helper ---------------------------------------------------

@@ -1,5 +1,6 @@
 import type { Device } from "../devices/device";
 import { Link } from "../net/link";
+import { AclRuleBudget } from "../policy/packet-policy-engine";
 import { DEFAULT_LINK_DELAY_NS } from "./constants";
 import { EventQueue } from "./event-queue";
 import { SeededRandom } from "./seeded-random";
@@ -31,6 +32,8 @@ export class SimulationEngine {
   readonly devices = new Map<string, Device>();
   readonly links: Link[] = [];
   readonly traceLog: TraceEntry[] = [];
+  /** Shared 2,048-rule ACL budget across every routed device in this lab. */
+  readonly aclRuleBudget = new AclRuleBudget();
 
   private readonly clock = new VirtualClock();
   private readonly queue = new EventQueue();
@@ -51,6 +54,7 @@ export class SimulationEngine {
       throw new Error(`Device ${device.id} already added`);
     }
     device.engine = this;
+    device.onAddedToEngine();
     this.devices.set(device.id, device);
     return device;
   }

@@ -3,6 +3,12 @@ import { EthernetInterface } from "../net/interface";
 import type { Ipv4 } from "../util/ipv4";
 import type { Mac } from "../util/mac";
 import { normalizeMac } from "../util/mac";
+import type {
+  AclBinding,
+  AclCounter,
+  AclDirection,
+  Ipv4Acl,
+} from "../policy/packet-policy-engine";
 import { Router, type RouterInterfaceRow, type RouteRow } from "./router";
 import { L2Switch } from "./switch";
 
@@ -48,6 +54,10 @@ export class Layer3Switch extends L2Switch {
     super(id, name);
     this.routingPlane = new Router(id, name);
     this.routingPlane.setForwardingEnabled(false);
+  }
+
+  override onAddedToEngine(): void {
+    this.syncRoutingPlane();
   }
 
   override rename(name: string): void {
@@ -131,6 +141,40 @@ export class Layer3Switch extends L2Switch {
     this.routingPlane.addStaticRoute(network, mask, nextHop);
   }
 
+  defineAcl(acl: Ipv4Acl): void {
+    this.syncRoutingPlane();
+    this.routingPlane.defineAcl(acl);
+  }
+
+  removeAcl(aclId: string): void {
+    this.routingPlane.removeAcl(aclId);
+  }
+
+  applyAcl(interfaceName: string, direction: AclDirection, aclId: string): void {
+    this.syncRoutingPlane();
+    this.routingPlane.applyAcl(interfaceName, direction, aclId);
+  }
+
+  removeAclBinding(interfaceName: string, direction: AclDirection): void {
+    this.routingPlane.removeAclBinding(interfaceName, direction);
+  }
+
+  aclConfigurations(): Ipv4Acl[] {
+    return this.routingPlane.aclConfigurations();
+  }
+
+  aclBindings(): AclBinding[] {
+    return this.routingPlane.aclBindings();
+  }
+
+  aclCounters(): AclCounter[] {
+    return this.routingPlane.aclCounters();
+  }
+
+  resetAclCounters(): void {
+    this.routingPlane.resetAclCounters();
+  }
+
   staticRouteConfigurations(): ReturnType<Router["staticRouteConfigurations"]> {
     return this.routingPlane.staticRouteConfigurations();
   }
@@ -210,6 +254,7 @@ export class Layer3Switch extends L2Switch {
 
   private syncRoutingPlane(): void {
     this.routingPlane.engine = this.engine;
+    this.routingPlane.useAclRuleBudget(this.engine.aclRuleBudget);
   }
 
   private sviMac(vlanId: number): Mac {

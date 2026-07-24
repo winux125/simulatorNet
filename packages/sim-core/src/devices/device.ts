@@ -48,6 +48,9 @@ export abstract class Device {
     return iface;
   }
 
+  /** Lifecycle hook for deterministic lab-scoped resources such as ACL budgets. */
+  onAddedToEngine(): void {}
+
   getInterface(name: string): EthernetInterface | undefined {
     return this.interfaces.get(name);
   }
