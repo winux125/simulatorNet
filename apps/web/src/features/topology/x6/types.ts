@@ -99,7 +99,7 @@ export interface TopologyGraphCallbacks {
 export interface TopologyGraphController {
   loadDocument(document: LabDocument): void;
   applyView(view: TopologyView): void;
-  /** Coarse topology lock (simulate mode / running lab): blocks all mutation. */
+  /** Emergency coarse lock; normal running mode uses connectable=false while keeping layout draggable. */
   updateReadonlyState(readonly: boolean): void;
   /** Fine tool gating within edit mode. */
   updateDraggable(draggable: boolean): void;

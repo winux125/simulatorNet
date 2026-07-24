@@ -16,7 +16,7 @@ interface ToolbarProps {
   workerStatus: "empty" | "loading" | "ready" | "error";
   engineState?: EngineUiState;
   ready: boolean;
-  dirty: boolean;
+  unsaved: boolean;
   powerState: LabPowerState;
   mode: WorkspaceMode;
   executionMode: ExecutionMode;
@@ -67,7 +67,7 @@ export function Toolbar(props: ToolbarProps) {
           <div className="app-bar__lab" aria-label="Active laboratory">
             <span className="app-bar__scope" data-scope={props.session ? "organization" : "local"}>{props.sessionScope}</span>
             <strong>{props.labTitle ?? "No laboratory loaded"}</strong>
-            {props.dirty && <StatusIndicator status="unsaved" label="Unsaved" />}
+            {props.unsaved && <StatusIndicator status="unsaved" label="Unsaved" />}
           </div>
           <StatusIndicator status={status} label={workerLabel} />
           {props.session ? (
@@ -120,8 +120,10 @@ export function Toolbar(props: ToolbarProps) {
           <span
             className="lab-power__lock"
             data-locked={props.powerState === "running"}
-            aria-label={props.powerState === "running" ? "Topology locked — stop the lab to edit" : "Topology unlocked"}
-            title={props.powerState === "running" ? "Topology locked — stop the lab to edit" : "Topology unlocked — devices and links are editable"}
+            aria-label={props.powerState === "running" ? "Topology connectivity locked" : "Topology connectivity unlocked"}
+            title={props.powerState === "running"
+              ? "Topology connectivity is locked while the lab is running. Layout, labels and notes can still be edited."
+              : "Topology connectivity is unlocked — devices and links are editable."}
           >
             {props.powerState === "running" ? <Lock size={13} /> : <Unlock size={13} />}
           </span>

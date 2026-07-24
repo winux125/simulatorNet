@@ -113,7 +113,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
               <div><dt>Lab</dt><dd>{props.snapshot?.title}</dd></div>
               <div><dt>Virtual time</dt><dd><code>{((props.snapshot?.virtualTime ?? 0) / 1_000_000).toFixed(3)} ms</code></dd></div>
             </dl>
-            {pendingRuntime && <p className="section-note">Apply &amp; Rebuild to create this device in the simulation worker.</p>}
+            {pendingRuntime && <p className="section-note">Apply Topology to create this device in the simulation worker.</p>}
             {profile?.cliProfile
               ? <Button variant="primary" icon={<TerminalSquare size={14} />} disabled={pendingRuntime || props.mode !== "simulate"} onClick={() => props.onOpenTerminal(node.id)}>Open CLI</Button>
               : <p className="section-note">This device has no interactive CLI. Use the topology and runtime inspector.</p>}

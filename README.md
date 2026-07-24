@@ -140,14 +140,16 @@ The vertical slice is now a professional, desktop-first network-lab workspace:
 
 ### Edit and Simulate
 
-**Edit** enables device placement, drag/drop, links, deletion, duplication,
-renaming and auto-arrange. Changes remain a draft and are marked visibly.
-**Apply & Rebuild** serializes the current worker configuration, merges it with
-the edited topology through `lab-format`, then performs the existing safe
-worker rebuild. Moving back to **Simulate** therefore preserves CLI
-configuration while deliberately resetting transient runtime state. The
-running lab supports CLI commands and deterministic packet operations; packet
-execution is controlled separately through Auto or Step.
+**Edit** enables structural changes: device placement, links, deletion and
+duplication. Structural drafts show **Pending topology changes**.
+**Apply Topology** serializes current worker configuration, merges it with the
+draft through `lab-format`, and rebuilds the worker; **Start Lab** performs that
+build automatically when necessary. Presentation changes (positions, labels,
+notes and diagram images) are still marked **Unsaved**, but never request a
+rebuild and remain editable while the lab runs. Typed configuration changes
+also update the worker without rebuilding physical connectivity. Stopping
+preserves structured configuration while deliberately clearing transient
+runtime state. Packet execution is controlled separately through Auto or Step.
 
 ### Topology, terminals and keyboard
 

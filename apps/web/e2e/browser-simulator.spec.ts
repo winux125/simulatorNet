@@ -347,12 +347,12 @@ test("draft-only devices wait for worker rebuild without unknown-device errors",
   expect(canvasBounds).not.toBeNull();
   await canvas.click({ position: { x: Math.round(canvasBounds!.width * 0.45), y: Math.round(canvasBounds!.height * 0.4) } });
   await page.getByRole("button", { name: "Select BR1" }).click();
-  const pendingMessage = page.getByText("Apply & Rebuild to create this device in the simulation worker.");
+  const pendingMessage = page.getByText("Apply Topology to create this device in the simulation worker.");
   await expect(pendingMessage).toBeVisible();
   await expect(page.getByText(/Unknown device/)).toHaveCount(0);
 
-  await page.locator(".pending-banner").getByRole("button", { name: "Apply & Rebuild" }).click();
-  await page.getByRole("dialog", { name: "Apply topology changes?" }).getByRole("button", { name: "Apply & Rebuild" }).click();
+  await page.locator(".pending-banner").getByRole("button", { name: "Apply Topology" }).click();
+  await page.getByRole("dialog", { name: "Apply topology changes?" }).getByRole("button", { name: "Apply Topology" }).click();
   await expect(pendingMessage).toHaveCount(0);
   await expect(page.getByText(/Unknown device/)).toHaveCount(0);
 });
@@ -409,10 +409,27 @@ test("two draft-configured PCs ping through an L2 switch after Start Lab", async
   await page.screenshot({ path: "/tmp/device-first-connections-1440x900.png", animations: "disabled" });
 
   await page.getByRole("button", { name: "Start Lab" }).click();
-  await page.getByRole("dialog", { name: "Apply topology changes?" }).getByRole("button", { name: "Apply & Rebuild" }).click();
   await expect(page.getByRole("button", { name: "Stop Lab" })).toBeVisible();
   await expect(page.locator("[data-connection-handle]")).toHaveCount(0);
   await openCli(page, "PC1");
+  await runCli(page, "ping 192.168.10.20");
+  await expect(page.getByTestId("terminal-transcript")).toContainText("Success rate is 100 percent");
+
+  // Layout and notes are presentation-only: both remain editable while the
+  // data plane is running and neither asks for a topology rebuild.
+  const pc1Node = page.locator('[data-device-id="pc-1"]').locator("xpath=ancestor::*[contains(@class,'x6-node')]");
+  const pc1Bounds = await pc1Node.boundingBox();
+  expect(pc1Bounds).not.toBeNull();
+  await page.mouse.move(pc1Bounds!.x + pc1Bounds!.width / 2, pc1Bounds!.y + pc1Bounds!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(pc1Bounds!.x + pc1Bounds!.width / 2 + 70, pc1Bounds!.y + pc1Bounds!.height / 2 + 25, { steps: 8 });
+  await page.mouse.up();
+  await expect(page.getByText("Pending topology changes")).toHaveCount(0);
+  await page.getByRole("button", { name: "Text", exact: true }).click();
+  await canvas.click({ position: { x: 380, y: 90 } });
+  await expect(page.getByText("Pending topology changes")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Stop Lab" })).toBeVisible();
+  await page.getByRole("tab", { name: /Terminal/ }).click();
   await runCli(page, "ping 192.168.10.20");
   await expect(page.getByTestId("terminal-transcript")).toContainText("Success rate is 100 percent");
 
@@ -458,8 +475,8 @@ test("deleting a device closes its CLI before the worker rebuild", async ({ page
   await page.getByRole("button", { name: "Delete selected" }).click();
   await expect(page.getByRole("tab", { name: /SW1/ })).toHaveCount(0);
 
-  await page.locator(".pending-banner").getByRole("button", { name: "Apply & Rebuild" }).click();
-  await page.getByRole("dialog", { name: "Apply topology changes?" }).getByRole("button", { name: "Apply & Rebuild" }).click();
+  await page.locator(".pending-banner").getByRole("button", { name: "Apply Topology" }).click();
+  await page.getByRole("dialog", { name: "Apply topology changes?" }).getByRole("button", { name: "Apply Topology" }).click();
   await expect(page.getByText(/Unknown device/)).toHaveCount(0);
 });
 
@@ -470,7 +487,7 @@ test("lab power lifecycle locks the topology while running and unlocks after sto
   // 1-3. New stopped lab with a couple of devices.
   await page.getByRole("button", { name: "New Lab", exact: true }).click();
   await expect(page.getByRole("button", { name: "Start Lab" })).toBeVisible();
-  await expect(page.getByLabel("Topology unlocked")).toBeVisible();
+  await expect(page.getByLabel("Topology connectivity unlocked")).toBeVisible();
   await page.getByRole("button", { name: "Add Device", exact: true }).click();
   await page.getByRole("tab", { name: "End Devices" }).click();
   await page.getByRole("button", { name: "Add PC" }).click();
@@ -480,9 +497,7 @@ test("lab power lifecycle locks the topology while running and unlocks after sto
 
   // 4-5. Start the lab; topology becomes locked.
   await page.getByRole("button", { name: "Start Lab" }).click();
-  const applyDialog = page.getByRole("dialog", { name: "Apply topology changes?" });
-  if (await applyDialog.count()) await applyDialog.getByRole("button", { name: "Apply & Rebuild" }).click();
-  await expect(page.getByLabel("Topology locked — stop the lab to edit")).toBeVisible();
+  await expect(page.getByLabel("Topology connectivity locked")).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop Lab" })).toBeVisible();
 
   // 6-8. Editing is rejected while running (Add Device disabled).
@@ -493,7 +508,7 @@ test("lab power lifecycle locks the topology while running and unlocks after sto
   const stopDialog = page.getByRole("dialog", { name: "Stop this lab?" });
   if (await stopDialog.count()) await stopDialog.getByRole("button", { name: "Stop Lab" }).click();
   await expect(page.getByRole("button", { name: "Start Lab" })).toBeVisible();
-  await expect(page.getByLabel("Topology unlocked")).toBeVisible();
+  await expect(page.getByLabel("Topology connectivity unlocked")).toBeVisible();
 
   // 15-16. Topology editing works again.
   await page.getByRole("button", { name: "Add Device", exact: true }).click();

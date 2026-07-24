@@ -5,7 +5,7 @@ import { IconButton } from "../ui";
 interface ToolRailProps {
   mode: WorkspaceMode;
   activeTool: WorkspaceTool;
-  dirty: boolean;
+  pendingTopologyChanges: boolean;
   canDelete: boolean;
   onTool(tool: WorkspaceTool): void;
   onDelete(): void;
@@ -26,7 +26,18 @@ export function ToolRail(props: ToolRailProps) {
       <IconButton label="Fit topology" icon={<Maximize2 size={17} />} onClick={props.onFit} />
       <IconButton label="Auto arrange" icon={<Grid3X3 size={17} />} disabled={!editable} onClick={props.onArrange} />
       <span className="tool-rail__spacer" />
-      {props.dirty && <button type="button" className="tool-rail__apply tooltip-anchor" data-tooltip="Apply & Rebuild" aria-label="Apply & Rebuild" onClick={props.onApply}><span>!</span></button>}
+      {props.pendingTopologyChanges && (
+        <button
+          type="button"
+          className="tool-rail__apply tooltip-anchor"
+          data-tooltip="Apply Topology"
+          aria-label="Apply Topology"
+          title="Rebuild the running model after adding, removing or reconnecting devices."
+          onClick={props.onApply}
+        >
+          <span>!</span>
+        </button>
+      )}
     </nav>
   );
 }

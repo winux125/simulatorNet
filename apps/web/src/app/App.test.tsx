@@ -41,6 +41,7 @@ const graphHarness = vi.hoisted(() => ({
   zoomIn: vi.fn(),
   zoomOut: vi.fn(),
   connectionIntent: undefined as ((source: string, target: string, sourcePort?: string, targetPort?: string) => void) | undefined,
+  nodeMoved: undefined as ((id: string, position: { x: number; y: number }) => void) | undefined,
 }));
 
 vi.mock("@xterm/xterm", () => {
@@ -98,8 +99,12 @@ vi.mock("../features/topology/TopologyGraphSurface", async () => {
     React.useEffect(() => { if ((props.zoomOutRequest as number) > 0) graphHarness.zoomOut(); }, [props.zoomOutRequest]);
     React.useEffect(() => {
       graphHarness.connectionIntent = props.onConnectionIntent as typeof graphHarness.connectionIntent;
-      return () => { graphHarness.connectionIntent = undefined; };
-    }, [props.onConnectionIntent]);
+      graphHarness.nodeMoved = props.onNodeMoved as typeof graphHarness.nodeMoved;
+      return () => {
+        graphHarness.connectionIntent = undefined;
+        graphHarness.nodeMoved = undefined;
+      };
+    }, [props.onConnectionIntent, props.onNodeMoved]);
     return React.createElement("div", {
       "data-testid": "topology-graph",
       onClick: (event: React.MouseEvent) => {
@@ -161,6 +166,7 @@ beforeEach(() => {
   graphHarness.zoomIn.mockClear();
   graphHarness.zoomOut.mockClear();
   graphHarness.connectionIntent = undefined;
+  graphHarness.nodeMoved = undefined;
   window.localStorage.clear();
   useWorkspaceStore.getState().reset();
   Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn((query: string) => ({
@@ -371,14 +377,14 @@ describe("M6.1 simulator workspace", () => {
     expect(useWorkspaceStore.getState().pendingDeviceKind).toBeUndefined();
   });
 
-  it("keeps draft-only devices out of worker inspection until Apply & Rebuild", async () => {
+  it("keeps draft-only devices out of worker inspection until Apply Topology", async () => {
     const client = new RuntimeClient();
     render(<App client={client} />);
     await userEvent.click(screen.getByRole("button", { name: "New Lab" }));
     await placeDevice("Bridge");
     await userEvent.click(screen.getByRole("button", { name: "Select BR1" }));
     expect(await screen.findByText("Pending rebuild")).toBeTruthy();
-    expect(screen.getByText("Apply & Rebuild to create this device in the simulation worker.")).toBeTruthy();
+    expect(screen.getByText("Apply Topology to create this device in the simulation worker.")).toBeTruthy();
     expect(client.requestTypes).not.toContain("GET_DEVICE_INSPECTION");
     expect(useWorkspaceStore.getState().problems).toHaveLength(0);
   });
@@ -444,8 +450,8 @@ describe("M6.1 simulator workspace", () => {
     await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
     await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
     await placeDevice("PC");
-    expect(screen.getByText("Topology changes pending")).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "Apply & Rebuild" }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Pending topology changes")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Apply Topology" }).length).toBeGreaterThanOrEqual(1);
   });
 
   it("executes device context menu actions", async () => {
@@ -900,11 +906,11 @@ describe("M8.3 desktop menus and terminal", () => {
     await waitFor(() => expect(useWorkspaceStore.getState().mode).toBe("edit"));
   });
 
-  it("disables Apply & Rebuild when there are no pending changes", async () => {
+  it("disables Apply Topology when there are no pending changes", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     await openMenu("Lab");
-    expect((screen.getByRole("menuitem", { name: "Apply & Rebuild" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("menuitem", { name: "Apply Topology" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("offers Auto/Step and deterministic queue controls from the Simulation menu", async () => {
@@ -1183,7 +1189,7 @@ describe("M10.2.2c lab power lifecycle and topology lock", () => {
     await loadDemo(client);
     expect(useWorkspaceStore.getState().powerState).toBe("running");
     expect(screen.getByRole("button", { name: "Stop Lab" })).toBeTruthy();
-    expect(screen.getByLabelText("Topology locked — stop the lab to edit")).toBeTruthy();
+    expect(screen.getByLabelText("Topology connectivity locked")).toBeTruthy();
   });
 
   it("opens a new lab stopped with the topology unlocked", async () => {
@@ -1192,7 +1198,7 @@ describe("M10.2.2c lab power lifecycle and topology lock", () => {
     await userEvent.click(await screen.findByRole("button", { name: "New Lab" }));
     await waitFor(() => expect(useWorkspaceStore.getState().powerState).toBe("stopped"));
     expect(screen.getByRole("button", { name: "Start Lab" })).toBeTruthy();
-    expect(screen.getByLabelText("Topology unlocked")).toBeTruthy();
+    expect(screen.getByLabelText("Topology connectivity unlocked")).toBeTruthy();
   });
 
   it("starts a stopped lab into the running state", async () => {
@@ -1268,5 +1274,60 @@ describe("M10.2.2c lab power lifecycle and topology lock", () => {
     // Running: the Start control is not offered; only Stop is.
     expect(screen.queryByRole("button", { name: "Start Lab" })).toBeNull();
     expect(screen.getByRole("button", { name: "Stop Lab" })).toBeTruthy();
+  });
+});
+
+describe("M10.2.3c change-impact and rebuild semantics", () => {
+  it("moves a running device without rebuilding or clearing runtime trace", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await submitTerminal(terminal, "ping 192.168.20.10");
+    await waitFor(() => expect(useWorkspaceStore.getState().traces.length).toBeGreaterThan(0));
+    const traceCount = useWorkspaceStore.getState().traces.length;
+    const rebuildCount = client.requestTypes.filter((type) => type === "REBUILD_LAB").length;
+
+    await act(async () => graphHarness.nodeMoved?.("pc-1", { x: 515, y: 125 }));
+
+    const state = useWorkspaceStore.getState();
+    expect(state.draft?.topology.nodes.find((node) => node.id === "pc-1")?.position).toEqual({ x: 515, y: 125 });
+    expect(state.powerState).toBe("running");
+    expect(state.unsaved).toBe(true);
+    expect(state.pendingTopologyChanges).toBe(false);
+    expect(state.traces).toHaveLength(traceCount);
+    expect(client.requestTypes.filter((type) => type === "REBUILD_LAB")).toHaveLength(rebuildCount);
+    expect(screen.queryByText("Pending topology changes")).toBeNull();
+  });
+
+  it("allows diagram notes while running but keeps connectivity controls locked", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await userEvent.click(screen.getByRole("button", { name: "Text" }));
+    fireEvent.click(screen.getByTestId("topology-graph"), { clientX: 280, clientY: 160 });
+
+    expect(useWorkspaceStore.getState().draft?.diagram?.annotations).toHaveLength(1);
+    expect(useWorkspaceStore.getState()).toMatchObject({
+      powerState: "running",
+      unsaved: true,
+      pendingTopologyChanges: false,
+    });
+    expect(screen.getAllByRole("button", { name: "Add link" }).every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+  });
+
+  it("auto-applies a structural draft when Start Lab is pressed", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New Lab" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
+    await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
+    await placeDevice("PC");
+    expect(useWorkspaceStore.getState().pendingTopologyChanges).toBe(true);
+
+    await userEvent.click(screen.getByRole("button", { name: "Start Lab" }));
+    await waitFor(() => expect(useWorkspaceStore.getState().powerState).toBe("running"));
+
+    expect(screen.queryByRole("dialog", { name: "Apply topology changes?" })).toBeNull();
+    expect(useWorkspaceStore.getState().pendingTopologyChanges).toBe(false);
+    expect(useWorkspaceStore.getState().snapshot?.nodes.map((node) => node.id)).toContain("pc-1");
   });
 });

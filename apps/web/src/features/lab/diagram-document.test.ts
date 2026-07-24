@@ -12,9 +12,11 @@ import {
   addDiagramAnnotation,
   addDiagramImage,
   duplicateDiagramAnnotation,
+  mergeRunningConfiguration,
   moveDiagramAnnotation,
   removeDiagramAnnotation,
   withDiagramLinkLabel,
+  withNodePosition,
 } from "./document";
 
 const ONE_PIXEL_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
@@ -116,4 +118,39 @@ describe("diagram document helpers", () => {
     });
     expect(moveDiagramAnnotation(locked, "locked-note", { x: 300, y: 300 })).toBe(locked);
   });
+
+  it("merges worker configuration without replacing positions, labels or annotations", () => {
+    const diagramDraft = textNote(
+      withDiagramLinkLabel(
+        withNodePosition(HUB_ETHERNET_DEMO, "pc-1", { x: 444, y: 222 }),
+        "link-1",
+        { text: "Users subnet", position: 0.35 },
+      ),
+    );
+    const running = structuredClone(HUB_ETHERNET_DEMO);
+    const pc = running.configurations["pc-1"];
+    if (pc?.kind === "pc") pc.hostname = "PC1-RUNTIME";
+
+    const merged = mergeRunningConfiguration(running, diagramDraft);
+    expect(merged.topology.nodes.find((node) => node.id === "pc-1")?.position).toEqual({ x: 444, y: 222 });
+    expect(merged.diagram).toEqual(diagramDraft.diagram);
+    expect(merged.configurations["pc-1"]?.hostname).toBe("PC1-RUNTIME");
+  });
 });
+
+function textNote(document: typeof HUB_ETHERNET_DEMO) {
+  return addDiagramAnnotation(document, {
+    id: "merge-note",
+    type: "text",
+    position: { x: 20, y: 30 },
+    width: 160,
+    content: "Keep me",
+    fontSize: 14,
+    bold: false,
+    italic: false,
+    alignment: "left",
+    foreground: "auto",
+    rotation: 0,
+    zIndex: 1,
+  });
+}

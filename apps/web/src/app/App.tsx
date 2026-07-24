@@ -21,6 +21,7 @@ import {
   removeDraftDevice,
   removeDraftLink,
 } from "../features/lab/document";
+import type { LabChangeImpact } from "../features/lab/change-impact";
 import { InspectorPanel } from "../features/inspector/InspectorPanel";
 import { DeviceWindow } from "../features/device/DeviceWindow";
 import { useLaunchSession } from "../features/session/useLaunchSession";
@@ -150,7 +151,7 @@ export function App({ client }: AppProps) {
     workspace.setWorkerStatus("loading");
     const canonical = canonicalizeLabDocument(document);
     const ready = await client.request({ type: "INITIALIZE_LAB", document: canonical });
-    workspace.setDraft(canonical, false);
+    workspace.replaceDraft(canonical);
     workspace.setSnapshot(ready);
     workspace.selectNode(undefined);
     workspace.selectLink(undefined);
@@ -171,7 +172,7 @@ export function App({ client }: AppProps) {
   const loadFile = (file: File) => void file.text().then(loadLabDocumentText).then((document) => initialize(document)).catch((error) => reportError(error, "validation"));
   const importLab = () => document.getElementById("load-lab-file")?.click();
   const closeLab = () => {
-    if (workspace.dirty) setConfirmClose(true);
+    if (workspace.unsaved) setConfirmClose(true);
     else workspace.reset();
   };
 
@@ -180,7 +181,7 @@ export function App({ client }: AppProps) {
     if (!draft) return;
     const running = await client.request({ type: "SERIALIZE_LAB" });
     const merged = mergeRunningConfiguration(running, draft);
-    useWorkspaceStore.getState().setDraft(merged, false);
+    useWorkspaceStore.getState().markSaved(merged);
     downloadLabDocument(merged, fileName);
   })().catch(reportError), [client, reportError]);
   const save = useCallback(() => exportLab(), [exportLab]);
@@ -195,7 +196,7 @@ export function App({ client }: AppProps) {
       const merged = mergeRunningConfiguration(running, state.draft);
       const ready = await client.request({ type: "REBUILD_LAB", document: merged });
       const current = useWorkspaceStore.getState();
-      current.setDraft(merged, false);
+      current.acceptTopology(merged);
       current.setSnapshot(ready);
       current.clearTraces();
       current.setMode(nextMode);
@@ -216,7 +217,7 @@ export function App({ client }: AppProps) {
       useWorkspaceStore.getState().setPowerState("stopping");
       void client.request({ type: "SERIALIZE_LAB" }).then(async (running) => {
         const draft = useWorkspaceStore.getState().draft;
-        if (draft) useWorkspaceStore.getState().setDraft(mergeRunningConfiguration(running, draft), false);
+        if (draft) useWorkspaceStore.getState().synchronizeConfiguration(mergeRunningConfiguration(running, draft));
         await client.request({ type: "RESET_RUNTIME" }).catch(() => undefined);
         const current = useWorkspaceStore.getState();
         current.clearTraces();
@@ -225,9 +226,7 @@ export function App({ client }: AppProps) {
       }).catch((error) => { useWorkspaceStore.getState().setPowerState("error"); reportError(error); });
       return;
     }
-    setPendingMode("simulate");
-    if (workspace.dirty) setConfirmApply(true);
-    else void rebuild("simulate").catch(reportError);
+    void rebuild("simulate").catch(reportError);
   };
 
   const changeExecutionMode = useCallback((mode: ExecutionMode) => {
@@ -246,14 +245,19 @@ export function App({ client }: AppProps) {
   const step = useCallback(() => void client.request({ type: "STEP_NEXT_EVENT" }).then((result) => useWorkspaceStore.getState().setSnapshot(result.snapshot)).catch(reportError), [client, reportError]);
   const reset = () => void client.request({ type: "RESET_RUNTIME" }).then((ready) => { workspace.clearTraces(); workspace.setSnapshot(ready); }).catch(reportError);
 
-  // Third topology-lock enforcement layer (after the toolbar/action layer and
-  // the X6 controller): reject any draft mutation while the lab is not stopped.
-  const updateDraft = (document: LabDocument) => {
-    if (!isTopologyEditable(useWorkspaceStore.getState().powerState)) {
-      reportError("Stop the lab before changing devices or links.", "validation");
+  // Structural connectivity is locked while running; presentation and typed
+  // configuration changes remain live without rebuilding the worker.
+  const updateDraft = (document: LabDocument, impact: LabChangeImpact) => {
+    const state = useWorkspaceStore.getState();
+    if (impact === "structural" && !isTopologyEditable(state.powerState)) {
+      reportError("Topology connectivity is locked while the lab is running. Layout, labels and notes can still be edited.", "validation");
       return;
     }
-    workspace.setDraft(document, true);
+    try {
+      state.applyDraft(document, impact);
+    } catch (error) {
+      reportError(error, "validation");
+    }
   };
 
   const startLab = () => {
@@ -283,23 +287,23 @@ export function App({ client }: AppProps) {
     if (!state.draft || state.mode !== "edit" || !isTopologyEditable(state.powerState)) return;
     if (state.selectedNodeId) {
       const removedDeviceId = state.selectedNodeId;
-      state.setDraft(removeDraftDevice(state.draft, removedDeviceId), true);
+      state.applyDraft(removeDraftDevice(state.draft, removedDeviceId), "structural");
       state.closeTerminal(removedDeviceId);
       setDeviceWindowId((current) => current === removedDeviceId ? undefined : current);
       state.selectNode(undefined);
     } else if (state.selectedLinkId) {
-      state.setDraft(removeDraftLink(state.draft, state.selectedLinkId), true);
+      state.applyDraft(removeDraftLink(state.draft, state.selectedLinkId), "structural");
       state.selectLink(undefined);
     }
   }, []);
   const duplicateSelected = () => {
     const state = useWorkspaceStore.getState();
     if (state.draft && state.mode === "edit" && state.selectedNodeId) {
-      state.setDraft(duplicateDraftDevice(state.draft, state.selectedNodeId), true);
+      state.applyDraft(duplicateDraftDevice(state.draft, state.selectedNodeId), "structural");
     }
   };
   const arrange = () => {
-    if (workspace.draft && workspace.mode === "edit") workspace.setDraft(autoArrangeDocument(workspace.draft), true);
+    if (workspace.draft) workspace.applyDraft(autoArrangeDocument(workspace.draft), "presentation");
     workspace.requestFit();
   };
   const openTerminal = (deviceId: string) => {
@@ -418,7 +422,12 @@ export function App({ client }: AppProps) {
       { id: "lab-edit", label: "Edit Topology", checked: editMode, disabled: !ready, onSelect: () => changeMode("edit") },
       { id: "lab-sim", label: "Operate Topology", checked: workspace.mode === "simulate", disabled: !ready, onSelect: () => changeMode("simulate") },
       { separator: true },
-      { id: "lab-apply", label: "Apply & Rebuild", disabled: !workspace.dirty, onSelect: () => { setPendingMode(workspace.mode); setConfirmApply(true); } },
+      {
+        id: "lab-apply",
+        label: "Apply Topology",
+        disabled: !workspace.pendingTopologyChanges,
+        onSelect: () => { setPendingMode("edit"); setConfirmApply(true); },
+      },
       { id: "lab-info", label: "Lab Information", icon: <Info size={14} />, disabled: !labOpen, onSelect: () => setLabInfoOpen(true) },
       { id: "lab-validate", label: "Validate Document", icon: <CheckCircle2 size={14} />, disabled: !labOpen, onSelect: validateDocument },
       { id: "lab-reset", label: "Reset Runtime", icon: <RotateCcw size={14} />, disabled: !simulationEnabled, onSelect: reset },
@@ -504,7 +513,7 @@ export function App({ client }: AppProps) {
         workerStatus={workspace.workerStatus}
         engineState={workspace.snapshot?.engineState}
         ready={ready}
-        dirty={workspace.dirty}
+        unsaved={workspace.unsaved}
         powerState={powerState}
         mode={workspace.mode}
         executionMode={workspace.executionMode}
@@ -536,7 +545,19 @@ export function App({ client }: AppProps) {
       {launchSession.state.status === "error" && <div className="workspace-error" role="alert"><AlertTriangle size={14} /><span>{launchSession.state.message}</span></div>}
       {validation && <div className="workspace-notice" role="status"><CheckCircle2 size={14} /><span>{validation}</span><IconButton label="Dismiss notice" icon={<X size={13} />} onClick={() => setValidation(undefined)} /></div>}
       {workspace.error && <div className="workspace-error" role="alert"><AlertTriangle size={14} /><span>{workspace.error}</span><button type="button" onClick={() => workspace.setDockTab("problems")}>View problems</button><IconButton label="Dismiss error" icon={<X size={13} />} onClick={() => workspace.setError(undefined)} /></div>}
-      {workspace.dirty && workspace.mode === "edit" && <div className="pending-banner"><span> Topology changes pending</span><Button size="sm" variant="primary" onClick={() => { setPendingMode("edit"); setConfirmApply(true); }}>Apply &amp; Rebuild</Button></div>}
+      {workspace.pendingTopologyChanges && workspace.mode === "edit" && (
+        <div className="pending-banner">
+          <span>Pending topology changes</span>
+          <Button
+            size="sm"
+            variant="primary"
+            title="Rebuild the running model after adding, removing or reconnecting devices."
+            onClick={() => { setPendingMode("edit"); setConfirmApply(true); }}
+          >
+            Apply Topology
+          </Button>
+        </div>
+      )}
       <div className="workspace-body">
         <PanelGroup orientation="vertical" className="workspace-resizable" id="workspace-layout">
           <ResizablePanel id="workspace-main" minSize="300px" defaultSize="76%">
@@ -579,14 +600,14 @@ export function App({ client }: AppProps) {
 
       {confirmApply && <WorkspaceDialog title="Apply topology changes?" eyebrow="Runtime rebuild" onClose={() => { setConfirmApply(false); setPendingMode(undefined); }}>
         <p>Applying the draft serializes the current device configuration, merges topology positions and rebuilds the worker runtime. Volatile ARP, MAC and event state will reset.</p>
-        <div className="dialog-actions"><Button variant="ghost" onClick={() => { setConfirmApply(false); setPendingMode(undefined); }}>Cancel</Button><Button variant="primary" onClick={() => void rebuild(pendingMode ?? "edit").catch(reportError)}>Apply &amp; Rebuild</Button></div>
+        <div className="dialog-actions"><Button variant="ghost" onClick={() => { setConfirmApply(false); setPendingMode(undefined); }}>Cancel</Button><Button variant="primary" onClick={() => void rebuild(pendingMode ?? "edit").catch(reportError)}>Apply Topology</Button></div>
       </WorkspaceDialog>}
       {confirmStop && <WorkspaceDialog title="Stop this lab?" eyebrow="Power lifecycle" onClose={() => setConfirmStop(false)}>
         <p>Topology editing will be unlocked. Transient runtime state, active connections, learned tables and packet trace will be cleared. Device configuration will be preserved.</p>
         <div className="dialog-actions"><Button variant="ghost" onClick={() => setConfirmStop(false)}>Cancel</Button><Button variant="danger" onClick={performStop}>Stop Lab</Button></div>
       </WorkspaceDialog>}
-      {confirmClose && <WorkspaceDialog title="Close laboratory?" eyebrow="Unsaved topology" onClose={() => setConfirmClose(false)}>
-        <p>The current topology has unapplied changes. Closing the laboratory will discard that draft.</p>
+      {confirmClose && <WorkspaceDialog title="Close laboratory?" eyebrow="Unsaved document" onClose={() => setConfirmClose(false)}>
+        <p>The current laboratory has unsaved changes. Closing it will discard the current document.</p>
         <div className="dialog-actions"><Button variant="ghost" onClick={() => setConfirmClose(false)}>Keep Editing</Button><Button variant="danger" onClick={() => { setConfirmClose(false); workspace.reset(); }}>Discard &amp; Close</Button></div>
       </WorkspaceDialog>}
       {saveAsOpen && <SaveAsDialog defaultName={workspace.draft?.id ?? "lab"} onClose={() => setSaveAsOpen(false)} onSave={(name) => { exportLab(name); setSaveAsOpen(false); }} />}
@@ -624,8 +645,8 @@ export function App({ client }: AppProps) {
         onConfigurationChanged={(next, runtimeSynchronized) => {
           const state = useWorkspaceStore.getState();
           if (!state.draft) return;
-          if (runtimeSynchronized) state.syncDraft(mergeRunningConfiguration(next, state.draft));
-          else state.setDraft(next, true);
+          if (runtimeSynchronized) state.synchronizeConfiguration(mergeRunningConfiguration(next, state.draft));
+          else state.applyDraft(next, "configuration");
         }}
         onError={reportInspectionError}
         onClose={() => setDeviceWindowId(undefined)}

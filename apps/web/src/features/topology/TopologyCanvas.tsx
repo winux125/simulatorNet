@@ -46,6 +46,7 @@ import {
 } from "react";
 import type { PortLabelMode, WorkspaceMode, WorkspaceTool } from "../../state/workspace-store";
 import { Button, StatusIndicator } from "../../ui";
+import type { LabChangeImpact } from "../lab/change-impact";
 import {
   addDiagramAnnotation,
   addDiagramImage,
@@ -92,7 +93,7 @@ interface TopologyCanvasProps {
   onPlacedDevice(): void;
   onActiveTool(tool: WorkspaceTool): void;
   onPortLabelMode(mode: PortLabelMode): void;
-  onChange(document: LabDocument): void;
+  onChange(document: LabDocument, impact: LabChangeImpact): void;
   onError(message: string): void;
   onLoadDemo(): void;
   onNewLab(): void;
@@ -166,7 +167,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   const pendingImagePosition = useRef<Point | undefined>(undefined);
   const graphApi = useRef<{ clientToLocal(point: Point): Point; fit(): void } | undefined>(undefined);
   const status = useMemo(() => new Map(props.snapshot?.nodes.map((node) => [node.id, node])), [props.snapshot]);
-  const editable = props.mode === "edit";
+  const structuralEditable = props.mode === "edit";
 
   const insertionPoint = useCallback((): Point => {
     const bounds = panelRef.current?.getBoundingClientRect();
@@ -179,11 +180,11 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   }, []);
 
   useEffect(() => {
-    if (!editable) {
+    if (!structuralEditable) {
       setConnectionIntent(undefined);
       setPendingConnectionSourceId(undefined);
     }
-  }, [editable]);
+  }, [structuralEditable]);
 
   const startConnection = useCallback((id: string) => {
     setContextMenu(undefined);
@@ -218,7 +219,9 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         ? ip ?? "No IPv4 address"
         : `${node.interfaces.length} ports`;
       const original = props.snapshot?.nodes.find((candidate) => candidate.id === node.id);
-      const changed = !original || original.position.x !== node.position?.x || original.position.y !== node.position?.y;
+      // Runtime snapshots intentionally do not own diagram coordinates. A moved
+      // node is presentation-only and must never receive a pending-rebuild badge.
+      const changed = !original;
       result.nodes[node.id] = {
         selected: props.selectedNodeId === node.id,
         data: {
@@ -233,7 +236,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           serviceBadges: live?.serviceBadges,
           terminalOpen: props.terminalTabs.includes(node.id),
           configurationChanged: changed,
-          connectable: editable,
+          connectable: structuralEditable,
           onActivate: activateNode,
           onOpen: props.onOpenDevice,
           onConnectStart: startConnection,
@@ -266,7 +269,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       result.annotations![annotation.id] = { selected: annotation.id === selectedAnnotationId };
     }
     return result;
-  }, [props, status, editable, activateNode, openNodeMenu, selectedAnnotationId, startConnection]);
+  }, [props, status, structuralEditable, activateNode, openNodeMenu, selectedAnnotationId, startConnection]);
 
   if (!props.document) {
     return (
@@ -292,7 +295,6 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   const editingAnnotation = document.diagram?.annotations.find((annotation) =>
     annotation.id === editingTextId && annotation.type === "text") as Extract<DiagramAnnotation, { type: "text" }> | undefined;
   const insertImageFile = async (file: File, requestedPosition?: Point) => {
-    if (!editable) return;
     try {
       const assetId = allocateId("asset", document.diagram?.assets?.map((asset) => asset.id) ?? []);
       const asset = await createDiagramAsset(file, assetId, document);
@@ -316,7 +318,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         zIndex: Math.max(0, ...(document.diagram?.annotations.map((item) => item.zIndex) ?? [])) + 1,
         locked: false,
       };
-      props.onChange(addDiagramImage(document, asset, annotation));
+      props.onChange(addDiagramImage(document, asset, annotation), "presentation");
       setSelectedAnnotationId(annotation.id);
     } catch (error) {
       props.onError(error instanceof Error ? error.message : "The image could not be inserted.");
@@ -327,7 +329,6 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     imageInputRef.current?.click();
   };
   const pasteIntoCanvas = (event: ReactClipboardEvent<HTMLElement>) => {
-    if (!editable) return;
     const target = event.target as HTMLElement;
     if (target.closest("input, textarea, [contenteditable='true'], .xterm")) return;
     const image = [...event.clipboardData.items]
@@ -345,13 +346,13 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     const annotation = createAnnotation(document, "annotation-text", position);
     if (annotation?.type === "text") {
       const next = { ...annotation, content: text.slice(0, 4_096) };
-      props.onChange(addDiagramAnnotation(document, next));
+      props.onChange(addDiagramAnnotation(document, next), "presentation");
       setSelectedAnnotationId(next.id);
     }
   };
   const addAt = (kind: NodeSpec["kind"], position?: Point) => {
-    if (!editable) return;
-    props.onChange(addDraftDevice(document, kind, position));
+    if (!structuralEditable) return;
+    props.onChange(addDraftDevice(document, kind, position), "structural");
     setContextMenu(undefined);
   };
   const addFromPane = (kind: NodeSpec["kind"]) => {
@@ -362,19 +363,17 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   };
   const paneClick = (local: Point) => {
     setContextMenu(undefined);
-    if (editable && props.pendingDeviceKind) {
+    if (structuralEditable && props.pendingDeviceKind) {
       addAt(props.pendingDeviceKind, local);
       props.onPlacedDevice();
       return;
     }
-    if (editable) {
-      const annotation = createAnnotation(document, props.activeTool, local);
-      if (annotation) {
-        props.onChange(addDiagramAnnotation(document, annotation));
-        setSelectedAnnotationId(annotation.id);
-        props.onPlacedDevice();
-        return;
-      }
+    const annotation = createAnnotation(document, props.activeTool, local);
+    if (annotation) {
+      props.onChange(addDiagramAnnotation(document, annotation), "presentation");
+      setSelectedAnnotationId(annotation.id);
+      props.onPlacedDevice();
+      return;
     }
     setSelectedAnnotationId(undefined);
     setPendingConnectionSourceId(undefined);
@@ -391,26 +390,26 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       if (action === "rename") {
         const current = document.configurations[contextMenu.id]?.hostname ?? contextMenu.id;
         const next = window.prompt("Device hostname", current);
-        if (next) props.onChange(renameDraftDevice(document, contextMenu.id, next));
+        if (next) props.onChange(renameDraftDevice(document, contextMenu.id, next), "configuration");
       }
-      if (action === "duplicate") props.onChange(duplicateDraftDevice(document, contextMenu.id));
-      if (action === "delete") props.onChange(removeDraftDevice(document, contextMenu.id));
+      if (action === "duplicate") props.onChange(duplicateDraftDevice(document, contextMenu.id), "structural");
+      if (action === "delete") props.onChange(removeDraftDevice(document, contextMenu.id), "structural");
     }
     if (contextMenu.kind === "link") {
       if (action === "inspect") props.onSelectLink(contextMenu.id);
       if (action === "label") {
         const current = document.diagram?.linkLabels.find((label) => label.linkId === contextMenu.id)?.text ?? "";
         const next = window.prompt("Link annotation", current);
-        if (next !== null) props.onChange(withDiagramLinkLabel(document, contextMenu.id, { text: next, visible: true }));
+        if (next !== null) props.onChange(withDiagramLinkLabel(document, contextMenu.id, { text: next, visible: true }), "presentation");
       }
-      if (action === "delete") props.onChange(removeDraftLink(document, contextMenu.id));
+      if (action === "delete") props.onChange(removeDraftLink(document, contextMenu.id), "structural");
     }
     if (contextMenu.kind === "pane") {
       const local = graphApi.current?.clientToLocal({ x: contextMenu.x, y: contextMenu.y }) ?? insertionPoint();
       if (action === "add-text") {
         const annotation = createAnnotation(document, "annotation-text", local);
         if (annotation) {
-          props.onChange(addDiagramAnnotation(document, annotation));
+          props.onChange(addDiagramAnnotation(document, annotation), "presentation");
           setSelectedAnnotationId(annotation.id);
         }
       }
@@ -418,7 +417,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       if (action === "add-shape") {
         const annotation = createAnnotation(document, "annotation-rectangle", local);
         if (annotation) {
-          props.onChange(addDiagramAnnotation(document, annotation));
+          props.onChange(addDiagramAnnotation(document, annotation), "presentation");
           setSelectedAnnotationId(annotation.id);
         }
       }
@@ -427,7 +426,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   };
 
   const updateSelected = (next: DiagramAnnotation) => {
-    props.onChange(updateDiagramAnnotation(document, next));
+    props.onChange(updateDiagramAnnotation(document, next), "presentation");
   };
 
   const startTextEditing = (annotationId: string) => {
@@ -477,17 +476,15 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         </button>
       </div>
 
-      {editable && (
-        <div className="diagram-insert-toolbar" aria-label="Insert diagram element">
-          <span>Insert</span>
-          <button type="button" onClick={() => props.onActiveTool("annotation-text")} aria-pressed={props.activeTool === "annotation-text"}><Type size={13} /> Text</button>
-          <button type="button" onClick={() => openImagePicker()}><ImagePlus size={13} /> Image</button>
-          <button type="button" onClick={() => props.onActiveTool("annotation-rectangle")} aria-pressed={props.activeTool === "annotation-rectangle"}><Square size={13} /> Rectangle</button>
-          <button type="button" onClick={() => props.onActiveTool("annotation-ellipse")} aria-pressed={props.activeTool === "annotation-ellipse"}><Circle size={13} /> Ellipse</button>
-          <button type="button" onClick={() => props.onActiveTool("annotation-line")} aria-pressed={props.activeTool === "annotation-line"}><Minus size={13} /> Line</button>
-          <button type="button" onClick={() => props.onActiveTool("annotation-arrow")} aria-pressed={props.activeTool === "annotation-arrow"}><ArrowUpToLine size={13} /> Arrow</button>
-        </div>
-      )}
+      <div className="diagram-insert-toolbar" aria-label="Insert diagram element">
+        <span>Insert</span>
+        <button type="button" onClick={() => props.onActiveTool("annotation-text")} aria-pressed={props.activeTool === "annotation-text"}><Type size={13} /> Text</button>
+        <button type="button" onClick={() => openImagePicker()}><ImagePlus size={13} /> Image</button>
+        <button type="button" onClick={() => props.onActiveTool("annotation-rectangle")} aria-pressed={props.activeTool === "annotation-rectangle"}><Square size={13} /> Rectangle</button>
+        <button type="button" onClick={() => props.onActiveTool("annotation-ellipse")} aria-pressed={props.activeTool === "annotation-ellipse"}><Circle size={13} /> Ellipse</button>
+        <button type="button" onClick={() => props.onActiveTool("annotation-line")} aria-pressed={props.activeTool === "annotation-line"}><Minus size={13} /> Line</button>
+        <button type="button" onClick={() => props.onActiveTool("annotation-arrow")} aria-pressed={props.activeTool === "annotation-arrow"}><ArrowUpToLine size={13} /> Arrow</button>
+      </div>
 
       {(selectedAnnotation || ANNOTATION_TOOLS.has(props.activeTool)) && (
         <div className="annotation-toolbar" aria-label="Annotation formatting">
@@ -526,13 +523,13 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
             <button type="button" aria-label={selectedAnnotation.locked ? "Unlock annotation" : "Lock annotation"} onClick={() => updateSelected({ ...selectedAnnotation, locked: !selectedAnnotation.locked })}>{selectedAnnotation.locked ? <Lock size={13} /> : <LockOpen size={13} />}</button>
             <button type="button" aria-label="Duplicate annotation" onClick={() => {
               const next = duplicateDiagramAnnotation(document, selectedAnnotation.id);
-              props.onChange(next);
+              props.onChange(next, "presentation");
               const ids = new Set(document.diagram?.annotations.map((annotation) => annotation.id) ?? []);
               setSelectedAnnotationId(next.diagram?.annotations.find((annotation) => !ids.has(annotation.id))?.id);
             }}><Copy size={13} /></button>
-            <button type="button" aria-label="Bring forward" onClick={() => props.onChange(changeDiagramAnnotationZOrder(document, selectedAnnotation.id, "forward"))}><ArrowUpToLine size={13} /></button>
-            <button type="button" aria-label="Send backward" onClick={() => props.onChange(changeDiagramAnnotationZOrder(document, selectedAnnotation.id, "backward"))}><ArrowDownToLine size={13} /></button>
-            <button type="button" aria-label="Delete annotation" onClick={() => { props.onChange(removeDiagramAnnotation(document, selectedAnnotation.id)); setSelectedAnnotationId(undefined); }}><Trash2 size={13} /></button>
+            <button type="button" aria-label="Bring forward" onClick={() => props.onChange(changeDiagramAnnotationZOrder(document, selectedAnnotation.id, "forward"), "presentation")}><ArrowUpToLine size={13} /></button>
+            <button type="button" aria-label="Send backward" onClick={() => props.onChange(changeDiagramAnnotationZOrder(document, selectedAnnotation.id, "backward"), "presentation")}><ArrowDownToLine size={13} /></button>
+            <button type="button" aria-label="Delete annotation" onClick={() => { props.onChange(removeDiagramAnnotation(document, selectedAnnotation.id), "presentation"); setSelectedAnnotationId(undefined); }}><Trash2 size={13} /></button>
           </>}
         </div>
       )}
@@ -540,15 +537,15 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       <TopologyGraphSurface
         document={document}
         view={view}
-        readonly={!editable}
-        draggable={editable && (props.activeTool === "select" || Boolean(selectedAnnotation))}
-        connectable={editable}
+        readonly={false}
+        draggable={props.activeTool === "select" || Boolean(selectedAnnotation)}
+        connectable={structuralEditable}
         fitRequest={props.fitRequest}
         zoomResetRequest={props.zoomResetRequest}
         zoomInRequest={props.zoomInRequest}
         zoomOutRequest={props.zoomOutRequest}
         onReady={(handle) => { graphApi.current = handle; }}
-        onNodeMoved={(id, position) => { if (editable) props.onChange(withNodePosition(document, id, position)); }}
+        onNodeMoved={(id, position) => props.onChange(withNodePosition(document, id, position), "presentation")}
         onSelectNode={(id) => {
           setSelectedAnnotationId(undefined);
           props.onSelectLink(undefined);
@@ -556,7 +553,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         }}
         onOpenDevice={props.onOpenDevice}
         onConnectionIntent={(sourceId, targetId, sourcePort, targetPort) => {
-          if (!editable) return;
+          if (!structuralEditable) return;
           setContextMenu(undefined);
           setSelectedAnnotationId(undefined);
           setPendingConnectionSourceId(undefined);
@@ -564,7 +561,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           props.onSelectNode(sourceId);
           setConnectionIntent({ sourceId, targetId, sourcePort, targetPort });
         }}
-        onAnnotationMoved={(id, position) => { if (editable) props.onChange(moveDiagramAnnotation(document, id, position)); }}
+        onAnnotationMoved={(id, position) => props.onChange(moveDiagramAnnotation(document, id, position), "presentation")}
         onSelectAnnotation={(id) => {
           setSelectedAnnotationId(id);
           props.onSelectNode(undefined);
@@ -572,8 +569,8 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         }}
         onEditAnnotation={startTextEditing}
         onConnect={(source, sourcePort, target, targetPort) => {
-          if (!editable) return;
-          props.onChange(createLink(document, source, sourcePort, target, targetPort).document);
+          if (!structuralEditable) return;
+          props.onChange(createLink(document, source, sourcePort, target, targetPort).document, "structural");
         }}
         onConnectionRejected={props.onError}
         onSelectLink={(id) => { setSelectedAnnotationId(undefined); props.onSelectLink(id); }}
@@ -583,7 +580,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         onDropDevice={(kind, local) => { if ((DEVICE_TYPES as readonly string[]).includes(kind)) addAt(kind as NodeSpec["kind"], local); }}
       />
 
-      {connectionIntent && editable && (
+      {connectionIntent && structuralEditable && (
         <DeviceConnectionDialog
           key={`${connectionIntent.sourceId}-${connectionIntent.targetId}`}
           document={document}
@@ -594,7 +591,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           onClose={() => { setConnectionIntent(undefined); setPendingConnectionSourceId(undefined); }}
           onConnect={(sourceId, sourcePort, targetId, targetPort) => {
             const result = createLink(document, sourceId, sourcePort, targetId, targetPort);
-            props.onChange(result.document);
+            props.onChange(result.document, "structural");
             props.onSelectNode(undefined);
             props.onSelectLink(result.link.id);
           }}
@@ -637,7 +634,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
             {props.mode === "simulate" && getDeviceProfile(document.topology.nodes.find((node) => node.id === contextMenu.id)!.kind).cliProfile
               && <button role="menuitem" type="button" onClick={() => contextAction("terminal")}>Open CLI <kbd>Enter</kbd></button>}
             <button role="menuitem" type="button" onClick={() => contextAction("inspect")}>Inspect <Eye size={13} /></button>
-            {editable && <>
+            {structuralEditable && <>
               <span className="context-menu__separator" />
               <button role="menuitem" type="button" onClick={() => contextAction("connect")}>Connect… <Cable size={13} /></button>
               <button role="menuitem" type="button" onClick={() => contextAction("rename")}>Rename</button>
@@ -648,19 +645,19 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           {contextMenu.kind === "link" && <>
             <button role="menuitem" type="button" onClick={() => contextAction("inspect")}>Inspect link</button>
             <button role="menuitem" type="button" onClick={() => contextAction("label")}>Edit link label…</button>
-            {editable && <button role="menuitem" type="button" className="is-danger" onClick={() => contextAction("delete")}>Delete link</button>}
+            {structuralEditable && <button role="menuitem" type="button" className="is-danger" onClick={() => contextAction("delete")}>Delete link</button>}
           </>}
           {contextMenu.kind === "pane" && <>
-            {editable && <>
+            {structuralEditable && <>
               <button role="menuitem" type="button" onClick={() => addFromPane("pc")}><Monitor size={14} /> Add PC</button>
               <button role="menuitem" type="button" onClick={() => addFromPane("l2-switch")}><Network size={14} /> Add switch</button>
               <button role="menuitem" type="button" onClick={() => addFromPane("router")}><RouterIcon size={14} /> Add router</button>
               <span className="context-menu__separator" />
-              <button role="menuitem" type="button" onClick={() => contextAction("add-text")}><Type size={14} /> Add Text</button>
-              <button role="menuitem" type="button" onClick={() => contextAction("add-image")}><ImagePlus size={14} /> Add Image</button>
-              <button role="menuitem" type="button" onClick={() => contextAction("add-shape")}><Square size={14} /> Add Shape</button>
-              <span className="context-menu__separator" />
             </>}
+            <button role="menuitem" type="button" onClick={() => contextAction("add-text")}><Type size={14} /> Add Text</button>
+            <button role="menuitem" type="button" onClick={() => contextAction("add-image")}><ImagePlus size={14} /> Add Image</button>
+            <button role="menuitem" type="button" onClick={() => contextAction("add-shape")}><Square size={14} /> Add Shape</button>
+            <span className="context-menu__separator" />
             <button role="menuitem" type="button" onClick={() => { graphApi.current?.fit(); setContextMenu(undefined); }}><Maximize2 size={14} /> Fit view</button>
           </>}
         </div>

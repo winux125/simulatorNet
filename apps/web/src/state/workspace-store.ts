@@ -1,6 +1,12 @@
 import type { LabDocument, NodeSpec } from "@sim/contracts";
 import type { LabUiSnapshot, SimulationTraceEvent } from "@sim/sim-worker";
 import { create } from "zustand";
+import {
+  assertLabChangeImpact,
+  hasStructuralChanges,
+  LabChangeImpactError,
+  type LabChangeImpact,
+} from "../features/lab/change-impact";
 
 export type WorkspaceMode = "edit" | "simulate";
 export type ExecutionMode = "auto" | "step";
@@ -51,6 +57,8 @@ interface TraceFilters {
 
 interface WorkspaceState {
   draft: LabDocument | undefined;
+  savedDocument: LabDocument | undefined;
+  appliedDocument: LabDocument | undefined;
   snapshot: LabUiSnapshot | undefined;
   traces: SimulationTraceEvent[];
   selectedNodeId: string | undefined;
@@ -63,7 +71,8 @@ interface WorkspaceState {
   executionMode: ExecutionMode;
   activeTool: WorkspaceTool;
   pendingDeviceKind: NodeSpec["kind"] | undefined;
-  dirty: boolean;
+  unsaved: boolean;
+  pendingTopologyChanges: boolean;
   error: string | undefined;
   problems: WorkspaceProblem[];
   filters: TraceFilters;
@@ -79,8 +88,11 @@ interface WorkspaceState {
   // Bounded topology-edit history (edit-mode drafts only) for Undo/Redo.
   past: LabDocument[];
   future: LabDocument[];
-  setDraft(draft: LabDocument | undefined, dirty?: boolean): void;
-  syncDraft(draft: LabDocument): void;
+  replaceDraft(draft: LabDocument | undefined): void;
+  applyDraft(draft: LabDocument, impact: LabChangeImpact): void;
+  synchronizeConfiguration(draft: LabDocument): void;
+  acceptTopology(draft: LabDocument): void;
+  markSaved(draft: LabDocument): void;
   undo(): void;
   redo(): void;
   requestZoomReset(): void;
@@ -115,6 +127,8 @@ interface WorkspaceState {
 
 const initialState = {
   draft: undefined,
+  savedDocument: undefined,
+  appliedDocument: undefined,
   snapshot: undefined,
   traces: [],
   selectedNodeId: undefined,
@@ -127,7 +141,8 @@ const initialState = {
   executionMode: "auto" as const,
   activeTool: "select" as const,
   pendingDeviceKind: undefined,
-  dirty: false,
+  unsaved: false,
+  pendingTopologyChanges: false,
   error: undefined,
   problems: [],
   filters: { device: "", type: "", search: "" },
@@ -147,24 +162,81 @@ const initialState = {
 const MAX_HISTORY = 50;
 let nextProblemId = 1;
 
+function matchesSavedDocument(document: LabDocument, saved: LabDocument | undefined): boolean {
+  return saved !== undefined && (document === saved || JSON.stringify(document) === JSON.stringify(saved));
+}
+
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   ...initialState,
-  // A `dirty` write is a user topology edit: snapshot the previous draft so it can
-  // be undone. Programmatic syncs (rebuild/merge/import) pass `dirty === false` and
-  // leave the history untouched.
-  setDraft: (draft, dirty = false) => set((state) => dirty && state.draft
-    ? { draft, dirty, past: [...state.past, state.draft].slice(-MAX_HISTORY), future: [] }
-    : { draft, dirty }),
-  syncDraft: (draft) => set({ draft }),
+  replaceDraft: (draft) => set({
+    draft,
+    savedDocument: draft,
+    appliedDocument: draft,
+    unsaved: false,
+    pendingTopologyChanges: false,
+    past: [],
+    future: [],
+  }),
+  applyDraft: (draft, impact) => set((state) => {
+    if (!state.draft) return {};
+    const actual = assertLabChangeImpact(state.draft, draft, impact);
+    if (actual === "none") return {};
+    return {
+      draft,
+      unsaved: true,
+      pendingTopologyChanges: hasStructuralChanges(state.appliedDocument, draft),
+      past: [...state.past, state.draft].slice(-MAX_HISTORY),
+      future: [],
+    };
+  }),
+  synchronizeConfiguration: (draft) => set((state) => {
+    if (!state.draft) return {};
+    if (hasStructuralChanges(state.draft, draft)) {
+      throw new LabChangeImpactError("configuration", "structural");
+    }
+    if (JSON.stringify(state.draft) === JSON.stringify(draft)) return {};
+    const configurationChanged = JSON.stringify(state.draft.configurations) !== JSON.stringify(draft.configurations);
+    return {
+      draft,
+      // Canonical serialization can normalize presentation-only ordering. That
+      // normalization is not itself a new user edit; runtime config changes are.
+      unsaved: state.unsaved || configurationChanged,
+      pendingTopologyChanges: hasStructuralChanges(state.appliedDocument, draft),
+    };
+  }),
+  acceptTopology: (draft) => set((state) => ({
+    draft,
+    appliedDocument: draft,
+    unsaved: state.unsaved,
+    pendingTopologyChanges: false,
+  })),
+  markSaved: (draft) => set((state) => ({
+    draft,
+    savedDocument: draft,
+    unsaved: false,
+    pendingTopologyChanges: hasStructuralChanges(state.appliedDocument, draft),
+  })),
   undo: () => set((state) => {
     const previous = state.past.at(-1);
     if (!previous || !state.draft) return {};
-    return { draft: previous, past: state.past.slice(0, -1), future: [state.draft, ...state.future], dirty: true };
+    return {
+      draft: previous,
+      past: state.past.slice(0, -1),
+      future: [state.draft, ...state.future],
+      unsaved: !matchesSavedDocument(previous, state.savedDocument),
+      pendingTopologyChanges: hasStructuralChanges(state.appliedDocument, previous),
+    };
   }),
   redo: () => set((state) => {
     const next = state.future[0];
     if (!next || !state.draft) return {};
-    return { draft: next, future: state.future.slice(1), past: [...state.past, state.draft], dirty: true };
+    return {
+      draft: next,
+      future: state.future.slice(1),
+      past: [...state.past, state.draft],
+      unsaved: !matchesSavedDocument(next, state.savedDocument),
+      pendingTopologyChanges: hasStructuralChanges(state.appliedDocument, next),
+    };
   }),
   requestZoomReset: () => set((state) => ({ zoomResetRequest: state.zoomResetRequest + 1 })),
   setSnapshot: (snapshot) => set((state) => {
