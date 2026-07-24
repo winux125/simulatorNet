@@ -34,6 +34,9 @@ function defaultNode(kind: NodeSpec["kind"], id: string, index: number, position
     "l2-switch": "SW",
     "l3-switch": "DSW",
     router: "R",
+    firewall: "FW",
+    cloud: "ISP",
+    "traffic-generator": "TG",
   };
   return {
     id,
@@ -54,6 +57,9 @@ function defaultConfiguration(node: NodeSpec): DeviceConfig {
     case "l2-switch": return { kind: "l2-switch", hostname, interfaces: [], vlans: [] };
     case "l3-switch": return { kind: "l3-switch", hostname, interfaces: [], vlans: [], svis: [], staticRoutes: [], ipRoutingEnabled: false };
     case "router": return { kind: "router", hostname, interfaces: [], subinterfaces: [], staticRoutes: [], dhcpPools: [] };
+    case "firewall": return { kind: "firewall", hostname, interfaces: [], subinterfaces: [], staticRoutes: [], dhcpPools: [] };
+    case "cloud": return { kind: "cloud", hostname, interfaces: [], subinterfaces: [], staticRoutes: [], dhcpPools: [] };
+    case "traffic-generator": return { kind: "traffic-generator", hostname, interfaces: [], dhcpEnabled: false };
   }
 }
 
@@ -66,6 +72,9 @@ function idPrefix(kind: DeviceType): string {
     "l2-switch": "switch",
     "l3-switch": "l3-switch",
     router: "router",
+    firewall: "firewall",
+    cloud: "cloud",
+    "traffic-generator": "traffic-generator",
   }[kind];
 }
 
@@ -452,6 +461,9 @@ export function autoArrangeDocument(document: LabDocument): LabDocument {
     "l2-switch": 400,
     "l3-switch": 520,
     router: 720,
+    firewall: 640,
+    cloud: 880,
+    "traffic-generator": 160,
   };
   return {
     ...document,

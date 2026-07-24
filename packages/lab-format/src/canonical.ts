@@ -1,6 +1,8 @@
 import type {
   DeviceConfig,
   BridgeDeviceConfig,
+  CloudDeviceConfig,
+  FirewallDeviceConfig,
   HubDeviceConfig,
   Layer3SwitchDeviceConfig,
   Layer3SwitchInterfaceConfig,
@@ -13,6 +15,7 @@ import type {
   ServerDeviceConfig,
   SwitchDeviceConfig,
   SwitchInterfaceConfig,
+  TrafficGeneratorDeviceConfig,
 } from "@sim/contracts";
 import { ipToInt, macFromIndex, normalizeServiceConfiguration } from "@sim/sim-core";
 import { parseLabDocument } from "./parse";
@@ -147,6 +150,36 @@ function routerConfiguration(node: NodeSpec, config: RouterDeviceConfig | undefi
   };
 }
 
+function firewallConfiguration(
+  node: NodeSpec,
+  config: FirewallDeviceConfig | undefined,
+): FirewallDeviceConfig {
+  const router = routerConfiguration(node, config
+    ? { ...config, kind: "router" }
+    : undefined);
+  return { ...router, kind: "firewall" };
+}
+
+function cloudConfiguration(
+  node: NodeSpec,
+  config: CloudDeviceConfig | undefined,
+): CloudDeviceConfig {
+  const router = routerConfiguration(node, config
+    ? { ...config, kind: "router" }
+    : undefined);
+  return { ...router, kind: "cloud" };
+}
+
+function trafficGeneratorConfiguration(
+  node: NodeSpec,
+  config: TrafficGeneratorDeviceConfig | undefined,
+): TrafficGeneratorDeviceConfig {
+  const pc = pcConfiguration(node, config
+    ? { ...config, kind: "pc" }
+    : undefined);
+  return { ...pc, kind: "traffic-generator" };
+}
+
 function layer3SwitchConfiguration(
   node: NodeSpec,
   config: Layer3SwitchDeviceConfig | undefined,
@@ -190,7 +223,19 @@ function configurationFor(node: NodeSpec, existing: DeviceConfig | undefined): D
   if (node.kind === "l3-switch") {
     return layer3SwitchConfiguration(node, existing?.kind === "l3-switch" ? existing : undefined);
   }
-  return routerConfiguration(node, existing?.kind === "router" ? existing : undefined);
+  if (node.kind === "router") {
+    return routerConfiguration(node, existing?.kind === "router" ? existing : undefined);
+  }
+  if (node.kind === "firewall") {
+    return firewallConfiguration(node, existing?.kind === "firewall" ? existing : undefined);
+  }
+  if (node.kind === "cloud") {
+    return cloudConfiguration(node, existing?.kind === "cloud" ? existing : undefined);
+  }
+  return trafficGeneratorConfiguration(
+    node,
+    existing?.kind === "traffic-generator" ? existing : undefined,
+  );
 }
 
 export function canonicalizeLabDocument(document: LabDocument): LabDocument {

@@ -11,8 +11,10 @@ import {
 } from "@sim/contracts";
 import {
   createSimulationEngine,
+  Firewall,
   EthernetBridge,
   Hub,
+  IspCloud,
   Layer3Switch,
   type Device,
   L2Switch,
@@ -20,6 +22,7 @@ import {
   Pc,
   Router,
   Server,
+  TrafficGenerator,
   type SimulationEngine,
 } from "@sim/sim-core";
 import { canonicalizeLabDocument } from "./canonical";
@@ -38,6 +41,9 @@ export interface BuiltLab {
   getSwitch(id: DeviceId | string): L2Switch | undefined;
   getLayer3Switch(id: DeviceId | string): Layer3Switch | undefined;
   getRouter(id: DeviceId | string): Router | undefined;
+  getFirewall(id: DeviceId | string): Firewall | undefined;
+  getCloud(id: DeviceId | string): IspCloud | undefined;
+  getTrafficGenerator(id: DeviceId | string): TrafficGenerator | undefined;
 }
 
 class BuiltLabImpl implements BuiltLab {
@@ -86,6 +92,21 @@ class BuiltLabImpl implements BuiltLab {
     const device = this.getDevice(id);
     return device instanceof Router ? device : undefined;
   }
+
+  getFirewall(id: DeviceId | string): Firewall | undefined {
+    const device = this.getDevice(id);
+    return device instanceof Firewall ? device : undefined;
+  }
+
+  getCloud(id: DeviceId | string): IspCloud | undefined {
+    const device = this.getDevice(id);
+    return device instanceof IspCloud ? device : undefined;
+  }
+
+  getTrafficGenerator(id: DeviceId | string): TrafficGenerator | undefined {
+    const device = this.getDevice(id);
+    return device instanceof TrafficGenerator ? device : undefined;
+  }
 }
 
 function createDevice(node: NodeSpec, config: DeviceConfig, engine: SimulationEngine): Device {
@@ -96,6 +117,9 @@ function createDevice(node: NodeSpec, config: DeviceConfig, engine: SimulationEn
   if (node.kind === "bridge") return engine.add(new EthernetBridge(node.id, hostname));
   if (node.kind === "l2-switch") return engine.add(new L2Switch(node.id, hostname));
   if (node.kind === "l3-switch") return engine.add(new Layer3Switch(node.id, hostname));
+  if (node.kind === "firewall") return engine.add(new Firewall(node.id, hostname));
+  if (node.kind === "cloud") return engine.add(new IspCloud(node.id, hostname));
+  if (node.kind === "traffic-generator") return engine.add(new TrafficGenerator(node.id, hostname));
   return engine.add(new Router(node.id, hostname));
 }
 
@@ -140,6 +164,19 @@ function applyConfiguration(device: Device, config: DeviceConfig): void {
     device.configureServices(config.enabledServices);
     return;
   }
+  if (device instanceof TrafficGenerator && config.kind === "traffic-generator") {
+    for (const iface of config.interfaces) applyPhysical(device, iface);
+    if (config.ipv4) {
+      device.configure({
+        ip: config.ipv4.address,
+        mask: config.ipv4.prefixLength,
+        gateway: config.ipv4.defaultGateway,
+        dnsServer: config.dnsServer,
+      });
+    }
+    if (config.dhcpEnabled) device.setDhcpEnabled(true);
+    return;
+  }
   if (device instanceof Hub && config.kind === "hub") {
     for (const iface of config.interfaces) applyPhysical(device, iface);
     return;
@@ -162,7 +199,8 @@ function applyConfiguration(device: Device, config: DeviceConfig): void {
     }
     return;
   }
-  if (device instanceof Router && config.kind === "router") {
+  if (device instanceof Router
+    && (config.kind === "router" || config.kind === "firewall" || config.kind === "cloud")) {
     for (const iface of config.interfaces) {
       applyPhysical(device, iface);
       if (iface.routed || iface.ipv4) {
@@ -290,6 +328,19 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       dnsServer: state.dnsServer,
     };
   }
+  if (device instanceof TrafficGenerator) {
+    const state = device.configurationSnapshot();
+    return {
+      kind: "traffic-generator",
+      hostname: device.name,
+      interfaces: node.interfaces.map((iface) => physicalConfiguration(device, iface.id)),
+      ipv4: state.ip === undefined
+        ? undefined
+        : { address: state.ip, prefixLength: prefixLength(state.maskInt), defaultGateway: state.gateway },
+      dhcpEnabled: state.dhcpEnabled,
+      dnsServer: state.dnsServer,
+    };
+  }
   if (device instanceof Hub) {
     return {
       kind: "hub",
@@ -370,8 +421,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
   }
   const summaries = device.interfaceSummaries();
   const physical = new Map(summaries.filter((iface) => iface.vlan === undefined).map((iface) => [iface.name, iface]));
-  return {
-    kind: "router",
+  const routed = {
     hostname: device.name,
     interfaces: node.interfaces.map((iface) => {
       const l3 = physical.get(iface.id);
@@ -405,6 +455,9 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       leaseSeconds: pool.leaseSeconds,
     })),
   };
+  if (device instanceof Firewall) return { kind: "firewall", ...routed };
+  if (device instanceof IspCloud) return { kind: "cloud", ...routed };
+  return { kind: "router", ...routed };
 }
 
 export function serializeLabDocument(builtLab: BuiltLab, metadata: LabMetadata): LabDocument {

@@ -1,5 +1,16 @@
 import { DEVICE_PROFILE_LIST, type NodeSpec } from "@sim/contracts";
-import { Cable, ChevronDown, Monitor, Network, Plus, Sparkles, Trash2, type LucideIcon } from "lucide-react";
+import {
+  Cable,
+  ChevronDown,
+  Cloud,
+  Monitor,
+  Network,
+  Plus,
+  Shield,
+  Sparkles,
+  Trash2,
+  type LucideIcon,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { WorkspaceTool } from "../state/workspace-store";
 import { DeviceIcon } from "./DeviceIcon";
@@ -14,11 +25,13 @@ interface DevicePaletteProps {
   onTool(tool: WorkspaceTool): void;
 }
 
-type PaletteCategory = "network" | "end-device" | "connections";
+type PaletteCategory = "network" | "end-device" | "security" | "infrastructure" | "connections";
 
 const categories: Array<{ id: PaletteCategory; label: string }> = [
   { id: "network", label: "Network Devices" },
   { id: "end-device", label: "End Devices" },
+  { id: "security", label: "Security" },
+  { id: "infrastructure", label: "Infrastructure" },
   { id: "connections", label: "Connections" },
 ];
 
@@ -74,7 +87,15 @@ export function DevicePalette(props: DevicePaletteProps) {
                 className={category === entry.id ? "is-active" : ""}
                 onClick={() => setCategory(entry.id)}
               >
-                {entry.id === "network" ? <Network size={15} /> : entry.id === "end-device" ? <Monitor size={15} /> : <Cable size={15} />}
+                {entry.id === "network"
+                  ? <Network size={15} />
+                  : entry.id === "end-device"
+                    ? <Monitor size={15} />
+                    : entry.id === "security"
+                      ? <Shield size={15} />
+                      : entry.id === "infrastructure"
+                        ? <Cloud size={15} />
+                        : <Cable size={15} />}
                 <span>{entry.label}</span>
               </button>
             ))}

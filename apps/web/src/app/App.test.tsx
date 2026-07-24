@@ -358,6 +358,8 @@ describe("M6.1 simulator workspace", () => {
     const picker = screen.getByRole("dialog", { name: "Add topology item" });
     expect(within(picker).getByRole("tab", { name: "Network Devices" })).toBeTruthy();
     expect(within(picker).getByRole("tab", { name: "End Devices" })).toBeTruthy();
+    expect(within(picker).getByRole("tab", { name: "Security" })).toBeTruthy();
+    expect(within(picker).getByRole("tab", { name: "Infrastructure" })).toBeTruthy();
     expect(within(picker).getByRole("tab", { name: "Connections" })).toBeTruthy();
   });
 
@@ -370,6 +372,12 @@ describe("M6.1 simulator workspace", () => {
     await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
     expect(screen.getByRole("button", { name: "Add PC" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add Server" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("tab", { name: "Security" }));
+    expect(screen.getByRole("button", { name: "Add Firewall" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("tab", { name: "Infrastructure" }));
+    expect(screen.getByRole("button", { name: "Add Cloud / ISP" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add Traffic Generator" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
     await userEvent.click(screen.getByRole("button", { name: "Add PC" }));
     expect(useWorkspaceStore.getState().pendingDeviceKind).toBe("pc");
     fireEvent.click(screen.getByTestId("topology-graph"), { clientX: 300, clientY: 220 });

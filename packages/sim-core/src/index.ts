@@ -19,6 +19,9 @@ export * from "./devices/layer3-switch";
 export * from "./devices/pc";
 export * from "./devices/server";
 export * from "./devices/router";
+export * from "./devices/firewall";
+export * from "./devices/isp-cloud";
+export * from "./devices/traffic-generator";
 
 // Packets / frames
 export * from "./packets/ethernet";

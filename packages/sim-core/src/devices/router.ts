@@ -1,4 +1,12 @@
-import { ArpOp, DhcpMessageType, EtherType, IcmpCode, IcmpType, IpProtocol } from "@sim/contracts";
+import {
+  ArpOp,
+  DhcpMessageType,
+  EtherType,
+  IcmpCode,
+  IcmpType,
+  IpProtocol,
+  type DeviceType,
+} from "@sim/contracts";
 import {
   DEFAULT_DHCP_LEASE_SECONDS,
   DEFAULT_IP_TTL,
@@ -129,7 +137,7 @@ export interface DhcpPoolConfig {
  * server that leases addresses from per-subnet pools.
  */
 export class Router extends Device {
-  readonly deviceType = "router" as const;
+  readonly deviceType: DeviceType = "router";
   readonly packetPolicy = new PacketPolicyEngine();
   readonly nat = new NatEngine();
   private readonly l3 = new Map<string, L3Interface>();
@@ -634,6 +642,7 @@ export class Router extends Device {
       this.sendIcmpError(IcmpType.DestinationUnreachable, IcmpCode.NetUnreachable, packet, ingress);
       return;
     }
+    if (!this.permitForward(packet, ingress, route.egress)) return;
     this.engine.trace({
       time: this.engine.now(),
       type: "route",
@@ -657,7 +666,32 @@ export class Router extends Device {
         outbound = result.packet;
       }
     }
-    this.egressSend(outbound, route.egress, route.nextHopIp);
+    const additionalDelayNs = this.forwardingDelayNs(outbound, ingress, route.egress);
+    if (additionalDelayNs > 0) {
+      this.engine.scheduleIn(additionalDelayNs, () => {
+        this.egressSend(outbound, route.egress, route.nextHopIp);
+      });
+    } else {
+      this.egressSend(outbound, route.egress, route.nextHopIp);
+    }
+  }
+
+  /** Extension point for stateful firewalls and deterministic ISP impairment. */
+  protected permitForward(
+    _packet: Ipv4Packet,
+    _ingress: L3Interface,
+    _egress: L3Interface,
+  ): boolean {
+    return true;
+  }
+
+  /** Additional virtual transit delay; physical link delay remains separate. */
+  protected forwardingDelayNs(
+    _packet: Ipv4Packet,
+    _ingress: L3Interface,
+    _egress: L3Interface,
+  ): number {
+    return 0;
   }
 
   /** Originate a locally-generated packet (echo reply, ICMP error). */

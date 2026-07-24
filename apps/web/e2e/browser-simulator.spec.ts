@@ -357,6 +357,63 @@ test("draft-only devices wait for worker rebuild without unknown-device errors",
   await expect(page.getByText(/Unknown device/)).toHaveCount(0);
 });
 
+test("security and infrastructure devices build with every visual profile", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "New Lab", exact: true }).click();
+  const canvas = page.getByTestId("topology-graph");
+
+  const place = async (
+    category: "Security" | "Infrastructure",
+    model: "Firewall" | "Cloud / ISP" | "Traffic Generator",
+    x: number,
+    y: number,
+  ) => {
+    await page.getByRole("button", { name: "Add Device", exact: true }).click();
+    const picker = page.getByRole("dialog", { name: "Add topology item" });
+    await picker.getByRole("tab", { name: category, exact: true }).click();
+    await picker.getByRole("button", { name: `Add ${model}`, exact: true }).click();
+    await canvas.click({ position: { x, y } });
+  };
+
+  await place("Security", "Firewall", 300, 230);
+  await place("Infrastructure", "Cloud / ISP", 630, 130);
+  await place("Infrastructure", "Traffic Generator", 930, 310);
+
+  for (const deviceType of ["firewall", "cloud", "traffic-generator"]) {
+    await expect(page.locator(`[data-device-type="${deviceType}"]`)).toHaveCount(1);
+    await expect(page.locator(`[data-device-type="${deviceType}"]`)).toHaveAttribute("data-profile", "classic");
+  }
+  await expect(page.getByText("Pending topology changes", { exact: true })).toBeVisible();
+
+  await chooseIconProfile(page, "Education Flat");
+  await expect(page.locator('[data-device-type="firewall"]')).toHaveAttribute("data-profile", "education");
+  await chooseIconProfile(page, "Minimal Network");
+  await expect(page.locator('[data-device-type="cloud"]')).toHaveAttribute("data-profile", "minimal");
+  await chooseIconProfile(page, "Classic Lab");
+
+  await page.locator(".pending-banner").getByRole("button", { name: "Apply Topology" }).click();
+  await page.getByRole("dialog", { name: "Apply topology changes?" })
+    .getByRole("button", { name: "Apply Topology" }).click();
+  await expect(page.getByText("Pending topology changes", { exact: true })).toHaveCount(0);
+
+  for (const hostname of ["FW1", "ISP1", "TG1"]) {
+    await closeInspector(page);
+    await page.getByRole("button", { name: `Select ${hostname}` }).click();
+    await expect(page.getByRole("region", { name: "Inspector" })).toContainText(hostname);
+    await expect(page.getByText(/Unknown device/)).toHaveCount(0);
+  }
+
+  await closeInspector(page);
+  await page.getByRole("button", { name: "Add Device", exact: true }).click();
+  await page.getByRole("dialog", { name: "Add topology item" })
+    .getByRole("tab", { name: "Infrastructure", exact: true }).click();
+  await page.screenshot({
+    path: "/tmp/m10-3c-security-infrastructure-1440x900.png",
+    animations: "disabled",
+  });
+});
+
 test("two draft-configured PCs ping through an L2 switch after Start Lab", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");

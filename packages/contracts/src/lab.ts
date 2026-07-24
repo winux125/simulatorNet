@@ -214,6 +214,22 @@ export const RouterDeviceConfigSchema = z.object({
 });
 export type RouterDeviceConfig = z.infer<typeof RouterDeviceConfigSchema>;
 
+/** Baseline routed-device shapes; security/tool configuration is added in M10.3d. */
+export const FirewallDeviceConfigSchema = RouterDeviceConfigSchema.extend({
+  kind: z.literal("firewall"),
+});
+export type FirewallDeviceConfig = z.infer<typeof FirewallDeviceConfigSchema>;
+
+export const CloudDeviceConfigSchema = RouterDeviceConfigSchema.extend({
+  kind: z.literal("cloud"),
+});
+export type CloudDeviceConfig = z.infer<typeof CloudDeviceConfigSchema>;
+
+export const TrafficGeneratorDeviceConfigSchema = PcDeviceConfigSchema.extend({
+  kind: z.literal("traffic-generator"),
+});
+export type TrafficGeneratorDeviceConfig = z.infer<typeof TrafficGeneratorDeviceConfigSchema>;
+
 export const Layer3SwitchInterfaceConfigSchema = z.discriminatedUnion("mode", [
   SwitchInterfaceConfigSchema.extend({ mode: z.enum(["access", "trunk"]) }).strict(),
   PhysicalInterfaceConfigSchema.extend({
@@ -251,6 +267,9 @@ export const DeviceConfigSchema = z.discriminatedUnion("kind", [
   SwitchDeviceConfigSchema,
   Layer3SwitchDeviceConfigSchema,
   RouterDeviceConfigSchema,
+  FirewallDeviceConfigSchema,
+  CloudDeviceConfigSchema,
+  TrafficGeneratorDeviceConfigSchema,
 ]);
 export type DeviceConfig = z.infer<typeof DeviceConfigSchema>;
 

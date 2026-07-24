@@ -39,6 +39,11 @@ describe("device profile registry", () => {
       Array.from({ length: 8 }, (_, index) => `Gi0/${index + 1}`),
     );
     expect(DEVICE_PROFILES.router.interfaceTemplates.map(({ id }) => id)).toEqual(["Gi0/0", "Gi0/1"]);
+    expect(DEVICE_PROFILES.firewall.interfaceTemplates.map(({ id }) => id)).toEqual([
+      "Eth0/0", "Eth0/1", "Eth0/2", "Eth0/3",
+    ]);
+    expect(DEVICE_PROFILES.cloud.interfaceTemplates).toHaveLength(4);
+    expect(DEVICE_PROFILES["traffic-generator"].interfaceTemplates.map(({ id }) => id)).toEqual(["eth0"]);
   });
 
   it("declares capabilities deliberately for each supported type", () => {
@@ -52,6 +57,9 @@ describe("device profile registry", () => {
     expect(deviceTypeHasCapability("l3-switch", "svi")).toBe(true);
     expect(deviceTypeHasCapability("router", "router-subinterfaces")).toBe(true);
     expect(deviceTypeHasCapability("server", "application-services")).toBe(true);
+    expect(deviceTypeHasCapability("firewall", "stateful-firewall")).toBe(true);
+    expect(deviceTypeHasCapability("cloud", "network-impairment")).toBe(true);
+    expect(deviceTypeHasCapability("traffic-generator", "traffic-generation")).toBe(true);
   });
 
   it("keeps M1-M9 schema-v1 documents valid and defaults stable", () => {
@@ -98,11 +106,20 @@ describe("device profile registry", () => {
         "l2-switch": { kind: "l2-switch" },
         "l3-switch": { kind: "l3-switch" },
         router: { kind: "router" },
+        firewall: { kind: "firewall" },
+        cloud: { kind: "cloud" },
+        "traffic-generator": { kind: "traffic-generator" },
       },
     });
     expect(document.configurations.bridge).toMatchObject({ agingTimeNs: 300_000_000_000 });
     expect(document.configurations.server).toMatchObject({ enabledServices: [], dhcpClientEnabled: false });
     expect(document.configurations["l3-switch"]).toMatchObject({ ipRoutingEnabled: false, svis: [] });
+    expect(document.configurations.firewall).toMatchObject({ kind: "firewall", staticRoutes: [] });
+    expect(document.configurations.cloud).toMatchObject({ kind: "cloud", staticRoutes: [] });
+    expect(document.configurations["traffic-generator"]).toMatchObject({
+      kind: "traffic-generator",
+      dhcpEnabled: false,
+    });
   });
 
   it("keeps server-only grading schemas out of the browser-safe main export", () => {

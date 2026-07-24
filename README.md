@@ -794,3 +794,33 @@ configuration use typed errors, including `NAT_PORT_EXHAUSTED`,
 Hairpin NAT is intentionally not implemented in M10.3. A matching NAT rule
 selected by an ACL is evaluated by the same `PacketPolicyEngine`; no arbitrary
 script or client-provided translation result is accepted.
+
+### Security and infrastructure devices
+
+The common device registry now includes three additional simulation-native
+types, with no vendor branding:
+
+- **Firewall** (`Security`) composes Router forwarding, static routes, ACL and
+  NAT/PAT with named zones and bounded stateful policy. Its ordered rules use
+  first match and an explicit default policy. TCP sessions, UDP
+  pseudo-sessions and ICMP request/reply state progress through `NEW`,
+  `ESTABLISHED`, optional `RELATED`, `CLOSING` and `EXPIRED` using virtual time.
+  Unsolicited traffic is denied by the default policy; established reverse
+  traffic is admitted from the bounded connection table.
+- **Cloud / ISP** (`Infrastructure`) is a simulated router with 2–8 Ethernet
+  interfaces, connected/static/default routes and optional per-egress latency,
+  seeded packet loss and descriptive impairment metadata. It never opens a
+  host socket, calls `fetch`, resolves DNS or claims real Internet access.
+  Bandwidth shaping is not implemented.
+- **Traffic Generator** (`Infrastructure`) is an IPv4 end host that schedules
+  finite ICMP, UDP, TCP and HTTP flows. A flow is bounded by count, virtual
+  interval, payload size and URL/port validation. Auto drains those events;
+  Step naturally leaves them in the same deterministic engine queue. Runtime
+  results expose sent, received, dropped, permitted, denied, translated and
+  timed-out counters.
+
+All three icon profiles contain original SimulatorNet Firewall, Cloud and
+Traffic Generator SVGs (30 source symbols total). They use `currentColor`,
+contain no raster/external references and remain visual-only. Baseline
+schema-v1 device records are backward-compatible; detailed ACL/NAT/firewall,
+impairment and flow persistence is added by the following integration slice.

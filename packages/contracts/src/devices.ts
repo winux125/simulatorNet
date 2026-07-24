@@ -8,6 +8,9 @@ export const DEVICE_TYPES = [
   "l2-switch",
   "l3-switch",
   "router",
+  "firewall",
+  "cloud",
+  "traffic-generator",
 ] as const;
 
 export const DeviceTypeSchema = z.enum(DEVICE_TYPES);
@@ -33,6 +36,11 @@ export const DEVICE_CAPABILITIES = [
   "dhcp-client",
   "dhcp-server",
   "application-services",
+  "packet-policy",
+  "nat",
+  "stateful-firewall",
+  "network-impairment",
+  "traffic-generation",
 ] as const;
 
 export const DeviceCapabilitySchema = z.enum(DEVICE_CAPABILITIES);
@@ -43,7 +51,14 @@ export interface InterfaceTemplate {
   readonly media: "ethernet";
 }
 
-export type DeviceCliProfile = "pc-host" | "server-host" | "bridge" | "switch" | "layer3-switch" | "router";
+export type DeviceCliProfile =
+  | "pc-host"
+  | "server-host"
+  | "bridge"
+  | "switch"
+  | "layer3-switch"
+  | "router"
+  | "firewall";
 
 export interface DeviceProfile {
   readonly type: DeviceType;
@@ -147,6 +162,34 @@ export const DEVICE_PROFILES = {
     iconKey: "router",
     cliProfile: "router",
     description: "Routes IPv4 packets between connected and static networks.",
+  },
+  firewall: {
+    type: "firewall",
+    displayName: "Firewall",
+    category: "security",
+    capabilities: ["ipv4-routing", "static-routing", "packet-policy", "nat", "stateful-firewall"],
+    interfaceTemplates: numbered("Eth0/", 0, 3),
+    iconKey: "firewall",
+    cliProfile: "firewall",
+    description: "Stateful routed security appliance with zones, ACLs, and NAT.",
+  },
+  cloud: {
+    type: "cloud",
+    displayName: "Cloud / ISP",
+    category: "infrastructure",
+    capabilities: ["ipv4-routing", "static-routing", "network-impairment"],
+    interfaceTemplates: numbered("Eth0/", 0, 3),
+    iconKey: "cloud",
+    description: "Simulated routed provider network with deterministic latency and loss.",
+  },
+  "traffic-generator": {
+    type: "traffic-generator",
+    displayName: "Traffic Generator",
+    category: "infrastructure",
+    capabilities: ["ethernet-end-host", "ipv4-host", "traffic-generation"],
+    interfaceTemplates: ethernet(["eth0"]),
+    iconKey: "traffic-generator",
+    description: "Runs bounded ICMP, UDP, TCP, and HTTP test flows.",
   },
 } as const satisfies Record<DeviceType, DeviceProfile>;
 

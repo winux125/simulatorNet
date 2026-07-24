@@ -12,6 +12,9 @@ export const DeviceKind = {
   L2Switch: "l2-switch",
   L3Switch: "l3-switch",
   Router: "router",
+  Firewall: "firewall",
+  Cloud: "cloud",
+  TrafficGenerator: "traffic-generator",
 } as const;
 export type DeviceKind = (typeof DeviceKind)[keyof typeof DeviceKind];
 

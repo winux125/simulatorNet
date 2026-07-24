@@ -83,8 +83,11 @@ function draftDeviceNode(document: LabDocument, deviceId: string): LabUiNode | u
       let ipAddress: string | undefined;
       let mode: "access" | "trunk" | "routed" | undefined;
       if (configuration?.kind === "pc" && index === 0) ipAddress = configuration.ipv4?.address;
+      if (configuration?.kind === "traffic-generator" && index === 0) ipAddress = configuration.ipv4?.address;
       if (configuration?.kind === "server") ipAddress = configuration.interfaces.find((candidate) => candidate.id === iface.id)?.ipv4?.address;
-      if (configuration?.kind === "router") ipAddress = configuration.interfaces.find((candidate) => candidate.id === iface.id)?.ipv4?.address;
+      if (configuration?.kind === "router" || configuration?.kind === "firewall" || configuration?.kind === "cloud") {
+        ipAddress = configuration.interfaces.find((candidate) => candidate.id === iface.id)?.ipv4?.address;
+      }
       if (configuration?.kind === "l2-switch") mode = configuration.interfaces.find((candidate) => candidate.id === iface.id)?.mode;
       if (configuration?.kind === "l3-switch") {
         const l3 = configuration.interfaces.find((candidate) => candidate.id === iface.id);

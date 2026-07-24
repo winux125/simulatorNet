@@ -24,6 +24,9 @@ const assetNames: Record<DeviceType, string> = {
   "l2-switch": "l2-switch.svg",
   "l3-switch": "l3-switch.svg",
   router: "router.svg",
+  firewall: "firewall.svg",
+  cloud: "cloud.svg",
+  "traffic-generator": "traffic-generator.svg",
 };
 
 afterEach(() => {
@@ -45,7 +48,7 @@ function allAssetPaths(): string[] {
 }
 
 describe("topology device icon profiles", () => {
-  it("provides all seven device types in all three profiles", () => {
+  it("provides every device type in all three profiles", () => {
     for (const profile of profiles) {
       expect(readdirSync(join(iconsDir, profile)).sort()).toEqual(Object.values(assetNames).sort());
       for (const type of DEVICE_TYPES) {
@@ -55,7 +58,7 @@ describe("topology device icon profiles", () => {
         expect(svg.dataset.fallback).toBeUndefined();
       }
     }
-    expect(allAssetPaths()).toHaveLength(21);
+    expect(allAssetPaths()).toHaveLength(30);
   });
 
   it("uses a uniform viewBox and theme-aware currentColor", () => {

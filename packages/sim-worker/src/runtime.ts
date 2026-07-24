@@ -25,6 +25,7 @@ import {
   Pc,
   Router,
   Server,
+  TrafficGenerator,
   type TraceEntry,
 } from "@sim/sim-core";
 import { SimulationWorkerError, serializeWorkerError } from "./errors";
@@ -385,6 +386,32 @@ export class SimulationWorkerRuntime {
         applications: applicationInspection(device),
       };
     }
+    if (device instanceof TrafficGenerator) {
+      return {
+        ...base,
+        type: "traffic-generator",
+        interfaces: [...device.interfaces.values()].map((iface) => ({
+          id: iface.name,
+          adminUp: iface.adminUp,
+          operationalUp: iface.operationalUp,
+          description: iface.description,
+          mode: "routed" as const,
+          ipAddress: device.ip,
+          prefixLength: prefixLength(device.maskInt),
+        })),
+        arpEntries: [...device.arpTable].map(([ipAddress, macAddress]) => ({ ipAddress, macAddress })),
+        dhcp: {
+          enabled: device.dhcpEnabled,
+          state: device.dhcpState,
+          bound: device.dhcpBound,
+        },
+        transport: {
+          udpSockets: device.transport.udp.inspect(),
+          tcpConnections: device.transport.tcp.inspect(),
+        },
+        applications: applicationInspection(device),
+      };
+    }
     if (device instanceof Pc) {
       return {
         ...base,
@@ -507,7 +534,7 @@ export class SimulationWorkerRuntime {
     if (device instanceof Router) {
       return {
         ...base,
-        type: "router",
+        type: device.deviceType,
         interfaces: device.interfaceSummaries().map((row) => ({
           id: row.name,
           adminUp: row.adminUp,

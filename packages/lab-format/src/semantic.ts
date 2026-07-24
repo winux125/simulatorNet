@@ -335,6 +335,12 @@ function validateConfiguration(config: DeviceConfig, node: NodeSpec, path: strin
   if (config.kind === "l2-switch") validateSwitch(config, node, path);
   if (config.kind === "l3-switch") validateLayer3Switch(config, node, path);
   if (config.kind === "router") validateRouter(config, node, path);
+  if (config.kind === "firewall" || config.kind === "cloud") {
+    validateRouter({ ...config, kind: "router" }, node, path);
+  }
+  if (config.kind === "cloud" && (node.interfaces.length < 2 || node.interfaces.length > 8)) {
+    fail("invalid-cloud-interface-count", `${path}.interfaces`, "Cloud / ISP requires 2-8 Ethernet interfaces");
+  }
   if (config.kind === "server") validateServer(config, node, path);
   if (config.kind === "hub") validatePhysicalInterfaces(config.interfaces, node, path);
   if (config.kind === "bridge") {
@@ -349,6 +355,13 @@ function validateConfiguration(config: DeviceConfig, node: NodeSpec, path: strin
     });
     if (config.dhcpEnabled && config.ipv4) {
       fail("pc-address-mode-conflict", path, "A PC cannot have static IPv4 and DHCP enabled at the same time");
+    }
+  }
+  if (config.kind === "traffic-generator") {
+    requireUnique(config.interfaces.map((iface) => iface.id), `${path}.interfaces`, "interface id");
+    validatePhysicalInterfaces(config.interfaces, node, path);
+    if (config.dhcpEnabled && config.ipv4) {
+      fail("traffic-address-mode-conflict", path, "A Traffic Generator cannot have static IPv4 and DHCP enabled together");
     }
   }
 }
