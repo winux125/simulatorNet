@@ -59,9 +59,13 @@ export interface ImportSourceNode {
   readonly interfaces: readonly string[];
   /** Preserved, never-executed startup configuration text. */
   readonly startupConfig?: string;
+  /** Config dialect of `startupConfig`, controlling whether a subset is applied. */
+  readonly configFamily?: ConfigFamily;
   /** True when the source family usually needs an interactive console login. */
   readonly authLikelyRequired?: boolean;
 }
+
+export type ConfigFamily = "ios-like" | "vpcs" | "junos" | "eos" | "panos" | "fortios" | "unknown";
 
 export interface ImportSourceLink {
   readonly id: string;

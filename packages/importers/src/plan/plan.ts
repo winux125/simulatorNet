@@ -30,6 +30,8 @@ import {
 } from "../mapping/registry";
 import { ImportReportBuilder } from "../reports/report";
 import { boundText } from "../security/text";
+import { parseIosConfig } from "../config/ios-config";
+import { buildDeviceConfigFromIos, parseVpcsConfig } from "../config/apply";
 import type {
   ImportedSourceArtifact,
   ImportMappingDecision,
@@ -58,7 +60,9 @@ function decisionFor(proposal: ImportMappingProposal): ImportMappingDecision {
 
 function buildProposals(parsed: ParsedSourceTopology): ImportMappingProposal[] {
   return parsed.nodes.map((node): ImportMappingProposal => {
-    const mapping = resolveDeviceMapping(parsed.platform, node.sourceTemplate ?? node.sourceKind);
+    // Match on the adapter-normalized sourceKind token, not the raw platform
+    // template string (e.g. "ethernet_switch"/"IOSvL2"), which is display-only.
+    const mapping = resolveDeviceMapping(parsed.platform, node.sourceKind);
     const target = mapping.targetDeviceType;
     return {
       sourceNodeId: node.id,
@@ -134,12 +138,6 @@ function assemble(
     } else if (proposal?.interfaceWarning) {
       builder.warning("interface-mismatch", proposal.interfaceWarning, node.id);
     }
-    if (node.startupConfig) {
-      const text = boundText(node.startupConfig, MAX_EXTERNAL_APPLIANCE_UNPARSED_CONFIG_CHARS, DEFAULT_IMPORT_LIMITS.maxConfigLinesPerDevice);
-      importedStartupConfigs++;
-      unparsedConfigLines += text.split("\n").length;
-      unparsedArtifacts.push({ nodeId: node.id, kind: "startup-config", text });
-    }
   }
 
   // Keep only links whose endpoints survived, without connecting an interface twice.
@@ -180,8 +178,50 @@ function assemble(
       position: node.position ? { x: node.position.x, y: node.position.y } : undefined,
       interfaces: interfaceIds.map((id) => ({ id })),
     });
+
     if (entry.placeholder) {
       configurations[node.id] = externalApplianceConfig(node, interfaceIds, parsed.platform);
+      if (node.startupConfig) {
+        importedStartupConfigs++;
+        unparsedConfigLines += node.startupConfig.split("\n").length;
+        unparsedArtifacts.push({ nodeId: node.id, kind: "startup-config", text: boundStartup(node.startupConfig) });
+      }
+      continue;
+    }
+
+    if (!node.startupConfig) continue;
+    importedStartupConfigs++;
+    unparsedArtifacts.push({ nodeId: node.id, kind: "startup-config", text: boundStartup(node.startupConfig) });
+
+    if (node.configFamily === "ios-like") {
+      const parsedConfig = parseIosConfig(node.startupConfig, interfaceIds);
+      const built = buildDeviceConfigFromIos(entry.deviceType, parsedConfig, interfaceIds, node.label);
+      if (built.config) configurations[node.id] = built.config;
+      unparsedConfigLines += parsedConfig.unparsedLines.length;
+      if (parsedConfig.appliedLines.length > 0) {
+        builder.info("config-applied", `Applied ${parsedConfig.appliedLines.length} configuration line(s) on ${node.label}`, node.id);
+      }
+      if (parsedConfig.unparsedLines.length > 0) {
+        builder.warning("config-unparsed", `${parsedConfig.unparsedLines.length} configuration line(s) on ${node.label} were preserved but not applied`, node.id);
+      }
+      if (built.droppedRoutes > 0) {
+        builder.warning("config-route-unreachable", `${built.droppedRoutes} static route(s) on ${node.label} were not applied (next hop is not directly connected)`, node.id);
+      }
+    } else if (node.configFamily === "vpcs" && entry.deviceType === "pc") {
+      const vpcs = parseVpcsConfig(node.startupConfig);
+      if (vpcs.address) {
+        configurations[node.id] = {
+          kind: "pc",
+          hostname: node.label,
+          interfaces: interfaceIds.map((id) => ({ id, shutdown: false })),
+          ipv4: { address: vpcs.address, prefixLength: vpcs.prefixLength ?? 24, defaultGateway: vpcs.gateway },
+          dhcpEnabled: false,
+        };
+        builder.info("config-applied", `Applied VPCS addressing on ${node.label}`, node.id);
+      }
+    } else {
+      unparsedConfigLines += node.startupConfig.split("\n").length;
+      builder.warning("config-preserved", `Source configuration for ${node.label} (${node.configFamily ?? "unknown"}) was preserved but not applied`, node.id);
     }
   }
 
@@ -259,6 +299,10 @@ function externalApplianceConfig(
     importWarnings: warnings.slice(0, MAX_EXTERNAL_APPLIANCE_WARNINGS),
     authHint: node.authLikelyRequired ? "likely-required" : "unknown",
   };
+}
+
+function boundStartup(text: string): string {
+  return boundText(text, MAX_EXTERNAL_APPLIANCE_UNPARSED_CONFIG_CHARS, DEFAULT_IMPORT_LIMITS.maxConfigLinesPerDevice);
 }
 
 function dedupe(values: readonly string[]): string[] {

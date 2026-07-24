@@ -26,11 +26,22 @@ export interface ImportDeviceMapping {
  * format adapters) take precedence over these "*" rows during resolution.
  */
 export const IMPORT_DEVICE_MAPPINGS: ImportDeviceMapping[] = [
-  { sourcePlatform: "*", sourceKinds: ["vpcs", "desktop-host", "docker-host"], targetDeviceType: "pc", supportLevel: "configuration-partial", interfaceNaming: "preserve" },
+  // Layer-2 switching appliances.
+  { sourcePlatform: "*", sourceKinds: ["iol-l2", "iou-l2", "unmanaged-switch", "ethernet-switch", "l2-switch", "veos-l2"], targetDeviceType: "l2-switch", supportLevel: "configuration-partial", interfaceNaming: "preserve", authLikelyRequired: true },
+  // Routers (IOS-like families get a partial config apply; others topology-only).
+  { sourcePlatform: "*", sourceKinds: ["iol-l3", "iou-l3", "iosv", "iosxe", "csr1000v", "csr", "c8000v", "dynamips", "generic-router", "router"], targetDeviceType: "router", supportLevel: "configuration-partial", interfaceNaming: "preserve", authLikelyRequired: true },
+  { sourcePlatform: "*", sourceKinds: ["iosxr", "xrv"], targetDeviceType: "router", supportLevel: "topology-only", interfaceNaming: "preserve", authLikelyRequired: true },
+  // Multilayer switching.
+  { sourcePlatform: "*", sourceKinds: ["nxos", "nexus", "n9kv", "multilayer-switch", "l3-switch"], targetDeviceType: "l3-switch", supportLevel: "topology-only", interfaceNaming: "preserve", authLikelyRequired: true },
+  // Firewall-like security appliances.
+  { sourcePlatform: "*", sourceKinds: ["asav", "asa", "ftdv", "ftd", "firepower", "fortigate", "fortios", "paloalto", "panos", "vsrx", "srx", "firewall"], targetDeviceType: "firewall", supportLevel: "topology-only", interfaceNaming: "preserve", authLikelyRequired: true },
+  // Lightweight hosts and servers.
+  { sourcePlatform: "*", sourceKinds: ["vpcs"], targetDeviceType: "pc", supportLevel: "configuration-partial", interfaceNaming: "preserve" },
+  { sourcePlatform: "*", sourceKinds: ["desktop-host", "docker-host", "alpine", "ubuntu-host", "linux-host", "linux"], targetDeviceType: "pc", supportLevel: "topology-only", interfaceNaming: "preserve", authLikelyRequired: true },
   { sourcePlatform: "*", sourceKinds: ["linux-server", "server"], targetDeviceType: "server", supportLevel: "topology-only", interfaceNaming: "preserve", authLikelyRequired: true },
-  { sourcePlatform: "*", sourceKinds: ["ethernet-switch", "l2-switch", "unmanaged-switch"], targetDeviceType: "l2-switch", supportLevel: "topology-only", interfaceNaming: "preserve" },
+  // Infrastructure.
   { sourcePlatform: "*", sourceKinds: ["ethernet-hub", "hub"], targetDeviceType: "hub", supportLevel: "topology-only", interfaceNaming: "preserve" },
-  { sourcePlatform: "*", sourceKinds: ["generic-router", "router"], targetDeviceType: "router", supportLevel: "topology-only", interfaceNaming: "preserve", authLikelyRequired: true },
+  { sourcePlatform: "*", sourceKinds: ["cloud", "nat-cloud", "internet"], targetDeviceType: "cloud", supportLevel: "topology-only", interfaceNaming: "preserve" },
 ];
 
 const FALLBACK: ImportDeviceMapping = {

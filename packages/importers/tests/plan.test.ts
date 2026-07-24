@@ -24,7 +24,7 @@ function parsed(): ParsedSourceTopology {
       {
         id: "fw1",
         label: "FW1",
-        sourceKind: "acme-firewall-9000",
+        sourceKind: "acme-widget-9000",
         vendor: "Acme",
         interfaces: ["eth0", "eth1"],
         startupConfig: "set security policy allow\n",
@@ -63,7 +63,7 @@ describe("import plan and execution", () => {
     expect(config.kind).toBe("external-appliance");
     expect(config.sourcePlatform).toBe("containerlab");
     expect(config.sourceVendor).toBe("Acme");
-    expect(config.sourceNodeKind).toBe("acme-firewall-9000");
+    expect(config.sourceNodeKind).toBe("acme-widget-9000");
     expect(config.authHint).toBe("likely-required");
     expect(config.unparsedConfig).toContain("set security policy allow");
     expect(result.sourceArtifacts.find((artifact) => artifact.nodeId === "fw1")?.text).toContain("set security policy allow");
@@ -77,7 +77,7 @@ describe("import plan and execution", () => {
     expect(JSON.stringify(a.report)).toBe(JSON.stringify(b.report));
     expect(a.report.mappedDeviceTypes).toMatchObject({ router: 1, "l2-switch": 1, pc: 1, "external-appliance": 1 });
     expect(a.report.ignoredVendorImages).toEqual(["acme-9000.qcow2"]);
-    expect(a.report.unsupportedDeviceTypes).toEqual(["acme-firewall-9000"]);
+    expect(a.report.unsupportedDeviceTypes).toEqual(["acme-widget-9000"]);
   });
 
   it("lets the user override a suggestion with a placeholder or exclusion", () => {

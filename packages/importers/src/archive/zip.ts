@@ -24,7 +24,7 @@ const CEN_SIG = 0x02014b50;
 const LOC_SIG = 0x04034b50;
 const ZIP64_SENTINEL = 0xffffffff;
 const BACKSLASH = String.fromCharCode(92);
-const NESTED_ARCHIVE_EXTENSIONS = new Set(["zip", "gz", "tgz", "tar", "bz2", "xz", "7z", "rar", "unl"]);
+const NESTED_ARCHIVE_EXTENSIONS = new Set(["zip", "gz", "tgz", "tar", "bz2", "xz", "7z", "rar"]);
 
 export function isZipArchive(bytes: Uint8Array): boolean {
   return bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b

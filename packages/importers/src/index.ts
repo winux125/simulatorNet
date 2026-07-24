@@ -14,4 +14,7 @@ export * from "./mapping/registry";
 export * from "./reports/report";
 export * from "./detect/detect";
 export * from "./adapters/adapter";
+export * from "./adapters/builtins";
+export * from "./config/ios-config";
+export * from "./config/apply";
 export * from "./plan/plan";
