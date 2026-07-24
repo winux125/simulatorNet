@@ -753,3 +753,44 @@ they reset on rebuild and are never persistent lab configuration. Limits are
 64 ACLs per routed device, 256 rules per ACL and 2,048 rules across one
 simulation engine. The browser worker and server verifier both consume this
 same core implementation; neither side evaluates user-provided JavaScript.
+
+### Deterministic NAT and PAT
+
+Router adds reusable static one-to-one NAT, bounded dynamic address pools and
+PAT overload for TCP, UDP and ICMP. L3 interfaces receive explicit `inside` or
+`outside` roles. PAT allocates the first collision-free token in
+49152–65535, independently per protocol, so identical inputs and virtual time
+produce identical translation tables. There is no random or wall-clock
+allocation.
+
+The implemented policy order is:
+
+```text
+inside → outside:
+  inbound ACL (inside-local source)
+  → route lookup
+  → source NAT/PAT
+  → outbound ACL (inside-global source)
+  → ARP/transmit
+
+outside → inside:
+  destination translation
+  → inbound ACL (translated inside-local destination)
+  → route lookup
+  → outbound ACL
+  → ARP/transmit
+```
+
+The router provides proxy ARP for configured global addresses and active PAT
+interface addresses. Static mappings accept inbound traffic by definition;
+dynamic/PAT traffic requires an active translation and otherwise emits
+`nat-no-translation`. Runtime mappings use only virtual-time expiry (300 s
+dynamic/TCP, 60 s UDP, 30 s ICMP) and are excluded from persistent
+configuration. Limits are 128 rules, 32 pools, 256 addresses per pool and
+1,024 active translations per routed device. Exhaustion and incomplete role
+configuration use typed errors, including `NAT_PORT_EXHAUSTED`,
+`NAT_POOL_EXHAUSTED`, `NAT_NO_TRANSLATION` and `NAT_ROLE_MISSING`.
+
+Hairpin NAT is intentionally not implemented in M10.3. A matching NAT rule
+selected by an ACL is evaluated by the same `PacketPolicyEngine`; no arbitrary
+script or client-provided translation result is accepted.

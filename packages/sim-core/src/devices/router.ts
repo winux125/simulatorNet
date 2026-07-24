@@ -23,6 +23,15 @@ import {
   PacketPolicyError,
 } from "../policy/packet-policy-engine";
 import {
+  NatEngine,
+  NatError,
+  type NatInterfaceRole,
+  type NatPool,
+  type NatRule,
+  type NatTranslation,
+  type NatTranslationResult,
+} from "../policy/nat-engine";
+import {
   BROADCAST_IP,
   intToIp,
   type Ipv4,
@@ -122,7 +131,9 @@ export interface DhcpPoolConfig {
 export class Router extends Device {
   readonly deviceType = "router" as const;
   readonly packetPolicy = new PacketPolicyEngine();
+  readonly nat = new NatEngine();
   private readonly l3 = new Map<string, L3Interface>();
+  private readonly natRoles = new Map<string, NatInterfaceRole>();
   private readonly staticRoutes: StaticRoute[] = [];
   private readonly dhcpPools: DhcpPool[] = [];
   private forwardingEnabled = true;
@@ -182,6 +193,58 @@ export class Router extends Device {
     this.packetPolicy.resetCounters();
   }
 
+  setNatRole(interfaceName: string, role: NatInterfaceRole | undefined): void {
+    if (!this.l3.has(interfaceName)) {
+      throw new NatError("NAT_ROLE_MISSING", `Router ${this.id} has no L3 interface ${interfaceName}.`);
+    }
+    if (role === undefined) this.natRoles.delete(interfaceName);
+    else this.natRoles.set(interfaceName, role);
+  }
+
+  natRole(interfaceName: string): NatInterfaceRole | undefined {
+    return this.natRoles.get(interfaceName);
+  }
+
+  defineNatPool(pool: NatPool): void {
+    this.nat.definePool(pool);
+  }
+
+  removeNatPool(poolId: string): void {
+    this.nat.removePool(poolId);
+  }
+
+  defineNatRule(rule: NatRule): void {
+    this.nat.defineRule(rule);
+  }
+
+  removeNatRule(ruleId: string): void {
+    this.nat.removeRule(ruleId);
+  }
+
+  natPoolConfigurations(): NatPool[] {
+    return this.nat.poolConfigurations();
+  }
+
+  natRuleConfigurations(): NatRule[] {
+    return this.nat.ruleConfigurations();
+  }
+
+  natTranslations(): NatTranslation[] {
+    return this.nat.translationTable(this.engine.now());
+  }
+
+  resetNatRuntime(): void {
+    this.nat.resetRuntime();
+  }
+
+  validateNatRoles(): void {
+    if (!this.nat.hasRules()) return;
+    const roles = new Set(this.natRoles.values());
+    if (!roles.has("inside") || !roles.has("outside")) {
+      throw new NatError("NAT_ROLE_MISSING", "NAT requires at least one inside and one outside L3 interface.");
+    }
+  }
+
   /** Assign an IP/mask directly to a physical port (a routed interface). */
   configureInterface(physicalName: string, config: L3Config): L3Interface {
     const iface = this.getOrCreateInterface(physicalName);
@@ -216,6 +279,7 @@ export class Router extends Device {
 
   removeInterface(name: string): void {
     this.l3.delete(name);
+    this.natRoles.delete(name);
   }
 
   setForwardingEnabled(enabled: boolean): void {
@@ -428,12 +492,19 @@ export class Router extends Device {
     this.arpTable.set(arp.senderIp, normalizeMac(arp.senderMac));
     this.flushArpPending(arp.senderIp);
 
-    if (arp.op === ArpOp.Request && iface.ip !== undefined && arp.targetIp === iface.ip) {
+    const ownsTarget = iface.ip !== undefined && (
+      arp.targetIp === iface.ip
+      || (
+        this.natRoles.get(iface.name) === "outside"
+        && this.nat.ownsOutsideAddress(arp.targetIp, iface.ip)
+      )
+    );
+    if (arp.op === ArpOp.Request && ownsTarget) {
       const reply: ArpPacket = {
         kind: "arp",
         op: ArpOp.Reply,
         senderMac: iface.physical.mac,
-        senderIp: iface.ip,
+        senderIp: arp.targetIp,
         targetMac: arp.senderMac,
         targetIp: arp.senderIp,
       };
@@ -477,22 +548,37 @@ export class Router extends Device {
   // --- IPv4 / ICMP -------------------------------------------------------
 
   private handleIpv4(packet: Ipv4Packet, frame: EthernetFrame, ingress: L3Interface): void {
-    if (!this.permitByAcl(packet, ingress, "in")) return;
+    let acceptedPacket = packet;
+    if (this.nat.hasRules() && this.natRoles.get(ingress.name) === "outside") {
+      this.validateNatRoles();
+      try {
+        const result = this.nat.translateInbound(packet, this.natContext(ingress));
+        acceptedPacket = result.packet;
+        this.traceNatTranslation("destination", packet, result);
+      } catch (error) {
+        if (error instanceof NatError && error.code === "NAT_NO_TRANSLATION") {
+          this.traceNatError(error, ingress, packet);
+          return;
+        }
+        throw error;
+      }
+    }
+    if (!this.permitByAcl(acceptedPacket, ingress, "in")) return;
 
     // Opportunistically cache the L2 address of the L3 source.
-    this.arpTable.set(packet.src, normalizeMac(frame.src));
+    this.arpTable.set(acceptedPacket.src, normalizeMac(frame.src));
 
     // DHCP server: broadcast requests are delivered locally regardless of dst IP.
-    if (packet.payload.kind === "udp" && packet.payload.dstPort === DHCP_SERVER_PORT) {
-      this.handleDhcp(packet.payload, ingress);
+    if (acceptedPacket.payload.kind === "udp" && acceptedPacket.payload.dstPort === DHCP_SERVER_PORT) {
+      this.handleDhcp(acceptedPacket.payload, ingress);
       return;
     }
 
-    if (this.isOwnIp(packet.dst)) {
-      this.deliverLocal(packet);
+    if (this.isOwnIp(acceptedPacket.dst)) {
+      this.deliverLocal(acceptedPacket);
       return;
     }
-    this.forward(packet, ingress);
+    this.forward(acceptedPacket, ingress);
   }
 
   private deliverLocal(packet: Ipv4Packet): void {
@@ -554,7 +640,24 @@ export class Router extends Device {
       device: this.id,
       detail: { dst: packet.dst, egress: route.egress.name, nextHop: route.nextHopIp },
     });
-    this.egressSend({ ...packet, ttl }, route.egress, route.nextHopIp);
+    let outbound = { ...packet, ttl };
+    if (this.nat.hasRules()) {
+      this.validateNatRoles();
+      const ingressRole = this.natRoles.get(ingress.name);
+      const egressRole = this.natRoles.get(route.egress.name);
+      if (!ingressRole || !egressRole) {
+        throw new NatError(
+          "NAT_ROLE_MISSING",
+          `NAT role missing on ${!ingressRole ? ingress.name : route.egress.name}.`,
+        );
+      }
+      if (ingressRole === "inside" && egressRole === "outside") {
+        const result = this.nat.translateOutbound(outbound, this.natContext(route.egress));
+        this.traceNatTranslation("source", outbound, result);
+        outbound = result.packet;
+      }
+    }
+    this.egressSend(outbound, route.egress, route.nextHopIp);
   }
 
   /** Originate a locally-generated packet (echo reply, ICMP error). */
@@ -678,6 +781,56 @@ export class Router extends Device {
       detail,
     });
     return decision.action === "permit";
+  }
+
+  private natContext(outside: L3Interface) {
+    return {
+      nowNs: this.engine.now(),
+      outsideInterfaceAddress: outside.ip,
+      aclPermits: (aclId: string, packet: Ipv4Packet) => this.packetPolicy.aclPermits(aclId, packet),
+    };
+  }
+
+  private traceNatTranslation(
+    addressField: "source" | "destination",
+    before: Ipv4Packet,
+    result: NatTranslationResult,
+  ): void {
+    if (!result.translation) return;
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "nat-translated",
+      device: this.id,
+      detail: {
+        ruleId: result.translation.ruleId,
+        kind: result.translation.kind,
+        protocol: result.translation.protocol,
+        addressField,
+        originalAddress: addressField === "source" ? before.src : before.dst,
+        translatedAddress: addressField === "source" ? result.packet.src : result.packet.dst,
+        originalToken: addressField === "source"
+          ? packetTransportToken(before, "source")
+          : packetTransportToken(before, "destination"),
+        translatedToken: addressField === "source"
+          ? packetTransportToken(result.packet, "source")
+          : packetTransportToken(result.packet, "destination"),
+      },
+    });
+  }
+
+  private traceNatError(error: NatError, ingress: L3Interface, packet: Ipv4Packet): void {
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "nat-no-translation",
+      device: this.id,
+      detail: {
+        code: error.code,
+        interface: ingress.name,
+        source: packet.src,
+        destination: packet.dst,
+        protocol: packet.protocol,
+      },
+    });
   }
 
   // --- DHCP server -------------------------------------------------------
@@ -823,4 +976,15 @@ function popcount(maskInt: number): number {
     count++;
   }
   return count;
+}
+
+function packetTransportToken(
+  packet: Ipv4Packet,
+  side: "source" | "destination",
+): number | undefined {
+  if (packet.payload.kind === "tcp" || packet.payload.kind === "udp") {
+    return side === "source" ? packet.payload.srcPort : packet.payload.dstPort;
+  }
+  if (packet.payload.kind === "icmp") return packet.payload.identifier;
+  return undefined;
 }

@@ -31,6 +31,7 @@ export * from "./packets/dhcp";
 
 // Reusable L3 packet policy (Router, L3 switch, and future Firewall)
 export * from "./policy/packet-policy-engine";
+export * from "./policy/nat-engine";
 
 // Host transport
 export * from "./transport/errors";

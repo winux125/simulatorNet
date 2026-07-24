@@ -213,6 +213,22 @@ export class PacketPolicyEngine {
       throw new PacketPolicyError("ACL_NOT_FOUND", `ACL '${binding.aclId}' is not defined.`);
     }
 
+    return this.evaluateDefinition(acl, interfaceName, direction, packet);
+  }
+
+  /** Evaluate a named ACL as a selector (for example, a NAT source rule). */
+  aclPermits(aclId: string, packet: Ipv4Packet): boolean {
+    const acl = this.acls.get(aclId);
+    if (!acl) throw new PacketPolicyError("ACL_NOT_FOUND", `ACL '${aclId}' is not defined.`);
+    return this.evaluateDefinition(acl, "policy-selector", "in", packet).action === "permit";
+  }
+
+  private evaluateDefinition(
+    acl: Ipv4Acl,
+    interfaceName: string,
+    direction: AclDirection,
+    packet: Ipv4Packet,
+  ): AclDecision {
     const match = acl.rules.find((rule) => matchesRule(acl.type, rule, packet));
     if (match) {
       this.incrementCounter(acl.id, match.sequence, match.action);
