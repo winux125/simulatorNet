@@ -5,9 +5,19 @@ async function chooseDemo(page: import("@playwright/test").Page, name: RegExp) {
   await page.getByRole("button", { name }).click();
 }
 
+async function closeInspector(page: import("@playwright/test").Page) {
+  const openInspector = page.getByRole("region", { name: "Inspector" });
+  if (await openInspector.isVisible()) {
+    await openInspector.getByRole("button", { name: "Close inspector" }).click();
+  }
+}
+
 async function openCli(page: import("@playwright/test").Page, hostname: string) {
+  await closeInspector(page);
   await page.getByRole("button", { name: `Select ${hostname}` }).click();
-  await page.getByTestId("inspector").getByRole("button", { name: /Open CLI/ }).click();
+  const inspector = page.getByRole("region", { name: "Inspector" });
+  await expect(inspector).toContainText(hostname);
+  await inspector.getByRole("button", { name: /Open CLI/ }).click();
   await expect(page.getByRole("tab", { name: new RegExp(hostname) })).toBeVisible();
 }
 
@@ -22,6 +32,91 @@ async function chooseTheme(page: import("@playwright/test").Page, theme: "System
   await page.getByRole("menuitem", { name: "Theme", exact: true }).click();
   await page.getByRole("menuitemradio", { name: theme, exact: true }).click();
 }
+
+async function chooseIconProfile(
+  page: import("@playwright/test").Page,
+  profile: "Classic Lab" | "Education Flat" | "Minimal Network",
+) {
+  await page.getByRole("menuitem", { name: "View", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Device Icon Style", exact: true }).click();
+  await page.getByRole("menuitemradio", { name: profile, exact: true }).click();
+}
+
+test("topology visual profiles and domain diagram tools persist", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await chooseDemo(page, /Large Campus Topology/);
+  await expect(page.locator(".canvas-statusbar").getByText("13 devices", { exact: true })).toBeVisible();
+  await expect(page.locator(".canvas-statusbar").getByText("12 links", { exact: true })).toBeVisible();
+  await expect(page.locator(".inspector-panel")).toHaveCount(0);
+
+  await chooseTheme(page, "Light");
+  await chooseIconProfile(page, "Classic Lab");
+  await page.getByRole("button", { name: "Fit topology" }).click();
+  await page.waitForTimeout(300);
+  await page.mouse.move(1400, 880);
+  await page.waitForTimeout(120);
+  await page.screenshot({ path: "/tmp/classic-large-topology-1440x900.png", animations: "disabled" });
+
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.getByRole("button", { name: "Fit topology" }).click();
+  await page.waitForTimeout(250);
+  await page.mouse.move(1880, 1060);
+  await page.waitForTimeout(120);
+  await page.screenshot({ path: "/tmp/classic-large-topology-1920x1080.png", animations: "disabled" });
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await chooseIconProfile(page, "Education Flat");
+  await page.getByRole("button", { name: "Fit topology" }).click();
+  await page.waitForTimeout(200);
+  await page.mouse.move(1400, 880);
+  await page.waitForTimeout(120);
+  await expect(page.locator('[data-device-type="router"]').first()).toHaveAttribute("data-profile", "education");
+  await page.screenshot({ path: "/tmp/education-topology-1440x900.png", animations: "disabled" });
+
+  await chooseIconProfile(page, "Minimal Network");
+  await page.getByRole("button", { name: "Fit topology" }).click();
+  await page.waitForTimeout(200);
+  await page.mouse.move(1400, 880);
+  await page.waitForTimeout(120);
+  await expect(page.locator('[data-device-type="router"]').first()).toHaveAttribute("data-profile", "minimal");
+  await page.screenshot({ path: "/tmp/minimal-topology-1440x900.png", animations: "disabled" });
+
+  await chooseIconProfile(page, "Classic Lab");
+  await chooseTheme(page, "Dark");
+  await page.getByRole("button", { name: "Fit topology" }).click();
+  await page.waitForTimeout(200);
+  await page.mouse.move(1400, 880);
+  await page.waitForTimeout(120);
+  await page.screenshot({ path: "/tmp/classic-dark-1440x900.png", animations: "disabled" });
+
+  await page.getByRole("button", { name: "Instructions", exact: true }).click();
+  await expect(page.getByRole("complementary", { name: "Lab instructions" })).toContainText("Inspect the core");
+  await page.getByRole("button", { name: "Close instructions" }).click();
+
+  await page.getByRole("button", { name: "Edit Topology" }).click();
+  await page.getByRole("menuitem", { name: "Tools", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Add Diagram Annotation", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Text", exact: true }).click();
+  await page.getByTestId("topology-graph").click({ position: { x: 620, y: 180 } });
+  await expect(page.getByLabel("Annotation formatting")).toBeVisible();
+
+  page.once("dialog", (dialog) => dialog.accept("Trunk VLAN 10,20"));
+  await page.locator('[data-cell-id="core-wan"] path').last().click({ button: "right", force: true });
+  await page.getByRole("menuitem", { name: "Edit link label…" }).click();
+  await expect.poll(async () => (await page.locator(".x6-edge-label").allTextContents()).join(" ").replaceAll("\u00a0", " ")).toContain("Trunk VLAN 10,20");
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("menuitem", { name: "File", exact: true }).click();
+  await page.getByRole("menuitem", { name: /Save \/ Export Lab/ }).click();
+  const download = await downloadPromise;
+  const exportPath = await download.path();
+  expect(exportPath).not.toBeNull();
+  await page.locator("#load-lab-file").setInputFiles(exportPath!);
+  await expect(page.locator(".canvas-statusbar").getByText("13 devices", { exact: true })).toBeVisible();
+  await expect(page.getByText("Trunk VLAN 10,20", { exact: true })).toBeVisible();
+});
 
 test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI", async ({ page }) => {
   const menu = (label: string) => page.getByRole("menuitem", { name: label, exact: true });
@@ -90,6 +185,7 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   await page.getByRole("button", { name: "Simulation", exact: true }).click();
   await expect(page.getByRole("button", { name: "Simulation", exact: true })).toHaveAttribute("aria-pressed", "true");
 
+  await closeInspector(page);
   await page.getByRole("button", { name: "Select PC1" }).dblclick();
   const deviceWindow = page.getByRole("dialog", { name: "PC1 device window" });
   await expect(deviceWindow).toBeVisible();
@@ -134,7 +230,7 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
     return text.match(/C:\\>/g)?.length ?? 0;
   }).toBe(1);
 
-  // 8. View menu → hide and restore the Inspector.
+  // 8. A device click opened the Inspector; View can hide and restore it.
   await menu("View").click();
   await page.getByRole("menuitem", { name: "Hide Inspector" }).click();
   await expect(page.locator(".inspector-panel")).toHaveCount(0);
@@ -265,6 +361,7 @@ test("two draft-configured PCs ping through an L2 switch after Start Lab", async
   await configurePc("PC2", "192.168.10.20");
   await expect(page.getByText(/Unknown device/)).toHaveCount(0);
 
+  await closeInspector(page);
   await page.getByRole("button", { name: "Add link" }).click();
   await page.locator('[data-cell-id="pc-1"] [data-interface="eth0"]').dragTo(
     page.locator('[data-cell-id="switch-1"] [data-interface="Gi0/1"]'),
@@ -414,7 +511,7 @@ test("M10.2 DNS and HTTP traverse UDP/TCP and expose Server service UI", async (
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
   await chooseDemo(page, /DNS \+ Web Services/);
-  await expect(page.getByLabel("Enabled services: DNS, HTTP")).toBeVisible();
+  await expect(page.getByLabel("Enabled services: DNS, HTTP")).toHaveCount(1);
 
   await openCli(page, "PC1");
   await runCli(page, "nslookup portal.lab");
@@ -423,6 +520,7 @@ test("M10.2 DNS and HTTP traverse UDP/TCP and expose Server service UI", async (
   await expect(page.getByTestId("terminal-transcript")).toContainText("HTTP/1.1 200");
   await expect(page.getByTestId("terminal-transcript")).toContainText("Welcome to SimulatorNet");
 
+  await closeInspector(page);
   await page.getByRole("button", { name: "Select PC1" }).dblclick();
   const pcWindow = page.getByRole("dialog", { name: "PC1 device window" });
   await pcWindow.getByRole("button", { name: "Web Browser" }).click();
@@ -431,13 +529,13 @@ test("M10.2 DNS and HTTP traverse UDP/TCP and expose Server service UI", async (
   await expect(pcWindow.getByLabel("Web response preview")).toContainText("Welcome to SimulatorNet");
   await pcWindow.getByRole("button", { name: "Close device window" }).click();
 
+  await closeInspector(page);
   await page.getByRole("button", { name: "Select SRV1" }).dblclick();
   const serverWindow = page.getByRole("dialog", { name: "SRV1 device window" });
   await serverWindow.getByRole("tab", { name: "Services" }).click();
   await expect(serverWindow.getByText("DNS", { exact: true }).first()).toBeVisible();
   await expect(serverWindow.getByText("HTTP", { exact: true }).first()).toBeVisible();
   await serverWindow.getByRole("button", { name: "Close device window" }).click();
-  await page.getByRole("button", { name: "Select SRV1" }).click();
   await page.getByRole("tab", { name: "Configuration" }).click();
   await expect(page.getByLabel("Server services")).toBeVisible();
   await expect(page.getByLabel("DNS records")).toHaveValue(/portal\.lab/);
@@ -468,10 +566,11 @@ test("M10.2 TFTP, NTP, and Syslog workflows retain bounded runtime state", async
   await runCli(page, "sim syslog send 172.20.10.10 warning uplink changed");
   await expect(page.getByTestId("terminal-transcript")).toContainText("message sent");
 
+  await closeInspector(page);
   await page.getByRole("button", { name: "Select SRV1" }).click();
   await page.getByRole("tab", { name: "Runtime" }).click();
   await expect(page.getByText("Syslog messages")).toBeVisible();
-  await expect(page.getByTestId("inspector").getByText("uplink changed", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Inspector" }).getByText("uplink changed", { exact: true })).toBeVisible();
   await chooseTheme(page, "Dark");
   await page.screenshot({ path: "/tmp/m10-2-services-dark-1280x720.png", animations: "disabled" });
   await chooseTheme(page, "Light");

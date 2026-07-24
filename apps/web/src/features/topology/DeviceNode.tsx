@@ -1,8 +1,6 @@
-import { getDeviceProfile, type DeviceType } from "@sim/contracts";
-import { TerminalSquare } from "lucide-react";
+import type { DeviceType } from "@sim/contracts";
 import type { MouseEvent } from "react";
 import { DeviceIcon } from "../../components/DeviceIcon";
-import { StatusIndicator } from "../../ui";
 
 export interface DeviceNodeData {
   hostname: string;
@@ -18,15 +16,8 @@ export interface DeviceNodeData {
   onContextMenu(id: string, event: MouseEvent): void;
 }
 
-/**
- * A single topology device. Rendered both by the X6 graph (via
- * `@antv/x6-react-shape`) in the browser and directly by the test harness, so
- * it stays framework-agnostic: no canvas-library imports, and interaction is a
- * plain accessible button. X6 owns dragging and edge routing; this button owns
- * select / open / context-menu so the same affordances work under jsdom.
- */
+/** Compact equipment symbol rendered inside the X6 React node. */
 export function DeviceNode({ id, data, selected }: { id: string; data: DeviceNodeData; selected: boolean }) {
-  const profile = getDeviceProfile(data.deviceType);
   const nodeClass = [
     "device-node",
     selected ? "is-selected" : "",
@@ -44,16 +35,20 @@ export function DeviceNode({ id, data, selected }: { id: string; data: DeviceNod
         onClick={() => data.onActivate(id)}
         onDoubleClick={() => data.onOpen(id)}
       >
-        <span className="device-node__icon" aria-hidden="true"><DeviceIcon type={data.deviceType} size={22} state={data.status === "up" ? "running" : "stopped"} /></span>
-        <span className="device-node__copy">
-          <span><strong>{data.hostname}</strong>{data.terminalOpen && <TerminalSquare size={11} aria-label="CLI open" />}</span>
-          <small>{data.subtitle}</small>
+        <span className="device-node__icon" aria-hidden="true">
+          <DeviceIcon type={data.deviceType} size={48} state={data.status === "up" ? "running" : "stopped"} />
         </span>
-        <StatusIndicator status={data.status} compact />
+        <span className="device-node__name">
+          <i aria-hidden="true" />
+          <strong>{data.hostname}</strong>
+        </span>
+        <small>{data.subtitle}</small>
       </button>
-      <span className="device-node__type" title={profile.description}>{profile.displayName}</span>
-      {data.serviceBadges && data.serviceBadges.length > 0 && <span className="device-node__services" aria-label={`Enabled services: ${data.serviceBadges.join(", ")}`}>{data.serviceBadges.slice(0, 3).map((service) => <b key={service}>{service}</b>)}</span>}
-      {data.configurationChanged && <span className="device-node__changed" title="Configuration changed">●</span>}
+      {data.terminalOpen && <span className="device-node__terminal" title="CLI open">CLI</span>}
+      {data.serviceBadges && data.serviceBadges.length > 0 && (
+        <span className="visually-hidden" aria-label={`Enabled services: ${data.serviceBadges.join(", ")}`} />
+      )}
+      {data.configurationChanged && <span className="device-node__changed" title="Pending rebuild">!</span>}
     </div>
   );
 }

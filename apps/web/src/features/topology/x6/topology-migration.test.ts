@@ -159,7 +159,7 @@ describe("M10.2.2a topology adapter", () => {
     const off = vi.fn();
     const fakeGraph = { on, off, clientToLocal: (p: { x: number; y: number }) => p, zoom: () => 1 } as unknown as Parameters<typeof attachGraphEvents>[0];
     const detach = attachGraphEvents(fakeGraph, {
-      onNodeMoved: vi.fn(), onEdgeConnected: vi.fn(), onEdgeClick: vi.fn(), onEdgeContextMenu: vi.fn(),
+      onNodeMoved: vi.fn(), onNodeClick: vi.fn(), onNodeDoubleClick: vi.fn(), onEdgeConnected: vi.fn(), onEdgeClick: vi.fn(), onEdgeContextMenu: vi.fn(),
       onBlankClick: vi.fn(), onBlankContextMenu: vi.fn(), onScale: vi.fn(),
     });
     const subscribed = on.mock.calls.map((call) => call[0]);
@@ -169,7 +169,7 @@ describe("M10.2.2a topology adapter", () => {
   });
 
   it("16. drives canvas styles from theme-aware CSS variables", () => {
-    expect(edgeLineAttrs(true, false).stroke).toContain("var(--color-link-up");
+    expect(edgeLineAttrs(true, false).stroke).toContain("var(--color-topology-link");
     expect(edgeLineAttrs(false, true).stroke).toContain("var(--color-accent");
     expect(portBodyAttrs(false, true).fill).toContain("var(");
   });

@@ -1,4 +1,4 @@
-import { PORT_GROUP, portBodyAttrs } from "./styles";
+import { PORT_GROUP_LEFT, PORT_GROUP_RIGHT, portBodyAttrs } from "./styles";
 import type { GraphNodeModel } from "./types";
 
 // One X6 port per physical interface. Links attach to a specific interface, so
@@ -12,7 +12,12 @@ export interface PortDefinition {
 
 function portGroups(): Record<string, any> {
   return {
-    [PORT_GROUP]: {
+    [PORT_GROUP_LEFT]: {
+      position: "left",
+      label: { position: { name: "left", args: { x: -6 } } },
+      attrs: { circle: portBodyAttrs(false, false) },
+    },
+    [PORT_GROUP_RIGHT]: {
       position: "right",
       label: { position: { name: "right", args: { x: 6 } } },
       attrs: {
@@ -26,9 +31,9 @@ export function buildPorts(node: GraphNodeModel, upInterfaces: ReadonlySet<strin
   const occupied = new Set(node.occupiedInterfaces);
   return {
     groups: portGroups(),
-    items: node.interfaces.map((iface) => ({
+    items: node.interfaces.map((iface, index) => ({
       id: iface,
-      group: PORT_GROUP,
+      group: index % 2 === 0 ? PORT_GROUP_RIGHT : PORT_GROUP_LEFT,
       attrs: {
         circle: {
           ...portBodyAttrs(occupied.has(iface), upInterfaces.has(iface)),

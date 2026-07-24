@@ -4,7 +4,17 @@ import { create } from "zustand";
 
 export type WorkspaceMode = "edit" | "simulate";
 export type ExecutionMode = "realtime" | "simulation";
-export type WorkspaceTool = "select" | "add-device" | "add-link" | "delete";
+export type WorkspaceTool =
+  | "select"
+  | "add-device"
+  | "add-link"
+  | "delete"
+  | "annotation-text"
+  | "annotation-rectangle"
+  | "annotation-ellipse"
+  | "annotation-line"
+  | "annotation-arrow";
+export type PortLabelMode = "always" | "selected" | "hidden";
 
 // Lab power lifecycle — a concept distinct from the Edit/Operate workspace mode
 // and from the Realtime/Simulation execution mode. Topology may only be mutated
@@ -61,7 +71,7 @@ interface WorkspaceState {
   dockTab: DockTab;
   paletteOpen: boolean;
   inspectorOpen: boolean;
-  showLinkLabels: boolean;
+  portLabelMode: PortLabelMode;
   fitRequest: number;
   zoomResetRequest: number;
   zoomInRequest: number;
@@ -96,7 +106,7 @@ interface WorkspaceState {
   setDockTab(tab: DockTab): void;
   setPaletteOpen(open: boolean): void;
   setInspectorOpen(open: boolean): void;
-  setShowLinkLabels(show: boolean): void;
+  setPortLabelMode(mode: PortLabelMode): void;
   requestFit(): void;
   requestZoomIn(): void;
   requestZoomOut(): void;
@@ -124,8 +134,8 @@ const initialState = {
   inspectorTab: "overview" as const,
   dockTab: "terminal" as const,
   paletteOpen: false,
-  inspectorOpen: true,
-  showLinkLabels: true,
+  inspectorOpen: false,
+  portLabelMode: "always" as const,
   fitRequest: 0,
   zoomResetRequest: 0,
   zoomInRequest: 0,
@@ -210,7 +220,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   setDockTab: (dockTab) => set({ dockTab }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
   setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
-  setShowLinkLabels: (showLinkLabels) => set({ showLinkLabels }),
+  setPortLabelMode: (portLabelMode) => set({ portLabelMode }),
   requestFit: () => set((state) => ({ fitRequest: state.fitRequest + 1 })),
   requestZoomIn: () => set((state) => ({ zoomInRequest: state.zoomInRequest + 1 })),
   requestZoomOut: () => set((state) => ({ zoomOutRequest: state.zoomOutRequest + 1 })),

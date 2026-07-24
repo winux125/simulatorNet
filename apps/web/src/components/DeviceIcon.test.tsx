@@ -6,21 +6,17 @@ import { dirname, join, resolve } from "node:path";
 import { DEVICE_TYPES, type DeviceType } from "@sim/contracts";
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  DEVICE_ICON_PROFILE_STORAGE_KEY,
+  setDeviceIconProfile,
+  type DeviceIconProfile,
+} from "../hooks/useDeviceIconProfile";
 import { DeviceIcon } from "./DeviceIcon";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const iconsDir = resolve(here, "../assets/device-icons");
-
-afterEach(() => cleanup());
-
-function renderIcon(type: DeviceType, props: Partial<{ state: string; title: string }> = {}) {
-  const { container } = render(<DeviceIcon type={type} size={32} {...(props as object)} />);
-  const svg = container.querySelector("svg");
-  if (!svg) throw new Error(`no svg rendered for ${type}`);
-  return svg;
-}
-
-const assetFor: Record<DeviceType, string> = {
+const profiles: DeviceIconProfile[] = ["classic", "education", "minimal"];
+const assetNames: Record<DeviceType, string> = {
   pc: "pc.svg",
   server: "server.svg",
   hub: "hub.svg",
@@ -30,83 +26,74 @@ const assetFor: Record<DeviceType, string> = {
   router: "router.svg",
 };
 
-describe("M10.2.2b device icon system", () => {
-  it("1. renders a real (non-fallback) icon for every device profile", () => {
-    for (const type of DEVICE_TYPES) {
-      const svg = renderIcon(type);
-      expect(svg.getAttribute("data-device-type")).toBe(type);
-      expect(svg.getAttribute("data-fallback")).toBeNull();
-      expect(svg.querySelectorAll("rect, circle, path, polygon, line").length).toBeGreaterThan(0);
+afterEach(() => {
+  cleanup();
+  window.localStorage.clear();
+});
+
+function renderIcon(type: DeviceType, profile?: DeviceIconProfile, state = "stopped") {
+  const { container } = render(<DeviceIcon type={type} profile={profile} state={state as "stopped"} size={48} />);
+  const svg = container.querySelector("svg");
+  if (!svg) throw new Error(`no SVG rendered for ${type}`);
+  return svg;
+}
+
+function allAssetPaths(): string[] {
+  return profiles.flatMap((profile) => readdirSync(join(iconsDir, profile))
+    .filter((name) => name.endsWith(".svg"))
+    .map((name) => join(iconsDir, profile, name)));
+}
+
+describe("topology device icon profiles", () => {
+  it("provides all seven device types in all three profiles", () => {
+    for (const profile of profiles) {
+      expect(readdirSync(join(iconsDir, profile)).sort()).toEqual(Object.values(assetNames).sort());
+      for (const type of DEVICE_TYPES) {
+        const svg = renderIcon(type, profile);
+        expect(svg.dataset.profile).toBe(profile);
+        expect(svg.dataset.deviceType).toBe(type);
+        expect(svg.dataset.fallback).toBeUndefined();
+      }
     }
+    expect(allAssetPaths()).toHaveLength(21);
   });
 
-  it("2. maps every device type to a unique, distinct SVG asset", () => {
-    const files = readdirSync(iconsDir).filter((file) => file.endsWith(".svg"));
-    expect(new Set(files).size).toBe(files.length);
-    expect(files.sort()).toEqual(Object.values(assetFor).sort());
-    const bodies = files.map((file) => readFileSync(join(iconsDir, file), "utf8"));
-    expect(new Set(bodies).size).toBe(bodies.length);
-  });
-
-  it("3. draws every icon with currentColor only", () => {
-    for (const type of DEVICE_TYPES) {
-      const svg = renderIcon(type);
-      expect(svg.getAttribute("stroke")).toBe("currentColor");
-    }
-    for (const file of Object.values(assetFor)) {
-      const body = readFileSync(join(iconsDir, file), "utf8");
-      expect(body).toContain('stroke="currentColor"');
-      expect(body).not.toMatch(/#[0-9a-fA-F]{3,6}/); // no hard-coded hex palette
-      expect(body).not.toMatch(/rgb\(|hsl\(|gradient/i);
-    }
-  });
-
-  it("4. embeds no raster images", () => {
-    for (const file of Object.values(assetFor)) {
-      const body = readFileSync(join(iconsDir, file), "utf8");
-      expect(body).not.toMatch(/<image\b/i);
-      expect(body).not.toMatch(/data:image\//i);
-      expect(body).not.toMatch(/\.(png|jpe?g|webp|gif)/i);
-    }
-  });
-
-  it("5. references no external URLs", () => {
-    for (const file of Object.values(assetFor)) {
-      const body = readFileSync(join(iconsDir, file), "utf8").replace(/xmlns="[^"]*"/g, "");
-      expect(body).not.toMatch(/https?:\/\//i);
-      expect(body).not.toMatch(/xlink:href|href=/i);
-      expect(body).not.toMatch(/url\(/i);
-    }
-  });
-
-  it("6. carries no Cisco or Packet Tracer branding", () => {
-    for (const file of Object.values(assetFor)) {
-      const body = readFileSync(join(iconsDir, file), "utf8");
-      expect(body).not.toMatch(/cisco|packet\s*tracer|packettracer/i);
-      expect(body).not.toMatch(/<text\b/i); // no embedded text
-    }
-  });
-
-  it("10. keeps icons legible via currentColor across themes", () => {
-    // currentColor inheritance is what makes the icon follow the theme text
-    // colour; a fixed fill/stroke would break in the opposite theme.
-    for (const file of Object.values(assetFor)) {
-      const body = readFileSync(join(iconsDir, file), "utf8");
+  it("uses a uniform viewBox and theme-aware currentColor", () => {
+    for (const path of allAssetPaths()) {
+      const body = readFileSync(path, "utf8");
+      expect(body).toContain('viewBox="0 0 64 64"');
       expect(body).toContain("currentColor");
-      expect(body).not.toMatch(/fill="#|stroke="#/);
+      expect(body).not.toMatch(/#[0-9a-fA-F]{3,8}|rgb\(|hsl\(|gradient/i);
     }
   });
 
-  it("11. keeps runtime status separate from the icon geometry", () => {
-    const stopped = renderIcon("router", { state: "stopped" }).innerHTML;
-    const running = renderIcon("router", { state: "running" }).innerHTML;
-    expect(stopped).toBe(running); // geometry does not change with status
-    expect(renderIcon("router", { state: "error" }).getAttribute("data-state")).toBe("error");
+  it("contains no proprietary, raster, embedded-text or external assets", () => {
+    for (const path of allAssetPaths()) {
+      const body = readFileSync(path, "utf8").replace(/xmlns="[^"]*"/g, "");
+      expect(body).not.toMatch(/cisco|packet\s*tracer|pnetlab|eve-ng/i);
+      expect(body).not.toMatch(/<image\b|<text\b|data:image\/|\.(png|jpe?g|webp|gif)/i);
+      expect(body).not.toMatch(/https?:\/\/|xlink:href|href=|url\(/i);
+    }
   });
 
-  it("12. degrades to a controlled fallback for an unknown type", () => {
-    const svg = renderIcon("satellite" as DeviceType);
-    expect(svg.getAttribute("data-fallback")).toBe("true");
-    expect(svg.querySelectorAll("rect, path").length).toBeGreaterThan(0);
+  it("defaults to Classic Lab and persists the visual preference locally", () => {
+    expect(renderIcon("router").dataset.profile).toBe("classic");
+    setDeviceIconProfile("education");
+    expect(window.localStorage.getItem(DEVICE_ICON_PROFILE_STORAGE_KEY)).toBe("education");
+    expect(document.documentElement.dataset.deviceIconProfile).toBe("education");
+    expect(renderIcon("router").dataset.profile).toBe("education");
+  });
+
+  it("keeps runtime power state separate from icon geometry", () => {
+    const stopped = renderIcon("router", "classic", "stopped");
+    const markup = stopped.innerHTML;
+    cleanup();
+    const running = renderIcon("router", "classic", "running");
+    expect(running.innerHTML).toBe(markup);
+    expect(running.dataset.state).toBe("running");
+  });
+
+  it("uses a controlled fallback for an unknown device type", () => {
+    expect(renderIcon("satellite" as DeviceType, "minimal").dataset.fallback).toBe("true");
   });
 });

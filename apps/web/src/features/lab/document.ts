@@ -2,6 +2,8 @@ import {
   getDeviceProfile,
   type DeviceConfig,
   type DeviceType,
+  type DiagramAnnotation,
+  type DiagramLinkLabel,
   type HostIpConfiguration,
   type HostStaticConfiguration,
   type LabDocument,
@@ -126,6 +128,9 @@ export function duplicateDraftDevice(document: LabDocument, nodeId: string): Lab
 export function removeDraftDevice(document: LabDocument, nodeId: string): LabDocument {
   const configurations = { ...document.configurations };
   delete configurations[nodeId];
+  const removedLinkIds = new Set(document.topology.links
+    .filter((link) => link.a.node === nodeId || link.b.node === nodeId)
+    .map((link) => link.id));
   return {
     ...document,
     topology: {
@@ -134,6 +139,12 @@ export function removeDraftDevice(document: LabDocument, nodeId: string): LabDoc
       links: document.topology.links.filter((link) => link.a.node !== nodeId && link.b.node !== nodeId),
     },
     configurations,
+    diagram: document.diagram === undefined
+      ? undefined
+      : {
+          ...document.diagram,
+          linkLabels: document.diagram.linkLabels.filter((label) => !removedLinkIds.has(label.linkId)),
+        },
   };
 }
 
@@ -280,6 +291,100 @@ export function withNodePosition(document: LabDocument, nodeId: string, position
   };
 }
 
+function diagram(document: LabDocument) {
+  return document.diagram ?? { annotations: [], linkLabels: [] };
+}
+
+export function addDiagramAnnotation(
+  document: LabDocument,
+  annotation: DiagramAnnotation,
+): LabDocument {
+  const current = diagram(document);
+  return {
+    ...document,
+    diagram: {
+      ...current,
+      annotations: [...current.annotations.filter((item) => item.id !== annotation.id), annotation],
+    },
+  };
+}
+
+export function updateDiagramAnnotation(
+  document: LabDocument,
+  annotation: DiagramAnnotation,
+): LabDocument {
+  const current = diagram(document);
+  return {
+    ...document,
+    diagram: {
+      ...current,
+      annotations: current.annotations.map((item) => item.id === annotation.id ? annotation : item),
+    },
+  };
+}
+
+export function removeDiagramAnnotation(document: LabDocument, annotationId: string): LabDocument {
+  const current = diagram(document);
+  return {
+    ...document,
+    diagram: {
+      ...current,
+      annotations: current.annotations.filter((annotation) => annotation.id !== annotationId),
+    },
+  };
+}
+
+export function moveDiagramAnnotation(
+  document: LabDocument,
+  annotationId: string,
+  position: { x: number; y: number },
+): LabDocument {
+  const annotation = document.diagram?.annotations.find((candidate) => candidate.id === annotationId);
+  if (!annotation || annotation.type === "line" || annotation.type === "arrow") return document;
+  return updateDiagramAnnotation(document, { ...annotation, position });
+}
+
+export function changeDiagramAnnotationZOrder(
+  document: LabDocument,
+  annotationId: string,
+  direction: "forward" | "backward",
+): LabDocument {
+  const annotations = document.diagram?.annotations ?? [];
+  const annotation = annotations.find((candidate) => candidate.id === annotationId);
+  if (!annotation) return document;
+  const bounds = annotations.map((candidate) => candidate.zIndex);
+  const zIndex = direction === "forward"
+    ? Math.max(0, ...bounds) + 1
+    : Math.min(0, ...bounds) - 1;
+  return updateDiagramAnnotation(document, { ...annotation, zIndex });
+}
+
+export function withDiagramLinkLabel(
+  document: LabDocument,
+  linkId: string,
+  patch: Partial<Omit<DiagramLinkLabel, "linkId">>,
+): LabDocument {
+  if (!document.topology.links.some((link) => link.id === linkId)) return document;
+  const current = diagram(document);
+  const existing = current.linkLabels.find((label) => label.linkId === linkId);
+  const next: DiagramLinkLabel = {
+    linkId,
+    text: existing?.text ?? "",
+    position: existing?.position ?? 0.5,
+    followLink: existing?.followLink ?? true,
+    offset: existing?.offset ?? -12,
+    visible: existing?.visible ?? true,
+    ...patch,
+  };
+  return {
+    ...document,
+    diagram: {
+      ...current,
+      linkLabels: [...current.linkLabels.filter((label) => label.linkId !== linkId), next],
+    },
+  };
+}
+
 export function removeDraftLink(document: LabDocument, linkId: string): LabDocument {
   return {
     ...document,
@@ -287,6 +392,12 @@ export function removeDraftLink(document: LabDocument, linkId: string): LabDocum
       ...document.topology,
       links: document.topology.links.filter((link) => link.id !== linkId),
     },
+    diagram: document.diagram === undefined
+      ? undefined
+      : {
+          ...document.diagram,
+          linkLabels: document.diagram.linkLabels.filter((label) => label.linkId !== linkId),
+        },
   };
 }
 

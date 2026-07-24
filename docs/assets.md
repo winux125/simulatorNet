@@ -1,49 +1,49 @@
 # Visual asset provenance
 
-SimulatorNet uses two, and only two, sources of iconography. This keeps the
-interface consistent and the licensing unambiguous.
+SimulatorNet uses two sources of iconography. This keeps the interface
+consistent and the licensing unambiguous.
 
 ## Control icons — Lucide
 
-Toolbar, menu, dock and device-window **action** icons come from
+Toolbar, menu, dock and device-window action icons come from
 [`lucide-react`](https://lucide.dev) (ISC license). Lucide is the single control
-icon set; Material, Font Awesome and ad-hoc SVGs are intentionally not mixed in
-for the same actions.
+icon set; other icon libraries and ad-hoc action SVGs are not mixed in.
 
 ## Device icons — original SimulatorNet SVGs
 
-Network **device** symbols are original artwork created for SimulatorNet and
-live in [`apps/web/src/assets/device-icons/`](../apps/web/src/assets/device-icons):
+Network device symbols are original artwork created for SimulatorNet. The 21
+source SVGs live under
+[`apps/web/src/assets/device-icons/`](../apps/web/src/assets/device-icons), with
+seven device types in each profile:
 
-| Type        | File            |
-| ----------- | --------------- |
-| PC          | `pc.svg`        |
-| Server      | `server.svg`    |
-| Hub         | `hub.svg`       |
-| Bridge      | `bridge.svg`    |
-| L2 Switch   | `l2-switch.svg` |
-| L3 Switch   | `l3-switch.svg` |
-| Router      | `router.svg`    |
+- **Classic Lab** — compact equipment-style symbols for dense network labs.
+- **Education Flat** — clear flat symbols for teaching diagrams.
+- **Minimal Network** — lightweight monochrome symbols for large topologies.
 
-They are rendered through the single [`DeviceIcon`](../apps/web/src/components/DeviceIcon.tsx)
-component, which is reused across the palette, topology nodes, device windows and
-the inspector so a device looks identical everywhere.
+Each `classic/`, `education/` and `minimal/` directory contains `pc.svg`,
+`server.svg`, `hub.svg`, `bridge.svg`, `l2-switch.svg`, `l3-switch.svg` and
+`router.svg`.
 
-Design rules (enforced by `DeviceIcon.test.tsx`):
+They are rendered through the shared
+[`DeviceIcon`](../apps/web/src/components/DeviceIcon.tsx) component. The profile
+preference is local UI state stored as `simulatornet.deviceIconProfile`; it is
+not part of `LabDocument`, submissions, simulation or grading.
 
-- one visual language: `0 0 24 24` viewBox, 1.6 stroke width, round caps/joins;
+Design rules enforced by `DeviceIcon.test.tsx`:
+
+- every provenance asset uses the same `0 0 64 64` viewBox;
 - `currentColor` only — no gradients, embedded shadows or hard-coded palette;
-- theme-aware (inherit text colour), legible at 20/24/32/48/64 px;
-- no embedded raster images, no external URLs, no embedded text;
-- runtime status is shown by a **separate** indicator, never baked into the SVG.
+- theme-aware and legible at 20/24/32/48/64 px;
+- no embedded raster images, external URLs or embedded text;
+- runtime status uses a separate indicator and never changes SVG geometry.
 
-## What is explicitly excluded
+## Explicitly excluded
 
-- No Cisco or Packet Tracer icons, logos or branding.
+- No third-party network-vendor or simulator icons, logos or branding.
 - No photographs of hardware.
 - No AI-generated raster (PNG/WebP/JPEG) or vector assets.
-- No remotely-loaded images.
+- No remotely loaded images.
 - No emoji used as a final device symbol.
 
-Licensing: Lucide is ISC-licensed; the SimulatorNet device SVGs are part of this
-repository and covered by the repository license.
+Licensing: Lucide is ISC-licensed; the SimulatorNet device SVGs are original
+repository assets covered by the repository license.

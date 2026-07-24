@@ -17,6 +17,7 @@ interface InspectorPanelProps {
   tab: InspectorTab;
   mode: "edit" | "simulate";
   compact: boolean;
+  side: "left" | "right";
   onTab(tab: InspectorTab): void;
   onOpenTerminal(deviceId: string): void;
   onError(message: string): void;
@@ -76,7 +77,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
   }, [props.client, props.onError, props.selectedNodeId, props.snapshot]);
 
   return (
-    <Panel className={`inspector-panel ${props.compact ? "is-drawer" : ""}`} aria-label="Inspector">
+    <Panel className={`inspector-panel is-${props.side} ${props.compact ? "is-drawer" : ""}`} aria-label="Inspector">
       <PanelHeader
         title="Inspector"
         detail={node ? node.hostname : link ? link.id : "No selection"}

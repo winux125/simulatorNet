@@ -204,6 +204,20 @@ export function canonicalizeLabDocument(document: LabDocument): LabDocument {
     id: parsed.id,
     title: parsed.title,
     description: parsed.description,
+    instructions: parsed.instructions,
+    expectedOutcome: parsed.expectedOutcome,
+    diagram: parsed.diagram === undefined
+      ? undefined
+      : {
+          annotations: [...parsed.diagram.annotations].sort(byId).map((annotation) => (
+            "position" in annotation
+              ? { ...annotation, position: { ...annotation.position } }
+              : { ...annotation, start: { ...annotation.start }, end: { ...annotation.end } }
+          )),
+          linkLabels: [...parsed.diagram.linkLabels]
+            .sort((a, b) => a.linkId.localeCompare(b.linkId))
+            .map((label) => ({ ...label })),
+        },
     simulation: { seed: parsed.simulation.seed },
     topology: {
       schemaVersion: 1,

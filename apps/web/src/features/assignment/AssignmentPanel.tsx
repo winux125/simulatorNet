@@ -34,7 +34,10 @@ export function AssignmentPanel({ client, onOpenDocument, onError }: AssignmentP
       const first = assignments[0];
       if (!first) return;
       const opened = await assignmentClient.openAssignment(first.id);
-      await onOpenDocument(opened.document);
+      await onOpenDocument({
+        ...opened.document,
+        instructions: opened.assignment.instructions ?? opened.document.instructions,
+      });
       setAssignment(opened.assignment);
       setInstanceId(opened.instance.id);
       setRevision(opened.instance.revision);

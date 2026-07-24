@@ -26,6 +26,10 @@ import { DeviceWindow } from "../features/device/DeviceWindow";
 import { useLaunchSession } from "../features/session/useLaunchSession";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useTheme } from "../hooks/useTheme";
+import {
+  setDeviceIconProfile,
+  useDeviceIconProfile,
+} from "../hooks/useDeviceIconProfile";
 import { isTopologyEditable, useWorkspaceStore, type ExecutionMode, type WorkspaceMode } from "../state/workspace-store";
 import { Button, IconButton, Kbd } from "../ui";
 import type { SimulatorClient } from "./simulator-client";
@@ -101,6 +105,7 @@ export function App({ client }: AppProps) {
   const compact = useMediaQuery("(max-width: 999px)");
   const narrowDesktop = useMediaQuery("(max-width: 1299px)");
   const theme = useTheme();
+  const deviceIconProfile = useDeviceIconProfile();
   const launchSession = useLaunchSession();
   const [confirmApply, setConfirmApply] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
@@ -143,7 +148,7 @@ export function App({ client }: AppProps) {
     workspace.setSnapshot(ready);
     workspace.selectNode(undefined);
     workspace.selectLink(undefined);
-    workspace.setInspectorOpen(!narrowDesktop);
+    workspace.setInspectorOpen(false);
     workspace.setMode(initialMode);
     // A freshly loaded lab in simulate mode is running; a new/edit lab is stopped.
     workspace.setPowerState(initialMode === "simulate" ? "running" : "stopped");
@@ -378,7 +383,16 @@ export function App({ client }: AppProps) {
       { id: "view-zoom", label: "Reset Zoom", disabled: !labOpen, onSelect: workspace.requestZoomReset },
       { separator: true },
       { id: "view-inspector", label: workspace.inspectorOpen ? "Hide Inspector" : "Show Inspector", icon: <PanelRight size={14} />, onSelect: () => workspace.setInspectorOpen(!workspace.inspectorOpen) },
-      { id: "view-ports", label: workspace.showLinkLabels ? "Hide Port Labels" : "Show Port Labels", icon: <Tag size={14} />, onSelect: () => workspace.setShowLinkLabels(!workspace.showLinkLabels) },
+      { id: "view-icons", label: "Device Icon Style", submenu: [
+        { id: "icons-classic", label: "Classic Lab", checked: deviceIconProfile === "classic", onSelect: () => setDeviceIconProfile("classic") },
+        { id: "icons-education", label: "Education Flat", checked: deviceIconProfile === "education", onSelect: () => setDeviceIconProfile("education") },
+        { id: "icons-minimal", label: "Minimal Network", checked: deviceIconProfile === "minimal", onSelect: () => setDeviceIconProfile("minimal") },
+      ] },
+      { id: "view-ports", label: "Port Labels", icon: <Tag size={14} />, submenu: [
+        { id: "ports-always", label: "Always", checked: workspace.portLabelMode === "always", onSelect: () => workspace.setPortLabelMode("always") },
+        { id: "ports-selected", label: "Selected", checked: workspace.portLabelMode === "selected", onSelect: () => workspace.setPortLabelMode("selected") },
+        { id: "ports-hidden", label: "Hidden", checked: workspace.portLabelMode === "hidden", onSelect: () => workspace.setPortLabelMode("hidden") },
+      ] },
       { id: "view-terminal", label: "Open Terminal", icon: <TerminalSquare size={14} />, disabled: !labOpen, onSelect: openTerminalFromMenu },
       { separator: true },
       { id: "view-theme", label: "Theme", icon: <SunMoon size={14} />, submenu: [
@@ -413,6 +427,13 @@ export function App({ client }: AppProps) {
     { id: "tools", label: "Tools", items: [
       { id: "tools-terminal", label: "Open Terminal", icon: <TerminalSquare size={14} />, disabled: !labOpen, onSelect: openTerminalFromMenu },
       { id: "tools-arrange", label: "Auto Arrange Topology", icon: <Grid3X3 size={14} />, disabled: !editMode, onSelect: arrange },
+      { id: "tools-annotations", label: "Add Diagram Annotation", disabled: !editMode, submenu: [
+        { id: "annotation-text", label: "Text", onSelect: () => workspace.setActiveTool("annotation-text") },
+        { id: "annotation-rectangle", label: "Rectangle", onSelect: () => workspace.setActiveTool("annotation-rectangle") },
+        { id: "annotation-ellipse", label: "Ellipse", onSelect: () => workspace.setActiveTool("annotation-ellipse") },
+        { id: "annotation-line", label: "Line", onSelect: () => workspace.setActiveTool("annotation-line") },
+        { id: "annotation-arrow", label: "Arrow", onSelect: () => workspace.setActiveTool("annotation-arrow") },
+      ] },
       { id: "tools-validate", label: "Validate Document", icon: <CheckCircle2 size={14} />, disabled: !labOpen, onSelect: validateDocument },
       { separator: true },
       { id: "tools-cli", label: "CLI Compatibility", icon: <Wrench size={14} />, onSelect: () => setCliCommandsOpen(true) },
@@ -429,6 +450,10 @@ export function App({ client }: AppProps) {
     : undefined;
   const openDeviceNode = runtimeDeviceNode
     ?? (deviceWindowId && workspace.draft ? draftDeviceNode(workspace.draft, deviceWindowId) : undefined);
+  const topologyXs = workspace.draft?.topology.nodes.map((node) => node.position?.x ?? 0) ?? [];
+  const selectedNodeX = workspace.draft?.topology.nodes.find((node) => node.id === workspace.selectedNodeId)?.position?.x;
+  const topologyMidpoint = topologyXs.length > 0 ? (Math.min(...topologyXs) + Math.max(...topologyXs)) / 2 : 0;
+  const inspectorSide = selectedNodeX !== undefined && selectedNodeX >= topologyMidpoint ? "left" : "right";
 
   const inspector = labOpen && workspace.inspectorOpen && (
     <InspectorPanel
@@ -440,6 +465,7 @@ export function App({ client }: AppProps) {
       tab={workspace.inspectorTab}
       mode={workspace.mode}
       compact={compact}
+      side={inspectorSide}
       onTab={workspace.setInspectorTab}
       onOpenTerminal={openTerminal}
       onError={reportInspectionError}
@@ -506,23 +532,15 @@ export function App({ client }: AppProps) {
       {workspace.dirty && workspace.mode === "edit" && <div className="pending-banner"><span> Topology changes pending</span><Button size="sm" variant="primary" onClick={() => { setPendingMode("edit"); setConfirmApply(true); }}>Apply &amp; Rebuild</Button></div>}
       <div className="workspace-body">
         <PanelGroup orientation="vertical" className="workspace-resizable" id="workspace-layout">
-          <ResizablePanel id="workspace-main" minSize="300px" defaultSize="68%">
+          <ResizablePanel id="workspace-main" minSize="300px" defaultSize="76%">
             <div className="main-workspace">
-              {!compact && workspace.inspectorOpen ? (
-                <PanelGroup orientation="horizontal" id="main-layout">
-                  <ResizablePanel id="topology" minSize="520px" defaultSize="76%">
-                    <Suspense fallback={<CanvasLoading />}><TopologyCanvas {...topologyProps()} /></Suspense>
-                  </ResizablePanel>
-                  <Separator className="resize-handle resize-handle--vertical" />
-                  <ResizablePanel id="inspector" minSize="280px" maxSize="440px" defaultSize="330px">{inspector}</ResizablePanel>
-                </PanelGroup>
-              ) : <Suspense fallback={<CanvasLoading />}><TopologyCanvas {...topologyProps()} /></Suspense>}
-              {compact && inspector}
+              <Suspense fallback={<CanvasLoading />}><TopologyCanvas {...topologyProps()} /></Suspense>
+              {inspector}
             </div>
           </ResizablePanel>
           {labOpen && <>
             <Separator className="resize-handle resize-handle--horizontal" />
-            <ResizablePanel id="bottom-dock" minSize="160px" maxSize="48%" defaultSize={narrowDesktop ? "220px" : "270px"}>
+            <ResizablePanel id="bottom-dock" minSize="160px" maxSize="48%" defaultSize={narrowDesktop ? "180px" : "190px"}>
               <Suspense fallback={<DockLoading />}>
                 <BottomDock
                   client={client}
@@ -608,7 +626,7 @@ export function App({ client }: AppProps) {
       selectedNodeId: workspace.selectedNodeId,
       selectedLinkId: workspace.selectedLinkId,
       terminalTabs: workspace.terminalTabs,
-      showLinkLabels: workspace.showLinkLabels,
+      portLabelMode: workspace.portLabelMode,
       fitRequest: workspace.fitRequest,
       zoomResetRequest: workspace.zoomResetRequest,
       zoomInRequest: workspace.zoomInRequest,
@@ -619,7 +637,7 @@ export function App({ client }: AppProps) {
       onOpenDevice: setDeviceWindowId,
       onInspect: (id: string) => { workspace.selectNode(id); workspace.setInspectorOpen(true); },
       onPlacedDevice: () => workspace.setPendingDeviceKind(undefined),
-      onShowLinkLabels: workspace.setShowLinkLabels,
+      onPortLabelMode: workspace.setPortLabelMode,
       onChange: updateDraft,
       onError: (message: string) => reportError(message, "validation"),
       onLoadDemo: () => setDemoLabOpen(true),

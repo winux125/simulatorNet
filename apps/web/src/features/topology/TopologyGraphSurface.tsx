@@ -19,10 +19,14 @@ export interface TopologyGraphSurfaceProps {
   zoomOutRequest: number;
   onReady(handle: { clientToLocal(point: Point): Point; fit(): void }): void;
   onNodeMoved(id: string, position: Point): void;
+  onSelectNode(id: string): void;
+  onOpenDevice(id: string): void;
   onConnect(source: string, sourcePort: string, target: string, targetPort: string): void;
   onConnectionRejected(message: string): void;
   onSelectLink(id: string): void;
   onLinkContextMenu(id: string, clientX: number, clientY: number): void;
+  onSelectAnnotation(id: string): void;
+  onAnnotationMoved(id: string, position: Point): void;
   onPaneClick(local: Point): void;
   onPaneContextMenu(clientX: number, clientY: number): void;
   onDropDevice(kind: string, local: Point): void;
@@ -41,10 +45,14 @@ export function TopologyGraphSurface(props: TopologyGraphSurfaceProps) {
       container,
       callbacks: {
         onNodeMoved: (id, position) => propsRef.current.onNodeMoved(id, position),
+        onSelectNode: (id) => propsRef.current.onSelectNode(id),
+        onOpenDevice: (id) => propsRef.current.onOpenDevice(id),
         onConnect: (source, sourcePort, target, targetPort) => propsRef.current.onConnect(source, sourcePort, target, targetPort),
         onConnectionRejected: (message) => propsRef.current.onConnectionRejected(message),
         onSelectLink: (id) => propsRef.current.onSelectLink(id),
         onLinkContextMenu: (id, x, y) => propsRef.current.onLinkContextMenu(id, x, y),
+        onSelectAnnotation: (id) => propsRef.current.onSelectAnnotation(id),
+        onAnnotationMoved: (id, position) => propsRef.current.onAnnotationMoved(id, position),
         onPaneClick: (local) => propsRef.current.onPaneClick(local),
         onPaneContextMenu: (x, y) => propsRef.current.onPaneContextMenu(x, y),
         onDropDevice: (kind, local) => propsRef.current.onDropDevice(kind, local),

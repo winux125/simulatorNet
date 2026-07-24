@@ -750,10 +750,10 @@ describe("M8.3 desktop menus and terminal", () => {
   it("toggles the Inspector from the View menu", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);
-    expect(useWorkspaceStore.getState().inspectorOpen).toBe(true);
-    await openMenu("View");
-    await userEvent.click(screen.getByRole("menuitem", { name: "Hide Inspector" }));
     expect(useWorkspaceStore.getState().inspectorOpen).toBe(false);
+    await openMenu("View");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Show Inspector" }));
+    expect(useWorkspaceStore.getState().inspectorOpen).toBe(true);
   });
 
   it("changes the theme through the View menu submenu", async () => {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { TopologySchema } from "./topology";
+import { LabDiagramSchema } from "./diagram";
 
 /** The only lab JSON schema understood by this release. */
 export const CURRENT_LAB_SCHEMA_VERSION = 1 as const;
@@ -257,6 +258,9 @@ export const LabMetadataSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
   description: z.string().optional(),
+  instructions: z.string().optional(),
+  expectedOutcome: z.string().optional(),
+  diagram: LabDiagramSchema.optional(),
 });
 export type LabMetadata = z.infer<typeof LabMetadataSchema>;
 

@@ -7,6 +7,8 @@ import type { Point } from "./types";
 
 export interface GraphEventHandlers {
   onNodeMoved(id: string, position: Point): void;
+  onNodeClick(id: string): void;
+  onNodeDoubleClick(id: string): void;
   onEdgeConnected(edge: Edge): void;
   onEdgeClick(id: string): void;
   onEdgeContextMenu(id: string, clientX: number, clientY: number): void;
@@ -24,6 +26,8 @@ export function attachGraphEvents(graph: Graph, handlers: GraphEventHandlers): (
       const position = node.position();
       handlers.onNodeMoved(node.id, { x: position.x, y: position.y });
     }],
+    ["node:click", ({ node }) => handlers.onNodeClick(node.id)],
+    ["node:dblclick", ({ node }) => handlers.onNodeDoubleClick(node.id)],
     ["edge:connected", ({ edge, isNew }) => { if (isNew) handlers.onEdgeConnected(edge); }],
     ["edge:click", ({ edge }) => handlers.onEdgeClick(edge.id)],
     ["edge:contextmenu", ({ e, edge }) => {

@@ -47,8 +47,13 @@
   --color-error-text: #ffc4ce;
   --color-link: #466176;
   --color-link-up: #447a63;
+  --color-topology-link: #38a6dc;
   --color-link-label: #a8b7ca;
   --color-link-label-bg: #101722;
+  --color-link-label-border: #3a5369;
+  --color-device-icon: #aab7c4;
+  --color-device-chassis: #8795a3;
+  --color-device-highlight: #dce4ea;
   --color-canvas-grid: #334155;
   --color-node-border: #35465a;
   --color-node-border-hover: #4b637c;
@@ -120,8 +125,13 @@
   --color-error-text: #8c1f34;
   --color-link: #688092;
   --color-link-up: #438064;
+  --color-topology-link: #287eb8;
   --color-link-label: #3c5264;
   --color-link-label-bg: #eef3f6;
+  --color-link-label-border: #bdccd7;
+  --color-device-icon: #667784;
+  --color-device-chassis: #7b8791;
+  --color-device-highlight: #f8fafb;
   --color-canvas-grid: #afbdc9;
   --color-node-border: #a9bac7;
   --color-node-border-hover: #7894a8;

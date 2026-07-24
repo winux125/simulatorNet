@@ -38,12 +38,20 @@ export interface NodeView {
 export interface LinkView {
   operational: boolean;
   selected: boolean;
-  label?: string;
+  sourceLabel?: string;
+  targetLabel?: string;
+  diagramLabel?: {
+    text: string;
+    position: number;
+    followLink: boolean;
+    offset: number;
+  };
 }
 
 export interface TopologyView {
   nodes: Record<string, NodeView>;
   links: Record<string, LinkView>;
+  annotations?: Record<string, { selected: boolean }>;
 }
 
 /** The draft topology as currently held by the graph (positions + wiring). */
@@ -68,10 +76,14 @@ export type ConnectionValidation =
 /** Callbacks the controller raises for the React layer to fold into the draft. */
 export interface TopologyGraphCallbacks {
   onNodeMoved(id: string, position: Point): void;
+  onSelectNode(id: string): void;
+  onOpenDevice(id: string): void;
   onConnect(source: string, sourcePort: string, target: string, targetPort: string): void;
   onConnectionRejected(message: string): void;
   onSelectLink(id: string): void;
   onLinkContextMenu(id: string, clientX: number, clientY: number): void;
+  onSelectAnnotation(id: string): void;
+  onAnnotationMoved(id: string, position: Point): void;
   onPaneClick(local: Point): void;
   onPaneContextMenu(clientX: number, clientY: number): void;
   onDropDevice(kind: string, local: Point): void;

@@ -159,7 +159,14 @@ export class SimulationWorkerRuntime {
     const parsed = parseLabDocument(migrated);
     const canonical = canonicalizeLabDocument(parsed);
     this.document = canonical;
-    this.metadata = { id: canonical.id, title: canonical.title, description: canonical.description };
+    this.metadata = {
+      id: canonical.id,
+      title: canonical.title,
+      description: canonical.description,
+      instructions: canonical.instructions,
+      expectedOutcome: canonical.expectedOutcome,
+      diagram: canonical.diagram,
+    };
     this.rebuildEngine(canonical);
     const snapshot = this.snapshot();
     this.emit({ type: isInitial ? "LAB_READY" : "STATE_CHANGED", snapshot });

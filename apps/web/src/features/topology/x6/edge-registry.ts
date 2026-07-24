@@ -10,8 +10,25 @@ function attrs(view: LinkView | undefined) {
 }
 
 function labels(view: LinkView | undefined) {
-  if (!view?.label) return [];
-  return [{ attrs: edgeLabelAttrs(), position: 0.5, label: view.label }];
+  if (!view) return [];
+  const result = [];
+  if (view.sourceLabel) {
+    result.push({ attrs: edgeLabelAttrs(view.sourceLabel), position: { distance: 0.13, offset: -10 } });
+  }
+  if (view.diagramLabel?.text) {
+    result.push({
+      attrs: edgeLabelAttrs(view.diagramLabel.text, "diagram"),
+      position: {
+        distance: view.diagramLabel.position,
+        offset: view.diagramLabel.offset,
+        options: { keepGradient: view.diagramLabel.followLink, ensureLegibility: true },
+      },
+    });
+  }
+  if (view.targetLabel) {
+    result.push({ attrs: edgeLabelAttrs(view.targetLabel), position: { distance: 0.87, offset: -10 } });
+  }
+  return result;
 }
 
 export function addLinkEdge(graph: Graph, link: GraphLinkModel, view: LinkView | undefined): Edge {
@@ -21,8 +38,8 @@ export function addLinkEdge(graph: Graph, link: GraphLinkModel, view: LinkView |
     target: { cell: link.target, port: link.targetPort },
     attrs: attrs(view),
     labels: labels(view),
-    router: { name: "manhattan", args: { padding: 12 } },
-    connector: { name: "rounded", args: { radius: 8 } },
+    router: { name: "normal" },
+    connector: { name: "normal" },
     zIndex: -1,
   });
 }
