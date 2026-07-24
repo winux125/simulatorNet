@@ -11,12 +11,13 @@ export const DEVICE_TYPES = [
   "firewall",
   "cloud",
   "traffic-generator",
+  "external-appliance",
 ] as const;
 
 export const DeviceTypeSchema = z.enum(DEVICE_TYPES);
 export type DeviceType = z.infer<typeof DeviceTypeSchema>;
 
-export const DEVICE_CATEGORIES = ["network", "end-device", "security", "infrastructure"] as const;
+export const DEVICE_CATEGORIES = ["network", "end-device", "security", "infrastructure", "external"] as const;
 export const DeviceCategorySchema = z.enum(DEVICE_CATEGORIES);
 export type DeviceCategory = z.infer<typeof DeviceCategorySchema>;
 
@@ -198,6 +199,16 @@ export const DEVICE_PROFILES = {
     interfaceTemplates: ethernet(["eth0"]),
     iconKey: "traffic-generator",
     description: "Runs bounded ICMP, UDP, TCP, and HTTP test flows.",
+  },
+  "external-appliance": {
+    type: "external-appliance",
+    displayName: "External Appliance",
+    category: "external",
+    capabilities: [],
+    interfaceTemplates: [],
+    iconKey: "external-appliance",
+    description:
+      "Imported node from another platform that SimulatorNet does not simulate. Kept as a visual placeholder with no data plane.",
   },
 } as const satisfies Record<DeviceType, DeviceProfile>;
 

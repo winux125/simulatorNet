@@ -15,6 +15,8 @@ export const DeviceKind = {
   Firewall: "firewall",
   Cloud: "cloud",
   TrafficGenerator: "traffic-generator",
+  /** Imported placeholder for a node SimulatorNet does not simulate. */
+  ExternalAppliance: "external-appliance",
 } as const;
 export type DeviceKind = (typeof DeviceKind)[keyof typeof DeviceKind];
 

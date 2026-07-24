@@ -27,6 +27,7 @@ const assetNames: Record<DeviceType, string> = {
   firewall: "firewall.svg",
   cloud: "cloud.svg",
   "traffic-generator": "traffic-generator.svg",
+  "external-appliance": "external-appliance.svg",
 };
 
 afterEach(() => {
@@ -58,7 +59,7 @@ describe("topology device icon profiles", () => {
         expect(svg.dataset.fallback).toBeUndefined();
       }
     }
-    expect(allAssetPaths()).toHaveLength(30);
+    expect(allAssetPaths()).toHaveLength(33);
   });
 
   it("uses a uniform viewBox and theme-aware currentColor", () => {

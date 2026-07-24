@@ -232,6 +232,18 @@ importers:
         specifier: ^3.24.0
         version: 3.25.76
 
+  packages/importers:
+    dependencies:
+      '@sim/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@sim/lab-format':
+        specifier: workspace:*
+        version: link:../lab-format
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
+
   packages/lab-format:
     dependencies:
       '@sim/contracts':

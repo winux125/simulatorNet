@@ -2,6 +2,7 @@ import type {
   DeviceConfig,
   BridgeDeviceConfig,
   CloudDeviceConfig,
+  ExternalApplianceDeviceConfig,
   FirewallDeviceConfig,
   HubDeviceConfig,
   Layer3SwitchDeviceConfig,
@@ -286,6 +287,26 @@ function layer3SwitchConfiguration(
   };
 }
 
+function externalApplianceConfiguration(
+  node: NodeSpec,
+  config: ExternalApplianceDeviceConfig | undefined,
+): ExternalApplianceDeviceConfig {
+  const interfaces = new Map(config?.interfaces.map((iface) => [iface.id, iface]));
+  return {
+    kind: "external-appliance",
+    hostname: config?.hostname ?? node.name ?? node.id,
+    interfaces: node.interfaces.map((iface) => commonInterface(iface.id, interfaces.get(iface.id))),
+    sourcePlatform: config?.sourcePlatform ?? "unknown",
+    sourceVendor: config?.sourceVendor,
+    sourceNodeKind: config?.sourceNodeKind,
+    sourceTemplate: config?.sourceTemplate,
+    sourceIconHint: config?.sourceIconHint,
+    unparsedConfig: config?.unparsedConfig,
+    importWarnings: config?.importWarnings ? [...config.importWarnings] : [],
+    authHint: config?.authHint ?? "unknown",
+  };
+}
+
 function configurationFor(node: NodeSpec, existing: DeviceConfig | undefined): DeviceConfig {
   if (node.kind === "pc") return pcConfiguration(node, existing?.kind === "pc" ? existing : undefined);
   if (node.kind === "server") return serverConfiguration(node, existing?.kind === "server" ? existing : undefined);
@@ -306,9 +327,15 @@ function configurationFor(node: NodeSpec, existing: DeviceConfig | undefined): D
   if (node.kind === "cloud") {
     return cloudConfiguration(node, existing?.kind === "cloud" ? existing : undefined);
   }
-  return trafficGeneratorConfiguration(
+  if (node.kind === "traffic-generator") {
+    return trafficGeneratorConfiguration(
+      node,
+      existing?.kind === "traffic-generator" ? existing : undefined,
+    );
+  }
+  return externalApplianceConfiguration(
     node,
-    existing?.kind === "traffic-generator" ? existing : undefined,
+    existing?.kind === "external-appliance" ? existing : undefined,
   );
 }
 
@@ -325,6 +352,14 @@ export function canonicalizeLabDocument(document: LabDocument): LabDocument {
     description: parsed.description,
     instructions: parsed.instructions,
     expectedOutcome: parsed.expectedOutcome,
+    sourceImport: parsed.sourceImport === undefined
+      ? undefined
+      : {
+          platform: parsed.sourceImport.platform,
+          originalFilename: parsed.sourceImport.originalFilename,
+          sourceVersion: parsed.sourceImport.sourceVersion,
+          warnings: [...parsed.sourceImport.warnings],
+        },
     diagram: parsed.diagram === undefined
       ? undefined
       : {

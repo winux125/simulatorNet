@@ -426,6 +426,38 @@ export const Layer3SwitchDeviceConfigSchema = z.object({
 });
 export type Layer3SwitchDeviceConfig = z.infer<typeof Layer3SwitchDeviceConfigSchema>;
 
+/**
+ * Inert placeholder produced when a lab import contains a node SimulatorNet does
+ * not simulate. It carries only source metadata and preserved (never executed)
+ * startup text so the topology can still open, be inspected and be re-mapped.
+ * It has no capabilities and never participates in the data plane.
+ */
+export const MAX_EXTERNAL_APPLIANCE_UNPARSED_CONFIG_CHARS = 20_000;
+export const MAX_EXTERNAL_APPLIANCE_WARNINGS = 50;
+
+export const ExternalApplianceAuthHintSchema = z.enum(["unknown", "likely-required", "none"]);
+export type ExternalApplianceAuthHint = z.infer<typeof ExternalApplianceAuthHintSchema>;
+
+export const ExternalApplianceDeviceConfigSchema = z.object({
+  kind: z.literal("external-appliance"),
+  hostname: z.string().min(1).optional(),
+  interfaces: z.array(PhysicalInterfaceConfigSchema).default([]),
+  /** Platform the node was imported from, e.g. "pnetlab", "gns3", "containerlab". */
+  sourcePlatform: z.string().min(1).max(64),
+  sourceVendor: z.string().min(1).max(64).optional(),
+  /** Original node type/kind string from the source platform. */
+  sourceNodeKind: z.string().min(1).max(128).optional(),
+  /** Original template/node-definition name from the source platform. */
+  sourceTemplate: z.string().min(1).max(128).optional(),
+  /** Presentation hint only; the renderer falls back to the generic icon. */
+  sourceIconHint: z.string().min(1).max(128).optional(),
+  /** Preserved startup text; never parsed as config and never executed. */
+  unparsedConfig: z.string().max(MAX_EXTERNAL_APPLIANCE_UNPARSED_CONFIG_CHARS).optional(),
+  importWarnings: z.array(z.string().max(512)).max(MAX_EXTERNAL_APPLIANCE_WARNINGS).default([]),
+  authHint: ExternalApplianceAuthHintSchema.default("unknown"),
+});
+export type ExternalApplianceDeviceConfig = z.infer<typeof ExternalApplianceDeviceConfigSchema>;
+
 export const DeviceConfigSchema = z.discriminatedUnion("kind", [
   PcDeviceConfigSchema,
   ServerDeviceConfigSchema,
@@ -437,8 +469,23 @@ export const DeviceConfigSchema = z.discriminatedUnion("kind", [
   FirewallDeviceConfigSchema,
   CloudDeviceConfigSchema,
   TrafficGeneratorDeviceConfigSchema,
+  ExternalApplianceDeviceConfigSchema,
 ]);
 export type DeviceConfig = z.infer<typeof DeviceConfigSchema>;
+
+/**
+ * Non-canonical provenance for a lab converted from another platform. It is
+ * deliberately timestamp-free and never reaches the verifier (grading uses the
+ * submission snapshot only), so it cannot perturb the deterministic grade.
+ */
+export const MAX_LAB_SOURCE_IMPORT_WARNINGS = 200;
+export const LabSourceImportSchema = z.object({
+  platform: z.string().min(1).max(64),
+  originalFilename: z.string().min(1).max(255).optional(),
+  sourceVersion: z.string().min(1).max(64).optional(),
+  warnings: z.array(z.string().max(512)).max(MAX_LAB_SOURCE_IMPORT_WARNINGS).default([]),
+}).strict();
+export type LabSourceImport = z.infer<typeof LabSourceImportSchema>;
 
 export const LabMetadataSchema = z.object({
   id: z.string().min(1),
@@ -447,6 +494,7 @@ export const LabMetadataSchema = z.object({
   instructions: z.string().optional(),
   expectedOutcome: z.string().optional(),
   diagram: LabDiagramSchema.optional(),
+  sourceImport: LabSourceImportSchema.optional(),
 });
 export type LabMetadata = z.infer<typeof LabMetadataSchema>;
 

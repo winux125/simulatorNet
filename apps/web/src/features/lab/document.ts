@@ -37,6 +37,7 @@ function defaultNode(kind: NodeSpec["kind"], id: string, index: number, position
     firewall: "FW",
     cloud: "ISP",
     "traffic-generator": "TG",
+    "external-appliance": "EXT",
   };
   return {
     id,
@@ -75,6 +76,10 @@ function defaultConfiguration(node: NodeSpec): DeviceConfig {
     case "traffic-generator": return {
       kind: "traffic-generator", hostname, interfaces: [], dhcpEnabled: false, flows: [],
     };
+    case "external-appliance": return {
+      kind: "external-appliance", hostname, interfaces: [], sourcePlatform: "unknown",
+      importWarnings: [], authHint: "unknown",
+    };
   }
 }
 
@@ -90,6 +95,7 @@ function idPrefix(kind: DeviceType): string {
     firewall: "firewall",
     cloud: "cloud",
     "traffic-generator": "traffic-generator",
+    "external-appliance": "appliance",
   }[kind];
 }
 
@@ -479,6 +485,7 @@ export function autoArrangeDocument(document: LabDocument): LabDocument {
     firewall: 640,
     cloud: 880,
     "traffic-generator": 160,
+    "external-appliance": 1000,
   };
   return {
     ...document,

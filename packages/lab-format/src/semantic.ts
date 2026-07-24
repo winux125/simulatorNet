@@ -460,6 +460,7 @@ function validateConfiguration(config: DeviceConfig, node: NodeSpec, path: strin
     });
   }
   if (config.kind === "server") validateServer(config, node, path);
+  if (config.kind === "external-appliance") validatePhysicalInterfaces(config.interfaces, node, path);
   if (config.kind === "hub") validatePhysicalInterfaces(config.interfaces, node, path);
   if (config.kind === "bridge") {
     validatePhysicalInterfaces(config.interfaces, node, path);

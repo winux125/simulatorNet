@@ -12,6 +12,7 @@ import {
 } from "@sim/contracts";
 import {
   createSimulationEngine,
+  ExternalAppliance,
   Firewall,
   EthernetBridge,
   Hub,
@@ -45,6 +46,7 @@ export interface BuiltLab {
   getFirewall(id: DeviceId | string): Firewall | undefined;
   getCloud(id: DeviceId | string): IspCloud | undefined;
   getTrafficGenerator(id: DeviceId | string): TrafficGenerator | undefined;
+  getExternalAppliance(id: DeviceId | string): ExternalAppliance | undefined;
 }
 
 class BuiltLabImpl implements BuiltLab {
@@ -108,6 +110,11 @@ class BuiltLabImpl implements BuiltLab {
     const device = this.getDevice(id);
     return device instanceof TrafficGenerator ? device : undefined;
   }
+
+  getExternalAppliance(id: DeviceId | string): ExternalAppliance | undefined {
+    const device = this.getDevice(id);
+    return device instanceof ExternalAppliance ? device : undefined;
+  }
 }
 
 function createDevice(node: NodeSpec, config: DeviceConfig, engine: SimulationEngine): Device {
@@ -121,6 +128,7 @@ function createDevice(node: NodeSpec, config: DeviceConfig, engine: SimulationEn
   if (node.kind === "firewall") return engine.add(new Firewall(node.id, hostname));
   if (node.kind === "cloud") return engine.add(new IspCloud(node.id, hostname));
   if (node.kind === "traffic-generator") return engine.add(new TrafficGenerator(node.id, hostname));
+  if (node.kind === "external-appliance") return engine.add(new ExternalAppliance(node.id, hostname));
   return engine.add(new Router(node.id, hostname));
 }
 
@@ -196,6 +204,20 @@ function applyConfiguration(device: Device, config: DeviceConfig): void {
   if (device instanceof EthernetBridge && config.kind === "bridge") {
     for (const iface of config.interfaces) applyPhysical(device, iface);
     device.setAgingTimeNs(config.agingTimeNs);
+    return;
+  }
+  if (device instanceof ExternalAppliance && config.kind === "external-appliance") {
+    for (const iface of config.interfaces) applyPhysical(device, iface);
+    device.source = {
+      platform: config.sourcePlatform,
+      vendor: config.sourceVendor,
+      nodeKind: config.sourceNodeKind,
+      template: config.sourceTemplate,
+      iconHint: config.sourceIconHint,
+      unparsedConfig: config.unparsedConfig,
+      warnings: [...config.importWarnings],
+      authHint: config.authHint,
+    };
     return;
   }
   if (device instanceof Layer3Switch && config.kind === "l3-switch") {
@@ -465,6 +487,22 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
     };
   }
 
+  if (device instanceof ExternalAppliance) {
+    const source = device.source;
+    return {
+      kind: "external-appliance",
+      hostname: device.name,
+      interfaces: node.interfaces.map((iface) => physicalConfiguration(device, iface.id)),
+      sourcePlatform: source.platform,
+      sourceVendor: source.vendor,
+      sourceNodeKind: source.nodeKind,
+      sourceTemplate: source.template,
+      sourceIconHint: source.iconHint,
+      unparsedConfig: source.unparsedConfig,
+      importWarnings: [...source.warnings],
+      authHint: source.authHint,
+    };
+  }
   if (!(device instanceof Router)) {
     throw new LabSemanticError("configuration-type-mismatch", `configurations.${node.id}`, "Unsupported device type");
   }

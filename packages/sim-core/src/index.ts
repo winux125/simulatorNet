@@ -22,6 +22,7 @@ export * from "./devices/router";
 export * from "./devices/firewall";
 export * from "./devices/isp-cloud";
 export * from "./devices/traffic-generator";
+export * from "./devices/external-appliance";
 
 // Packets / frames
 export * from "./packets/ethernet";
