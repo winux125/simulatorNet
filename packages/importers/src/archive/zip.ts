@@ -147,7 +147,9 @@ function concat(chunks: readonly Uint8Array[], total: number): Uint8Array {
 async function inflateRaw(compressed: Uint8Array, cap: number): Promise<Uint8Array> {
   const stream = new DecompressionStream("deflate-raw");
   const writer = stream.writable.getWriter();
-  void writer.write(compressed);
+  // Copy into a fresh ArrayBuffer so the chunk is a strict BufferSource across
+  // both the Node and DOM lib type definitions.
+  void writer.write(new Uint8Array(compressed));
   void writer.close();
   const reader = stream.readable.getReader();
   const chunks: Uint8Array[] = [];

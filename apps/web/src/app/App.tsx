@@ -22,6 +22,8 @@ import {
   removeDraftLink,
 } from "../features/lab/document";
 import type { LabChangeImpact } from "../features/lab/change-impact";
+import { detectLabImportFormat } from "@sim/importers";
+import { ImportLabWizard } from "../features/lab/ImportLabWizard";
 import { InspectorPanel } from "../features/inspector/InspectorPanel";
 import { DeviceWindow } from "../features/device/DeviceWindow";
 import { useLaunchSession } from "../features/session/useLaunchSession";
@@ -117,6 +119,7 @@ export function App({ client }: AppProps) {
   const [confirmStop, setConfirmStop] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [labInfoOpen, setLabInfoOpen] = useState(false);
+  const [importFile, setImportFile] = useState<File | undefined>(undefined);
   const [cliCommandsOpen, setCliCommandsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [saveAsOpen, setSaveAsOpen] = useState(false);
@@ -172,7 +175,21 @@ export function App({ client }: AppProps) {
     void initialize(demo.document).catch((error) => reportError(error, "validation"));
   };
   const newLab = () => void initialize(EMPTY_LAB, "edit").catch((error) => reportError(error, "validation"));
-  const loadFile = (file: File) => void file.text().then(loadLabDocumentText).then((document) => initialize(document)).catch((error) => reportError(error, "validation"));
+  const loadFile = (file: File) => void (async () => {
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const detection = detectLabImportFormat({ filename: file.name, bytes });
+      // A .json file is native intent: use the native loader so JSON/validation
+      // errors are reported directly. Foreign formats go through the wizard.
+      const nativeIntent = detection.format === "simulatornet"
+        || (detection.format === "unknown" && file.name.toLowerCase().endsWith(".json"));
+      if (nativeIntent) {
+        await initialize(loadLabDocumentText(new TextDecoder().decode(bytes)));
+      } else {
+        setImportFile(file);
+      }
+    } catch (error) { reportError(error, "validation"); }
+  })();
   const importLab = () => document.getElementById("load-lab-file")?.click();
   const closeLab = () => {
     if (workspace.unsaved) setConfirmClose(true);
@@ -542,7 +559,7 @@ export function App({ client }: AppProps) {
         onStopLab={stopLab}
         onLogout={() => void launchSession.logout().catch((error) => reportError(error, "validation"))}
       />
-      <input id="load-lab-file" className="visually-hidden" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) loadFile(file); event.target.value = ""; }} />
+      <input id="load-lab-file" className="visually-hidden" type="file" accept="application/json,.json,.unl,.zip,.gns3,.gns3project,.yml,.yaml,.virl,.pkt,.pka" onChange={(event) => { const file = event.target.files?.[0]; if (file) loadFile(file); event.target.value = ""; }} />
       {launchSession.state.status === "authenticated" && <AssignmentPanel client={client} onOpenDocument={(document) => initialize(document, "simulate")} onError={(message) => reportError(message, "validation")} />}
       {launchSession.state.status === "exchanging" && <div className="launch-status" role="status">Exchanging secure launch code…</div>}
       {launchSession.state.status === "error" && <div className="workspace-error" role="alert"><AlertTriangle size={14} /><span>{launchSession.state.message}</span></div>}
@@ -615,6 +632,12 @@ export function App({ client }: AppProps) {
       </WorkspaceDialog>}
       {saveAsOpen && <SaveAsDialog defaultName={workspace.draft?.id ?? "lab"} onClose={() => setSaveAsOpen(false)} onSave={(name) => { exportLab(name); setSaveAsOpen(false); }} />}
       {demoLabOpen && <DemoLabDialog onClose={() => setDemoLabOpen(false)} onLoad={loadDemo} />}
+      {importFile && <ImportLabWizard
+        file={importFile}
+        onCancel={() => setImportFile(undefined)}
+        onImported={(document) => { setImportFile(undefined); void initialize(document, "edit").catch((error) => reportError(error, "validation")); }}
+        onError={(message) => reportError(message, "validation")}
+      />}
       {labInfoOpen && workspace.draft && <LabInformationDialog document={workspace.draft} mode={workspace.mode} onClose={() => setLabInfoOpen(false)} />}
       {cliCommandsOpen && <CliCommandsDialog onClose={() => setCliCommandsOpen(false)} />}
       {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
