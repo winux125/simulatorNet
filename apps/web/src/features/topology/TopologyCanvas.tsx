@@ -609,7 +609,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
             }}
           >
             <header><div><p>Diagram annotation</p><h2>Edit text</h2></div><button type="button" className="dialog-close" aria-label="Close text editor" onClick={() => setEditingTextId(undefined)}><X size={15} /></button></header>
-            <label className="annotation-text-field">Text<textarea aria-label="Annotation text" rows={7} value={editingText} autoFocus maxLength={4_096} onChange={(event) => setEditingText(event.target.value)} /></label>
+            <div className="workspace-dialog__body"><label className="annotation-text-field">Text<textarea aria-label="Annotation text" rows={7} value={editingText} autoFocus maxLength={4_096} onChange={(event) => setEditingText(event.target.value)} /></label></div>
             <div className="dialog-actions"><Button type="button" variant="ghost" onClick={() => setEditingTextId(undefined)}>Cancel</Button><Button type="submit" variant="primary">Apply</Button></div>
           </form>
         </div>

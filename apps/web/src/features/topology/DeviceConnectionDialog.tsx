@@ -93,6 +93,7 @@ export function DeviceConnectionDialog(props: DeviceConnectionDialogProps) {
           </button>
         </header>
 
+        <div className="workspace-dialog__body">
         <div className="connection-device-route">
           <EndpointCard label="From device" name={sourceName} kind={sourceNode.kind} />
           <ArrowRight size={17} aria-hidden="true" />
@@ -157,6 +158,7 @@ export function DeviceConnectionDialog(props: DeviceConnectionDialogProps) {
         {error && <p className="connection-dialog__error" role="alert">{error}</p>}
 
         <p className="section-note">The connection is added only after both physical interfaces are confirmed.</p>
+        </div>
         <div className="dialog-actions">
           <Button type="button" variant="ghost" onClick={props.onClose}>Cancel</Button>
           <Button type="submit" variant="primary" icon={<Cable size={14} />} disabled={!canConnect}>Connect</Button>
