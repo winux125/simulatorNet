@@ -196,9 +196,12 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
         // Sanitize CLI output: strip any escape sequence an imported config might
         // carry, so only the terminal's own generated sequences ever run.
         const output = result.output ? stripControlSequences(result.output) : "";
-        const rows = Math.max(1, (terminal.rows || 24) - 1);
-        if (output && !result.deferred && TerminalPager.needed(output, rows)) {
-          pager = new TerminalPager(output, rows);
+        // Page by the viewport height, but only for genuinely long output, so a
+        // short listing (e.g. `?`) never paginates even in a small terminal.
+        const viewport = Math.max(1, (terminal.rows || 24) - 1);
+        const threshold = Math.max(viewport, 20);
+        if (output && !result.deferred && TerminalPager.needed(output, threshold)) {
+          pager = new TerminalPager(output, viewport);
           pendingPromptResult = result;
           writePagerPage(pager.page());
           if (fromDeferredEvent) setTranscript((current) => `${current}${output}\n`);
