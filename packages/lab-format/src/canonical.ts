@@ -1,4 +1,5 @@
 import type {
+  ConsoleAccessConfiguration,
   DeviceConfig,
   BridgeDeviceConfig,
   CloudDeviceConfig,
@@ -47,6 +48,25 @@ function canonicalInterfaces(nodes: readonly NodeSpec[]): NodeSpec[] {
   }));
 }
 
+function canonicalConsoleAccess(
+  config: { consoleAccess?: ConsoleAccessConfiguration } | undefined,
+): ConsoleAccessConfiguration | undefined {
+  const access = config?.consoleAccess;
+  if (!access) return undefined;
+  return {
+    mode: access.mode,
+    users: [...access.users]
+      .sort(byId)
+      .map((user) => ({ ...user, passwordVerifier: { ...user.passwordVerifier } })),
+    consolePasswordVerifier: access.consolePasswordVerifier ? { ...access.consolePasswordVerifier } : undefined,
+    enableSecretVerifier: access.enableSecretVerifier ? { ...access.enableSecretVerifier } : undefined,
+    maximumAttempts: access.maximumAttempts,
+    loginBanner: access.loginBanner,
+    motdBanner: access.motdBanner,
+    credentialResetRequired: access.credentialResetRequired,
+  };
+}
+
 function commonInterface(
   id: string,
   existing: PhysicalInterfaceConfig | undefined,
@@ -85,6 +105,7 @@ function serverConfiguration(node: NodeSpec, config: ServerDeviceConfig | undefi
     enabledServices: [...(config?.enabledServices ?? [])]
       .sort(byId)
       .map((service) => normalizeServiceConfiguration(service)),
+    consoleAccess: canonicalConsoleAccess(config),
   };
 }
 
@@ -104,6 +125,7 @@ function bridgeConfiguration(node: NodeSpec, config: BridgeDeviceConfig | undefi
     hostname: config?.hostname ?? node.name ?? node.id,
     interfaces: node.interfaces.map((iface) => commonInterface(iface.id, interfaces.get(iface.id))),
     agingTimeNs: config?.agingTimeNs ?? 300_000_000_000,
+    consoleAccess: canonicalConsoleAccess(config),
   };
 }
 
@@ -127,6 +149,7 @@ function switchConfiguration(node: NodeSpec, config: SwitchDeviceConfig | undefi
           : undefined,
       };
     }),
+    consoleAccess: canonicalConsoleAccess(config),
   };
 }
 
@@ -194,6 +217,7 @@ function routerConfiguration(node: NodeSpec, config: RouterDeviceConfig | undefi
     dhcpPools: [...(config?.dhcpPools ?? [])].sort(byId).map((pool) => ({ ...pool })),
     ...canonicalAcls(config),
     ...canonicalNat(config),
+    consoleAccess: canonicalConsoleAccess(config),
   };
 }
 
@@ -284,6 +308,7 @@ function layer3SwitchConfiguration(
       .map((route) => ({ ...route })),
     ipRoutingEnabled: config?.ipRoutingEnabled ?? false,
     ...canonicalAcls(config),
+    consoleAccess: canonicalConsoleAccess(config),
   };
 }
 

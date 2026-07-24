@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { TopologySchema } from "./topology";
 import { LabDiagramSchema } from "./diagram";
+import { ConsoleAccessConfigurationSchema } from "./console";
 
 /** The only lab JSON schema understood by this release. */
 export const CURRENT_LAB_SCHEMA_VERSION = 1 as const;
@@ -128,6 +129,7 @@ export const ServerDeviceConfigSchema = z.object({
   dhcpClientEnabled: z.boolean().default(false),
   dnsServer: Ipv4Schema.optional(),
   enabledServices: z.array(ServerServiceConfigSchema).max(16).default([]),
+  consoleAccess: ConsoleAccessConfigurationSchema.optional(),
 });
 export type ServerDeviceConfig = z.infer<typeof ServerDeviceConfigSchema>;
 
@@ -144,6 +146,7 @@ export const BridgeDeviceConfigSchema = z.object({
   hostname: z.string().min(1).optional(),
   interfaces: z.array(PhysicalInterfaceConfigSchema).default([]),
   agingTimeNs: z.number().int().positive().default(DEFAULT_BRIDGE_AGING_TIME_NS),
+  consoleAccess: ConsoleAccessConfigurationSchema.optional(),
 });
 export type BridgeDeviceConfig = z.infer<typeof BridgeDeviceConfigSchema>;
 
@@ -167,6 +170,7 @@ export const SwitchDeviceConfigSchema = z.object({
   hostname: z.string().min(1).optional(),
   vlans: z.array(VlanConfigSchema).default([]),
   interfaces: z.array(SwitchInterfaceConfigSchema).default([]),
+  consoleAccess: ConsoleAccessConfigurationSchema.optional(),
 });
 export type SwitchDeviceConfig = z.infer<typeof SwitchDeviceConfigSchema>;
 
@@ -319,6 +323,7 @@ export const RouterDeviceConfigSchema = z.object({
   natPools: z.array(NatPoolConfigSchema).max(32).default([]),
   natRules: z.array(NatRuleConfigSchema).max(128).default([]),
   natInterfaceRoles: z.array(NatInterfaceRoleConfigSchema).max(64).default([]),
+  consoleAccess: ConsoleAccessConfigurationSchema.optional(),
 });
 export type RouterDeviceConfig = z.infer<typeof RouterDeviceConfigSchema>;
 
@@ -423,6 +428,7 @@ export const Layer3SwitchDeviceConfigSchema = z.object({
   staticRoutes: z.array(StaticRouteConfigSchema).default([]),
   ipRoutingEnabled: z.boolean().default(false),
   ...RoutedSecurityConfigShape,
+  consoleAccess: ConsoleAccessConfigurationSchema.optional(),
 });
 export type Layer3SwitchDeviceConfig = z.infer<typeof Layer3SwitchDeviceConfigSchema>;
 

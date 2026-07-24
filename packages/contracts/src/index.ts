@@ -5,3 +5,4 @@ export * from "./topology";
 export * from "./lab";
 export * from "./host-ip";
 export * from "./diagram";
+export * from "./console";

@@ -1,0 +1,19 @@
+{
+  "name": "@sim/console-auth",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Simulated device-console authentication for SimulatorNet: cross-runtime PBKDF2 password verifiers and the login/enable session state machine. Deliberately separate from platform (Keycloak/session) auth and from the deterministic packet engine.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@sim/contracts": "workspace:*"
+  }
+}

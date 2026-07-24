@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@sim/console-auth": "workspace:*",
     "@sim/contracts": "workspace:*",
     "@sim/lab-format": "workspace:*",
     "zod": "^3.24.0"
