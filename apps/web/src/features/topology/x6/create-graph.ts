@@ -23,21 +23,22 @@ export function createGraph(options: CreateGraphOptions): Graph {
       allowBlank: false,
       allowLoop: false,
       allowMulti: false,
-      allowNode: false,
+      allowNode: true,
       allowEdge: false,
       snap: { radius: 24 },
       router: { name: "manhattan", args: { padding: 12 } },
       connector: { name: "rounded", args: { radius: 8 } },
-      validateMagnet: () => options.isConnectable(),
+      validateMagnet: ({ magnet }) => options.isConnectable()
+        && Boolean(magnet.getAttribute("port") || magnet.getAttribute("data-connection-handle")),
       validateConnection: ({ sourceMagnet, targetMagnet, sourceCell, targetCell }) => {
-        if (!options.isConnectable() || !sourceMagnet || !targetMagnet) return false;
-        const sourcePort = sourceMagnet.getAttribute("port");
-        const targetPort = targetMagnet.getAttribute("port");
+        if (!options.isConnectable() || !sourceCell || !targetCell || sourceCell.id === targetCell.id) return false;
+        const sourcePort = sourceMagnet?.getAttribute("port") ?? null;
+        const targetPort = targetMagnet?.getAttribute("port") ?? null;
         return options.validateConnection(
           sourcePort,
           targetPort,
-          sourceCell?.id ?? null,
-          targetCell?.id ?? null,
+          sourceCell.id,
+          targetCell.id,
         );
       },
     },

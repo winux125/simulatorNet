@@ -46,6 +46,38 @@ function findInterface(topology: Topology, nodeId: string, ifaceId: string): boo
   return Boolean(topology.nodes.find((node) => node.id === nodeId)?.interfaces.some((iface) => iface.id === ifaceId));
 }
 
+/** Validate a device-to-device drag before asking the user to choose interfaces. */
+export function validateDeviceConnection(
+  document: LabDocument,
+  source: string,
+  target: string,
+  options: { locked?: boolean } = {},
+): ConnectionValidation {
+  if (options.locked) {
+    return { ok: false, code: "TOPOLOGY_LOCKED", message: "Stop the lab before changing links." };
+  }
+  const topology = document.topology;
+  const sourceNode = topology.nodes.find((node) => node.id === source);
+  const targetNode = topology.nodes.find((node) => node.id === target);
+  if (!sourceNode) {
+    return { ok: false, code: "SOURCE_MISSING", message: `Unknown source device '${source}'.` };
+  }
+  if (!targetNode) {
+    return { ok: false, code: "TARGET_MISSING", message: `Unknown target device '${target}'.` };
+  }
+  if (source === target) {
+    return { ok: false, code: "SELF_LINK", message: "A device cannot be connected to itself." };
+  }
+  const used = occupancy(topology);
+  if (!sourceNode.interfaces.some((iface) => !used.has(endpointKey(source, iface.id)))) {
+    return { ok: false, code: "SOURCE_OCCUPIED", message: `All interfaces on '${source}' are already connected.` };
+  }
+  if (!targetNode.interfaces.some((iface) => !used.has(endpointKey(target, iface.id)))) {
+    return { ok: false, code: "TARGET_OCCUPIED", message: `All interfaces on '${target}' are already connected.` };
+  }
+  return { ok: true };
+}
+
 /**
  * Validate a proposed link before it is ever created, so invalid edges never
  * flash on the canvas. All simulator interfaces are Ethernet, so compatibility

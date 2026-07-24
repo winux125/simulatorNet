@@ -21,6 +21,7 @@ export interface TopologyGraphSurfaceProps {
   onNodeMoved(id: string, position: Point): void;
   onSelectNode(id: string): void;
   onOpenDevice(id: string): void;
+  onConnectionIntent(source: string, target: string, sourcePort?: string, targetPort?: string): void;
   onConnect(source: string, sourcePort: string, target: string, targetPort: string): void;
   onConnectionRejected(message: string): void;
   onSelectLink(id: string): void;
@@ -47,6 +48,7 @@ export function TopologyGraphSurface(props: TopologyGraphSurfaceProps) {
         onNodeMoved: (id, position) => propsRef.current.onNodeMoved(id, position),
         onSelectNode: (id) => propsRef.current.onSelectNode(id),
         onOpenDevice: (id) => propsRef.current.onOpenDevice(id),
+        onConnectionIntent: (source, target, sourcePort, targetPort) => propsRef.current.onConnectionIntent(source, target, sourcePort, targetPort),
         onConnect: (source, sourcePort, target, targetPort) => propsRef.current.onConnect(source, sourcePort, target, targetPort),
         onConnectionRejected: (message) => propsRef.current.onConnectionRejected(message),
         onSelectLink: (id) => propsRef.current.onSelectLink(id),

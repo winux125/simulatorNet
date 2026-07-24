@@ -40,6 +40,7 @@ const graphHarness = vi.hoisted(() => ({
   fit: vi.fn(),
   zoomIn: vi.fn(),
   zoomOut: vi.fn(),
+  connectionIntent: undefined as ((source: string, target: string, sourcePort?: string, targetPort?: string) => void) | undefined,
 }));
 
 vi.mock("@xterm/xterm", () => {
@@ -95,6 +96,10 @@ vi.mock("../features/topology/TopologyGraphSurface", async () => {
     React.useEffect(() => { if ((props.fitRequest as number) > 0) graphHarness.fit(); }, [props.fitRequest]);
     React.useEffect(() => { if ((props.zoomInRequest as number) > 0) graphHarness.zoomIn(); }, [props.zoomInRequest]);
     React.useEffect(() => { if ((props.zoomOutRequest as number) > 0) graphHarness.zoomOut(); }, [props.zoomOutRequest]);
+    React.useEffect(() => {
+      graphHarness.connectionIntent = props.onConnectionIntent as typeof graphHarness.connectionIntent;
+      return () => { graphHarness.connectionIntent = undefined; };
+    }, [props.onConnectionIntent]);
     return React.createElement("div", {
       "data-testid": "topology-graph",
       onClick: (event: React.MouseEvent) => {
@@ -155,6 +160,7 @@ beforeEach(() => {
   graphHarness.fit.mockClear();
   graphHarness.zoomIn.mockClear();
   graphHarness.zoomOut.mockClear();
+  graphHarness.connectionIntent = undefined;
   window.localStorage.clear();
   useWorkspaceStore.getState().reset();
   Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn((query: string) => ({
@@ -449,6 +455,63 @@ describe("M6.1 simulator workspace", () => {
     fireEvent.contextMenu(screen.getByRole("button", { name: "Select PC1" }));
     await userEvent.click(screen.getByRole("menuitem", { name: "Duplicate" }));
     expect(useWorkspaceStore.getState().draft?.topology.nodes).toHaveLength(5);
+  });
+
+  it("opens interface selection after a device-to-device drag and creates the connection", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New Lab" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
+    await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add PC" }));
+    fireEvent.click(screen.getByTestId("topology-graph"), { clientX: 240, clientY: 220 });
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Network Devices" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add L2 Switch" }));
+    fireEvent.click(screen.getByTestId("topology-graph"), { clientX: 520, clientY: 260 });
+
+    expect(screen.getByRole("button", { name: "Connect PC1 to another device" })).toBeTruthy();
+    act(() => graphHarness.connectionIntent?.("pc-1", "switch-1"));
+    let dialog = screen.getByRole("dialog", { name: "Configure connection" });
+    expect(within(dialog).getAllByText("PC1")).toHaveLength(2);
+    expect(within(dialog).getAllByText("SW1")).toHaveLength(2);
+    expect((within(dialog).getByLabelText("Connection type") as HTMLSelectElement).value).toBe("ethernet");
+    expect((within(dialog).getByLabelText("Source interface") as HTMLSelectElement).value).toBe("eth0");
+    expect((within(dialog).getByLabelText("Target interface") as HTMLSelectElement).value).toBe("Gi0/1");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(useWorkspaceStore.getState().draft?.topology.links).toHaveLength(0);
+
+    act(() => graphHarness.connectionIntent?.("pc-1", "switch-1"));
+    dialog = screen.getByRole("dialog", { name: "Configure connection" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    expect(useWorkspaceStore.getState().draft?.topology.links).toEqual([
+      { id: "link-1", a: { node: "pc-1", iface: "eth0" }, b: { node: "switch-1", iface: "Gi0/1" } },
+    ]);
+    expect(screen.queryByRole("dialog", { name: "Configure connection" })).toBeNull();
+
+    act(() => graphHarness.connectionIntent?.("pc-1", "switch-1"));
+    expect(screen.getByText("All interfaces on PC1 are already connected.")).toBeTruthy();
+  });
+
+  it("starts a device-first connection from the context menu", async () => {
+    const client = new RuntimeClient();
+    render(<App client={client} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New Lab" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
+    await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add PC" }));
+    fireEvent.click(screen.getByTestId("topology-graph"), { clientX: 240, clientY: 220 });
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Network Devices" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add L2 Switch" }));
+    fireEvent.click(screen.getByTestId("topology-graph"), { clientX: 520, clientY: 260 });
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Select PC1" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Connect…" }));
+    expect(screen.getByText("Select the device to connect")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Select SW1" }));
+    expect(screen.getByRole("dialog", { name: "Configure connection" })).toBeTruthy();
   });
 
   it("toggles topology link labels", async () => {

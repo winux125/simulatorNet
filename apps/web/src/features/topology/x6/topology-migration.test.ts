@@ -6,7 +6,7 @@ import { canonicalizeLabDocument, stringifyLabDocument } from "@sim/lab-format";
 import { describe, expect, it, vi } from "vitest";
 import { removeDraftDevice, withNodePosition } from "../../lab/document";
 import { attachGraphEvents } from "./graph-events";
-import { createLink, toGraphLinks, toGraphNodes, validateConnection } from "./lab-document-adapter";
+import { createLink, toGraphLinks, toGraphNodes, validateConnection, validateDeviceConnection } from "./lab-document-adapter";
 import { buildPorts } from "./port-registry";
 import { edgeLineAttrs, portBodyAttrs } from "./styles";
 
@@ -174,7 +174,35 @@ describe("M10.2.2a topology adapter", () => {
     expect(portBodyAttrs(false, true).fill).toContain("var(");
   });
 
-  it("18. keeps sim-core out of the main thread (worker owns the engine)", () => {
+  it("17. validates a device drag before opening the interface dialog", () => {
+    expect(validateDeviceConnection(doc(), "pc-1", "switch-1")).toEqual({ ok: true });
+    expect(validateDeviceConnection(doc(), "pc-1", "pc-1")).toEqual({
+      ok: false,
+      code: "SELF_LINK",
+      message: expect.any(String),
+    });
+    expect(validateDeviceConnection(doc(), "pc-1", "switch-1", { locked: true })).toEqual({
+      ok: false,
+      code: "TOPOLOGY_LOCKED",
+      message: expect.any(String),
+    });
+    const links = [{ id: "link-1", a: { node: "pc-1", iface: "eth0" }, b: { node: "switch-1", iface: "Gi0/1" } }];
+    expect(validateDeviceConnection(doc(SEVEN, links), "pc-1", "server-1")).toEqual({
+      ok: false,
+      code: "SOURCE_OCCUPIED",
+      message: expect.stringContaining("All interfaces"),
+    });
+  });
+
+  it("18. preserves a device-first connection through canonical export", () => {
+    const { document } = createLink(doc(), "pc-1", "eth0", "switch-1", "Gi0/1");
+    const parsed = JSON.parse(stringifyLabDocument(canonicalizeLabDocument(document))) as LabDocument;
+    expect(parsed.topology.links).toEqual([
+      { id: "link-1", a: { node: "pc-1", iface: "eth0" }, b: { node: "switch-1", iface: "Gi0/1" } },
+    ]);
+  });
+
+  it("19. keeps sim-core out of the main thread (worker owns the engine)", () => {
     const mainThread = sourceFiles().filter((file) => file.endsWith(".ts") || file.endsWith(".tsx"))
       .filter((file) => !file.includes(`${join("src", "worker")}`));
     const offenders = mainThread.filter((file) => /from "@sim\/sim-core"/.test(readFileSync(file, "utf8")));

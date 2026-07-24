@@ -78,6 +78,7 @@ export interface TopologyGraphCallbacks {
   onNodeMoved(id: string, position: Point): void;
   onSelectNode(id: string): void;
   onOpenDevice(id: string): void;
+  onConnectionIntent(source: string, target: string, sourcePort?: string, targetPort?: string): void;
   onConnect(source: string, sourcePort: string, target: string, targetPort: string): void;
   onConnectionRejected(message: string): void;
   onSelectLink(id: string): void;

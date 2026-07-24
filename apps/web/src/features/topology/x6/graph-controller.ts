@@ -3,7 +3,13 @@ import type { DiagramAnnotation, LabDocument } from "@sim/contracts";
 import { createGraph } from "./create-graph";
 import { addLinkEdge, updateLinkEdge } from "./edge-registry";
 import { attachGraphEvents } from "./graph-events";
-import { createLink as adapterCreateLink, toGraphLinks, toGraphNodes, validateConnection } from "./lab-document-adapter";
+import {
+  createLink as adapterCreateLink,
+  toGraphLinks,
+  toGraphNodes,
+  validateConnection,
+  validateDeviceConnection,
+} from "./lab-document-adapter";
 import { registerDeviceNode, type DeviceCellData } from "./node-registry";
 import { buildPorts, portsMatch } from "./port-registry";
 import { NODE_HEIGHT, NODE_WIDTH, portBodyAttrs, SIM_DEVICE_SHAPE } from "./styles";
@@ -35,6 +41,7 @@ function devicePresentationKey(data: DeviceCellData): string {
     serviceBadges: data.device.serviceBadges,
     terminalOpen: data.device.terminalOpen,
     configurationChanged: data.device.configurationChanged,
+    connectable: data.device.connectable,
   });
 }
 
@@ -55,7 +62,10 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     isNodeMovable: () => state.draggable && !state.readonly,
     isConnectable: () => state.connectable && !state.readonly,
     validateConnection: (sourcePort, targetPort, sourceCell, targetCell) => {
-      if (!sourcePort || !targetPort || !sourceCell || !targetCell || !state.document) return false;
+      if (!sourceCell || !targetCell || !state.document) return false;
+      if (!sourcePort || !targetPort) {
+        return validateDeviceConnection(state.document, sourceCell, targetCell, { locked: state.readonly }).ok;
+      }
       return validateConnection(state.document, sourceCell, sourcePort, targetCell, targetPort, { locked: state.readonly }).ok;
     },
   });
@@ -79,7 +89,13 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       const sourcePort = edge.getSourcePortId();
       const targetPort = edge.getTargetPortId();
       graph.removeEdge(edge); // Authoritative edges are re-rendered from the draft.
-      if (!sourceCell || !targetCell || !sourcePort || !targetPort || !state.document) return;
+      if (!sourceCell || !targetCell || !state.document) return;
+      if (!sourcePort || !targetPort) {
+        const result = validateDeviceConnection(state.document, sourceCell.id, targetCell.id, { locked: state.readonly });
+        if (!result.ok) { options.callbacks.onConnectionRejected(result.message); return; }
+        options.callbacks.onConnectionIntent(sourceCell.id, targetCell.id, sourcePort, targetPort);
+        return;
+      }
       const result = validateConnection(state.document, sourceCell.id, sourcePort, targetCell.id, targetPort, { locked: state.readonly });
       if (!result.ok) { options.callbacks.onConnectionRejected(result.message); return; }
       options.callbacks.onConnect(sourceCell.id, sourcePort, targetCell.id, targetPort);

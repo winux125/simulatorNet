@@ -366,18 +366,29 @@ test("two draft-configured PCs ping through an L2 switch after Start Lab", async
   await expect(page.getByText(/Unknown device/)).toHaveCount(0);
 
   await closeInspector(page);
-  await page.getByRole("button", { name: "Add link" }).click();
-  await page.locator('[data-cell-id="pc-1"] [data-interface="eth0"]').dragTo(
-    page.locator('[data-cell-id="switch-1"] [data-interface="Gi0/1"]'),
-  );
-  await page.locator('[data-cell-id="pc-2"] [data-interface="eth0"]').dragTo(
-    page.locator('[data-cell-id="switch-1"] [data-interface="Gi0/2"]'),
-  );
+  const connectDevice = async (source: string, target: string, targetPort: string) => {
+    const sourceNode = page.locator(`[data-device-id="${source}"]`);
+    const targetNode = page.locator(`[data-device-id="${target}"]`);
+    await sourceNode.hover();
+    const handle = sourceNode.locator("[data-connection-handle]");
+    await expect(handle).toHaveCSS("opacity", "1");
+    await handle.dragTo(targetNode.locator(".device-node__surface"));
+    const dialog = page.getByRole("dialog", { name: "Configure connection" });
+    await expect(dialog.getByLabel("Connection type")).toHaveValue("ethernet");
+    await dialog.getByLabel("Target interface").selectOption(targetPort);
+    if (source === "pc-1") await page.screenshot({ path: "/tmp/device-connection-modal-1440x900.png", animations: "disabled" });
+    await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+  };
+  await connectDevice("pc-1", "switch-1", "Gi0/1");
+  await connectDevice("pc-2", "switch-1", "Gi0/2");
   await expect(page.getByText("2 links", { exact: true })).toBeVisible();
+  await page.screenshot({ path: "/tmp/device-first-connections-1440x900.png", animations: "disabled" });
 
   await page.getByRole("button", { name: "Start Lab" }).click();
   await page.getByRole("dialog", { name: "Apply topology changes?" }).getByRole("button", { name: "Apply & Rebuild" }).click();
   await expect(page.getByRole("button", { name: "Stop Lab" })).toBeVisible();
+  await expect(page.locator("[data-connection-handle]")).toHaveCount(0);
   await openCli(page, "PC1");
   await runCli(page, "ping 192.168.10.20");
   await expect(page.getByTestId("terminal-transcript")).toContainText("Success rate is 100 percent");

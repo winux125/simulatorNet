@@ -27,7 +27,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useCallback, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { PortLabelMode, WorkspaceMode, WorkspaceTool } from "../../state/workspace-store";
 import { Button, StatusIndicator } from "../../ui";
 import {
@@ -45,6 +45,7 @@ import {
   withDiagramLinkLabel,
   withNodePosition,
 } from "../lab/document";
+import { DeviceConnectionDialog } from "./DeviceConnectionDialog";
 import { TopologyGraphSurface } from "./TopologyGraphSurface";
 import { portLabelsVisible } from "./diagram-presentation";
 import { createLink } from "./x6/lab-document-adapter";
@@ -82,6 +83,13 @@ type ContextMenuState =
   | { kind: "node"; id: string; x: number; y: number }
   | { kind: "link"; id: string; x: number; y: number }
   | { kind: "pane"; x: number; y: number };
+
+interface ConnectionIntent {
+  sourceId: string;
+  targetId: string;
+  sourcePort?: string;
+  targetPort?: string;
+}
 
 const ANNOTATION_TOOLS = new Set<WorkspaceTool>([
   "annotation-text",
@@ -127,11 +135,37 @@ function createAnnotation(document: LabDocument, tool: WorkspaceTool, position: 
 
 export function TopologyCanvas(props: TopologyCanvasProps) {
   const [contextMenu, setContextMenu] = useState<ContextMenuState>();
+  const [connectionIntent, setConnectionIntent] = useState<ConnectionIntent>();
+  const [pendingConnectionSourceId, setPendingConnectionSourceId] = useState<string>();
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string>();
   const [instructionsOpen, setInstructionsOpen] = useState(false);
   const graphApi = useRef<{ clientToLocal(point: Point): Point; fit(): void } | undefined>(undefined);
   const status = useMemo(() => new Map(props.snapshot?.nodes.map((node) => [node.id, node])), [props.snapshot]);
   const editable = props.mode === "edit";
+
+  useEffect(() => {
+    if (!editable) {
+      setConnectionIntent(undefined);
+      setPendingConnectionSourceId(undefined);
+    }
+  }, [editable]);
+
+  const startConnection = useCallback((id: string) => {
+    setContextMenu(undefined);
+    setSelectedAnnotationId(undefined);
+    props.onSelectLink(undefined);
+    props.onSelectNode(id);
+    setPendingConnectionSourceId(id);
+  }, [props.onSelectLink, props.onSelectNode]);
+
+  const activateNode = useCallback((id: string) => {
+    if (pendingConnectionSourceId && pendingConnectionSourceId !== id) {
+      setConnectionIntent({ sourceId: pendingConnectionSourceId, targetId: id });
+      setPendingConnectionSourceId(undefined);
+      return;
+    }
+    props.onSelectNode(id);
+  }, [pendingConnectionSourceId, props.onSelectNode]);
 
   const openNodeMenu = useCallback((id: string, event: ReactMouseEvent) => {
     event.preventDefault();
@@ -164,8 +198,10 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           serviceBadges: live?.serviceBadges,
           terminalOpen: props.terminalTabs.includes(node.id),
           configurationChanged: changed,
-          onActivate: props.onSelectNode,
+          connectable: editable,
+          onActivate: activateNode,
           onOpen: props.onOpenDevice,
+          onConnectStart: startConnection,
           onContextMenu: openNodeMenu,
         },
       };
@@ -195,7 +231,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       result.annotations![annotation.id] = { selected: annotation.id === selectedAnnotationId };
     }
     return result;
-  }, [props, status, openNodeMenu, selectedAnnotationId]);
+  }, [props, status, editable, activateNode, openNodeMenu, selectedAnnotationId, startConnection]);
 
   if (!props.document) {
     return (
@@ -246,6 +282,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       }
     }
     setSelectedAnnotationId(undefined);
+    setPendingConnectionSourceId(undefined);
     props.onSelectNode(undefined);
     props.onSelectLink(undefined);
   };
@@ -255,6 +292,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     if (contextMenu.kind === "node") {
       if (action === "terminal") props.onOpenTerminal(contextMenu.id);
       if (action === "inspect") props.onInspect(contextMenu.id);
+      if (action === "connect") startConnection(contextMenu.id);
       if (action === "rename") {
         const current = document.configurations[contextMenu.id]?.hostname ?? contextMenu.id;
         const next = window.prompt("Device hostname", current);
@@ -289,7 +327,8 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         <StatusIndicator status={props.mode === "edit" ? "unsaved" : "ready"} label={props.mode === "edit" ? "Edit topology" : "Lab running"} />
         <span>{document.topology.nodes.length} devices</span>
         <span>{document.topology.links.length} links</span>
-        {props.activeTool === "add-link" && <strong><Cable size={12} /> Drag between interface endpoints</strong>}
+        {pendingConnectionSourceId && <strong><Cable size={12} /> Select the device to connect</strong>}
+        {props.activeTool === "add-link" && <strong><Cable size={12} /> Drag a cable handle onto another device</strong>}
         {ANNOTATION_TOOLS.has(props.activeTool) && <strong>Click the canvas to place annotation</strong>}
         <button
           type="button"
@@ -326,7 +365,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         view={view}
         readonly={!editable}
         draggable={editable && (props.activeTool === "select" || Boolean(selectedAnnotation))}
-        connectable={editable && props.activeTool === "add-link"}
+        connectable={editable}
         fitRequest={props.fitRequest}
         zoomResetRequest={props.zoomResetRequest}
         zoomInRequest={props.zoomInRequest}
@@ -339,6 +378,15 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           props.onSelectNode(id);
         }}
         onOpenDevice={props.onOpenDevice}
+        onConnectionIntent={(sourceId, targetId, sourcePort, targetPort) => {
+          if (!editable) return;
+          setContextMenu(undefined);
+          setSelectedAnnotationId(undefined);
+          setPendingConnectionSourceId(undefined);
+          props.onSelectLink(undefined);
+          props.onSelectNode(sourceId);
+          setConnectionIntent({ sourceId, targetId, sourcePort, targetPort });
+        }}
         onAnnotationMoved={(id, position) => { if (editable) props.onChange(moveDiagramAnnotation(document, id, position)); }}
         onSelectAnnotation={(id) => {
           setSelectedAnnotationId(id);
@@ -356,6 +404,24 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         onPaneContextMenu={(x, y) => setContextMenu({ kind: "pane", x, y })}
         onDropDevice={(kind, local) => { if ((DEVICE_TYPES as readonly string[]).includes(kind)) addAt(kind as NodeSpec["kind"], local); }}
       />
+
+      {connectionIntent && editable && (
+        <DeviceConnectionDialog
+          key={`${connectionIntent.sourceId}-${connectionIntent.targetId}`}
+          document={document}
+          sourceId={connectionIntent.sourceId}
+          targetId={connectionIntent.targetId}
+          preferredSourcePort={connectionIntent.sourcePort}
+          preferredTargetPort={connectionIntent.targetPort}
+          onClose={() => { setConnectionIntent(undefined); setPendingConnectionSourceId(undefined); }}
+          onConnect={(sourceId, sourcePort, targetId, targetPort) => {
+            const result = createLink(document, sourceId, sourcePort, targetId, targetPort);
+            props.onChange(result.document);
+            props.onSelectNode(undefined);
+            props.onSelectLink(result.link.id);
+          }}
+        />
+      )}
 
       <button className="instructions-button" type="button" onClick={() => setInstructionsOpen(true)}>Instructions</button>
       {instructionsOpen && (
@@ -376,6 +442,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
             <button role="menuitem" type="button" onClick={() => contextAction("inspect")}>Inspect <Eye size={13} /></button>
             {editable && <>
               <span className="context-menu__separator" />
+              <button role="menuitem" type="button" onClick={() => contextAction("connect")}>Connect… <Cable size={13} /></button>
               <button role="menuitem" type="button" onClick={() => contextAction("rename")}>Rename</button>
               <button role="menuitem" type="button" onClick={() => contextAction("duplicate")}>Duplicate</button>
               <button role="menuitem" type="button" className="is-danger" onClick={() => contextAction("delete")}>Delete</button>

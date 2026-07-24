@@ -1,4 +1,5 @@
 import type { DeviceType } from "@sim/contracts";
+import { Cable } from "lucide-react";
 import type { MouseEvent } from "react";
 import { DeviceIcon } from "../../components/DeviceIcon";
 
@@ -11,8 +12,10 @@ export interface DeviceNodeData {
   serviceBadges?: string[];
   terminalOpen: boolean;
   configurationChanged: boolean;
+  connectable: boolean;
   onActivate(id: string): void;
   onOpen(id: string): void;
+  onConnectStart(id: string): void;
   onContextMenu(id: string, event: MouseEvent): void;
 }
 
@@ -30,6 +33,7 @@ export function DeviceNode({ id, data, selected }: { id: string; data: DeviceNod
     <div className={nodeClass} data-device-id={id} onContextMenu={(event) => data.onContextMenu(id, event)}>
       <button
         type="button"
+        className="device-node__surface"
         aria-label={`Select ${data.hostname}`}
         aria-pressed={selected}
         onClick={() => data.onActivate(id)}
@@ -44,6 +48,25 @@ export function DeviceNode({ id, data, selected }: { id: string; data: DeviceNod
         </span>
         <small>{data.subtitle}</small>
       </button>
+      {data.connectable && (
+        <button
+          type="button"
+          className="device-node__connect"
+          aria-label={`Connect ${data.hostname} to another device`}
+          title="Connect device"
+          data-connection-handle="true"
+          {...({ magnet: "true" } as Record<string, string>)}
+          onClick={(event) => {
+            event.stopPropagation();
+            // X6 emits a click after a completed mouse drag. Treat only a
+            // keyboard activation as the button-style fallback; pointer users
+            // create the connection by dragging the magnet.
+            if (event.detail === 0) data.onConnectStart(id);
+          }}
+        >
+          <Cable size={12} aria-hidden="true" />
+        </button>
+      )}
       {data.terminalOpen && <span className="device-node__terminal" title="CLI open">CLI</span>}
       {data.serviceBadges && data.serviceBadges.length > 0 && (
         <span className="visually-hidden" aria-label={`Enabled services: ${data.serviceBadges.join(", ")}`} />

@@ -108,7 +108,7 @@ export function DevicePalette(props: DevicePaletteProps) {
             {category === "connections" && <>
               <ConnectionTool
                 label="Automatic Ethernet"
-                description="Choose compatible free Ethernet ports"
+                description="Drag a cable handle between devices, then confirm their interfaces"
                 icon={Sparkles}
                 active={props.activeTool === "add-link"}
                 disabled={props.disabled}
@@ -116,7 +116,7 @@ export function DevicePalette(props: DevicePaletteProps) {
               />
               <ConnectionTool
                 label="Ethernet Link"
-                description="Drag between interface endpoints"
+                description="Advanced: drag directly between physical interface endpoints"
                 icon={Cable}
                 active={props.activeTool === "add-link"}
                 disabled={props.disabled}
