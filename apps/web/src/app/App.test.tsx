@@ -36,6 +36,7 @@ interface MockXterm {
 }
 
 const xtermHarness = vi.hoisted(() => ({ instances: [] as MockXterm[] }));
+const fitHarness = vi.hoisted(() => ({ calls: 0 }));
 const graphHarness = vi.hoisted(() => ({
   fit: vi.fn(),
   zoomIn: vi.fn(),
@@ -67,7 +68,7 @@ vi.mock("@xterm/xterm", () => {
   }
   return { Terminal: MockTerminal };
 });
-vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() { fitHarness.calls += 1; } } }));
 vi.mock("react-resizable-panels", async () => {
   const React = await import("react");
   return {
@@ -162,13 +163,15 @@ beforeEach(() => {
   narrowViewport = false;
   prefersDark = true;
   xtermHarness.instances.length = 0;
+  fitHarness.calls = 0;
   graphHarness.fit.mockClear();
   graphHarness.zoomIn.mockClear();
   graphHarness.zoomOut.mockClear();
   graphHarness.connectionIntent = undefined;
   graphHarness.nodeMoved = undefined;
-  window.localStorage.clear();
+  useWorkspaceStore.getState().setTerminalPresentationMode("docked");
   useWorkspaceStore.getState().reset();
+  window.localStorage.clear();
   Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn((query: string) => ({
     matches: query.includes("max-width: 999px")
       ? compactViewport
@@ -1378,5 +1381,150 @@ describe("M10.2.3c change-impact and rebuild semantics", () => {
     expect(screen.queryByRole("dialog", { name: "Apply topology changes?" })).toBeNull();
     expect(useWorkspaceStore.getState().pendingTopologyChanges).toBe(false);
     expect(useWorkspaceStore.getState().snapshot?.nodes.map((node) => node.id)).toContain("pc-1");
+  });
+});
+
+describe("M10.3.2c unified terminal workspace", () => {
+  async function choosePresentation(label: "Dock at Bottom" | "Float" | "Maximize") {
+    await openMenu("View");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Terminal" }));
+    await userEvent.click(screen.getByRole("menuitemradio", { name: new RegExp(`^${label}`) }));
+  }
+
+  it("ignores presentation shortcuts when no laboratory is open", () => {
+    render(<App client={new RuntimeClient()} />);
+    fireEvent.keyDown(window, { key: "`", code: "Backquote", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "Enter", ctrlKey: true, altKey: true });
+    expect(useWorkspaceStore.getState()).toMatchObject({
+      terminalVisible: false,
+      terminalPresentationMode: "docked",
+      terminalTabs: [],
+    });
+  });
+
+  it("moves one xterm through Dock, Float and Maximize while preserving input and search", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await type(terminal, "ping 192.168.");
+    const search = screen.getByLabelText("PC1 terminal search") as HTMLInputElement;
+    await userEvent.type(search, "ping");
+    const fitsBefore = fitHarness.calls;
+
+    await choosePresentation("Float");
+    expect(useWorkspaceStore.getState().terminalPresentationMode).toBe("floating");
+    expect(xtermHarness.instances).toHaveLength(1);
+    expect(xtermHarness.instances[0]).toBe(terminal);
+    expect(search.value).toBe("ping");
+
+    await choosePresentation("Maximize");
+    expect(useWorkspaceStore.getState().terminalPresentationMode).toBe("maximized");
+    expect(xtermHarness.instances).toHaveLength(1);
+
+    await choosePresentation("Dock at Bottom");
+    expect(useWorkspaceStore.getState().terminalPresentationMode).toBe("docked");
+    expect(xtermHarness.instances).toHaveLength(1);
+    expect(terminal.disposed).toBe(false);
+    expect(terminal.output).toContain("ping 192.168.");
+    expect(fitHarness.calls).toBeGreaterThan(fitsBefore);
+  });
+
+  it("hides the terminal window without closing tabs or the worker session", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await openMenu("View");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Terminal" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Hide Terminal" }));
+
+    expect(useWorkspaceStore.getState()).toMatchObject({
+      terminalVisible: false,
+      terminalTabs: ["pc-1"],
+    });
+    expect(terminal.disposed).toBe(false);
+    expect(client.requestTypes).not.toContain("CLOSE_CLI_SESSION");
+
+    await openMenu("View");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Terminal" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: /^Show Terminal/ }));
+    expect(useWorkspaceStore.getState().terminalVisible).toBe(true);
+    expect(xtermHarness.instances).toHaveLength(1);
+  });
+
+  it("shares multiple tabs, supports keyboard cycling, and closes tabs to the right", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await openDeviceTerminal("Select PC1");
+    await openDeviceTerminal("Select SW1");
+    expect(xtermHarness.instances).toHaveLength(2);
+    expect(useWorkspaceStore.getState().activeTerminalDeviceId).toBe("switch-1");
+
+    fireEvent.keyDown(screen.getByLabelText("SW1 terminal"), { key: "PageUp", ctrlKey: true });
+    expect(useWorkspaceStore.getState().activeTerminalDeviceId).toBe("pc-1");
+
+    const pcTab = screen.getByRole("tab", { name: /PC1 terminal/ });
+    fireEvent.contextMenu(pcTab, { clientX: 40, clientY: 40 });
+    await userEvent.click(screen.getByRole("menuitem", { name: "Close Tabs to the Right" }));
+    expect(useWorkspaceStore.getState()).toMatchObject({
+      terminalTabs: ["pc-1"],
+      activeTerminalDeviceId: "pc-1",
+    });
+    await waitFor(() => expect(xtermHarness.instances[1]?.disposed).toBe(true));
+    expect(xtermHarness.instances[0]?.disposed).toBe(false);
+  });
+
+  it("uses Device Window as a launcher instead of mounting another xterm", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await openDeviceTerminal("Select PC1");
+    expect(xtermHarness.instances).toHaveLength(1);
+
+    fireEvent.doubleClick(screen.getByRole("button", { name: "Select PC1" }));
+    const dialog = await screen.findByRole("dialog", { name: "PC1 device window" });
+    await userEvent.click(within(dialog).getByRole("tab", { name: "Terminal" }));
+    expect(within(dialog).getByRole("button", { name: "Open in Terminal Workspace" })).toBeTruthy();
+    expect(within(dialog).queryByLabelText("PC1 terminal")).toBeNull();
+    expect(xtermHarness.instances).toHaveLength(1);
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Open in Terminal Workspace" }));
+    expect(screen.queryByRole("dialog", { name: "PC1 device window" })).toBeNull();
+    expect(xtermHarness.instances).toHaveLength(1);
+    expect(useWorkspaceStore.getState().terminalTabs).toEqual(["pc-1"]);
+  });
+
+  it("restores a maximized terminal with Escape without closing its session", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await choosePresentation("Float");
+    await choosePresentation("Maximize");
+
+    fireEvent.keyDown(screen.getByLabelText("PC1 terminal"), { key: "Escape" });
+    expect(useWorkspaceStore.getState().terminalPresentationMode).toBe("floating");
+    expect(terminal.disposed).toBe(false);
+  });
+
+  it("only intercepts Ctrl/Cmd+W while focus is inside the terminal", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await openDeviceTerminal("Select PC1");
+    fireEvent.keyDown(window, { key: "w", ctrlKey: true });
+    expect(useWorkspaceStore.getState().terminalTabs).toEqual(["pc-1"]);
+
+    fireEvent.keyDown(screen.getByLabelText("PC1 terminal"), { key: "w", ctrlKey: true });
+    expect(useWorkspaceStore.getState().terminalTabs).toEqual([]);
+  });
+
+  it("keeps terminal instances across theme and device icon profile changes", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await chooseTheme("Light");
+    await openMenu("View");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Device Icon Style" }));
+    await userEvent.click(screen.getByRole("menuitemradio", { name: "Minimal Network" }));
+    expect(xtermHarness.instances).toHaveLength(1);
+    expect(xtermHarness.instances[0]).toBe(terminal);
+    expect(terminal.disposed).toBe(false);
   });
 });

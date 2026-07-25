@@ -180,6 +180,7 @@
   --footer-height: 22px;
   --z-canvas-overlay: 10;
   --z-drawer: 30;
+  --z-terminal-floating: 45;
   --z-menu: 50;
   --z-dialog: 100;
   --transition-fast: 120ms ease;

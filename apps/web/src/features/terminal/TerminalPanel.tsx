@@ -2,13 +2,14 @@ import type { ConsoleAccessConfiguration } from "@sim/contracts";
 import type { CliExecutionResult, LabUiNode } from "@sim/sim-worker";
 import { ConsoleAuthSession } from "@sim/console-auth";
 import { stripControlSequences } from "@sim/importers";
-import { Clipboard, Eraser, TerminalSquare, X } from "lucide-react";
+import { Clipboard, Eraser, Search, TerminalSquare, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Terminal as XtermTerminal } from "@xterm/xterm";
 import type { FitAddon as XtermFitAddon } from "@xterm/addon-fit";
 import type { SimulatorClient } from "../../app/simulator-client";
 import type { WorkspaceMode } from "../../state/workspace-store";
 import type { ResolvedTheme } from "../../hooks/useTheme";
+import { DeviceIcon } from "../../components/DeviceIcon";
 import { EmptyState, IconButton } from "../../ui";
 import { TerminalCommandHistory } from "./terminal-history";
 import { LineBuffer, classifyTerminalKey } from "./terminal-line-editor";
@@ -29,10 +30,14 @@ interface TerminalWorkspaceProps {
   theme: ResolvedTheme;
   appearance?: TerminalAppearance;
   sessionNamespace?: string;
+  layoutSignal?: string;
   /** Simulated console-access config for a device, if it requires a login. */
   consoleAccessFor?(deviceId: string): ConsoleAccessConfiguration | undefined;
   onActivate(deviceId: string): void;
   onClose(deviceId: string): void;
+  onReorder?(fromIndex: number, toIndex: number): void;
+  onCloseOthers?(deviceId: string): void;
+  onCloseToRight?(deviceId: string): void;
   onError(message: string): void;
 }
 
@@ -42,29 +47,107 @@ function terminalText(value: string): string {
 
 export function TerminalWorkspace(props: TerminalWorkspaceProps) {
   const activeNode = props.nodes.find((node) => node.id === props.activeDeviceId);
+  const [tabMenu, setTabMenu] = useState<{ deviceId: string; x: number; y: number }>();
+  useEffect(() => {
+    if (!tabMenu) return;
+    const close = () => setTabMenu(undefined);
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("blur", close);
+    };
+  }, [tabMenu]);
+
+  const cycleTab = (direction: -1 | 1) => {
+    if (props.tabs.length < 2) return;
+    const current = Math.max(0, props.tabs.indexOf(props.activeDeviceId ?? ""));
+    props.onActivate(props.tabs[(current + direction + props.tabs.length) % props.tabs.length]!);
+  };
+
   if (props.tabs.length === 0) {
     return <EmptyState icon={<TerminalSquare size={28} />} title="No terminal sessions" description="Open a device context menu or use Open CLI in the inspector. Type commands directly into the terminal — each session keeps its own history inside the worker." />;
   }
   return (
-    <div className="terminal-workspace" data-overflow-boundary="hidden">
+    <div
+      className="terminal-workspace"
+      data-overflow-boundary="hidden"
+      onKeyDownCapture={(event) => {
+        if (!(event.ctrlKey || event.metaKey)) return;
+        if (event.key === "PageUp") {
+          event.preventDefault();
+          cycleTab(-1);
+        } else if (event.key === "PageDown") {
+          event.preventDefault();
+          cycleTab(1);
+        }
+      }}
+    >
       <div className="terminal-tabs" role="tablist" aria-label="Device terminal sessions">
-        {props.tabs.map((deviceId) => {
+        {props.tabs.map((deviceId, index) => {
           const node = props.nodes.find((candidate) => candidate.id === deviceId);
           const active = props.activeDeviceId === deviceId;
           const title = node?.type === "pc"
             ? `${node.hostname} — Command Prompt`
             : node?.type === "server" ? `${node.hostname} — Terminal` : `${node?.hostname ?? deviceId} — CLI`;
           return (
-            <button key={deviceId} type="button" role="tab" aria-selected={active} aria-label={`${node?.hostname ?? deviceId} terminal${active ? ", active" : ""}`} className={active ? "is-active" : ""} onClick={() => props.onActivate(deviceId)}>
-              <TerminalSquare size={13} aria-hidden="true" />
+            <button
+              key={deviceId}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              aria-label={`${node?.hostname ?? deviceId} terminal${active ? ", active" : ""}`}
+              className={active ? "is-active" : ""}
+              draggable={Boolean(props.onReorder)}
+              onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("application/x-simulatornet-terminal-tab", String(index));
+              }}
+              onDragOver={(event) => {
+                if (event.dataTransfer.types.includes("application/x-simulatornet-terminal-tab")) {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                }
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                const fromIndex = Number(event.dataTransfer.getData("application/x-simulatornet-terminal-tab"));
+                if (Number.isInteger(fromIndex)) props.onReorder?.(fromIndex, index);
+              }}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                props.onActivate(deviceId);
+                setTabMenu({
+                  deviceId,
+                  x: Math.max(4, Math.min(event.clientX, window.innerWidth - 176)),
+                  y: Math.max(4, Math.min(event.clientY, window.innerHeight - 120)),
+                });
+              }}
+              onClick={() => props.onActivate(deviceId)}
+            >
+              {node
+                ? <DeviceIcon type={node.type} size={15} state={node.status === "up" ? "running" : "stopped"} />
+                : <TerminalSquare size={13} aria-hidden="true" />}
               <span>{title}</span>
-              <small>{deviceId}</small>
+              <small><i className={node?.status === "up" ? "is-ready" : ""} />{node?.status === "up" ? "connected" : deviceId}</small>
               <span className="terminal-tab-close" role="button" aria-label={`Close ${node?.hostname ?? deviceId} CLI`} tabIndex={0} onClick={(event) => { event.stopPropagation(); props.onClose(deviceId); }} onKeyDown={(event) => { if (event.key === "Enter") props.onClose(deviceId); }}><X size={12} /></span>
             </button>
           );
         })}
         <span className="terminal-tabs__meta">{activeNode ? `${activeNode.type} · isolated session` : ""}</span>
       </div>
+      {tabMenu && <div
+        className="terminal-tab-menu"
+        role="menu"
+        aria-label="Terminal tab actions"
+        style={{ left: tabMenu.x, top: tabMenu.y }}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <button type="button" role="menuitem" onClick={() => { props.onActivate(tabMenu.deviceId); setTabMenu(undefined); }}>Activate</button>
+        <button type="button" role="menuitem" onClick={() => { props.onClose(tabMenu.deviceId); setTabMenu(undefined); }}>Close</button>
+        <button type="button" role="menuitem" disabled={props.tabs.length < 2} onClick={() => { props.onCloseOthers?.(tabMenu.deviceId); setTabMenu(undefined); }}>Close Others</button>
+        <button type="button" role="menuitem" disabled={props.tabs.indexOf(tabMenu.deviceId) === props.tabs.length - 1} onClick={() => { props.onCloseToRight?.(tabMenu.deviceId); setTabMenu(undefined); }}>Close Tabs to the Right</button>
+      </div>}
       <div className="terminal-sessions">
         {props.tabs.map((deviceId) => {
           const node = props.nodes.find((candidate) => candidate.id === deviceId);
@@ -78,6 +161,7 @@ export function TerminalWorkspace(props: TerminalWorkspaceProps) {
               enabled={props.mode === "simulate" && node !== undefined}
               theme={props.theme}
               appearance={props.appearance}
+              layoutSignal={props.layoutSignal}
               sessionNamespace={props.sessionNamespace ?? "terminal"}
               consoleAccess={props.consoleAccessFor?.(deviceId)}
               onError={props.onError}
@@ -97,12 +181,13 @@ interface TerminalSessionProps {
   enabled: boolean;
   theme: ResolvedTheme;
   appearance?: TerminalAppearance;
+  layoutSignal?: string;
   sessionNamespace: string;
   consoleAccess?: ConsoleAccessConfiguration;
   onError(message: string): void;
 }
 
-function TerminalSession({ client, deviceId, hostname, active, enabled, theme, appearance, sessionNamespace, consoleAccess, onError }: TerminalSessionProps) {
+function TerminalSession({ client, deviceId, hostname, active, enabled, theme, appearance, layoutSignal, sessionNamespace, consoleAccess, onError }: TerminalSessionProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XtermTerminal | undefined>(undefined);
   const fitRef = useRef<XtermFitAddon | undefined>(undefined);
@@ -117,6 +202,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
   appearanceRef.current = appearance;
   const [transcript, setTranscript] = useState("");
   const [ready, setReady] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   enabledRef.current = enabled;
   activeRef.current = active;
@@ -373,6 +459,17 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
     });
   }, [active]);
 
+  useEffect(() => {
+    if (!active) return;
+    const frame = window.requestAnimationFrame(() => {
+      try {
+        fitRef.current?.fit();
+        terminalRef.current?.scrollToBottom();
+      } catch { /* presentation transition */ }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [active, layoutSignal]);
+
   const copy = () => {
     const text = terminalRef.current?.getSelection() || transcript;
     if (text) void navigator.clipboard?.writeText(text).catch(() => onError("Clipboard permission was denied"));
@@ -381,11 +478,25 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
     clearRef.current();
     focusRef.current();
   };
+  const searchMatches = searchQuery
+    ? transcript.toLocaleLowerCase().split(searchQuery.toLocaleLowerCase()).length - 1
+    : 0;
 
   return (
     <section className={`terminal-session ${active ? "is-active" : ""}`} role="group" aria-label={`${hostname} CLI`} aria-hidden={!active} hidden={!active}>
       <div className="terminal-session__actions">
         <span><i className={ready ? "is-ready" : ""} />{ready ? `${hostname} connected` : "Loading terminal…"}</span>
+        <label className="terminal-search">
+          <Search size={11} aria-hidden="true" />
+          <input
+            type="search"
+            value={searchQuery}
+            aria-label={`${hostname} terminal search`}
+            placeholder="Search"
+            onChange={(event) => setSearchQuery(event.target.value)}
+          />
+          {searchQuery && <small>{searchMatches}</small>}
+        </label>
         <IconButton label="Copy terminal selection" icon={<Clipboard size={13} />} onClick={copy} />
         <IconButton label="Clear terminal (Ctrl+L)" icon={<Eraser size={13} />} onClick={clear} />
       </div>

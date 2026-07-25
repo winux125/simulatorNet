@@ -7,6 +7,14 @@ import {
   LabChangeImpactError,
   type LabChangeImpact,
 } from "../features/lab/change-impact";
+import {
+  DEFAULT_TERMINAL_FLOATING_BOUNDS,
+  persistTerminalPresentationMode,
+  readTerminalPresentationMode,
+  type RestorableTerminalPresentationMode,
+  type TerminalFloatingBounds,
+  type TerminalPresentationMode,
+} from "../features/terminal/terminal-presentation-state";
 
 export type WorkspaceMode = "edit" | "simulate";
 export type ExecutionMode = "auto" | "step";
@@ -65,6 +73,12 @@ interface WorkspaceState {
   selectedLinkId: string | undefined;
   terminalTabs: string[];
   activeTerminalDeviceId: string | undefined;
+  terminalPresentationMode: TerminalPresentationMode;
+  terminalRestoreMode: RestorableTerminalPresentationMode;
+  terminalVisible: boolean;
+  terminalMinimized: boolean;
+  terminalFloatingBounds: TerminalFloatingBounds;
+  terminalDockHeight: number;
   workerStatus: "empty" | "loading" | "ready" | "error";
   powerState: LabPowerState;
   mode: WorkspaceMode;
@@ -104,6 +118,15 @@ interface WorkspaceState {
   openTerminal(deviceId: string): void;
   closeTerminal(deviceId: string): void;
   setActiveTerminal(deviceId: string): void;
+  reorderTerminal(fromIndex: number, toIndex: number): void;
+  closeOtherTerminals(deviceId: string): void;
+  closeTerminalsToRight(deviceId: string): void;
+  setTerminalPresentationMode(mode: TerminalPresentationMode): void;
+  restoreTerminalPresentation(): void;
+  setTerminalVisible(visible: boolean): void;
+  setTerminalMinimized(minimized: boolean): void;
+  setTerminalFloatingBounds(bounds: TerminalFloatingBounds): void;
+  setTerminalDockHeight(height: number): void;
   setWorkerStatus(status: WorkspaceState["workerStatus"]): void;
   setPowerState(state: LabPowerState): void;
   setMode(mode: WorkspaceMode): void;
@@ -125,6 +148,7 @@ interface WorkspaceState {
   reset(): void;
 }
 
+const initialPresentationMode = readTerminalPresentationMode();
 const initialState = {
   draft: undefined,
   savedDocument: undefined,
@@ -135,6 +159,12 @@ const initialState = {
   selectedLinkId: undefined,
   terminalTabs: [],
   activeTerminalDeviceId: undefined,
+  terminalPresentationMode: initialPresentationMode,
+  terminalRestoreMode: (initialPresentationMode === "floating" ? "floating" : "docked") as RestorableTerminalPresentationMode,
+  terminalVisible: false,
+  terminalMinimized: false,
+  terminalFloatingBounds: DEFAULT_TERMINAL_FLOATING_BOUNDS,
+  terminalDockHeight: 240,
   workerStatus: "empty" as const,
   powerState: "stopped" as LabPowerState,
   mode: "simulate" as const,
@@ -255,6 +285,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     terminalTabs: state.terminalTabs.includes(deviceId) ? state.terminalTabs : [...state.terminalTabs, deviceId],
     activeTerminalDeviceId: deviceId,
     dockTab: "terminal",
+    terminalVisible: true,
+    terminalMinimized: false,
   })),
   closeTerminal: (deviceId) => set((state) => {
     const terminalTabs = state.terminalTabs.filter((id) => id !== deviceId);
@@ -264,6 +296,59 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     return { terminalTabs, activeTerminalDeviceId };
   }),
   setActiveTerminal: (activeTerminalDeviceId) => set({ activeTerminalDeviceId, dockTab: "terminal" }),
+  reorderTerminal: (fromIndex, toIndex) => set((state) => {
+    if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0
+      || fromIndex >= state.terminalTabs.length || toIndex >= state.terminalTabs.length) return {};
+    const terminalTabs = [...state.terminalTabs];
+    const [moved] = terminalTabs.splice(fromIndex, 1);
+    if (!moved) return {};
+    terminalTabs.splice(toIndex, 0, moved);
+    return { terminalTabs };
+  }),
+  closeOtherTerminals: (deviceId) => set((state) => state.terminalTabs.includes(deviceId)
+    ? { terminalTabs: [deviceId], activeTerminalDeviceId: deviceId }
+    : {}),
+  closeTerminalsToRight: (deviceId) => set((state) => {
+    const index = state.terminalTabs.indexOf(deviceId);
+    if (index < 0) return {};
+    const terminalTabs = state.terminalTabs.slice(0, index + 1);
+    return {
+      terminalTabs,
+      activeTerminalDeviceId: terminalTabs.includes(state.activeTerminalDeviceId ?? "")
+        ? state.activeTerminalDeviceId
+        : deviceId,
+    };
+  }),
+  setTerminalPresentationMode: (terminalPresentationMode) => {
+    persistTerminalPresentationMode(terminalPresentationMode);
+    set((state) => ({
+      terminalPresentationMode,
+      terminalRestoreMode: terminalPresentationMode === "maximized"
+        ? (state.terminalPresentationMode === "maximized" ? state.terminalRestoreMode : state.terminalPresentationMode)
+        : terminalPresentationMode,
+      terminalVisible: true,
+      terminalMinimized: false,
+      dockTab: terminalPresentationMode === "docked" ? "terminal" : state.dockTab,
+    }));
+  },
+  restoreTerminalPresentation: () => set((state) => {
+    persistTerminalPresentationMode(state.terminalRestoreMode);
+    return {
+      terminalPresentationMode: state.terminalRestoreMode,
+      terminalVisible: true,
+      terminalMinimized: false,
+      dockTab: state.terminalRestoreMode === "docked" ? "terminal" : state.dockTab,
+    };
+  }),
+  setTerminalVisible: (terminalVisible) => set((state) => ({
+    terminalVisible,
+    terminalMinimized: terminalVisible ? false : state.terminalMinimized,
+  })),
+  setTerminalMinimized: (terminalMinimized) => set({ terminalMinimized, terminalVisible: true }),
+  setTerminalFloatingBounds: (terminalFloatingBounds) => set({ terminalFloatingBounds }),
+  setTerminalDockHeight: (terminalDockHeight) => set((state) => (
+    state.terminalDockHeight === terminalDockHeight ? {} : { terminalDockHeight }
+  )),
   setWorkerStatus: (workerStatus) => set({ workerStatus }),
   setPowerState: (powerState) => set({ powerState }),
   setMode: (mode) => set({ mode, activeTool: "select", pendingDeviceKind: undefined, paletteOpen: false }),
@@ -298,6 +383,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   requestZoomOut: () => set((state) => ({ zoomOutRequest: state.zoomOutRequest + 1 })),
   reset: () => {
     nextProblemId = 1;
-    set(initialState);
+    set((state) => ({
+      ...initialState,
+      terminalPresentationMode: state.terminalPresentationMode,
+      terminalRestoreMode: state.terminalRestoreMode,
+      terminalFloatingBounds: state.terminalFloatingBounds,
+      terminalDockHeight: state.terminalDockHeight,
+    }));
   },
 }));

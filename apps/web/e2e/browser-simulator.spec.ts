@@ -138,6 +138,17 @@ test("responsive topology links preserve domain endpoints across workspace chang
   await closeInspector(page);
   await expectTopologyLinksAttached(page, 12);
 
+  await page.getByRole("button", { name: "Select CORE-R1" }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: /Open CLI/ }).click();
+  await expect(page.getByRole("tab", { name: /CORE-R1 terminal/ })).toBeVisible();
+  await page.getByRole("button", { name: "Float terminal" }).click();
+  await expectTopologyLinksAttached(page, 12);
+  await page.getByRole("button", { name: "Maximize terminal" }).click();
+  await expectTopologyLinksAttached(page, 12);
+  await page.getByRole("button", { name: "Restore terminal" }).click();
+  await page.getByRole("button", { name: "Dock terminal at bottom" }).click();
+  await expectTopologyLinksAttached(page, 12);
+
   const separator = page.locator(".resize-handle--horizontal");
   const separatorBounds = await separator.boundingBox();
   expect(separatorBounds).not.toBeNull();

@@ -6,13 +6,11 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { SimulatorClient } from "../../app/simulator-client";
-import type { ResolvedTheme } from "../../hooks/useTheme";
 import type { LabPowerState } from "../../state/workspace-store";
 import { DeviceIcon } from "../../components/DeviceIcon";
 import { Button, IconButton } from "../../ui";
 import { ServerServicesPanel } from "../inspector/ServerServicesPanel";
-import { TerminalWorkspace } from "../terminal/TerminalPanel";
-import { CONSOLE_CAPABLE_KINDS, consoleAccessOf } from "../lab/document";
+import { CONSOLE_CAPABLE_KINDS } from "../lab/document";
 import { ConsoleAccessPanel } from "./ConsoleAccessPanel";
 import { HostIpConfigurationPanel } from "./HostIpConfigurationPanel";
 import {
@@ -30,9 +28,9 @@ interface DeviceWindowProps {
   client: SimulatorClient;
   document: LabDocument;
   node: LabUiNode;
-  theme: ResolvedTheme;
   powerState: LabPowerState;
   runtimeAvailable: boolean;
+  onOpenTerminal(deviceId: string): void;
   onConfigurationChanged(document: LabDocument, runtimeSynchronized: boolean): void;
   onError(message: string): void;
   onClose(): void;
@@ -135,7 +133,7 @@ export function DeviceWindow(props: DeviceWindowProps) {
             powerState={props.powerState}
             runtimeAvailable={props.runtimeAvailable}
             onConfigurationChanged={props.onConfigurationChanged}
-            onTerminal={() => setTab("terminal")}
+            onTerminal={() => props.onOpenTerminal(props.node.id)}
             onError={props.onError}
           />}
           {tab === "config" && <StructuredConfiguration document={props.document} node={props.node} />}
@@ -148,19 +146,12 @@ export function DeviceWindow(props: DeviceWindowProps) {
           {tab === "services" && (props.runtimeAvailable
             ? <ServerServicesPanel client={props.client} deviceId={props.node.id} refreshKey={props.node.interfaces.length} onError={props.onError} />
             : <DraftRuntimeNotice />)}
-          {tab === "terminal" && (props.runtimeAvailable ? <TerminalWorkspace
-            client={props.client}
-            tabs={[props.node.id]}
-            activeDeviceId={props.node.id}
-            nodes={[props.node]}
-            mode="simulate"
-            theme={props.theme}
-            sessionNamespace="device-window"
-            consoleAccessFor={(id) => consoleAccessOf(props.document, id)}
-            onActivate={() => undefined}
-            onClose={props.onClose}
-            onError={props.onError}
-          /> : <DraftRuntimeNotice />)}
+          {tab === "terminal" && (props.runtimeAvailable
+            ? <TerminalWorkspaceLauncher
+                node={props.node}
+                onOpen={() => props.onOpenTerminal(props.node.id)}
+              />
+            : <DraftRuntimeNotice />)}
           {tab === "interfaces" && <Interfaces node={props.node} />}
           {isSecuritySection(tab) && (props.runtimeAvailable
             ? <SecurityConfigurationPanel
@@ -279,6 +270,16 @@ function Desktop({
 
 function DraftRuntimeNotice() {
   return <div className="device-window-section"><p className="section-eyebrow">Pending rebuild</p><h2>Start the lab to open this tool</h2><p>This device exists in the topology draft. Its runtime tools become available after Apply &amp; Rebuild.</p></div>;
+}
+
+function TerminalWorkspaceLauncher({ node, onOpen }: { node: LabUiNode; onOpen(): void }) {
+  return <div className="device-window-section terminal-workspace-launcher">
+    <span className="terminal-workspace-launcher__icon"><TerminalSquare size={28} aria-hidden="true" /></span>
+    <p className="section-eyebrow">Unified terminal workspace</p>
+    <h2>{node.hostname} {node.type === "pc" ? "Command Prompt" : "CLI"}</h2>
+    <p>Open this device in the shared terminal workspace. Docking, floating, or maximizing keeps the same session, login state, command history, and scrollback.</p>
+    <Button variant="primary" onClick={onOpen}>Open in Terminal Workspace</Button>
+  </div>;
 }
 
 function DesktopButton({ label, icon: ToolIcon, active, onClick }: { label: string; icon: LucideIcon; active: boolean; onClick(): void }) {

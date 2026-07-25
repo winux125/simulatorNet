@@ -15,6 +15,7 @@ import { AssignmentPanel } from "../features/assignment/AssignmentPanel";
 import { DEMO_LABS, type DemoLabId } from "../fixtures/m10-demo-labs";
 import {
   autoArrangeDocument,
+  consoleAccessOf,
   duplicateDraftDevice,
   loadLabDocumentText,
   mergeRunningConfiguration,
@@ -34,6 +35,7 @@ import {
   useDeviceIconProfile,
 } from "../hooks/useDeviceIconProfile";
 import { applyTerminalAppearance, getTerminalAppearance, type TerminalAppearance } from "../features/terminal/terminal-appearance";
+import { TerminalPresentation } from "../features/terminal/TerminalPresentation";
 import { isTopologyEditable, useWorkspaceStore, type ExecutionMode, type WorkspaceMode } from "../state/workspace-store";
 import { Button, IconButton, Kbd } from "../ui";
 import type { SimulatorClient } from "./simulator-client";
@@ -111,7 +113,6 @@ function draftDeviceNode(document: LabDocument, deviceId: string): LabUiNode | u
 export function App({ client }: AppProps) {
   const workspace = useWorkspaceStore();
   const compact = useMediaQuery("(max-width: 999px)");
-  const narrowDesktop = useMediaQuery("(max-width: 1299px)");
   const theme = useTheme();
   const deviceIconProfile = useDeviceIconProfile();
   const [terminalAppearance, setTerminalAppearanceState] = useState<TerminalAppearance>(getTerminalAppearance());
@@ -349,6 +350,15 @@ export function App({ client }: AppProps) {
       if (target) { openTerminal(target); return; }
     }
     workspace.setDockTab("terminal");
+    workspace.setTerminalVisible(true);
+  };
+  const showTerminal = () => {
+    const state = useWorkspaceStore.getState();
+    if (state.terminalTabs.length === 0) openTerminalFromMenu();
+    else {
+      state.setTerminalVisible(true);
+      if (state.terminalPresentationMode === "docked") state.setDockTab("terminal");
+    }
   };
   const validateDocument = () => {
     const draft = useWorkspaceStore.getState().draft;
@@ -364,16 +374,50 @@ export function App({ client }: AppProps) {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (isTypingTarget(event.target)) return;
       const commandKey = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
+      const terminalFocused = event.target instanceof HTMLElement
+        && Boolean(event.target.closest(".terminal-presentation"));
+      if (commandKey && event.code === "Backquote") {
+        if (!useWorkspaceStore.getState().snapshot) return;
+        event.preventDefault();
+        const state = useWorkspaceStore.getState();
+        if (event.shiftKey) {
+          state.setTerminalPresentationMode(state.terminalPresentationMode === "floating" ? "docked" : "floating");
+        } else if (state.terminalVisible) {
+          state.setTerminalVisible(false);
+        } else {
+          showTerminal();
+        }
+        return;
+      }
+      if (commandKey && event.altKey && event.key === "Enter") {
+        const state = useWorkspaceStore.getState();
+        if (!state.snapshot || state.terminalTabs.length === 0) return;
+        event.preventDefault();
+        if (state.terminalPresentationMode === "maximized") state.restoreTerminalPresentation();
+        else state.setTerminalPresentationMode("maximized");
+        return;
+      }
+      if (commandKey && key === "w" && terminalFocused) {
+        event.preventDefault();
+        const state = useWorkspaceStore.getState();
+        if (state.activeTerminalDeviceId) state.closeTerminal(state.activeTerminalDeviceId);
+        return;
+      }
+      if (event.key === "Escape" && useWorkspaceStore.getState().terminalPresentationMode === "maximized") {
+        event.preventDefault();
+        useWorkspaceStore.getState().restoreTerminalPresentation();
+        return;
+      }
+      if (isTypingTarget(event.target)) return;
       if (commandKey && key === "n") { event.preventDefault(); newLab(); }
       else if (commandKey && key === "o") { event.preventDefault(); importLab(); }
       else if (commandKey && event.shiftKey && key === "s") { event.preventDefault(); setSaveAsOpen(true); }
       else if (commandKey && key === "s") { event.preventDefault(); save(); }
       else if (commandKey && key === "z" && event.shiftKey) { event.preventDefault(); useWorkspaceStore.getState().redo(); }
       else if (commandKey && key === "z") { event.preventDefault(); useWorkspaceStore.getState().undo(); }
-      else if (commandKey && event.key === "Enter") { event.preventDefault(); run(); }
+      else if (commandKey && !event.altKey && event.key === "Enter") { event.preventDefault(); run(); }
       else if (event.key === "Delete" || event.key === "Backspace") deleteSelection();
       else if (key === "f") workspace.requestFit();
       else if (event.key === "?") setShortcutsOpen(true);
@@ -435,7 +479,13 @@ export function App({ client }: AppProps) {
         { id: "ports-selected", label: "Selected", checked: workspace.portLabelMode === "selected", onSelect: () => workspace.setPortLabelMode("selected") },
         { id: "ports-hidden", label: "Hidden", checked: workspace.portLabelMode === "hidden", onSelect: () => workspace.setPortLabelMode("hidden") },
       ] },
-      { id: "view-terminal", label: "Open Terminal", icon: <TerminalSquare size={14} />, disabled: !labOpen, onSelect: openTerminalFromMenu },
+      { id: "view-terminal", label: "Terminal", icon: <TerminalSquare size={14} />, submenu: [
+        { id: "terminal-show", label: "Show Terminal", shortcut: "Ctrl `", disabled: !labOpen, onSelect: showTerminal },
+        { id: "terminal-dock", label: "Dock at Bottom", checked: workspace.terminalPresentationMode === "docked", disabled: !labOpen, onSelect: () => workspace.setTerminalPresentationMode("docked") },
+        { id: "terminal-float", label: "Float", shortcut: "Ctrl ⇧ `", checked: workspace.terminalPresentationMode === "floating", disabled: !labOpen, onSelect: () => workspace.setTerminalPresentationMode("floating") },
+        { id: "terminal-maximize", label: "Maximize", shortcut: "Ctrl Alt ↵", checked: workspace.terminalPresentationMode === "maximized", disabled: !labOpen, onSelect: () => workspace.setTerminalPresentationMode("maximized") },
+        { id: "terminal-hide", label: "Hide Terminal", disabled: !labOpen || !workspace.terminalVisible, onSelect: () => workspace.setTerminalVisible(false) },
+      ] },
       { separator: true },
       { id: "view-theme", label: "Theme", icon: <SunMoon size={14} />, submenu: [
         { id: "theme-system", label: "System", checked: theme.preference === "system", onSelect: () => theme.setPreference("system") },
@@ -596,33 +646,59 @@ export function App({ client }: AppProps) {
           </ResizablePanel>
           {labOpen && <>
             <Separator className="resize-handle resize-handle--horizontal" />
-            <ResizablePanel id="bottom-dock" minSize="160px" maxSize="48%" defaultSize={narrowDesktop ? "180px" : "190px"}>
+            <ResizablePanel
+              id="bottom-dock"
+              minSize="220px"
+              maxSize="48%"
+              defaultSize={`${workspace.terminalDockHeight}px`}
+            >
               <Suspense fallback={<DockLoading />}>
                 <BottomDock
-                  client={client}
                   tab={workspace.dockTab}
                   snapshot={workspace.snapshot}
                   traces={workspace.traces}
                   problems={workspace.problems}
                   terminalTabs={workspace.terminalTabs}
-                  activeTerminalDeviceId={workspace.activeTerminalDeviceId}
-                  mode={workspace.mode}
+                  terminalPresentationMode={workspace.terminalPresentationMode}
+                  terminalVisible={workspace.terminalVisible}
                   executionMode={workspace.executionMode}
-                  theme={theme.resolved}
                   onTab={workspace.setDockTab}
-                  onActivateTerminal={workspace.setActiveTerminal}
-                  onCloseTerminal={workspace.closeTerminal}
                   onClearProblems={workspace.clearProblems}
                   onExecutionModeChange={changeExecutionMode}
                   onStep={step}
                   onRunAll={run}
                   onClearTraces={workspace.clearTraces}
-                  onError={reportCliError}
                 />
               </Suspense>
             </ResizablePanel>
           </>}
         </PanelGroup>
+        {labOpen && <TerminalPresentation
+          client={client}
+          tabs={workspace.terminalTabs}
+          activeDeviceId={workspace.activeTerminalDeviceId}
+          nodes={workspace.snapshot?.nodes ?? []}
+          workspaceMode={workspace.mode}
+          theme={theme.resolved}
+          appearance={terminalAppearance}
+          presentationMode={workspace.terminalPresentationMode}
+          visible={workspace.terminalVisible}
+          minimized={workspace.terminalMinimized}
+          floatingBounds={workspace.terminalFloatingBounds}
+          consoleAccessFor={(deviceId) => workspace.draft ? consoleAccessOf(workspace.draft, deviceId) : undefined}
+          onActivate={workspace.setActiveTerminal}
+          onCloseTab={workspace.closeTerminal}
+          onReorder={workspace.reorderTerminal}
+          onCloseOthers={workspace.closeOtherTerminals}
+          onCloseToRight={workspace.closeTerminalsToRight}
+          onPresentationMode={workspace.setTerminalPresentationMode}
+          onRestore={workspace.restoreTerminalPresentation}
+          onVisible={workspace.setTerminalVisible}
+          onMinimized={workspace.setTerminalMinimized}
+          onFloatingBounds={workspace.setTerminalFloatingBounds}
+          onDockHeight={workspace.setTerminalDockHeight}
+          onError={reportCliError}
+        />}
       </div>
       <footer className="workspace-footer"><span>Workspace: <strong>{workspace.mode === "edit" ? "Edit" : "Operate"}</strong></span><span>Virtual time <code>{((workspace.snapshot?.virtualTime ?? 0) / 1_000_000).toFixed(3)} ms</code></span><span>{workspace.snapshot?.nodes.length ?? 0} devices</span><span className="workspace-footer__right">Schema v{workspace.draft?.schemaVersion ?? 1} · deterministic runtime</span></footer>
 
@@ -666,6 +742,11 @@ export function App({ client }: AppProps) {
           <Shortcut keys="Delete" label="Delete selection in Edit mode" />
           <Shortcut keys="F" label="Fit topology" />
           <Shortcut keys="Ctrl + L" label="Clear focused terminal" />
+          <Shortcut keys="Ctrl / Cmd + `" label="Show or hide terminal" />
+          <Shortcut keys="Ctrl / Cmd + Shift + `" label="Float or dock terminal" />
+          <Shortcut keys="Ctrl / Cmd + Alt + Enter" label="Maximize or restore terminal" />
+          <Shortcut keys="Ctrl / Cmd + PageUp / PageDown" label="Previous or next terminal tab" />
+          <Shortcut keys="Ctrl / Cmd + W" label="Close focused terminal tab" />
           <Shortcut keys="Escape" label="Close menus and dialogs" />
         </div>
       </WorkspaceDialog>}
@@ -673,9 +754,12 @@ export function App({ client }: AppProps) {
         client={client}
         document={workspace.draft}
         node={openDeviceNode}
-        theme={theme.resolved}
         powerState={workspace.powerState}
         runtimeAvailable={Boolean(runtimeDeviceNode)}
+        onOpenTerminal={(deviceId) => {
+          openTerminal(deviceId);
+          setDeviceWindowId(undefined);
+        }}
         onConfigurationChanged={(next, runtimeSynchronized) => {
           const state = useWorkspaceStore.getState();
           if (!state.draft) return;

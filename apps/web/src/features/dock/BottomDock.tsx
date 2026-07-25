@@ -1,32 +1,28 @@
 import type { LabUiSnapshot, SimulationTraceEvent } from "@sim/sim-worker";
 import { AlertTriangle, Braces, List, Network, TerminalSquare } from "lucide-react";
-import type { SimulatorClient } from "../../app/simulator-client";
-import type { DockTab, ExecutionMode, WorkspaceMode, WorkspaceProblem } from "../../state/workspace-store";
-import type { ResolvedTheme } from "../../hooks/useTheme";
+import type { DockTab, ExecutionMode, WorkspaceProblem } from "../../state/workspace-store";
 import { useState } from "react";
 import { Button, EmptyState, Tabs } from "../../ui";
-import { TerminalWorkspace } from "../terminal/TerminalPanel";
+import {
+  TERMINAL_DOCK_SLOT_ID,
+  type TerminalPresentationMode,
+} from "../terminal/terminal-presentation-state";
 
 interface BottomDockProps {
-  client: SimulatorClient;
   tab: DockTab;
   snapshot: LabUiSnapshot | undefined;
   traces: SimulationTraceEvent[];
   problems: WorkspaceProblem[];
   terminalTabs: string[];
-  activeTerminalDeviceId: string | undefined;
-  mode: WorkspaceMode;
+  terminalPresentationMode: TerminalPresentationMode;
+  terminalVisible: boolean;
   executionMode: ExecutionMode;
-  theme: ResolvedTheme;
   onTab(tab: DockTab): void;
-  onActivateTerminal(deviceId: string): void;
-  onCloseTerminal(deviceId: string): void;
   onClearProblems(): void;
   onExecutionModeChange(mode: ExecutionMode): void;
   onStep(): void;
   onRunAll(): void;
   onClearTraces(): void;
-  onError(message: string): void;
 }
 
 function timeLabel(nanoseconds: number): string {
@@ -61,8 +57,18 @@ export function BottomDock(props: BottomDockProps) {
         <Tabs label="Bottom panel sections" value={props.tab} options={options} onChange={props.onTab} />
       </div>
       <div className="bottom-dock__content" role="tabpanel">
-        <div className="dock-terminal-layer" hidden={props.tab !== "terminal"}>
-          <TerminalWorkspace client={props.client} tabs={props.terminalTabs} activeDeviceId={props.activeTerminalDeviceId} nodes={props.snapshot?.nodes ?? []} mode={props.mode} theme={props.theme} onActivate={props.onActivateTerminal} onClose={props.onCloseTerminal} onError={props.onError} />
+        <div id={TERMINAL_DOCK_SLOT_ID} className="dock-terminal-layer" hidden={props.tab !== "terminal"}>
+          {props.terminalTabs.length === 0
+            ? <EmptyState icon={<TerminalSquare size={28} />} title="No terminal sessions" description="Open a device context menu, inspector, or device window to start a shared terminal session." />
+            : !props.terminalVisible
+              ? <EmptyState icon={<TerminalSquare size={26} />} title="Terminal is hidden" description="Use View → Terminal → Show Terminal to restore the existing sessions." />
+              : props.terminalPresentationMode !== "docked"
+                ? <EmptyState
+                    icon={<TerminalSquare size={26} />}
+                    title={`Terminal is ${props.terminalPresentationMode}`}
+                    description="The same tabs and CLI sessions are open in the terminal window. Use View → Terminal → Dock at Bottom to return them here."
+                  />
+                : null}
         </div>
         {props.tab === "events" && <EventTable events={props.traces} />}
         {props.tab === "packet-trace" && <div className="packet-trace-view">
