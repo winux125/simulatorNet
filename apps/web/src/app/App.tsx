@@ -4,7 +4,7 @@ import type { LabUiNode, SimWorkerEvent } from "@sim/sim-worker";
 import { Group as PanelGroup, Panel as ResizablePanel, Separator } from "react-resizable-panels";
 import {
   AlertTriangle, CheckCircle2, Command, Download, Eraser, FilePlus2, FlaskConical, FolderOpen, FolderX,
-  Grid3X3, Info, Keyboard, Maximize2, PanelRight, Play, Redo2, RotateCcw, SkipForward,
+  Grid3X3, Info, Keyboard, Maximize2, Move, PanelRight, Play, Redo2, RotateCcw, SkipForward,
   Square, SunMoon, Tag, TerminalSquare, Undo2, Wrench, X,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
@@ -130,6 +130,7 @@ export function App({ client }: AppProps) {
   const [demoLabOpen, setDemoLabOpen] = useState(false);
   const [stepExplanationOpen, setStepExplanationOpen] = useState(false);
   const [packetModesOpen, setPacketModesOpen] = useState(false);
+  const [canvasNavigationOpen, setCanvasNavigationOpen] = useState(false);
   const [validation, setValidation] = useState<string>();
   const [pendingMode, setPendingMode] = useState<WorkspaceMode>();
   const [deviceWindowId, setDeviceWindowId] = useState<string>();
@@ -424,7 +425,7 @@ export function App({ client }: AppProps) {
       else if (event.key === "?") setShortcutsOpen(true);
       else if (event.key === "Escape") {
         setShortcutsOpen(false); setLabInfoOpen(false); setCliCommandsOpen(false); setAboutOpen(false);
-        setSaveAsOpen(false); setDemoLabOpen(false); setStepExplanationOpen(false); setPacketModesOpen(false); setConfirmApply(false); setConfirmStop(false); setValidation(undefined);
+        setSaveAsOpen(false); setDemoLabOpen(false); setStepExplanationOpen(false); setPacketModesOpen(false); setCanvasNavigationOpen(false); setConfirmApply(false); setConfirmStop(false); setValidation(undefined);
         workspace.setPaletteOpen(false); workspace.selectNode(undefined); workspace.selectLink(undefined);
       }
     };
@@ -537,6 +538,7 @@ export function App({ client }: AppProps) {
       { id: "tools-cli", label: "CLI Compatibility", icon: <Wrench size={14} />, onSelect: () => setCliCommandsOpen(true) },
     ] },
     { id: "help", label: "Help", items: [
+      { id: "help-canvas-navigation", label: "Canvas Navigation", icon: <Move size={14} />, onSelect: () => setCanvasNavigationOpen(true) },
       { id: "help-packet-modes", label: "Packet Execution Modes", icon: <SkipForward size={14} />, onSelect: () => setPacketModesOpen(true) },
       { id: "help-cli", label: "CLI Commands", icon: <TerminalSquare size={14} />, onSelect: () => setCliCommandsOpen(true) },
       { id: "help-shortcuts", label: "Keyboard Shortcuts", shortcut: "?", icon: <Keyboard size={14} />, onSelect: () => setShortcutsOpen(true) },
@@ -600,6 +602,7 @@ export function App({ client }: AppProps) {
         canUndo={workspace.past.length > 0}
         canRedo={workspace.future.length > 0}
         canDelete={hasSelection}
+        zoomScale={workspace.viewport.scale}
         session={launchSession.state.status === "authenticated" ? launchSession.state.identity : undefined}
         sessionPending={launchSession.state.status === "checking" || launchSession.state.status === "exchanging"}
         onModeChange={changeMode}
@@ -727,6 +730,7 @@ export function App({ client }: AppProps) {
       {cliCommandsOpen && <CliCommandsDialog onClose={() => setCliCommandsOpen(false)} />}
       {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
       {packetModesOpen && <PacketExecutionHelpDialog onClose={() => setPacketModesOpen(false)} />}
+      {canvasNavigationOpen && <CanvasNavigationHelpDialog onClose={() => setCanvasNavigationOpen(false)} />}
       {stepExplanationOpen && <WorkspaceDialog title="Step mode" eyebrow="Packet execution" onClose={dismissStepExplanation}>
         <p>Step mode lets you inspect ARP, ICMP, TCP and other network events one at a time.</p>
         <p>Your device configurations are unchanged. Switch back to Auto for normal operation.</p>
@@ -788,6 +792,9 @@ export function App({ client }: AppProps) {
       zoomResetRequest: workspace.zoomResetRequest,
       zoomInRequest: workspace.zoomInRequest,
       zoomOutRequest: workspace.zoomOutRequest,
+      viewport: workspace.viewport,
+      onViewport: workspace.setViewport,
+      onResetZoom: workspace.requestZoomReset,
       onSelectNode: (id: string | undefined) => { workspace.selectNode(id); if (id) workspace.setInspectorOpen(true); },
       onSelectLink: workspace.selectLink,
       onOpenTerminal: openTerminal,
@@ -869,6 +876,22 @@ function PacketExecutionHelpDialog({ onClose }: { onClose(): void }) {
       </section>
     </div>
     <p className="section-note">Both modes use deterministic virtual time. They do not change performance speed and do not use real wall-clock time.</p>
+  </WorkspaceDialog>;
+}
+
+function CanvasNavigationHelpDialog({ onClose }: { onClose(): void }) {
+  return <WorkspaceDialog title="Canvas navigation" eyebrow="Moving around the topology" onClose={onClose}>
+    <div className="shortcut-list">
+      <Shortcut keys="Two-finger move" label="Pan the canvas freely, including diagonally" />
+      <Shortcut keys="Pinch" label="Zoom smoothly around the pointer" />
+      <Shortcut keys="Wheel" label="Scroll the canvas vertically" />
+      <Shortcut keys="Shift + Wheel" label="Scroll the canvas horizontally" />
+      <Shortcut keys="Ctrl / Cmd + Wheel" label="Gentle zoom around the pointer" />
+      <Shortcut keys="Middle-button drag" label="Pan" />
+      <Shortcut keys="Space + drag" label="Pan" />
+      <Shortcut keys="Left drag on empty canvas" label="Select / marquee" />
+    </div>
+    <p className="section-note">A plain wheel never zooms and never scrolls the page. Zoom is limited to 20%–300%; the status bar shows the current percentage and resets it to 100%. Fit Topology stays a separate action.</p>
   </WorkspaceDialog>;
 }
 

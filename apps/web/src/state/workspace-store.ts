@@ -8,6 +8,11 @@ import {
   type LabChangeImpact,
 } from "../features/lab/change-impact";
 import {
+  IDENTITY_CANVAS_VIEWPORT,
+  isSameCanvasViewport,
+  type CanvasViewport,
+} from "../features/topology/canvas-navigation";
+import {
   DEFAULT_TERMINAL_FLOATING_BOUNDS,
   persistTerminalPresentationMode,
   readTerminalPresentationMode,
@@ -101,6 +106,11 @@ interface WorkspaceState {
   zoomResetRequest: number;
   zoomInRequest: number;
   zoomOutRequest: number;
+  /**
+   * Local canvas pan/zoom for the currently open lab. Presentation-only: it is
+   * never written into LabDocument, a grading submission, or the verifier.
+   */
+  viewport: CanvasViewport;
   // Bounded topology-edit history (edit-mode drafts only) for Undo/Redo.
   past: LabDocument[];
   future: LabDocument[];
@@ -147,6 +157,7 @@ interface WorkspaceState {
   requestFit(): void;
   requestZoomIn(): void;
   requestZoomOut(): void;
+  setViewport(viewport: CanvasViewport): void;
   reset(): void;
 }
 
@@ -187,6 +198,7 @@ const initialState = {
   zoomResetRequest: 0,
   zoomInRequest: 0,
   zoomOutRequest: 0,
+  viewport: IDENTITY_CANVAS_VIEWPORT,
   past: [] as LabDocument[],
   future: [] as LabDocument[],
 };
@@ -397,6 +409,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   requestFit: () => set((state) => ({ fitRequest: state.fitRequest + 1 })),
   requestZoomIn: () => set((state) => ({ zoomInRequest: state.zoomInRequest + 1 })),
   requestZoomOut: () => set((state) => ({ zoomOutRequest: state.zoomOutRequest + 1 })),
+  setViewport: (viewport) => set((state) => (
+    isSameCanvasViewport(state.viewport, viewport) ? {} : { viewport }
+  )),
   reset: () => {
     nextProblemId = 1;
     set((state) => ({

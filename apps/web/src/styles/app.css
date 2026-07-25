@@ -188,10 +188,14 @@ label.ui-icon-button { display: inline-grid; }
 .welcome-workspace__mark { display: grid; width: 42px; height: 42px; place-items: center; margin-bottom: 12px; border: 1px solid var(--color-icon-border); border-radius: var(--radius-md); background: var(--color-accent-muted); color: var(--color-accent); }
 .welcome-workspace h1 { margin: 3px 0 5px; font-size: 25px; letter-spacing: -.02em; }.welcome-workspace > p:not(.section-eyebrow) { max-width: 470px; margin: 0; color: var(--color-text-muted); font-size: var(--font-size-13); }
 .welcome-workspace__actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 20px; }.welcome-workspace ul { display: flex; flex-wrap: wrap; gap: 17px; margin: 18px 0 0; padding: 0; color: var(--color-text-faint); font-size: var(--font-size-10); list-style: none; }.welcome-workspace li::before { margin-right: 6px; color: var(--color-success); content: "●"; }
-.topology-panel .topology-graph { position: absolute; inset: 80px 0 0; background-image: radial-gradient(var(--color-canvas-grid) .8px, transparent .9px); background-size: 16px 16px; background-position: -1px -1px; }
+/* The canvas owns wheel/pinch input; the page must never scroll or zoom over it
+   and the topology never grows its own scrollbar (there is no X6 Scroller). */
+.topology-panel .topology-graph { position: absolute; inset: 80px 0 0; overflow: hidden; overscroll-behavior: contain; touch-action: none; background-image: radial-gradient(var(--color-canvas-grid) .8px, transparent .9px); background-size: 16px 16px; background-position: -1px -1px; }
 .topology-panel:has(.annotation-toolbar) .topology-graph { top: 154px; }
 .topology-panel[data-active-tool="pan"] .topology-graph { cursor: grab; }
 .topology-panel[data-active-tool="pan"] .topology-graph:active { cursor: grabbing; }
+.topology-graph.is-canvas-pannable { cursor: grab; }
+.topology-graph.is-canvas-panning { cursor: grabbing; }
 .topology-panel[data-active-tool^="annotation-"] .topology-graph { cursor: crosshair; }
 .topology-graph .x6-graph-svg, .topology-graph .x6-graph-background { background: transparent; }
 .canvas-statusbar { position: absolute; z-index: var(--z-canvas-overlay); top: 9px; left: 10px; display: flex; height: 28px; align-items: center; gap: 10px; padding: 0 7px; border: var(--border); border-radius: var(--radius-md); background: var(--color-overlay-panel); box-shadow: var(--shadow-soft); }
@@ -223,6 +227,8 @@ label.ui-icon-button { display: inline-grid; }
 .instructions-panel { position: absolute; z-index: calc(var(--z-canvas-overlay) + 1); bottom: 48px; left: 12px; width: min(390px, calc(100% - 24px)); min-width: 260px; min-height: 170px; max-width: 70%; max-height: 65%; padding: 12px; overflow: auto; resize: both; border: var(--border); border-radius: 5px; background: var(--color-panel); box-shadow: var(--elevation-menu); color: var(--color-text); }
 .instructions-panel header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 8px; border-bottom: var(--border); }.instructions-panel header button { display: grid; width: 24px; height: 24px; place-items: center; background: transparent; color: var(--color-text-muted); cursor: pointer; }.instructions-panel h3 { margin: 12px 0 4px; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }.instructions-panel p { margin: 6px 0; color: var(--color-text-muted); font-size: 11px; line-height: 1.55; white-space: pre-wrap; }
 .canvas-statusbar > button[aria-pressed="true"] { color: var(--color-accent); }
+.canvas-statusbar__zoom { font-variant-numeric: tabular-nums; }
+.toolbar-zoom-level { min-width: 34px; color: var(--color-text-muted); font-size: 9px; font-variant-numeric: tabular-nums; text-align: center; }
 .lab-information { position: absolute; z-index: var(--z-canvas-overlay); bottom: 14px; left: 14px; width: 260px; padding: 10px 11px; border: var(--border); border-radius: var(--radius-md); background: var(--color-overlay-panel); box-shadow: var(--shadow-soft); pointer-events: none; }
 .lab-information small, .section-eyebrow { color: var(--color-accent); font-size: 8px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
 .lab-information strong { display: block; margin-top: 3px; font-size: var(--font-size-11); }.lab-information p { margin: 4px 0; color: var(--color-text-muted); font-size: 9px; line-height: 1.4; }.lab-information span { color: var(--color-text-faint); font-size: 8px; }

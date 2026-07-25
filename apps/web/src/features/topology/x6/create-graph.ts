@@ -1,7 +1,13 @@
 import { Graph } from "@antv/x6";
+import { CANVAS_MAX_SCALE, CANVAS_MIN_SCALE } from "../canvas-navigation";
 
 // Factory for the X6 Graph. Interaction gating (drag / connect) is resolved
 // lazily against live refs so readonly/tool changes never require a rebuild.
+//
+// Wheel input is deliberately NOT configured here. The canvas owns a single
+// viewport through `canvas-navigation-controller`; enabling X6's `mousewheel`
+// module or listing `mouseWheel` in `panning.eventTypes` would duplicate wheel
+// handling. There is no Scroller plugin and therefore no inner scrollbars.
 
 export interface CreateGraphOptions {
   container: HTMLElement;
@@ -16,8 +22,8 @@ export function createGraph(options: CreateGraphOptions): Graph {
     autoResize: false,
     background: { color: "transparent" },
     grid: false,
-    panning: { enabled: false, eventTypes: ["leftMouseDown", "mouseWheel"] },
-    mousewheel: { enabled: true, modifiers: [], minScale: 0.3, maxScale: 1.8 },
+    scaling: { min: CANVAS_MIN_SCALE, max: CANVAS_MAX_SCALE },
+    panning: { enabled: false, eventTypes: ["leftMouseDown"] },
     interacting: (cellView) => ({
       nodeMovable: options.isNodeMovable(cellView.cell.id),
       edgeMovable: false,

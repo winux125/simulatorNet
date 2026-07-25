@@ -208,6 +208,14 @@ Topology links retain domain node/interface identifiers. A responsive redraw
 may re-anchor visuals, but it must never swap, infer, or mutate semantic
 endpoints. Persist only canonical domain data through `lab-format`.
 
+The canvas owns exactly one viewport: one graph translation and one graph
+scale. Do not add an X6 Scroller, an inner canvas scrollbar, or a second
+panning system beside it. All wheel heuristics belong to the central classifier
+in `features/topology/canvas-navigation.ts`, never to React components. Wheel
+listeners are bound to the canvas container, never to `document`. Pan and zoom
+are local workspace state and must never enter `LabDocument` or grading. See
+`docs/canvas-navigation.md`.
+
 Connection creation is device-first:
 
 1. drag from a device connection handle;

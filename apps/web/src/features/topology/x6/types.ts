@@ -1,4 +1,5 @@
 import type { LabDocument } from "@sim/contracts";
+import type { CanvasViewport } from "../canvas-navigation";
 import type { DeviceNodeData } from "../DeviceNode";
 
 // Plain-JSON view models exchanged between React and the X6 adapter. X6 never
@@ -97,6 +98,8 @@ export interface TopologyGraphCallbacks {
   onPanePointerUp(local: Point, modifiers: { shift: boolean; alt: boolean }): void;
   onPaneContextMenu(clientX: number, clientY: number): void;
   onDropDevice(kind: string, local: Point): void;
+  /** Local viewport changed (pan/zoom/fit). Presentation only — never persisted in a lab. */
+  onViewportChanged(viewport: CanvasViewport): void;
 }
 
 /**
@@ -121,6 +124,9 @@ export interface TopologyGraphController {
   zoomIn(): void;
   zoomOut(): void;
   resetZoom(): void;
+  getViewport(): CanvasViewport;
+  /** Restore a locally remembered viewport without fitting or rebuilding. */
+  setViewport(viewport: CanvasViewport): void;
   selectAll(): void;
   clearSelection(): void;
   clientToLocal(point: Point): Point;

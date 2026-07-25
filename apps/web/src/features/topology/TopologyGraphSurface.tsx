@@ -1,5 +1,6 @@
 import type { LabDocument } from "@sim/contracts";
 import { useEffect, useRef, type DragEvent } from "react";
+import { isSameCanvasViewport, type CanvasViewport } from "./canvas-navigation";
 import { createTopologyGraphController } from "./x6/graph-controller";
 import type { Point, TopologyGraphController, TopologyView } from "./x6/types";
 
@@ -18,7 +19,15 @@ export interface TopologyGraphSurfaceProps {
   zoomResetRequest: number;
   zoomInRequest: number;
   zoomOutRequest: number;
-  onReady(handle: { clientToLocal(point: Point): Point; localToClient(point: Point): Point; fit(): void }): void;
+  /** Locally remembered viewport, restored once when the surface mounts. */
+  restoreViewport?: CanvasViewport;
+  onReady(handle: {
+    clientToLocal(point: Point): Point;
+    localToClient(point: Point): Point;
+    getViewport(): CanvasViewport;
+    fit(): void;
+  }): void;
+  onViewportChanged(viewport: CanvasViewport): void;
   onNodeMoved(id: string, position: Point): void;
   onSelectNode(id: string): void;
   onOpenDevice(id: string): void;
@@ -74,10 +83,15 @@ export function TopologyGraphSurface(props: TopologyGraphSurfaceProps) {
         onPanePointerUp: (local, modifiers) => propsRef.current.onPanePointerUp(local, modifiers),
         onPaneContextMenu: (x, y) => propsRef.current.onPaneContextMenu(x, y),
         onDropDevice: (kind, local) => propsRef.current.onDropDevice(kind, local),
+        onViewportChanged: (viewport) => propsRef.current.onViewportChanged(viewport),
       },
     });
     controllerRef.current = controller;
     controller.resize(container.clientWidth, container.clientHeight);
+    const restored = propsRef.current.restoreViewport;
+    if (restored && !isSameCanvasViewport(restored, controller.getViewport())) {
+      controller.setViewport(restored);
+    }
     controller.updateReadonlyState(propsRef.current.readonly);
     controller.updateDraggable(propsRef.current.draggable);
     controller.updateConnectable(propsRef.current.connectable);
@@ -87,6 +101,7 @@ export function TopologyGraphSurface(props: TopologyGraphSurfaceProps) {
     propsRef.current.onReady({
       clientToLocal: (point) => controller.clientToLocal(point),
       localToClient: (point) => controller.localToClient(point),
+      getViewport: () => controller.getViewport(),
       fit: () => controller.fitToContent(),
     });
     const resizeObserver = typeof ResizeObserver === "undefined"

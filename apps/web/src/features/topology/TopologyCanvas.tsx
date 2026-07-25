@@ -32,6 +32,7 @@ import {
   MousePointer2,
   Network,
   Router as RouterIcon,
+  Search,
   Square,
   Tag,
   Type,
@@ -89,6 +90,7 @@ import {
   updateLineEndpoint,
 } from "./diagram-editor";
 import { TopologyGraphSurface } from "./TopologyGraphSurface";
+import { formatZoomPercent, type CanvasViewport } from "./canvas-navigation";
 import { portLabelsVisible } from "./diagram-presentation";
 import { createLink } from "./x6/lab-document-adapter";
 import type { Point, TopologyView } from "./x6/types";
@@ -107,6 +109,9 @@ interface TopologyCanvasProps {
   zoomResetRequest: number;
   zoomInRequest: number;
   zoomOutRequest: number;
+  viewport: CanvasViewport;
+  onViewport(viewport: CanvasViewport): void;
+  onResetZoom(): void;
   onSelectNode(id: string | undefined): void;
   onSelectLink(id: string | undefined): void;
   onOpenTerminal(id: string): void;
@@ -144,6 +149,13 @@ const ANNOTATION_TOOLS = new Set<WorkspaceTool>([
 ]);
 
 const DIAGRAM_COLORS = ["#2563eb", "#4d7fa9", "#0f766e", "#15803d", "#b45309", "#b91c1c", "#7e22ce", "#334155"];
+
+/**
+ * Trailing delay before a pan/zoom gesture is published to the workspace store.
+ * The graph itself is already updated per animation frame; this only keeps a
+ * continuous gesture from re-rendering the whole application at frame rate.
+ */
+const VIEWPORT_COMMIT_DELAY_MS = 150;
 
 function readDiagramPreference(key: string, fallback: boolean): boolean {
   try {
@@ -236,9 +248,15 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   const graphApi = useRef<{
     clientToLocal(point: Point): Point;
     localToClient(point: Point): Point;
+    getViewport(): CanvasViewport;
     fit(): void;
   } | undefined>(undefined);
   const suppressPaneClick = useRef(false);
+  const viewportTimer = useRef<number | undefined>(undefined);
+  const latestViewport = useRef<CanvasViewport | undefined>(undefined);
+  const onViewportRef = useRef(props.onViewport);
+  onViewportRef.current = props.onViewport;
+  const restoreViewport = useRef(props.viewport).current;
   const status = useMemo(() => new Map(props.snapshot?.nodes.map((node) => [node.id, node])), [props.snapshot]);
   const structuralEditable = props.mode === "edit";
 
@@ -258,6 +276,19 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       setPendingConnectionSourceId(undefined);
     }
   }, [structuralEditable]);
+
+  useEffect(() => () => {
+    if (viewportTimer.current !== undefined) window.clearTimeout(viewportTimer.current);
+  }, []);
+
+  const viewportChanged = useCallback((viewport: CanvasViewport) => {
+    latestViewport.current = viewport;
+    if (viewportTimer.current !== undefined) return;
+    viewportTimer.current = window.setTimeout(() => {
+      viewportTimer.current = undefined;
+      if (latestViewport.current) onViewportRef.current(latestViewport.current);
+    }, VIEWPORT_COMMIT_DELAY_MS);
+  }, []);
 
   const startConnection = useCallback((id: string) => {
     setContextMenu(undefined);
@@ -758,6 +789,15 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         >
           <Tag size={13} /> Ports: {props.portLabelMode}
         </button>
+        <button
+          type="button"
+          className="canvas-statusbar__zoom"
+          aria-label={`Canvas zoom ${formatZoomPercent(props.viewport.scale)}. Reset zoom to 100%`}
+          title="Reset zoom to 100% (Fit Topology stays separate)"
+          onClick={props.onResetZoom}
+        >
+          <Search size={13} /> Zoom: {formatZoomPercent(props.viewport.scale)}
+        </button>
       </div>
 
       <div className="diagram-insert-toolbar" role="toolbar" aria-label="Diagram tools">
@@ -860,6 +900,8 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         zoomResetRequest={props.zoomResetRequest}
         zoomInRequest={props.zoomInRequest}
         zoomOutRequest={props.zoomOutRequest}
+        restoreViewport={restoreViewport}
+        onViewportChanged={viewportChanged}
         onReady={(handle) => { graphApi.current = handle; }}
         onNodeMoved={(id, position) => props.onChange(withNodePosition(document, id, position), "presentation")}
         onSelectNode={(id) => {

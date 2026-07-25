@@ -1,5 +1,7 @@
 import type { CellAttrs, Node as X6Node } from "@antv/x6";
 import type { DiagramAnnotation, LabDocument } from "@sim/contracts";
+import { normalizeCanvasViewport, type CanvasViewport } from "../canvas-navigation";
+import { attachCanvasNavigation } from "./canvas-navigation-controller";
 import { createGraph } from "./create-graph";
 import { addLinkEdge, TOPOLOGY_EDGE_Z_INDEX, updateLinkEdge } from "./edge-registry";
 import { attachGraphEvents } from "./graph-events";
@@ -127,6 +129,28 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       return valid;
     },
   });
+  function readViewport(): CanvasViewport {
+    const translation = graph.translate();
+    return normalizeCanvasViewport({
+      scale: graph.zoom(),
+      translateX: translation.tx,
+      translateY: translation.ty,
+    });
+  }
+
+  function writeViewport(viewport: CanvasViewport): void {
+    const next = normalizeCanvasViewport(viewport);
+    graph.scale(next.scale, next.scale);
+    graph.translate(next.translateX, next.translateY);
+  }
+
+  // Single viewport owner: trackpad pan, pinch/modifier zoom, middle-mouse and
+  // Space drags all route through this handle. No Scroller, no page scroll.
+  const navigation = attachCanvasNavigation(
+    { container: options.container, getViewport: readViewport, setViewport: writeViewport },
+    (viewport) => options.callbacks.onViewportChanged(viewport),
+  );
+
   const clearConnectionTargetOnPointerEnd = () => clearConnectionTargetState();
   const clearConnectionTargetOnEscape = (event: KeyboardEvent) => {
     if (event.key === "Escape") clearConnectionTargetState();
@@ -533,15 +557,24 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     },
     fitToContent() {
       graph.zoomToFit({ padding: 24, maxScale: 1.4 });
+      navigation.notify();
     },
     zoomIn() {
-      graph.zoom(0.15);
+      navigation.zoomIn();
     },
     zoomOut() {
-      graph.zoom(-0.15);
+      navigation.zoomOut();
     },
+    // Reset Zoom returns to 100% only. Fit Topology stays a separate action.
     resetZoom() {
-      graph.zoomTo(1);
+      navigation.resetZoom();
+    },
+    getViewport() {
+      return readViewport();
+    },
+    setViewport(viewport) {
+      writeViewport(viewport);
+      navigation.notify();
     },
     selectAll() {
       // Selection is owned by the React store (single-selection model); box/
@@ -570,6 +603,7 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     },
     destroy() {
       detach();
+      navigation.destroy();
       window.removeEventListener("pointerup", clearConnectionTargetOnPointerEnd);
       window.removeEventListener("keydown", clearConnectionTargetOnEscape);
       graph.dispose();

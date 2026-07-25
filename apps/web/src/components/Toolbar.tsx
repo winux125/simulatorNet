@@ -4,6 +4,7 @@ import {
   Redo2, Save, Square, Trash2, Undo2, Unlock, UserRound, ZoomIn, ZoomOut,
 } from "lucide-react";
 import type { ReactNode } from "react";
+import { canZoomIn, canZoomOut, formatZoomPercent } from "../features/topology/canvas-navigation";
 import type { ExecutionMode, LabPowerState, WorkspaceMode, WorkspaceTool } from "../state/workspace-store";
 import { IconButton, StatusIndicator } from "../ui";
 import { MenuBar, type MenuDef } from "./MenuBar";
@@ -24,6 +25,8 @@ interface ToolbarProps {
   canUndo: boolean;
   canRedo: boolean;
   canDelete: boolean;
+  /** Current canvas scale, so the zoom controls can bound themselves. */
+  zoomScale: number;
   session?: { displayName: string; organizationName: string; role: string };
   sessionPending: boolean;
   onModeChange(mode: WorkspaceMode): void;
@@ -97,8 +100,9 @@ export function Toolbar(props: ToolbarProps) {
           <IconButton label="Delete selected" icon={<Trash2 size={15} />} disabled={props.mode !== "edit" || !props.canDelete} onClick={props.onDelete} />
         </ToolbarGroup>
         <ToolbarGroup label="Canvas actions">
-          <IconButton label="Zoom in" icon={<ZoomIn size={15} />} disabled={!props.ready} onClick={props.onZoomIn} />
-          <IconButton label="Zoom out" icon={<ZoomOut size={15} />} disabled={!props.ready} onClick={props.onZoomOut} />
+          <IconButton label="Zoom in" icon={<ZoomIn size={15} />} disabled={!props.ready || !canZoomIn(props.zoomScale)} onClick={props.onZoomIn} />
+          <span className="toolbar-zoom-level" aria-label={`Canvas zoom ${formatZoomPercent(props.zoomScale)}`}>{formatZoomPercent(props.zoomScale)}</span>
+          <IconButton label="Zoom out" icon={<ZoomOut size={15} />} disabled={!props.ready || !canZoomOut(props.zoomScale)} onClick={props.onZoomOut} />
           <IconButton label="Fit topology" icon={<Maximize2 size={15} />} disabled={!props.ready} onClick={props.onFit} />
         </ToolbarGroup>
 

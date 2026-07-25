@@ -63,6 +63,21 @@ Physical links retain source/target device IDs and interface IDs from
 `LabDocument`. Resize, redraw, style, or endpoint visual re-anchoring must never
 infer or swap those semantic endpoints.
 
+## Canvas viewport ownership
+
+The canvas owns exactly one viewport: a single graph translation and a single
+graph scale. There is no X6 Scroller, no inner topology scrollbar and no second
+panning system, so wheel input is classified and applied once.
+
+Two-finger trackpad movement pans on both axes, pinch and `Ctrl`/`Cmd`+wheel
+zoom gently around the pointer, and middle-button or `Space` drags pan. While
+the pointer is over the canvas the page never scrolls and browser page zoom is
+suppressed; everywhere else the narrow content owner keeps its own scrolling.
+
+Pan/zoom is local workspace state. It is remembered for as long as the lab is
+open and is never written into `LabDocument`, an export, or grading. See
+`docs/canvas-navigation.md`.
+
 ## Connection workflow
 
 The default workflow is device-first, similar to professional network-lab
