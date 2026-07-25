@@ -1,65 +1,133 @@
 # Import compatibility
 
-SimulatorNet can open topologies authored in several other network-lab tools.
-Import is a **one-way conversion** into a native SimulatorNet `LabDocument`: the
-source file is never modified, and no reverse export to the original format is
-claimed. Everything below runs in the browser (or the Node test runner) via the
-`@sim/importers` package — no server, no OS process, no shell, no real network,
-and no VM/image execution.
+SimulatorNet imports external lab files through a one-way, local conversion into
+the current `LabDocument` schema. Importing does not emulate a vendor platform,
+install an appliance image, or promise feature parity with the source product.
+The original file is never modified.
 
-## Supported formats
+## Formats
 
-| Format | Support | Topology | Config | Images | Notes |
-|---|---|---|---|---|---|
-| SimulatorNet (`.json`) | Full | Yes | Yes | Yes | The only full-fidelity round-trip format. |
-| PNETLab / EVE-NG (`.unl`, `.zip`) | Topology + partial config | Yes | Supported IOS-like subset | Safe raster only | Networks become links or an intermediate switch/hub. |
-| GNS3 (`.gns3`, `.gns3project`) | Topology + partial config | Yes | Supported subset + VPCS | Safe raster only | Ports/adapters resolved to interfaces. |
-| Containerlab (`.clab.yml`) | Topology + partial config | Yes | Inline startup-config | — | Interfaces derived from link endpoints. |
-| CML 2.x (`.yaml`) / VIRL 1.x (`.virl`) | Topology + partial config | Yes | Supported subset | — | Node definitions mapped to generic devices. |
-| Packet Tracer (`.pkt`, `.pka`) | Recognised, **not convertible** | — | — | — | No documented public conversion contract. |
+| Source | Accepted form | Compatibility |
+| --- | --- | --- |
+| SimulatorNet | canonical JSON | Full schema validation and canonicalization |
+| PNETLab | `.unl` or archive containing `.unl` | Topology, positions, labels, supported configuration; unsupported devices become explicit placeholders |
+| EVE-NG | `.unl` or archive containing `.unl` | Topology, positions, labels, supported configuration; unsupported devices become explicit placeholders |
+| GNS3 | `.gns3`, portable `.gns3project`/ZIP | Topology, positions, drawings, bounded raster assets, supported configuration |
+| Containerlab | `.clab.yml` or `.clab.yaml` | Topology and supported host/link configuration |
+| Cisco Modeling Labs | YAML | Topology, positions, annotations, supported configuration |
+| VIRL | `.virl` XML | Topology, positions, annotations, supported configuration |
+| Packet Tracer | `.pkt`, `.pka` | Recognized only; direct conversion is not available |
 
-## What is never imported
+Detection is content-first. File extensions help disambiguate known structures
+but do not override unsafe or unrecognized content. Packet Tracer files are
+reported honestly as recognized-but-unsupported; they are never guessed or
+partially decoded.
 
-Vendor appliance images and binaries are **never** imported, decoded in full, or
-uploaded: `qcow2`, `vmdk`, `vdi`, `vhd(x)`, `iso`, `img`, `bin`/`image`, IOL
-binaries, ELF/PE/Mach-O executables, Docker image archives, firmware and license
-files. When an archive contains them they are skipped and listed in the report:
+Device support is reported per mapping:
 
-> Vendor appliance images are not imported. SimulatorNet reimplements supported
-> behaviour and never executes these files.
+- **Full**: topology and the supported structured behavior are representable.
+- **Configuration partial**: topology is imported and only recognized
+  configuration is applied.
+- **Topology only**: the device is represented, but vendor behavior and
+  configuration are not reproduced.
+- **Visual placeholder**: an external appliance remains visible in the diagram
+  but has no simulated protocol behavior.
+- **Excluded**: the source node and links that depend on it are omitted by the
+  user's explicit choice.
 
-## Device mapping and placeholders
+## Import wizard
 
-Each source node is mapped declaratively to a generic SimulatorNet device
-(router, L2/L3 switch, firewall, PC, server, hub, cloud). A node whose kind is
-not recognised becomes an **external-appliance placeholder**: it appears on the
-canvas, keeps its hostname, source platform/vendor/kind, interfaces, links,
-position and any preserved (never executed) startup text, but has no simulation
-logic. Its status is "Unsupported simulation"; you can Inspect Source, Replace
-with a Supported Device, or Delete it. It cannot start a CLI as if it were
-running, cannot join the data plane, and never yields grading success. The import
-wizard lets you accept each suggested mapping, pick another device type, keep the
-placeholder, or exclude the node.
+The wizard has five deliberate steps:
 
-## Configuration import
+1. **Select File** detects and validates the source locally.
+2. **Inspect** summarizes the format, topology, configuration, annotations,
+   ignored files, and safe-conversion boundary.
+3. **Map Devices** lets the user accept a suggested SimulatorNet type, keep a
+   visual placeholder, or exclude each source node.
+4. **Review Warnings** groups material loss and blockers before conversion.
+5. **Import Result** reports the final status and counts, then allows the
+   converted lab or report to be opened.
 
-For Cisco IOS-like sources a supported command subset is applied through the
-public configuration API (hostname, interface addressing/shutdown/description,
-VLANs, switchport access, and directly-connected static routes); VPCS addressing
-is applied for VPCS hosts. **Only settings that cannot fail semantic validation
-are applied**, so an import never produces a lab that refuses to open. Every
-unrecognised line is preserved and reported per device — unknown source config is
-never silently dropped. Junos/EOS/PAN-OS/FortiOS configs (no parser) are kept as
-source text with support level `topology-only`; they are not passed off as
-applied configuration.
+Device mapping includes hostname/kind search, support filters, **Accept All**,
+and **Reset**. On a narrow viewport, each mapping becomes a readable card
+instead of an overflowing desktop table.
 
-## Determinism and boundaries
+The wizard is a bounded workspace:
 
-- The same source file always produces a **byte-identical** canonical
-  `LabDocument`. Provenance (`sourceImport`) is timestamp-free and never reaches
-  the verifier, so it cannot perturb grading.
-- Imported labs always open **stopped**. External appliances are marked
-  unsupported; you can replace them before starting.
-- Archives are guarded against ZIP-slip, absolute paths, symlinks, duplicates,
-  excessive entry counts/sizes and compression bombs; XML rejects DOCTYPE/DTD and
-  non-predefined entities; YAML rejects tags, anchors and aliases.
+- its header, progress steps, and footer remain reachable;
+- only the wizard body owns vertical scrolling;
+- action buttons do not disappear below the viewport;
+- focus remains inside the modal while it is open;
+- Escape or the close action exits without importing.
+
+Conversion does not begin until the review is accepted. Imported labs always
+open stopped so placeholders, interface mappings, and partial configuration can
+be inspected before simulation starts.
+
+## Warning groups
+
+The review screen groups the report into stable categories:
+
+- **Blocking Errors**
+- **Device Mapping Warnings**
+- **Partial Configuration**
+- **Ignored Vendor Images**
+- **Unsupported Nodes**
+- **Credential Reset Required**
+
+Warnings are not generic success messages. They identify affected source
+devices or artifacts whenever possible. The result screen distinguishes
+**Imported**, **Partially Imported**, and **Failed**, and reports imported node,
+link, annotation, placeholder, warning, and error counts.
+
+## Configuration and credentials
+
+Only configuration understood by SimulatorNet is restored as structured domain
+data. A bounded, redacted source artifact may be retained for review when the
+adapter cannot translate every line.
+
+Imported plaintext passwords, secrets, and vendor password hashes are not
+stored. Recognized console-access intent may be converted into SimulatorNet's
+own credential flow; otherwise the report marks that a credential reset is
+required. Never present imported vendor authentication as if it remained valid.
+
+## Images and executable content
+
+Vendor appliance images, VM disks, kernels, executables, scripts, and nested
+archives are ignored or rejected. They are never run, mounted, dynamically
+imported, or sent to a remote service.
+
+Diagram images are accepted only when their bytes validate as a bounded PNG,
+JPEG, or WebP. Remote URLs, SVG, embedded bitmap wrappers, and files whose
+extension disagrees with their actual content are rejected. Imported text is
+plain text, not executable HTML.
+
+## Resource limits
+
+`packages/importers/src/config/limits.ts` is the single source of truth. Current
+defaults bound:
+
+- input to 100 MiB;
+- archive entries to 500;
+- total expansion to 200 MiB;
+- a topology/config text file to 10 MiB;
+- retained diagram assets to 20 MiB;
+- compression ratio to 100:1;
+- topology to 500 nodes, 2,000 links, and 5,000 annotations;
+- configuration/artifact text per device;
+- XML and YAML depth/node counts.
+
+YAML aliases and nested archives are disabled. ZIP paths are normalized and
+validated before extraction. Limit failures stop inspection with a structured
+error; they do not produce a truncated lab that looks successful.
+
+## Determinism and persistence
+
+Inspection produces an immutable plan. Execution applies the user's mapping
+selection and creates a normal schema-valid document. Canonical ordering and ID
+derivation make the same source and mapping choices produce the same converted
+document.
+
+The conversion persists domain data only. It never stores parser objects,
+archive entry handles, vendor runtime state, X6 internal JSON, imported scores,
+or transient simulation caches.

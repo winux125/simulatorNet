@@ -1,96 +1,338 @@
-# CLAUDE.md
+# SimulatorNet Engineering Guide
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file is the primary repository guide for architecture, ownership, and
+implementation constraints. Keep it current when a milestone changes those
+boundaries. Product history belongs in `README.md`; detailed workflows belong
+in `docs/`.
 
-## What this is
+## Product model
 
-Open-source, browser-based network simulator for CCNA-level labs (a
-Packet-Tracer-like tool). It is a **simulator, not an emulator**: switch/router/
-protocol behaviour is reimplemented in TypeScript with a Cisco-*like* (not Cisco)
-CLI. Interactive networking runs entirely in the browser (a Web Worker); the
-server manages users/labs/results and re-runs the same engine headless to grade.
+SimulatorNet is a deterministic network **simulator**, not a virtual-machine
+emulator. Protocol behavior is implemented in TypeScript and runs through the
+same engine in two trust domains:
 
-Only the deterministic core exists so far (`packages/contracts`, `packages/sim-core`).
-The `apps/` (web, api, verifier) and CLI/router/VLAN/DHCP layers are planned but not built.
+- the browser uses a Web Worker for interactive labs;
+- the server verifier rebuilds a submitted lab and grades it independently.
 
-## Environment & commands
+The browser is not trusted for scores, traces, caches, leases, event results, or
+hidden grading checks. The verifier accepts structured topology and
+configuration, reconstructs runtime state, performs bounded deterministic
+actions, and calculates the result itself.
 
-Node, pnpm and git run **inside WSL Ubuntu only** — they are not on the Windows
-PATH. Node is 24 LTS via nvm, which is **not** auto-loaded by non-interactive
-shells; prefix commands with `export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; nvm use 24`
-when driving from outside an interactive WSL shell.
+## Runtime and commands
 
-From the repo root (in a shell with Node 24 + pnpm):
+The supported toolchain is Node.js 24 LTS and pnpm. This workspace is developed
+and tested inside WSL Ubuntu; run repository commands from the Linux checkout,
+not against it through a Windows Node installation.
 
 ```bash
 pnpm install
-pnpm test                                  # full Vitest suite (vitest run)
-pnpm test:watch                            # watch mode
-pnpm typecheck                             # tsc --noEmit per package (src only)
-
-pnpm exec vitest run packages/sim-core/test/ping.test.ts   # one test file
-pnpm exec vitest run -t "deterministic"                    # tests matching a name
+pnpm dev                 # web
+pnpm dev:api             # Fastify API
+pnpm build               # web production build
+pnpm build:server        # API and verifier production builds
+pnpm typecheck
+pnpm test                # all Vitest projects
+pnpm test:e2e            # Playwright
+pnpm verify:fixture
 ```
 
-If pnpm's pre-run deps check ever blocks a script, invoke tools directly to
-bypass it: `./node_modules/.bin/vitest run`, `./node_modules/.bin/tsc`.
+Infrastructure and database commands:
 
-pnpm 11 blocks dependency build scripts by default; esbuild (needed by Vitest)
-is approved via `allowBuilds: { esbuild: true }` in `pnpm-workspace.yaml`. A hook
-re-injects a placeholder there when the file changes — set it back to `true`.
+```bash
+cp .env.example .env
+docker compose up -d db
+docker compose up -d keycloak-db keycloak
+docker compose up -d api
+# or:
+pnpm infra:up
 
-## Architecture
+pnpm db:generate
+pnpm db:migrate
+pnpm db:check
+pnpm db:seed:dev
+pnpm db:test:integration
+pnpm smoke:m8
+```
 
-**Two packages, one shared engine.** `@sim/sim-core` is designed to run in two
-places: the browser (in a Web Worker) and the server verifier (headless in Node).
-Given identical topology, configuration, seed and input events, both must produce
-**exactly** the same result — that is what makes server-side grading tamper-proof,
-since the browser is never trusted to report its own score.
+`docker compose up -d db`, `keycloak-db`, `keycloak`, and `api` are deliberately
+independently runnable. Do not commit `.env`, credentials, tokens, generated
+coverage, Playwright artifacts, build output, or local database data.
 
-**Determinism is the load-bearing constraint.** `sim-core` is pure and
-dependency-free: no DOM, no Node APIs, no `Date.now()` / `Math.random()` /
-`setTimeout`. Instead:
-- Time is a `VirtualClock` (integer nanoseconds), advanced only by the event queue.
-- Randomness is `SeededRandom` (mulberry32). Never call `Math.random()`.
-- Ordering is `EventQueue`, a min-heap keyed by `(time, insertion-sequence)`. The
-  stable insertion-order tie-break is essential — same-instant events must run in
-  the same order every run. Anything that breaks this breaks the verifier.
+For the full PostgreSQL test suite, start the dedicated test database and
+provide its URL:
 
-**Discrete-event model.** The single model of "the wire" is
-`EthernetInterface.transmit()`, which schedules `peer.onReceive(frame)` after the
-link's `propagationDelayNs` via `engine.scheduleIn`. Devices implement
-`onReceive` and react synchronously (often scheduling further sends). There is no
-threading; everything is cooperative events on one timeline. `engine.runUntilIdle()`
-drains the queue; `advanceTo(t)` runs up to a time.
+```bash
+docker compose -f packages/db/compose.test.yaml up -d --wait
+export TEST_DATABASE_URL=postgresql://simulatornet:simulatornet_test_only@localhost:55432/simulatornet_test
+pnpm test
+```
 
-**Device model** (`src/devices/`): `Device` is the base (named interface map +
-`engine` back-reference set by `engine.add`). `L2Switch` learns source MACs on
-ingress, floods broadcast/unknown-unicast, and unicasts known destinations — one
-flat broadcast domain (no VLAN/STP yet). `Pc` has a minimal IPv4 stack: ARP table
-with a pending-packet queue, next-hop via subnet-or-gateway, and a per-sequence
-ping table with timeouts. Trace a ping through `pc.ping` → `sendIpv4` → ARP →
-`transmitIpv4` and the switch's `onReceive`/`flood` to understand the whole flow.
+Do not silently skip database tests in a quality gate.
 
-**Packets are plain discriminated-union objects, not byte buffers** (`src/packets/`),
-tagged by `kind` (`EthernetFrame.payload` is `"arp" | "ipv4"`; `Ipv4Packet.payload`
-is `"icmp"`). Correctness first; byte serialization / WASM can come later.
+## Monorepo map
 
-**`contracts` vs `sim-core`.** `@sim/contracts` holds the *serializable*,
-vendor-neutral schemas validated with zod — `Topology` and `LabDocument` (topology
-+ per-device config + seed) plus protocol/device enums and branded ids. These are
-what the API/DB persist (as JSONB) and what the verifier reloads; live runtime
-state lives only in `sim-core`. `LabDocument` deliberately stores no simulation
-memory — everything is re-derived from topology + config + seed.
+### Applications
 
-## Conventions
+| Path | Responsibility |
+| --- | --- |
+| `apps/web` | React/Vite engineering workspace, AntV X6 topology, xterm terminal, browser worker client |
+| `apps/verifier` | Headless Node adapter and fixture/CLI runner around grading-core |
+| `apps/api` | Fastify HTTP boundary, authentication, validation, logging, academic APIs |
 
-- ESM throughout with `verbatimModuleSyntax`: use `import type` for type-only
-  imports (and inline `type` in mixed imports).
-- `moduleResolution: "Bundler"`, extensionless relative imports. **No build step
-  yet**: each package's `exports` points straight at `src/index.ts`, and
-  `vitest.config.ts` also aliases `@sim/*` to those sources. `tsc` type-checks
-  `src` only; test files are transpiled by Vitest (esbuild), not type-checked.
-- `noUncheckedIndexedAccess` is on — indexed access is `T | undefined`; handle it.
-- Time is integer nanoseconds; shared constants live in `src/engine/constants.ts`.
-- Every protocol/behaviour ships with Vitest tests, including a golden
-  determinism trace (`enableTrace()` → compare `engine.traceLog` across runs).
+### Packages
+
+| Path | Responsibility |
+| --- | --- |
+| `packages/contracts` | Serializable Zod schemas and shared domain types |
+| `packages/sim-core` | Deterministic protocol engine, devices, services, transport, event queue |
+| `packages/cli-engine` | Lexer, parser, contextual help, session state, command formatting |
+| `packages/console-auth` | Device-console login and privilege session behavior |
+| `packages/lab-format` | Canonical LabDocument parsing, migration, semantic validation, build/restore |
+| `packages/sim-worker` | Typed browser-worker protocol, runtime ownership, UI-safe snapshots |
+| `packages/grading-core` | Pure deterministic grading checks and resource limits |
+| `packages/importers` | Safe one-way import detection, parsing, mapping, reports, and conversion |
+| `packages/db` | Node-only schema, migrations, repositories, transactions, audit and seed data |
+| `packages/authz` | Pure authorization policy evaluation |
+
+Keep application business logic thin. If behavior must be identical in the
+browser and verifier, it belongs in a reusable package.
+
+## Dependency and ownership rules
+
+### Contracts
+
+Contracts contain serializable data only. Prefer discriminated unions and Zod
+schemas at trust boundaries. Do not put engine instances, DOM objects, X6
+objects, Fastify requests, file handles, or callbacks in shared contracts.
+
+`LabDocument` is the canonical persisted domain model. It may contain topology,
+structured device configuration, deterministic seed, metadata, positions, link
+labels, and diagram annotations. It must not contain:
+
+- X6 internal JSON;
+- active selection or tool state;
+- terminal tabs, history, or scrollback;
+- browser theme, icon profile, execution mode, or layout preferences;
+- ARP/MAC caches, DHCP leases, sockets, pending operations, or event queues;
+- computed scores or hidden grading definitions.
+
+### Simulation core
+
+`sim-core` must remain deterministic and environment-neutral:
+
+- no DOM, Fastify, database, Node file APIs, process globals, or network access;
+- no `Date.now()`, wall-clock timers, `Math.random()`, or unordered iteration
+  that affects behavior;
+- use `VirtualClock`, the deterministic event queue, seeded randomness, stable
+  identifiers, and explicit resource bounds;
+- protocol results must be reproducible from canonical input and seed.
+
+Both browser and verifier must reach protocol behavior through the same core.
+Do not recreate protocol logic in React, Fastify handlers, or grading checks.
+
+### Browser worker
+
+The Web Worker owns the live engine, device instances, CLI sessions, virtual
+clock, event queue, traces, caches, leases, and runtime operations. React sends
+typed requests through `sim-worker`; the main thread must never mutate an
+`EndHost` or another engine object directly.
+
+UI state may optimistically present a requested configuration only when the
+worker protocol defines and confirms that operation. Structural topology
+changes are built through `lab-format`, not by patching a live graph-shaped
+object.
+
+### CLI
+
+`cli-engine` owns parsing, modes, contextual help, command errors, prompts, and
+formatting. Protocol execution is delegated to device/runtime capabilities.
+Keep incomplete syntax, invalid tokens, and domain validation failures as
+separate typed outcomes.
+
+Terminal histories and prompts are isolated per device session. Clearing a
+terminal clears presentation, not the underlying CLI session.
+
+### Verifier and grading
+
+`grading-core` is pure TypeScript and may depend on contracts, lab-format, and
+the simulation engine. It must not import Fastify, database packages, DOM APIs,
+Node file APIs, arbitrary modules supplied by a submission, or network clients.
+No `eval`, user-authored JavaScript, or unbounded regular expressions.
+
+`apps/verifier` owns Node-specific fixture loading, duration measurement, CLI
+exit behavior, and the adapter seam that can later move to a worker/queue.
+`apps/api` owns HTTP concerns and calls the verifier layer; it contains no
+network-protocol simulation logic.
+
+Hidden grading specs stay server-side. Student results redact hidden expected
+values and internal diagnostics. Instructor results may include bounded,
+sanitized diagnostics, never secrets or arbitrary stack traces.
+
+### Database and authorization
+
+`packages/db` is Node-only. Tenant-aware repository methods and transactions
+must enforce organization/assignment ownership rather than relying on callers
+to remember filters. Schema changes require migrations and integration tests.
+
+`authz` stays pure and testable. Authentication verifies identity; authorization
+decides whether that identity may perform an action. Do not mix those concerns
+into simulation packages.
+
+### Importers
+
+Imports are untrusted, one-way conversions into `LabDocument`. Detection,
+parsing, inspection, mapping, and execution must use centralized
+`DEFAULT_IMPORT_LIMITS`.
+
+- never execute imported scripts, vendor binaries, or appliance images;
+- never fetch remote resources;
+- reject unsafe archive paths, nested archives, expansion bombs, excessive
+  XML/YAML depth, nodes, aliases, or topology size;
+- preserve supported configuration as structured data and bounded redacted
+  artifacts;
+- never preserve plaintext passwords or vendor password hashes;
+- report partial mappings and ignored content honestly.
+
+See `docs/import-compatibility.md`.
+
+## Web workspace architecture
+
+### Topology and X6
+
+`TopologyGraphController` is the sole imperative owner of the X6 graph,
+rendering, ports, transforms, event subscriptions, and graph disposal. React
+owns domain state and passes explicit updates to the controller.
+
+Topology links retain domain node/interface identifiers. A responsive redraw
+may re-anchor visuals, but it must never swap, infer, or mutate semantic
+endpoints. Persist only canonical domain data through `lab-format`.
+
+Connection creation is device-first:
+
+1. drag from a device connection handle;
+2. drop on a valid target device;
+3. choose connection type and endpoint interfaces in the modal;
+4. commit the resulting domain link.
+
+Direct port interaction may remain an advanced path, but link semantics always
+come from the domain document.
+
+### Change-impact model
+
+Every edit must be classified before implementation:
+
+| Impact | Examples | While running |
+| --- | --- | --- |
+| Presentation | positions, labels, annotations, icon profile | allowed; no rebuild |
+| Device configuration | host IP, CLI configuration, services | typed worker request; no physical rebuild |
+| Structural topology | add/delete device, connect/reconnect/delete link | blocked until stopped, then rebuilt |
+
+Presentation undo/redo must not roll back network configuration that changed
+after the history entry. The diagram editor keeps a bounded 150-entry history
+and rebases configuration across that history.
+
+Deleting a stopped device must close only its own terminal tab and device
+window, clear matching selection, remove its links and stale session IDs, and
+never send a later worker request to the deleted ID. Other device sessions stay
+open.
+
+### Diagram editor
+
+Diagram annotations are domain objects rendered by X6. Text is plain text, not
+HTML. Raster images are limited to validated PNG, JPEG, or WebP data; SVG,
+remote URLs, embedded scripts, and executable content are rejected. See
+`docs/diagram-editor.md`.
+
+Diagram data is presentation-only unless a grading spec explicitly checks
+topology structure. The standard grading submission intentionally excludes it.
+
+### Terminal workspace
+
+There is one shared terminal workspace with Docked, Floating, and Maximized
+presentations. Moving between them must preserve the same tabs and mounted
+sessions: authentication state, current input, command history, scrollback,
+search, and xterm instances must not restart.
+
+Device windows only launch or focus the shared terminal. Do not mount a second
+terminal inside a device window. See `docs/terminal-experience.md`.
+
+### Layout and overflow
+
+The application shell owns the viewport. The browser body must not become the
+workspace scroll container. Fixed work areas clip overflow; the narrow content
+that needs scrolling owns it explicitly:
+
+- inspector content;
+- import-wizard body;
+- device-window content;
+- terminal/xterm viewport;
+- tables and menus where appropriate.
+
+Do not fix overflow by adding broad `overflow: auto` to ancestors; that creates
+double scrollbars, clipped controls, and incorrect X6/xterm measurements.
+
+At narrow widths, side panels become overlays/drawers so the topology remains
+usable. `ResizeObserver`-driven graph and terminal fitting must be bounded and
+must clean up observers and animation frames. See `docs/workspace-layout.md`.
+
+### Packet execution
+
+Visible terminology is **Auto** and **Step**:
+
+- Auto drains the bounded deterministic events needed to complete an operation;
+- Step queues events for inspection, processes one event at a time, or drains
+  them with Run All.
+
+Both use deterministic virtual time. They are not performance speeds and Auto
+is not wall-clock realtime. Browser execution mode is local workspace state and
+the verifier ignores it.
+
+## TypeScript and code conventions
+
+- ESM packages use explicit, acyclic boundaries.
+- With `verbatimModuleSyntax`, use `import type` for type-only imports.
+- Avoid `any`; narrow unknown data at boundaries.
+- Prefer pure functions and immutable domain updates.
+- Keep stable canonical ordering by ID where serialization is observable.
+- Errors crossing package or API boundaries must be typed and structured.
+- UI colors, spacing, typography, radii, and elevations use design tokens.
+- Assets are local, original or documented, and have provenance in
+  `docs/assets.md`.
+
+## Testing expectations
+
+Changes should be verified in proportion to their risk:
+
+```bash
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm build:server
+pnpm test:e2e
+pnpm verify:fixture
+```
+
+Also check, when relevant:
+
+- lab-format canonical round-trip and stable ordering;
+- browser/verifier deterministic equivalence;
+- resource and event limits;
+- PostgreSQL integration tests with a real test database;
+- responsive layouts and light/dark screenshots;
+- imported asset provenance and archive safety;
+- no hidden grading imports from browser packages;
+- no Fastify imports from grading-core;
+- no NUL/binary source files, secrets, debug artifacts, or generated output.
+
+Playwright milestone flows must run; do not leave them skipped merely because
+infrastructure was not started.
+
+## Repository workflow
+
+- Read `git status`, recent history, and relevant tests before editing.
+- Preserve unrelated user changes. Do not apply existing stashes automatically.
+- Use small, milestone-scoped atomic commits with the requested message.
+- Review the complete staged diff before each commit and confirm the worktree is
+  clean afterward.
+- Do not begin a later milestone unless the user explicitly requests it.
