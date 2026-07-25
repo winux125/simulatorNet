@@ -43,6 +43,12 @@ const graphHarness = vi.hoisted(() => ({
   zoomOut: vi.fn(),
   connectionIntent: undefined as ((source: string, target: string, sourcePort?: string, targetPort?: string) => void) | undefined,
   nodeMoved: undefined as ((id: string, position: { x: number; y: number }) => void) | undefined,
+  panePointerDown: undefined as ((point: { x: number; y: number }, modifiers: { shift: boolean; alt: boolean }) => void) | undefined,
+  panePointerMove: undefined as ((point: { x: number; y: number }) => void) | undefined,
+  panePointerUp: undefined as ((point: { x: number; y: number }, modifiers: { shift: boolean; alt: boolean }) => void) | undefined,
+  selectAnnotation: undefined as ((id: string, additive: boolean) => void) | undefined,
+  resizeAnnotation: undefined as ((id: string, width: number, height: number) => void) | undefined,
+  endpointMoved: undefined as ((id: string, endpoint: "start" | "end" | "bend", point: { x: number; y: number }) => void) | undefined,
 }));
 
 vi.mock("@xterm/xterm", () => {
@@ -88,10 +94,12 @@ vi.mock("../features/topology/TopologyGraphSurface", async () => {
     const view = props.view as {
       nodes: Record<string, { selected: boolean; data: Record<string, unknown> }>;
       links: Record<string, { label?: string }>;
+      annotations?: Record<string, { selected: boolean }>;
     };
     React.useEffect(() => {
-      (props.onReady as ((handle: { clientToLocal(p: { x: number; y: number }): { x: number; y: number }; fit(): void }) => void) | undefined)?.({
+      (props.onReady as ((handle: { clientToLocal(p: { x: number; y: number }): { x: number; y: number }; localToClient(p: { x: number; y: number }): { x: number; y: number }; fit(): void }) => void) | undefined)?.({
         clientToLocal: ({ x, y }) => ({ x, y }),
+        localToClient: ({ x, y }) => ({ x, y }),
         fit: graphHarness.fit,
       });
     }, []);
@@ -101,11 +109,23 @@ vi.mock("../features/topology/TopologyGraphSurface", async () => {
     React.useEffect(() => {
       graphHarness.connectionIntent = props.onConnectionIntent as typeof graphHarness.connectionIntent;
       graphHarness.nodeMoved = props.onNodeMoved as typeof graphHarness.nodeMoved;
+      graphHarness.panePointerDown = props.onPanePointerDown as typeof graphHarness.panePointerDown;
+      graphHarness.panePointerMove = props.onPanePointerMove as typeof graphHarness.panePointerMove;
+      graphHarness.panePointerUp = props.onPanePointerUp as typeof graphHarness.panePointerUp;
+      graphHarness.selectAnnotation = props.onSelectAnnotation as typeof graphHarness.selectAnnotation;
+      graphHarness.resizeAnnotation = props.onAnnotationResized as typeof graphHarness.resizeAnnotation;
+      graphHarness.endpointMoved = props.onAnnotationEndpointMoved as typeof graphHarness.endpointMoved;
       return () => {
         graphHarness.connectionIntent = undefined;
         graphHarness.nodeMoved = undefined;
+        graphHarness.panePointerDown = undefined;
+        graphHarness.panePointerMove = undefined;
+        graphHarness.panePointerUp = undefined;
+        graphHarness.selectAnnotation = undefined;
+        graphHarness.resizeAnnotation = undefined;
+        graphHarness.endpointMoved = undefined;
       };
-    }, [props.onConnectionIntent, props.onNodeMoved]);
+    }, [props.onConnectionIntent, props.onNodeMoved, props.onPanePointerDown, props.onPanePointerMove, props.onPanePointerUp, props.onSelectAnnotation, props.onAnnotationResized, props.onAnnotationEndpointMoved]);
     return React.createElement("div", {
       "data-testid": "topology-graph",
       onClick: (event: React.MouseEvent) => {
@@ -124,6 +144,13 @@ vi.mock("../features/topology/TopologyGraphSurface", async () => {
         onClick: () => (props.onSelectLink as ((linkId: string) => void))(id),
         onContextMenu: (event: React.MouseEvent) => { event.preventDefault(); (props.onLinkContextMenu as ((linkId: string, x: number, y: number) => void))(id, event.clientX, event.clientY); },
       }, String(link.label ?? id))),
+      ...Object.entries(view.annotations ?? {}).map(([id, annotation]) => React.createElement("button", {
+        key: `annotation-${id}`,
+        type: "button",
+        "aria-label": `Select annotation ${id}`,
+        "aria-pressed": annotation.selected,
+        onClick: (event: React.MouseEvent) => (props.onSelectAnnotation as ((annotationId: string, additive: boolean) => void))(id, event.shiftKey),
+      }, id)),
     ]);
   }
   return { TopologyGraphSurface: MockSurface, default: MockSurface };
@@ -1526,5 +1553,81 @@ describe("M10.3.2c unified terminal workspace", () => {
     expect(xtermHarness.instances).toHaveLength(1);
     expect(xtermHarness.instances[0]).toBe(terminal);
     expect(terminal.disposed).toBe(false);
+  });
+});
+
+describe("M10.3.2d professional diagram workspace", () => {
+  async function openEmptyLab() {
+    render(<App client={new RuntimeClient()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New Lab" }));
+  }
+
+  it("exposes one explicit Select, Hand, drawing, Image, and Connection toolbar", async () => {
+    await openEmptyLab();
+    const toolbar = screen.getByRole("toolbar", { name: "Diagram tools" });
+    for (const name of ["Select", "Hand", "Text", "Rectangle", "Ellipse", "Line", "Arrow", "Image", "Connection"]) {
+      expect(within(toolbar).getByRole("button", { name })).toBeTruthy();
+    }
+    await userEvent.click(within(toolbar).getByRole("button", { name: "Hand" }));
+    expect(within(toolbar).getByRole("button", { name: "Hand" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("creates a rectangle by drag and returns to Select", async () => {
+    await openEmptyLab();
+    await userEvent.click(screen.getByRole("button", { name: "Rectangle" }));
+    await act(async () => { graphHarness.panePointerDown?.({ x: 100, y: 120 }, { shift: false, alt: false }); });
+    await act(async () => { graphHarness.panePointerMove?.({ x: 280, y: 220 }); });
+    await act(async () => { graphHarness.panePointerUp?.({ x: 280, y: 220 }, { shift: false, alt: false }); });
+    expect(useWorkspaceStore.getState().draft?.diagram?.annotations[0]).toMatchObject({
+      type: "rectangle",
+      position: { x: 100, y: 120 },
+      width: 180,
+      height: 100,
+    });
+    expect(screen.getByRole("button", { name: "Select" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("opens immediate multiline text editing and persists plain text", async () => {
+    await openEmptyLab();
+    await userEvent.click(screen.getByRole("button", { name: "Text" }));
+    fireEvent.click(screen.getByTestId("topology-graph"), { clientX: 160, clientY: 180 });
+    const editor = await screen.findByRole("textbox", { name: "Annotation text" });
+    await userEvent.type(editor, "Loopback 10.0.0.1{enter}Management");
+    fireEvent.keyDown(editor, { key: "Enter", ctrlKey: true });
+    expect(useWorkspaceStore.getState().draft?.diagram?.annotations[0]).toMatchObject({
+      type: "text",
+      content: "Loopback 10.0.0.1\nManagement",
+    });
+  });
+
+  it("supports Shift multi-selection, alignment, duplication, and deletion", async () => {
+    await openEmptyLab();
+    for (const [start, end] of [
+      [{ x: 20, y: 20 }, { x: 120, y: 80 }],
+      [{ x: 200, y: 80 }, { x: 300, y: 140 }],
+    ] as const) {
+      await userEvent.click(screen.getByRole("button", { name: "Rectangle" }));
+      await act(async () => { graphHarness.panePointerDown?.(start, { shift: false, alt: false }); });
+      await act(async () => { graphHarness.panePointerUp?.(end, { shift: false, alt: false }); });
+    }
+    await act(async () => { graphHarness.selectAnnotation?.("annotation-1", false); });
+    await act(async () => { graphHarness.selectAnnotation?.("annotation-2", true); });
+    await userEvent.click(screen.getByRole("button", { name: "Align left edges" }));
+    expect(useWorkspaceStore.getState().draft?.diagram?.annotations.map((annotation) =>
+      "position" in annotation ? annotation.position.x : 0)).toEqual([20, 20]);
+    await userEvent.click(screen.getByRole("button", { name: "Duplicate annotation" }));
+    expect(useWorkspaceStore.getState().draft?.diagram?.annotations).toHaveLength(4);
+    await userEvent.click(screen.getByRole("button", { name: "Delete annotation" }));
+    expect(useWorkspaceStore.getState().draft?.diagram?.annotations).toHaveLength(2);
+  });
+
+  it("persists local snapping preferences without mutating the LabDocument", async () => {
+    await openEmptyLab();
+    const before = JSON.stringify(useWorkspaceStore.getState().draft);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Grid snap" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Guides" }));
+    expect(window.localStorage.getItem("simulatornet.diagram.snapToGrid")).toBe("false");
+    expect(window.localStorage.getItem("simulatornet.diagram.smartGuides")).toBe("false");
+    expect(JSON.stringify(useWorkspaceStore.getState().draft)).toBe(before);
   });
 });

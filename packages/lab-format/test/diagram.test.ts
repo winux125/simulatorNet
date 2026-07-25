@@ -52,8 +52,12 @@ const document: LabDocument = {
         position: { x: 60, y: 60 },
         width: 540,
         height: 170,
+        fill: "transparent",
         stroke: "#4d7fa9",
         strokeWidth: 1.5,
+        strokeDash: "dashed",
+        radius: 8,
+        opacity: 0.75,
         zIndex: 0,
         rotation: 0,
       },
@@ -132,6 +136,79 @@ describe("diagram metadata", () => {
     expect(canonical.diagram?.assets?.map((asset) => asset.id)).toEqual(["asset-a", "asset-z"]);
     expect(parseLabDocument(stringifyLabDocument(canonical)).diagram?.annotations)
       .toContainEqual(expect.objectContaining({ id: "image-map", assetId: "asset-z", locked: true }));
+  });
+
+  it("round-trips typed text, shape, line and arrow presentation styles", () => {
+    const styled = structuredClone(document);
+    styled.diagram!.annotations = [
+      {
+        id: "multiline",
+        type: "text",
+        position: { x: 20, y: 30 },
+        width: 240,
+        height: 72,
+        autoHeight: false,
+        content: "Management\n10.255.0.0/24",
+        fontSize: 18,
+        bold: true,
+        italic: true,
+        alignment: "left",
+        foreground: "#203247",
+        background: "#dbeafe",
+        border: "#4d7fa9",
+        borderWidth: 2,
+        opacity: 0.9,
+        rotation: 12,
+        locked: true,
+        zIndex: 2,
+      },
+      {
+        id: "shape",
+        type: "ellipse",
+        position: { x: 300, y: 30 },
+        width: 180,
+        height: 90,
+        fill: "#dbeafe",
+        stroke: "#2563eb",
+        strokeWidth: 3,
+        strokeDash: "dotted",
+        opacity: 0.65,
+        rotation: 5,
+        zIndex: 3,
+      },
+      {
+        id: "line",
+        type: "line",
+        start: { x: 40, y: 180 },
+        end: { x: 260, y: 220 },
+        bend: { x: 160, y: 170 },
+        stroke: "#2563eb",
+        strokeWidth: 2,
+        strokeDash: "dashed",
+        startMarker: "circle",
+        endMarker: "none",
+        opacity: 0.8,
+        label: "diagram-only",
+        zIndex: 4,
+      },
+      {
+        id: "arrow",
+        type: "arrow",
+        start: { x: 300, y: 180 },
+        end: { x: 520, y: 220 },
+        stroke: "#4d7fa9",
+        strokeWidth: 2.5,
+        strokeDash: "solid",
+        startMarker: "none",
+        endMarker: "arrow",
+        opacity: 1,
+        zIndex: 5,
+      },
+    ];
+
+    const canonical = canonicalizeLabDocument(styled);
+    expect(parseLabDocument(stringifyLabDocument(canonical)).diagram?.annotations)
+      .toEqual(canonical.diagram!.annotations);
   });
 
   it("rejects content whose decoded signature does not match the MIME type", () => {

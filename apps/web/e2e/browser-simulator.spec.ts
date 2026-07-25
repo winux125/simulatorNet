@@ -261,12 +261,11 @@ test("topology visual profiles and domain diagram tools persist", async ({ page 
   await page.getByRole("menuitem", { name: "Add Diagram Annotation", exact: true }).click();
   await page.getByRole("menuitem", { name: "Text", exact: true }).click();
   await page.getByTestId("topology-graph").click({ position: { x: 620, y: 180 } });
-  await expect(page.getByLabel("Annotation formatting")).toBeVisible();
-  const textCell = page.locator('[data-cell-id^="diagram:"]').last();
-  await textCell.dblclick();
   const textEditor = page.getByRole("dialog", { name: "Edit text annotation" });
   await textEditor.getByLabel("Annotation text").fill("Core loopbacks\n10.255.0.0/24");
   await textEditor.getByRole("button", { name: "Apply" }).click();
+  await expect(page.getByLabel("Annotation formatting")).toBeVisible();
+  const textCell = page.locator('[data-cell-id^="diagram:"]').last();
   await expect(textCell).toContainText("Core loopbacks10.255.0.0/24");
 
   const imageNodesBefore = await page.locator(".x6-node image").count();
@@ -302,6 +301,100 @@ test("topology visual profiles and domain diagram tools persist", async ({ page 
   await expect(page.locator(".x6-node image")).toHaveCount(imageNodesBefore + 1);
 });
 
+test("M10.3.2d diagram editor supports drag creation, transforms and round-trip", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "New Lab", exact: true }).click();
+  const canvas = page.getByTestId("topology-graph");
+  const bounds = await canvas.boundingBox();
+  expect(bounds).not.toBeNull();
+
+  const draw = async (tool: "Rectangle" | "Ellipse" | "Arrow", from: { x: number; y: number }, to: { x: number; y: number }) => {
+    await page.getByRole("button", { name: tool, exact: true }).click();
+    await page.mouse.move(bounds!.x + from.x, bounds!.y + from.y);
+    await page.mouse.down();
+    await page.mouse.move(bounds!.x + to.x, bounds!.y + to.y, { steps: 8 });
+    await page.mouse.up();
+    await expect(page.getByRole("button", { name: "Select", exact: true })).toHaveAttribute("aria-pressed", "true");
+  };
+
+  await draw("Rectangle", { x: 180, y: 180 }, { x: 420, y: 320 });
+  const rectangle = page.locator('[data-cell-id="diagram:annotation-1"]');
+  await expect(rectangle).toBeVisible();
+  await page.getByLabel("Fill color").fill("#dbeafe");
+  await page.getByLabel("Fill color").press("Enter");
+  await page.getByLabel("Shape border width").fill("3");
+
+  await draw("Ellipse", { x: 500, y: 190 }, { x: 690, y: 310 });
+  await expect(page.locator('[data-cell-id="diagram:annotation-2"]')).toBeVisible();
+  await draw("Arrow", { x: 280, y: 390 }, { x: 640, y: 430 });
+  await expect(page.locator('[data-cell-id="diagram:annotation-3"]')).toBeVisible();
+  const arrowEndpoint = page.locator('[data-cell-id="diagram-handle:annotation-3:end"]');
+  await expect(arrowEndpoint).toBeVisible();
+  const endpointBounds = await arrowEndpoint.boundingBox();
+  expect(endpointBounds).not.toBeNull();
+  await page.mouse.move(endpointBounds!.x + endpointBounds!.width / 2, endpointBounds!.y + endpointBounds!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(endpointBounds!.x + 80, endpointBounds!.y + 55, { steps: 5 });
+  await page.mouse.up();
+
+  await page.getByRole("button", { name: "Text", exact: true }).click();
+  await canvas.click({ position: { x: 760, y: 210 } });
+  const editor = page.getByRole("dialog", { name: "Edit text annotation" });
+  await editor.getByLabel("Annotation text").fill("Management subnet\n10.255.0.0/24");
+  await editor.getByLabel("Annotation text").press("Control+Enter");
+  await expect(page.locator('[data-cell-id="diagram:annotation-4"]')).toContainText("Management subnet");
+
+  await page.getByLabel("Choose diagram image").setInputFiles({
+    name: "diagram-note.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", "base64"),
+  });
+  await expect(page.locator('[data-cell-id="diagram:annotation-5"] image')).toBeVisible();
+  await page.getByLabel("Image alt description").fill("Topology note");
+  await page.locator(".topology-panel").evaluate((element, base64) => {
+    const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([bytes], "clipboard-note.png", { type: "image/png" }));
+    element.dispatchEvent(new ClipboardEvent("paste", {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: transfer,
+    }));
+  }, "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==");
+  await expect(page.locator('[data-cell-id="diagram:annotation-6"] image')).toBeVisible();
+
+  await rectangle.click();
+  await page.locator('[data-cell-id="diagram:annotation-2"]').click({ modifiers: ["Shift"] });
+  await expect(page.getByText("2 selected", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Align left edges" }).click();
+  const rectangleBeforeMove = await rectangle.boundingBox();
+  expect(rectangleBeforeMove).not.toBeNull();
+  await page.locator(".topology-panel").focus();
+  await page.keyboard.press("Shift+ArrowRight");
+  await expect.poll(async () => (await rectangle.boundingBox())?.x ?? 0)
+    .toBeGreaterThan(rectangleBeforeMove!.x + 5);
+  await page.getByRole("button", { name: "Lock annotation" }).click();
+  await expect(page.getByRole("button", { name: "Unlock annotation" })).toBeVisible();
+  await page.getByRole("button", { name: "Duplicate annotation" }).click();
+  await expect(page.locator('[data-cell-id^="diagram:"]')).toHaveCount(8);
+  await page.keyboard.press("Control+z");
+  await expect(page.locator('[data-cell-id^="diagram:"]')).toHaveCount(6);
+  await page.keyboard.press("Control+Shift+z");
+  await expect(page.locator('[data-cell-id^="diagram:"]')).toHaveCount(8);
+
+  await page.screenshot({ path: "/tmp/m10-3-2-diagram-editor-1440x900.png", animations: "disabled" });
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("menuitem", { name: "File", exact: true }).click();
+  await page.getByRole("menuitem", { name: /Save \/ Export Lab/ }).click();
+  const exported = await (await downloadPromise).path();
+  expect(exported).not.toBeNull();
+  await page.locator("#load-lab-file").setInputFiles(exported!);
+  await expect(page.locator('[data-cell-id^="diagram:"]')).toHaveCount(8);
+  await expect(page.locator('[data-cell-id="diagram:annotation-5"] image')).toBeVisible();
+});
+
 test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI", async ({ page }) => {
   const menu = (label: string) => page.getByRole("menuitem", { name: label, exact: true });
   const shell = page.locator(".app-shell");
@@ -334,19 +427,24 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   await expect(page.getByRole("button", { name: "Close bottom panel" })).toHaveCount(0);
   const chromeBounds = await page.locator(".desktop-chrome").boundingBox();
   const workspaceBounds = await page.locator(".workspace-resizable").boundingBox();
+  const topologyPanelBounds = await page.locator(".topology-panel").boundingBox();
   const topologyBounds = await page.getByTestId("topology-graph").boundingBox();
+  const diagramToolbarBounds = await page.getByRole("toolbar", { name: "Diagram tools" }).boundingBox();
   const dockBounds = await page.getByLabel("Workspace bottom panel").boundingBox();
   const footerBounds = await page.locator(".workspace-footer").boundingBox();
   expect(chromeBounds).not.toBeNull();
   expect(workspaceBounds).not.toBeNull();
+  expect(topologyPanelBounds).not.toBeNull();
   expect(topologyBounds).not.toBeNull();
+  expect(diagramToolbarBounds).not.toBeNull();
   expect(dockBounds).not.toBeNull();
   expect(footerBounds).not.toBeNull();
   expect(chromeBounds!.height).toBe(78);
   expect(chromeBounds!.width).toBe(1440);
-  expect(topologyBounds!.y).toBeLessThan(100);
+  expect(topologyPanelBounds!.y).toBeLessThan(100);
+  expect(topologyBounds!.y).toBeGreaterThanOrEqual(diagramToolbarBounds!.y + diagramToolbarBounds!.height);
   expect(dockBounds!.width).toBe(1440);
-  expect(dockBounds!.y).toBeGreaterThan(topologyBounds!.y);
+  expect(dockBounds!.y).toBeGreaterThan(topologyPanelBounds!.y);
   expect(Math.abs(dockBounds!.y + dockBounds!.height - footerBounds!.y)).toBeLessThanOrEqual(1);
   expect(Math.abs(workspaceBounds!.y + workspaceBounds!.height - footerBounds!.y)).toBeLessThanOrEqual(1);
 
@@ -729,6 +827,27 @@ test("two draft-configured PCs ping through an L2 switch after Start Lab", async
   await expect(page.getByText("Pending topology changes")).toHaveCount(0);
   await page.getByRole("button", { name: "Text", exact: true }).click();
   await canvas.click({ position: { x: 380, y: 90 } });
+  const runningTextEditor = page.getByRole("dialog", { name: "Edit text annotation" });
+  await runningTextEditor.getByLabel("Annotation text").fill("Running lab note");
+  await runningTextEditor.getByRole("button", { name: "Apply" }).click();
+  await page.getByLabel("Choose diagram image").setInputFiles({
+    name: "running-note.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", "base64"),
+  });
+  await expect(page.locator('[data-cell-id^="diagram:"] image')).toBeVisible();
+  const runningCanvasBounds = await canvas.boundingBox();
+  expect(runningCanvasBounds).not.toBeNull();
+  await page.getByRole("button", { name: "Arrow", exact: true }).click();
+  await page.mouse.move(runningCanvasBounds!.x + 420, runningCanvasBounds!.y + 160);
+  await page.mouse.down();
+  await page.mouse.move(runningCanvasBounds!.x + 620, runningCanvasBounds!.y + 210, { steps: 6 });
+  await page.mouse.up();
+  await expect(page.locator('[data-cell-id="diagram:annotation-3"]')).toBeVisible();
+  await expect(page.getByRole("button", { name: "Connection", exact: true })).toBeDisabled();
+  await page.locator('[data-cell-id="link-1"]').click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "Reconnect…" })).toBeDisabled();
+  await page.keyboard.press("Escape");
   await expect(page.getByText("Pending topology changes")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Stop Lab" })).toBeVisible();
   await page.getByRole("tab", { name: /Terminal/ }).click();

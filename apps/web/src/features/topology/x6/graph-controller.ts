@@ -23,8 +23,11 @@ export interface CreateControllerOptions {
 
 const EMPTY_DOCUMENT_TOPOLOGY = { schemaVersion: 1 as const, nodes: [], links: [] };
 const ANNOTATION_PREFIX = "diagram:";
+const ANNOTATION_HANDLE_PREFIX = "diagram-handle:";
 const ANNOTATION_Z_BASE = -10_000;
 const DEVICE_NODE_Z_INDEX = 1_000;
+const ANNOTATION_HANDLE_Z_INDEX = 2_000;
+const HANDLE_SIZE = 10;
 
 function annotationLayerZIndex(zIndex: number): number {
   return Math.min(TOPOLOGY_EDGE_Z_INDEX - 1, ANNOTATION_Z_BASE + zIndex);
@@ -36,6 +39,28 @@ function annotationCellId(id: string): string {
 
 function annotationId(cellId: string): string | undefined {
   return cellId.startsWith(ANNOTATION_PREFIX) ? cellId.slice(ANNOTATION_PREFIX.length) : undefined;
+}
+
+function annotationHandle(cellId: string): { id: string; kind: "resize" | "rotate" | "start" | "end" | "bend" } | undefined {
+  if (!cellId.startsWith(ANNOTATION_HANDLE_PREFIX)) return undefined;
+  const value = cellId.slice(ANNOTATION_HANDLE_PREFIX.length);
+  const separator = value.lastIndexOf(":");
+  if (separator < 1) return undefined;
+  const kind = value.slice(separator + 1);
+  if (!["resize", "rotate", "start", "end", "bend"].includes(kind)) return undefined;
+  return { id: value.slice(0, separator), kind: kind as "resize" | "rotate" | "start" | "end" | "bend" };
+}
+
+function dashArray(dash: "solid" | "dashed" | "dotted" | undefined): string | undefined {
+  if (dash === "dashed") return "7 4";
+  if (dash === "dotted") return "2 3";
+  return undefined;
+}
+
+function marker(name: "none" | "arrow" | "circle" | "diamond" | undefined) {
+  if (!name || name === "none") return null;
+  if (name === "arrow") return { name: "classic", size: 7 };
+  return { name, size: 6 };
 }
 
 function devicePresentationKey(data: DeviceCellData): string {
@@ -78,12 +103,14 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     readonly: false,
     draggable: false,
     connectable: false,
+    pannable: false,
   };
 
   const graph = createGraph({
     container: options.container,
     isNodeMovable: (cellId) => {
       if (!state.draggable || state.readonly) return false;
+      if (annotationHandle(cellId)) return true;
       const id = annotationId(cellId);
       return !id || !state.document?.diagram?.annotations.find((annotation) => annotation.id === id)?.locked;
     },
@@ -109,13 +136,39 @@ export function createTopologyGraphController(options: CreateControllerOptions):
 
   const detach = attachGraphEvents(graph, {
     onNodeMoved: (id, position) => {
+      const handle = annotationHandle(id);
+      if (handle) {
+        const annotation = state.document?.diagram?.annotations.find((candidate) => candidate.id === handle.id);
+        if (!annotation) return;
+        const point = { x: position.x + HANDLE_SIZE / 2, y: position.y + HANDLE_SIZE / 2 };
+        if (handle.kind === "resize" && "position" in annotation) {
+          options.callbacks.onAnnotationResized(
+            handle.id,
+            Math.max(12, point.x - annotation.position.x),
+            Math.max(12, point.y - annotation.position.y),
+          );
+        } else if (handle.kind === "rotate" && "position" in annotation) {
+          const center = {
+            x: annotation.position.x + annotation.width / 2,
+            y: annotation.position.y + (annotation.height ?? 40) / 2,
+          };
+          options.callbacks.onAnnotationRotated(
+            handle.id,
+            Math.atan2(point.y - center.y, point.x - center.x) * 180 / Math.PI + 90,
+          );
+        } else if (handle.kind === "start" || handle.kind === "end" || handle.kind === "bend") {
+          options.callbacks.onAnnotationEndpointMoved(handle.id, handle.kind, point);
+        }
+        return;
+      }
       const diagramId = annotationId(id);
       if (diagramId) options.callbacks.onAnnotationMoved(diagramId, position);
       else options.callbacks.onNodeMoved(id, position);
     },
-    onNodeClick: (id) => {
+    onNodeClick: (id, additive) => {
+      if (annotationHandle(id)) return;
       const diagramId = annotationId(id);
-      if (diagramId) options.callbacks.onSelectAnnotation(diagramId);
+      if (diagramId) options.callbacks.onSelectAnnotation(diagramId, additive);
     },
     onNodeDoubleClick: (id) => {
       const diagramId = annotationId(id);
@@ -140,15 +193,18 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       if (!result.ok) { options.callbacks.onConnectionRejected(result.message); return; }
       options.callbacks.onConnect(sourceCell.id, sourcePort, targetCell.id, targetPort);
     },
-    onEdgeClick: (id) => {
+    onEdgeClick: (id, additive) => {
       const diagramId = annotationId(id);
-      if (diagramId) options.callbacks.onSelectAnnotation(diagramId);
+      if (diagramId) options.callbacks.onSelectAnnotation(diagramId, additive);
       else options.callbacks.onSelectLink(id);
     },
     onEdgeContextMenu: (id, x, y) => {
       if (!annotationId(id)) options.callbacks.onLinkContextMenu(id, x, y);
     },
     onBlankClick: (local) => options.callbacks.onPaneClick(local),
+    onBlankPointerDown: (local, modifiers) => options.callbacks.onPanePointerDown(local, modifiers),
+    onBlankPointerMove: (local) => options.callbacks.onPanePointerMove(local),
+    onBlankPointerUp: (local, modifiers) => options.callbacks.onPanePointerUp(local, modifiers),
     onBlankContextMenu: (x, y) => options.callbacks.onPaneContextMenu(x, y),
     onScale: () => {},
   });
@@ -193,8 +249,9 @@ export function createTopologyGraphController(options: CreateControllerOptions):
         body: {
           fill: annotation.background ?? "transparent",
           stroke: selected ? "var(--color-accent, #2563eb)" : annotation.border ?? "transparent",
-          strokeWidth: selected ? 1.5 : annotation.border ? 1 : 0,
+          strokeWidth: selected ? Math.max(1.5, annotation.borderWidth ?? 0) : annotation.borderWidth ?? 0,
           strokeDasharray: selected ? "4 3" : undefined,
+          opacity: annotation.opacity ?? 1,
         },
         label: {
           text: annotation.content,
@@ -202,6 +259,10 @@ export function createTopologyGraphController(options: CreateControllerOptions):
           fontSize: annotation.fontSize,
           fontWeight: annotation.bold ? 700 : 400,
           fontStyle: annotation.italic ? "italic" : "normal",
+          opacity: annotation.opacity ?? 1,
+          textWrap: annotation.autoHeight === false
+            ? { width: -12, height: -8, ellipsis: true }
+            : undefined,
           textAnchor: annotation.alignment === "left" ? "start" : annotation.alignment === "right" ? "end" : "middle",
           refX: annotation.alignment === "left" ? 6 : annotation.alignment === "right" ? "100%-6" : "50%",
           textVerticalAnchor: "middle",
@@ -214,7 +275,10 @@ export function createTopologyGraphController(options: CreateControllerOptions):
         fill: annotation.fill ?? "transparent",
         stroke: selected ? "var(--color-accent, #2563eb)" : annotation.stroke,
         strokeWidth: selected ? annotation.strokeWidth + 1 : annotation.strokeWidth,
-        strokeDasharray: selected ? "5 3" : undefined,
+        strokeDasharray: selected ? "5 3" : dashArray(annotation.strokeDash),
+        opacity: annotation.opacity ?? 1,
+        rx: annotation.type === "rectangle" ? annotation.radius : undefined,
+        ry: annotation.type === "rectangle" ? annotation.radius : undefined,
       },
       label: { text: "" },
     };
@@ -225,33 +289,42 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     const selected = state.view.annotations?.[annotation.id]?.selected ?? false;
     const existing = graph.getCellById(id);
     if (annotation.type === "line" || annotation.type === "arrow") {
+      const labels = annotation.label
+        ? [{ attrs: { label: { text: annotation.label, fill: "var(--color-text, #203247)", fontSize: 11 } }, position: 0.5 }]
+        : [];
       const attrs = {
         line: {
           stroke: selected ? "var(--color-accent, #2563eb)" : annotation.stroke,
           strokeWidth: selected ? annotation.strokeWidth + 1 : annotation.strokeWidth,
-          targetMarker: annotation.type === "arrow" ? { name: "classic", size: 7 } : null,
-          sourceMarker: null,
+          strokeDasharray: selected ? "5 3" : dashArray(annotation.strokeDash),
+          opacity: annotation.opacity ?? 1,
+          targetMarker: marker(annotation.endMarker ?? (annotation.type === "arrow" ? "arrow" : "none")),
+          sourceMarker: marker(annotation.startMarker),
         },
       };
       if (existing?.isEdge()) {
         existing.setSource(annotation.start);
         existing.setTarget(annotation.end);
+        existing.setVertices(annotation.bend ? [annotation.bend] : []);
         existing.setAttrs(attrs);
+        existing.setLabels(labels);
         existing.setZIndex(annotationLayerZIndex(annotation.zIndex));
       } else {
         graph.addEdge({
           id,
           source: annotation.start,
           target: annotation.end,
+          vertices: annotation.bend ? [annotation.bend] : [],
           attrs,
+          labels,
           zIndex: annotationLayerZIndex(annotation.zIndex),
         });
       }
       return;
     }
-    const height = annotation.type === "text"
+    const height = annotation.type === "text" && annotation.autoHeight !== false
       ? Math.max(annotation.fontSize * Math.max(1.8, annotation.content.split("\n").length * 1.25), 30)
-      : annotation.height;
+      : annotation.type === "text" ? annotation.height ?? 40 : annotation.height;
     const shape = annotation.type === "ellipse" ? "ellipse" : "rect";
     const attrs = annotationNodeAttrs(annotation);
     if (existing?.isNode()) {
@@ -281,13 +354,74 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     }
   }
 
+  function renderAnnotationHandle(
+    annotation: DiagramAnnotation,
+    kind: "resize" | "rotate" | "start" | "end" | "bend",
+    point: Point,
+  ): string {
+    const id = `${ANNOTATION_HANDLE_PREFIX}${annotation.id}:${kind}`;
+    const existing = graph.getCellById(id);
+    const attrs = {
+      body: {
+        fill: kind === "rotate" ? "var(--color-overlay-panel, #ffffff)" : "var(--color-accent, #2563eb)",
+        stroke: "var(--color-accent, #2563eb)",
+        strokeWidth: 1.5,
+        cursor: kind === "rotate" ? "grab" : "nwse-resize",
+      },
+      label: { text: "" },
+    };
+    const x = point.x - HANDLE_SIZE / 2;
+    const y = point.y - HANDLE_SIZE / 2;
+    if (existing?.isNode()) {
+      existing.position(x, y);
+      existing.setAttrs(attrs);
+      existing.setZIndex(ANNOTATION_HANDLE_Z_INDEX);
+    } else {
+      graph.addNode({
+        id,
+        shape: "ellipse",
+        x,
+        y,
+        width: HANDLE_SIZE,
+        height: HANDLE_SIZE,
+        attrs,
+        zIndex: ANNOTATION_HANDLE_Z_INDEX,
+      });
+    }
+    return id;
+  }
+
+  function renderAnnotationHandles(annotation: DiagramAnnotation): string[] {
+    if (!state.view.annotations?.[annotation.id]?.selected || annotation.locked) return [];
+    if (annotation.type === "line" || annotation.type === "arrow") {
+      const ids = [
+        renderAnnotationHandle(annotation, "start", annotation.start),
+        renderAnnotationHandle(annotation, "end", annotation.end),
+      ];
+      if (annotation.bend) ids.push(renderAnnotationHandle(annotation, "bend", annotation.bend));
+      return ids;
+    }
+    return [
+      renderAnnotationHandle(annotation, "resize", {
+        x: annotation.position.x + annotation.width,
+        y: annotation.position.y + (annotation.type === "text" ? annotation.height ?? 40 : annotation.height),
+      }),
+      renderAnnotationHandle(annotation, "rotate", {
+        x: annotation.position.x + annotation.width / 2,
+        y: annotation.position.y - 24,
+      }),
+    ];
+  }
+
   function render(): void {
     if (!state.document) return;
     const nodes = toGraphNodes(state.document);
     const links = toGraphLinks(state.document);
     const annotations = state.document.diagram?.annotations ?? [];
+    const handleIds = annotations.flatMap(renderAnnotationHandles);
     const nodeIds = new Set([
       ...nodes.map((node) => node.id),
+      ...handleIds,
       ...annotations
         .filter((annotation) => annotation.type !== "line" && annotation.type !== "arrow")
         .map((annotation) => annotationCellId(annotation.id)),
@@ -385,6 +519,10 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     updateConnectable(connectable) {
       state.connectable = connectable;
     },
+    updatePannable(pannable) {
+      state.pannable = pannable;
+      graph.togglePanning(pannable);
+    },
     resize(width, height) {
       if (width <= 0 || height <= 0) return;
       graph.resize(width, height);
@@ -416,10 +554,14 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       const local = graph.clientToLocal(point);
       return { x: local.x, y: local.y };
     },
+    localToClient(point: Point) {
+      const client = graph.localToClient(point);
+      return { x: client.x, y: client.y };
+    },
     getDraftTopology() {
       const links = (state.document?.topology ?? EMPTY_DOCUMENT_TOPOLOGY).links;
       return {
-        nodes: graph.getNodes().filter((node) => !annotationId(node.id)).map((node) => {
+        nodes: graph.getNodes().filter((node) => !annotationId(node.id) && !annotationHandle(node.id)).map((node) => {
           const position = node.position();
           return { id: node.id, position: { x: position.x, y: position.y } };
         }),

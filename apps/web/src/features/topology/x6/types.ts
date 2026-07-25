@@ -85,10 +85,16 @@ export interface TopologyGraphCallbacks {
   onConnectionRejected(message: string): void;
   onSelectLink(id: string): void;
   onLinkContextMenu(id: string, clientX: number, clientY: number): void;
-  onSelectAnnotation(id: string): void;
+  onSelectAnnotation(id: string, additive: boolean): void;
   onEditAnnotation(id: string): void;
   onAnnotationMoved(id: string, position: Point): void;
+  onAnnotationResized(id: string, width: number, height: number): void;
+  onAnnotationRotated(id: string, rotation: number): void;
+  onAnnotationEndpointMoved(id: string, endpoint: "start" | "end" | "bend", point: Point): void;
   onPaneClick(local: Point): void;
+  onPanePointerDown(local: Point, modifiers: { shift: boolean; alt: boolean }): void;
+  onPanePointerMove(local: Point): void;
+  onPanePointerUp(local: Point, modifiers: { shift: boolean; alt: boolean }): void;
   onPaneContextMenu(clientX: number, clientY: number): void;
   onDropDevice(kind: string, local: Point): void;
 }
@@ -106,6 +112,7 @@ export interface TopologyGraphController {
   /** Fine tool gating within edit mode. */
   updateDraggable(draggable: boolean): void;
   updateConnectable(connectable: boolean): void;
+  updatePannable(pannable: boolean): void;
   /** Resize the paper without changing world coordinates, translation, or zoom. */
   resize(width: number, height: number): void;
   /** Rebind every rendered edge to its stable device/interface endpoints. */
@@ -117,6 +124,7 @@ export interface TopologyGraphController {
   selectAll(): void;
   clearSelection(): void;
   clientToLocal(point: Point): Point;
+  localToClient(point: Point): Point;
   getDraftTopology(): TopologyDraft;
   destroy(): void;
 }

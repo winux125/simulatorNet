@@ -13,11 +13,12 @@ export interface TopologyGraphSurfaceProps {
   readonly: boolean;
   draggable: boolean;
   connectable: boolean;
+  pannable: boolean;
   fitRequest: number;
   zoomResetRequest: number;
   zoomInRequest: number;
   zoomOutRequest: number;
-  onReady(handle: { clientToLocal(point: Point): Point; fit(): void }): void;
+  onReady(handle: { clientToLocal(point: Point): Point; localToClient(point: Point): Point; fit(): void }): void;
   onNodeMoved(id: string, position: Point): void;
   onSelectNode(id: string): void;
   onOpenDevice(id: string): void;
@@ -26,12 +27,19 @@ export interface TopologyGraphSurfaceProps {
   onConnectionRejected(message: string): void;
   onSelectLink(id: string): void;
   onLinkContextMenu(id: string, clientX: number, clientY: number): void;
-  onSelectAnnotation(id: string): void;
+  onSelectAnnotation(id: string, additive: boolean): void;
   onEditAnnotation(id: string): void;
   onAnnotationMoved(id: string, position: Point): void;
+  onAnnotationResized(id: string, width: number, height: number): void;
+  onAnnotationRotated(id: string, rotation: number): void;
+  onAnnotationEndpointMoved(id: string, endpoint: "start" | "end" | "bend", point: Point): void;
   onPaneClick(local: Point): void;
+  onPanePointerDown(local: Point, modifiers: { shift: boolean; alt: boolean }): void;
+  onPanePointerMove(local: Point): void;
+  onPanePointerUp(local: Point, modifiers: { shift: boolean; alt: boolean }): void;
   onPaneContextMenu(clientX: number, clientY: number): void;
   onDropDevice(kind: string, local: Point): void;
+  onDropImage(file: File, local: Point): void;
 }
 
 export function TopologyGraphSurface(props: TopologyGraphSurfaceProps) {
@@ -54,10 +62,16 @@ export function TopologyGraphSurface(props: TopologyGraphSurfaceProps) {
         onConnectionRejected: (message) => propsRef.current.onConnectionRejected(message),
         onSelectLink: (id) => propsRef.current.onSelectLink(id),
         onLinkContextMenu: (id, x, y) => propsRef.current.onLinkContextMenu(id, x, y),
-        onSelectAnnotation: (id) => propsRef.current.onSelectAnnotation(id),
+        onSelectAnnotation: (id, additive) => propsRef.current.onSelectAnnotation(id, additive),
         onEditAnnotation: (id) => propsRef.current.onEditAnnotation(id),
         onAnnotationMoved: (id, position) => propsRef.current.onAnnotationMoved(id, position),
+        onAnnotationResized: (id, width, height) => propsRef.current.onAnnotationResized(id, width, height),
+        onAnnotationRotated: (id, rotation) => propsRef.current.onAnnotationRotated(id, rotation),
+        onAnnotationEndpointMoved: (id, endpoint, point) => propsRef.current.onAnnotationEndpointMoved(id, endpoint, point),
         onPaneClick: (local) => propsRef.current.onPaneClick(local),
+        onPanePointerDown: (local, modifiers) => propsRef.current.onPanePointerDown(local, modifiers),
+        onPanePointerMove: (local) => propsRef.current.onPanePointerMove(local),
+        onPanePointerUp: (local, modifiers) => propsRef.current.onPanePointerUp(local, modifiers),
         onPaneContextMenu: (x, y) => propsRef.current.onPaneContextMenu(x, y),
         onDropDevice: (kind, local) => propsRef.current.onDropDevice(kind, local),
       },
@@ -67,10 +81,12 @@ export function TopologyGraphSurface(props: TopologyGraphSurfaceProps) {
     controller.updateReadonlyState(propsRef.current.readonly);
     controller.updateDraggable(propsRef.current.draggable);
     controller.updateConnectable(propsRef.current.connectable);
+    controller.updatePannable(propsRef.current.pannable);
     controller.loadDocument(propsRef.current.document);
     controller.applyView(propsRef.current.view);
     propsRef.current.onReady({
       clientToLocal: (point) => controller.clientToLocal(point),
+      localToClient: (point) => controller.localToClient(point),
       fit: () => controller.fitToContent(),
     });
     const resizeObserver = typeof ResizeObserver === "undefined"
@@ -94,7 +110,8 @@ export function TopologyGraphSurface(props: TopologyGraphSurfaceProps) {
     controller.updateReadonlyState(props.readonly);
     controller.updateDraggable(props.draggable);
     controller.updateConnectable(props.connectable);
-  }, [props.readonly, props.draggable, props.connectable]);
+    controller.updatePannable(props.pannable);
+  }, [props.readonly, props.draggable, props.connectable, props.pannable]);
 
   useEffect(() => {
     const controller = controllerRef.current;
@@ -112,8 +129,14 @@ export function TopologyGraphSurface(props: TopologyGraphSurfaceProps) {
     event.preventDefault();
     const kind = event.dataTransfer.getData("application/x-simulator-device");
     const controller = controllerRef.current;
-    if (!kind || !controller) return;
-    props.onDropDevice(kind, controller.clientToLocal({ x: event.clientX, y: event.clientY }));
+    if (!controller) return;
+    const local = controller.clientToLocal({ x: event.clientX, y: event.clientY });
+    if (kind) {
+      props.onDropDevice(kind, local);
+      return;
+    }
+    const file = [...event.dataTransfer.files].find((candidate) => candidate.type.startsWith("image/"));
+    if (file) props.onDropImage(file, local);
   };
 
   return (

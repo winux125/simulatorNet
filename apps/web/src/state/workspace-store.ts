@@ -20,10 +20,12 @@ export type WorkspaceMode = "edit" | "simulate";
 export type ExecutionMode = "auto" | "step";
 export type WorkspaceTool =
   | "select"
+  | "pan"
   | "add-device"
   | "add-link"
   | "delete"
   | "annotation-text"
+  | "annotation-image"
   | "annotation-rectangle"
   | "annotation-ellipse"
   | "annotation-line"
@@ -189,11 +191,18 @@ const initialState = {
   future: [] as LabDocument[],
 };
 
-const MAX_HISTORY = 50;
+const MAX_HISTORY = 150;
 let nextProblemId = 1;
 
 function matchesSavedDocument(document: LabDocument, saved: LabDocument | undefined): boolean {
   return saved !== undefined && (document === saved || JSON.stringify(document) === JSON.stringify(saved));
+}
+
+function rebaseConfigurationHistory(history: LabDocument[], source: LabDocument): LabDocument[] {
+  return history.map((document) => ({
+    ...document,
+    configurations: source.configurations,
+  }));
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
@@ -215,8 +224,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       draft,
       unsaved: true,
       pendingTopologyChanges: hasStructuralChanges(state.appliedDocument, draft),
-      past: [...state.past, state.draft].slice(-MAX_HISTORY),
-      future: [],
+      // Runtime-synchronized/network configuration is not presentation undo.
+      // Diagram and topology draft edits share this bounded document history;
+      // CLI, auth and worker runtime never enter it.
+      past: actual === "configuration"
+        ? rebaseConfigurationHistory(state.past, draft)
+        : [...state.past, state.draft].slice(-MAX_HISTORY),
+      future: actual === "configuration" ? rebaseConfigurationHistory(state.future, draft) : [],
     };
   }),
   synchronizeConfiguration: (draft) => set((state) => {
@@ -232,6 +246,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       // normalization is not itself a new user edit; runtime config changes are.
       unsaved: state.unsaved || configurationChanged,
       pendingTopologyChanges: hasStructuralChanges(state.appliedDocument, draft),
+      past: configurationChanged ? rebaseConfigurationHistory(state.past, draft) : state.past,
+      future: configurationChanged ? rebaseConfigurationHistory(state.future, draft) : state.future,
     };
   }),
   acceptTopology: (draft) => set((state) => ({

@@ -156,6 +156,34 @@ describe("deterministic grading checks", () => {
     expect(verifySubmission(untrusted)).toEqual(verifySubmission(baseline));
   });
 
+  it("keeps presentation annotations outside the trusted grading snapshot", () => {
+    const baseline = demoLabDocument();
+    const presented = clone(baseline);
+    presented.diagram = {
+      annotations: [{
+        id: "student-note",
+        type: "text",
+        position: { x: 40, y: 40 },
+        width: 240,
+        content: "This text is presentation-only.",
+        fontSize: 16,
+        bold: false,
+        italic: false,
+        alignment: "left",
+        foreground: "#203247",
+        zIndex: 1,
+        rotation: 0,
+      }],
+      linkLabels: [],
+      linkStyles: [],
+    };
+    const baselineRequest = { ...verificationRequest("instructor"), submission: submissionFrom(baseline) };
+    const presentedRequest = { ...verificationRequest("instructor"), submission: submissionFrom(presented) };
+
+    expect(presentedRequest.submission).toEqual(baselineRequest.submission);
+    expect(verifySubmission(presentedRequest)).toEqual(verifySubmission(baselineRequest));
+  });
+
   it("rejects an invalid submission before build", () => {
     expect(() => verifySubmission({ ...verificationRequest(), submission: {} })).toThrowError(VerificationError);
     try {

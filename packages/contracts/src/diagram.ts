@@ -14,6 +14,18 @@ export const DiagramPointSchema = z.object({
 }).strict();
 export type DiagramPoint = z.infer<typeof DiagramPointSchema>;
 
+export const DiagramColorSchema = z.union([
+  z.string().regex(/^#[0-9a-f]{6}$/i, "Diagram colors must use six-digit hexadecimal notation"),
+  z.literal("transparent"),
+]);
+export type DiagramColor = z.infer<typeof DiagramColorSchema>;
+
+export const DiagramStrokeDashSchema = z.enum(["solid", "dashed", "dotted"]);
+export type DiagramStrokeDash = z.infer<typeof DiagramStrokeDashSchema>;
+
+export const DiagramLineMarkerSchema = z.enum(["none", "arrow", "circle", "diamond"]);
+export type DiagramLineMarker = z.infer<typeof DiagramLineMarkerSchema>;
+
 const DiagramBaseSchema = z.object({
   id: z.string().min(1),
   zIndex: z.number().int().default(0),
@@ -25,27 +37,34 @@ export const TextDiagramAnnotationSchema = DiagramBaseSchema.extend({
   type: z.literal("text"),
   position: DiagramPointSchema,
   width: z.number().positive().default(180),
+  height: z.number().positive().optional(),
+  autoHeight: z.boolean().optional(),
   content: z.string().max(4_096),
   fontSize: z.number().min(8).max(72).default(16),
   bold: z.boolean().default(false),
   italic: z.boolean().default(false),
   alignment: z.enum(["left", "center", "right"]).default("left"),
-  foreground: z.string().min(1).default("#203247"),
-  background: z.string().min(1).optional(),
-  border: z.string().min(1).optional(),
+  foreground: z.union([DiagramColorSchema, z.literal("auto")]).default("#203247"),
+  background: DiagramColorSchema.optional(),
+  border: DiagramColorSchema.optional(),
+  borderWidth: z.number().min(0).max(12).optional(),
+  opacity: z.number().min(0.05).max(1).optional(),
 }).strict();
 
 const ShapeDiagramAnnotationBaseSchema = DiagramBaseSchema.extend({
   position: DiagramPointSchema,
   width: z.number().positive().default(180),
   height: z.number().positive().default(100),
-  fill: z.string().min(1).optional(),
-  stroke: z.string().min(1).default("#4d7fa9"),
+  fill: DiagramColorSchema.optional(),
+  stroke: DiagramColorSchema.default("#4d7fa9"),
   strokeWidth: z.number().min(0.5).max(12).default(1.5),
+  strokeDash: DiagramStrokeDashSchema.optional(),
+  opacity: z.number().min(0.05).max(1).optional(),
 }).strict();
 
 export const RectangleDiagramAnnotationSchema = ShapeDiagramAnnotationBaseSchema.extend({
   type: z.literal("rectangle"),
+  radius: z.number().min(0).max(200).optional(),
 }).strict();
 
 export const EllipseDiagramAnnotationSchema = ShapeDiagramAnnotationBaseSchema.extend({
@@ -55,8 +74,14 @@ export const EllipseDiagramAnnotationSchema = ShapeDiagramAnnotationBaseSchema.e
 const LineDiagramAnnotationBaseSchema = DiagramBaseSchema.omit({ rotation: true }).extend({
   start: DiagramPointSchema,
   end: DiagramPointSchema,
-  stroke: z.string().min(1).default("#4d7fa9"),
+  bend: DiagramPointSchema.optional(),
+  stroke: DiagramColorSchema.default("#4d7fa9"),
   strokeWidth: z.number().min(0.5).max(12).default(1.5),
+  strokeDash: DiagramStrokeDashSchema.optional(),
+  startMarker: DiagramLineMarkerSchema.optional(),
+  endMarker: DiagramLineMarkerSchema.optional(),
+  opacity: z.number().min(0.05).max(1).optional(),
+  label: z.string().max(512).optional(),
 }).strict();
 
 export const LineDiagramAnnotationSchema = LineDiagramAnnotationBaseSchema.extend({
@@ -65,6 +90,7 @@ export const LineDiagramAnnotationSchema = LineDiagramAnnotationBaseSchema.exten
 
 export const ArrowDiagramAnnotationSchema = LineDiagramAnnotationBaseSchema.extend({
   type: z.literal("arrow"),
+  endMarker: DiagramLineMarkerSchema.optional(),
 }).strict();
 
 export const ImageDiagramAnnotationSchema = DiagramBaseSchema.extend({
@@ -75,6 +101,7 @@ export const ImageDiagramAnnotationSchema = DiagramBaseSchema.extend({
   height: z.number().min(8).max(MAX_DIAGRAM_ASSET_DIMENSION),
   opacity: z.number().min(0.05).max(1).default(1),
   preserveAspectRatio: z.boolean().default(true),
+  alt: z.string().max(512).optional(),
 }).strict();
 
 export const DiagramAnnotationSchema = z.discriminatedUnion("type", [

@@ -40,4 +40,41 @@ describe("assignmentClient", () => {
     expect((error as AssignmentApiError).code).toBe("LAB_INSTANCE_REVISION_CONFLICT");
     expect((error as AssignmentApiError).status).toBe(409);
   });
+
+  it("preserves domain diagram data in the academic save payload", async () => {
+    const fetchMock = mockFetch(200, { id: "i1", revision: 2, status: "in-progress", canonicalHash: "hash" });
+    vi.stubGlobal("fetch", fetchMock);
+    await assignmentClient.saveInstance("i1", 1, {
+      schemaVersion: 1,
+      id: "diagram-lab",
+      title: "Diagram lab",
+      simulation: { seed: 17 },
+      topology: { schemaVersion: 1, nodes: [], links: [] },
+      configurations: {},
+      diagram: {
+        annotations: [{
+          id: "note",
+          type: "text",
+          position: { x: 20, y: 30 },
+          width: 180,
+          content: "Saved presentation note",
+          fontSize: 16,
+          bold: false,
+          italic: false,
+          alignment: "left",
+          foreground: "#203247",
+          zIndex: 1,
+          rotation: 0,
+        }],
+        linkLabels: [],
+        linkStyles: [],
+      },
+    });
+
+    const [, init] = (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      expectedRevision: 1,
+      document: { diagram: { annotations: [{ id: "note", content: "Saved presentation note" }] } },
+    });
+  });
 });

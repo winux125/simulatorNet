@@ -10,6 +10,8 @@ import {
   AlignCenter,
   AlignLeft,
   AlignRight,
+  AlignHorizontalDistributeCenter,
+  AlignVerticalDistributeCenter,
   ArrowDownToLine,
   ArrowUpToLine,
   Bold,
@@ -19,6 +21,7 @@ import {
   Eye,
   FilePlus2,
   FlaskConical,
+  Hand,
   Italic,
   ImagePlus,
   Lock,
@@ -26,6 +29,7 @@ import {
   Maximize2,
   Minus,
   Monitor,
+  MousePointer2,
   Network,
   Router as RouterIcon,
   Square,
@@ -42,6 +46,7 @@ import {
   useRef,
   useState,
   type ClipboardEvent as ReactClipboardEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import type { PortLabelMode, WorkspaceMode, WorkspaceTool } from "../../state/workspace-store";
@@ -52,11 +57,7 @@ import {
   addDiagramImage,
   addDraftDevice,
   allocateId,
-  changeDiagramAnnotationZOrder,
-  duplicateDiagramAnnotation,
   duplicateDraftDevice,
-  moveDiagramAnnotation,
-  removeDiagramAnnotation,
   removeDraftDevice,
   removeDraftLink,
   renameDraftDevice,
@@ -67,6 +68,26 @@ import {
 } from "../lab/document";
 import { DeviceConnectionDialog } from "./DeviceConnectionDialog";
 import { createDiagramAsset } from "./diagram-image-assets";
+import {
+  alignAnnotations,
+  annotationsInsideBounds,
+  changeAnnotationsZOrder,
+  createDiagramAnnotation,
+  DIAGRAM_CLIPBOARD_TYPE,
+  distributeAnnotations,
+  duplicateAnnotations,
+  isValidDiagramHex,
+  moveAnnotations,
+  pasteDiagramClipboard,
+  rectangleFromDrag,
+  removeAnnotations,
+  resizeAnnotation,
+  rotateAnnotation,
+  serializeDiagramClipboard,
+  setAnnotationLock,
+  snapTranslationToSmartGuides,
+  updateLineEndpoint,
+} from "./diagram-editor";
 import { TopologyGraphSurface } from "./TopologyGraphSurface";
 import { portLabelsVisible } from "./diagram-presentation";
 import { createLink } from "./x6/lab-document-adapter";
@@ -122,52 +143,102 @@ const ANNOTATION_TOOLS = new Set<WorkspaceTool>([
   "annotation-arrow",
 ]);
 
-function createAnnotation(document: LabDocument, tool: WorkspaceTool, position: Point): DiagramAnnotation | undefined {
-  if (!ANNOTATION_TOOLS.has(tool)) return undefined;
-  const id = allocateId("annotation", document.diagram?.annotations.map((annotation) => annotation.id) ?? []);
-  const zIndex = Math.max(0, ...(document.diagram?.annotations.map((annotation) => annotation.zIndex) ?? [])) + 1;
-  if (tool === "annotation-text") {
-    return {
-      id, type: "text", position, width: 180, content: "Text label", fontSize: 16,
-      bold: false, italic: false, alignment: "left", foreground: "auto", zIndex, rotation: 0,
-    };
+const DIAGRAM_COLORS = ["#2563eb", "#4d7fa9", "#0f766e", "#15803d", "#b45309", "#b91c1c", "#7e22ce", "#334155"];
+
+function readDiagramPreference(key: string, fallback: boolean): boolean {
+  try {
+    const value = window.localStorage.getItem(key);
+    return value === null ? fallback : value === "true";
+  } catch {
+    return fallback;
   }
-  if (tool === "annotation-line" || tool === "annotation-arrow") {
-    return {
-      id,
-      type: tool === "annotation-line" ? "line" : "arrow",
-      start: position,
-      end: { x: position.x + 180, y: position.y },
-      stroke: "#4d7fa9",
-      strokeWidth: 1.5,
-      zIndex,
-    };
+}
+
+function storeDiagramPreference(key: string, value: boolean): void {
+  try {
+    window.localStorage.setItem(key, String(value));
+  } catch {
+    // Local-only preferences may be unavailable in privacy-restricted contexts.
   }
-  return {
-    id,
-    type: tool === "annotation-ellipse" ? "ellipse" : "rectangle",
-    position,
-    width: 180,
-    height: 100,
-    stroke: "#4d7fa9",
-    strokeWidth: 1.5,
-    zIndex,
-    rotation: 0,
+}
+
+function boundedDiagramNumber(value: string, minimum: number, maximum: number, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(minimum, Math.min(maximum, parsed));
+}
+
+function DiagramColorControl(props: {
+  label: string;
+  value: string | undefined;
+  transparent?: boolean;
+  onChange(value: string): void;
+}) {
+  const normalized = props.value === "transparent" || props.value === "auto" || !props.value
+    ? "#4d7fa9"
+    : props.value;
+  const [draft, setDraft] = useState(normalized);
+  useEffect(() => setDraft(normalized), [normalized]);
+  const commit = () => {
+    if (isValidDiagramHex(draft)) props.onChange(draft.toLowerCase());
+    else setDraft(normalized);
   };
+  return (
+    <div className="diagram-color-control">
+      <span>{props.label}</span>
+      <div className="diagram-color-control__presets">
+        {DIAGRAM_COLORS.map((color) => (
+          <button
+            key={color}
+            type="button"
+            aria-label={`${props.label} ${color}`}
+            title={color}
+            style={{ backgroundColor: color }}
+            onClick={() => props.onChange(color)}
+          />
+        ))}
+      </div>
+      <input
+        aria-label={`${props.label} color`}
+        value={draft}
+        maxLength={7}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => { if (event.key === "Enter") commit(); }}
+      />
+      {props.transparent && (
+        <button type="button" onClick={() => props.onChange("transparent")}>Transparent</button>
+      )}
+    </div>
+  );
 }
 
 export function TopologyCanvas(props: TopologyCanvasProps) {
   const [contextMenu, setContextMenu] = useState<ContextMenuState>();
   const [connectionIntent, setConnectionIntent] = useState<ConnectionIntent>();
   const [pendingConnectionSourceId, setPendingConnectionSourceId] = useState<string>();
-  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string>();
+  const [selectedAnnotationIds, setSelectedAnnotationIds] = useState<string[]>([]);
   const [editingTextId, setEditingTextId] = useState<string>();
   const [editingText, setEditingText] = useState("");
+  const [newTextId, setNewTextId] = useState<string>();
+  const [dragStart, setDragStart] = useState<Point>();
+  const [dragCurrent, setDragCurrent] = useState<Point>();
+  const [marqueeStart, setMarqueeStart] = useState<Point>();
+  const [marqueeCurrent, setMarqueeCurrent] = useState<Point>();
+  const [snapToGrid, setSnapToGrid] = useState(() => readDiagramPreference("simulatornet.diagram.snapToGrid", true));
+  const [smartGuides, setSmartGuides] = useState(() => readDiagramPreference("simulatornet.diagram.smartGuides", true));
+  const [smartGuide, setSmartGuide] = useState<{ x?: number; y?: number }>({});
   const [instructionsOpen, setInstructionsOpen] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const pendingImagePosition = useRef<Point | undefined>(undefined);
-  const graphApi = useRef<{ clientToLocal(point: Point): Point; fit(): void } | undefined>(undefined);
+  const pendingReplaceImageId = useRef<string | undefined>(undefined);
+  const graphApi = useRef<{
+    clientToLocal(point: Point): Point;
+    localToClient(point: Point): Point;
+    fit(): void;
+  } | undefined>(undefined);
+  const suppressPaneClick = useRef(false);
   const status = useMemo(() => new Map(props.snapshot?.nodes.map((node) => [node.id, node])), [props.snapshot]);
   const structuralEditable = props.mode === "edit";
 
@@ -190,7 +261,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
 
   const startConnection = useCallback((id: string) => {
     setContextMenu(undefined);
-    setSelectedAnnotationId(undefined);
+    setSelectedAnnotationIds([]);
     props.onSelectLink(undefined);
     props.onSelectNode(id);
     setPendingConnectionSourceId(id);
@@ -207,7 +278,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
 
   const openNodeMenu = useCallback((id: string, event: ReactMouseEvent) => {
     event.preventDefault();
-    setSelectedAnnotationId(undefined);
+    setSelectedAnnotationIds([]);
     setContextMenu({ kind: "node", id, x: event.clientX, y: event.clientY });
   }, []);
 
@@ -268,10 +339,10 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       };
     }
     for (const annotation of props.document.diagram?.annotations ?? []) {
-      result.annotations![annotation.id] = { selected: annotation.id === selectedAnnotationId };
+      result.annotations![annotation.id] = { selected: selectedAnnotationIds.includes(annotation.id) };
     }
     return result;
-  }, [props, status, structuralEditable, activateNode, openNodeMenu, selectedAnnotationId, startConnection]);
+  }, [props, status, structuralEditable, activateNode, openNodeMenu, selectedAnnotationIds, startConnection]);
 
   if (!props.document) {
     return (
@@ -291,13 +362,24 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   }
 
   const document = props.document;
-  const selectedAnnotation = document.diagram?.annotations.find((annotation) => annotation.id === selectedAnnotationId);
+  const selectedAnnotation = document.diagram?.annotations.find((annotation) => annotation.id === selectedAnnotationIds.at(-1));
   const editingAnnotation = document.diagram?.annotations.find((annotation) =>
     annotation.id === editingTextId && annotation.type === "text") as Extract<DiagramAnnotation, { type: "text" }> | undefined;
   const insertImageFile = async (file: File, requestedPosition?: Point) => {
     try {
-      const assetId = allocateId("asset", document.diagram?.assets?.map((asset) => asset.id) ?? []);
+      const replacing = document.diagram?.annotations.find((annotation): annotation is Extract<DiagramAnnotation, { type: "image" }> =>
+        annotation.id === pendingReplaceImageId.current && annotation.type === "image");
+      const assetId = replacing?.assetId
+        ?? allocateId("asset", document.diagram?.assets?.map((asset) => asset.id) ?? []);
       const asset = await createDiagramAsset(file, assetId, document);
+      if (replacing) {
+        const annotation = { ...replacing, alt: replacing.alt || file.name.replace(/\.[^.]+$/, "") };
+        props.onChange(addDiagramImage(document, asset, annotation), "presentation");
+        setSelectedAnnotationIds([annotation.id]);
+        pendingReplaceImageId.current = undefined;
+        props.onActiveTool("select");
+        return;
+      }
       const annotationId = allocateId("annotation", document.diagram?.annotations.map((annotation) => annotation.id) ?? []);
       const maximumWidth = 360;
       const maximumHeight = 240;
@@ -315,12 +397,15 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         rotation: 0,
         opacity: 1,
         preserveAspectRatio: true,
+        alt: file.name.replace(/\.[^.]+$/, ""),
         zIndex: Math.max(0, ...(document.diagram?.annotations.map((item) => item.zIndex) ?? [])) + 1,
         locked: false,
       };
       props.onChange(addDiagramImage(document, asset, annotation), "presentation");
-      setSelectedAnnotationId(annotation.id);
+      setSelectedAnnotationIds([annotation.id]);
+      props.onActiveTool("select");
     } catch (error) {
+      pendingReplaceImageId.current = undefined;
       props.onError(error instanceof Error ? error.message : "The image could not be inserted.");
     }
   };
@@ -339,15 +424,25 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       void insertImageFile(image);
       return;
     }
+    const diagramPayload = event.clipboardData.getData(DIAGRAM_CLIPBOARD_TYPE);
+    if (diagramPayload) {
+      const pasted = pasteDiagramClipboard(document, diagramPayload);
+      if (pasted) {
+        event.preventDefault();
+        props.onChange(pasted.document, "presentation");
+        setSelectedAnnotationIds(pasted.ids);
+        return;
+      }
+    }
     const text = event.clipboardData.getData("text/plain");
     if (!text) return;
     event.preventDefault();
     const position = insertionPoint();
-    const annotation = createAnnotation(document, "annotation-text", position);
+    const annotation = createDiagramAnnotation(document, "annotation-text", position, position, { snap: snapToGrid });
     if (annotation?.type === "text") {
       const next = { ...annotation, content: text.slice(0, 4_096) };
       props.onChange(addDiagramAnnotation(document, next), "presentation");
-      setSelectedAnnotationId(next.id);
+      setSelectedAnnotationIds([next.id]);
     }
   };
   const addAt = (kind: NodeSpec["kind"], position?: Point) => {
@@ -362,23 +457,80 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     addAt(kind, position);
   };
   const paneClick = (local: Point) => {
+    if (suppressPaneClick.current) {
+      suppressPaneClick.current = false;
+      return;
+    }
     setContextMenu(undefined);
     if (structuralEditable && props.pendingDeviceKind) {
       addAt(props.pendingDeviceKind, local);
       props.onPlacedDevice();
       return;
     }
-    const annotation = createAnnotation(document, props.activeTool, local);
-    if (annotation) {
+    const annotation = props.activeTool === "annotation-text"
+      ? createDiagramAnnotation(document, props.activeTool, local, local, { snap: snapToGrid })
+      : undefined;
+    if (annotation?.type === "text") {
       props.onChange(addDiagramAnnotation(document, annotation), "presentation");
-      setSelectedAnnotationId(annotation.id);
+      setSelectedAnnotationIds([annotation.id]);
+      setEditingText("");
+      setEditingTextId(annotation.id);
+      setNewTextId(annotation.id);
       props.onPlacedDevice();
       return;
     }
-    setSelectedAnnotationId(undefined);
+    setSelectedAnnotationIds([]);
     setPendingConnectionSourceId(undefined);
     props.onSelectNode(undefined);
     props.onSelectLink(undefined);
+  };
+
+  const panePointerDown = (local: Point, modifiers: { shift: boolean; alt: boolean }) => {
+    if (ANNOTATION_TOOLS.has(props.activeTool) && props.activeTool !== "annotation-text") {
+      setDragStart(local);
+      setDragCurrent(local);
+      return;
+    }
+    if (props.activeTool === "select") {
+      setMarqueeStart(local);
+      setMarqueeCurrent(local);
+      if (!modifiers.shift) setSelectedAnnotationIds([]);
+    }
+  };
+
+  const panePointerMove = (local: Point) => {
+    if (dragStart) setDragCurrent(local);
+    if (marqueeStart) setMarqueeCurrent(local);
+  };
+
+  const panePointerUp = (local: Point, modifiers: { shift: boolean; alt: boolean }) => {
+    if (dragStart && ANNOTATION_TOOLS.has(props.activeTool)) {
+      const annotation = createDiagramAnnotation(document, props.activeTool, dragStart, local, {
+        shift: modifiers.shift,
+        alt: modifiers.alt,
+        snap: snapToGrid,
+      });
+      if (annotation) {
+        props.onChange(addDiagramAnnotation(document, annotation), "presentation");
+        setSelectedAnnotationIds([annotation.id]);
+        props.onPlacedDevice();
+      }
+      suppressPaneClick.current = true;
+      window.setTimeout(() => { suppressPaneClick.current = false; }, 0);
+      setDragStart(undefined);
+      setDragCurrent(undefined);
+      return;
+    }
+    if (marqueeStart) {
+      const bounds = rectangleFromDrag(marqueeStart, local);
+      if (Math.hypot(local.x - marqueeStart.x, local.y - marqueeStart.y) >= 4) {
+        setSelectedAnnotationIds(annotationsInsideBounds(document, bounds));
+        suppressPaneClick.current = true;
+        window.setTimeout(() => { suppressPaneClick.current = false; }, 0);
+      }
+      setMarqueeStart(undefined);
+      setMarqueeCurrent(undefined);
+    }
   };
 
   const contextAction = (action: string) => {
@@ -425,18 +577,21 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     if (contextMenu.kind === "pane") {
       const local = graphApi.current?.clientToLocal({ x: contextMenu.x, y: contextMenu.y }) ?? insertionPoint();
       if (action === "add-text") {
-        const annotation = createAnnotation(document, "annotation-text", local);
+        const annotation = createDiagramAnnotation(document, "annotation-text", local, local, { snap: snapToGrid });
         if (annotation) {
           props.onChange(addDiagramAnnotation(document, annotation), "presentation");
-          setSelectedAnnotationId(annotation.id);
+          setSelectedAnnotationIds([annotation.id]);
+          setEditingText("");
+          setEditingTextId(annotation.id);
+          setNewTextId(annotation.id);
         }
       }
       if (action === "add-image") openImagePicker(local);
       if (action === "add-shape") {
-        const annotation = createAnnotation(document, "annotation-rectangle", local);
+        const annotation = createDiagramAnnotation(document, "annotation-rectangle", local, local, { snap: snapToGrid });
         if (annotation) {
           props.onChange(addDiagramAnnotation(document, annotation), "presentation");
-          setSelectedAnnotationId(annotation.id);
+          setSelectedAnnotationIds([annotation.id]);
         }
       }
     }
@@ -450,18 +605,128 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   const startTextEditing = (annotationId: string) => {
     const annotation = document.diagram?.annotations.find((candidate) => candidate.id === annotationId);
     if (annotation?.type !== "text" || annotation.locked) return;
-    setSelectedAnnotationId(annotation.id);
+    setSelectedAnnotationIds([annotation.id]);
     setEditingText(annotation.content);
     setEditingTextId(annotation.id);
+    setNewTextId(undefined);
   };
+
+  const editAnnotation = (annotationId: string) => {
+    const annotation = document.diagram?.annotations.find((candidate) => candidate.id === annotationId);
+    if (annotation?.type === "text") startTextEditing(annotationId);
+    else if (annotation?.type === "image") setSelectedAnnotationIds([annotationId]);
+  };
+
+  const cancelTextEditing = () => {
+    if (editingTextId && editingTextId === newTextId && editingText.trim() === "") {
+      props.onChange(removeAnnotations(document, [editingTextId]), "presentation");
+      setSelectedAnnotationIds([]);
+    }
+    setEditingTextId(undefined);
+    setNewTextId(undefined);
+  };
+
+  const commitTextEditing = () => {
+    if (!editingAnnotation) return;
+    if (editingTextId === newTextId && editingText.trim() === "") {
+      props.onChange(removeAnnotations(document, [editingAnnotation.id]), "presentation");
+      setSelectedAnnotationIds([]);
+    } else {
+      updateSelected({ ...editingAnnotation, content: editingText.slice(0, 4_096) });
+    }
+    setEditingTextId(undefined);
+    setNewTextId(undefined);
+  };
+
+  const duplicateSelectedAnnotations = () => {
+    const duplicated = duplicateAnnotations(document, selectedAnnotationIds);
+    if (duplicated.ids.length === 0) return;
+    props.onChange(duplicated.document, "presentation");
+    setSelectedAnnotationIds(duplicated.ids);
+  };
+
+  const deleteSelectedAnnotations = () => {
+    if (selectedAnnotationIds.length === 0) return;
+    props.onChange(removeAnnotations(document, selectedAnnotationIds), "presentation");
+    setSelectedAnnotationIds([]);
+  };
+
+  const copyFromCanvas = (event: ReactClipboardEvent<HTMLElement>) => {
+    if (selectedAnnotationIds.length === 0) return;
+    const selected = (document.diagram?.annotations ?? [])
+      .filter((annotation) => selectedAnnotationIds.includes(annotation.id));
+    event.preventDefault();
+    event.clipboardData.setData(DIAGRAM_CLIPBOARD_TYPE, serializeDiagramClipboard(document, selectedAnnotationIds));
+    event.clipboardData.setData("text/plain", selected.map((annotation) =>
+      annotation.type === "text" ? annotation.content : `[${annotation.type}]`).join("\n"));
+  };
+
+  const handleCanvasKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true'], .xterm")) return;
+      const commandKey = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      if (event.key === "Escape") {
+        setDragStart(undefined);
+        setDragCurrent(undefined);
+        setMarqueeStart(undefined);
+        setMarqueeCurrent(undefined);
+        setSelectedAnnotationIds([]);
+        props.onActiveTool("select");
+        return;
+      }
+      if (commandKey && key === "a") {
+        event.preventDefault();
+        setSelectedAnnotationIds((document.diagram?.annotations ?? []).map((annotation) => annotation.id));
+        return;
+      }
+      if (selectedAnnotationIds.length === 0) return;
+      if (event.key === "Delete" || event.key === "Backspace") {
+        event.preventDefault();
+        deleteSelectedAnnotations();
+      } else if (commandKey && key === "d") {
+        event.preventDefault();
+        duplicateSelectedAnnotations();
+      } else if (event.key.startsWith("Arrow")) {
+        event.preventDefault();
+        const distance = event.shiftKey ? 10 : 1;
+        const dx = event.key === "ArrowLeft" ? -distance : event.key === "ArrowRight" ? distance : 0;
+        const dy = event.key === "ArrowUp" ? -distance : event.key === "ArrowDown" ? distance : 0;
+        props.onChange(moveAnnotations(document, selectedAnnotationIds, dx, dy, snapToGrid && !event.shiftKey), "presentation");
+      } else if (event.key === "Enter" && selectedAnnotation?.type === "text") {
+        event.preventDefault();
+        startTextEditing(selectedAnnotation.id);
+      } else if (event.key === "]") {
+        event.preventDefault();
+        props.onChange(changeAnnotationsZOrder(document, selectedAnnotationIds, "forward"), "presentation");
+      } else if (event.key === "[") {
+        event.preventDefault();
+        props.onChange(changeAnnotationsZOrder(document, selectedAnnotationIds, "backward"), "presentation");
+      }
+  };
+
+  const overlayPoint = (point: Point | undefined): Point | undefined => {
+    const panel = panelRef.current?.getBoundingClientRect();
+    const client = point && graphApi.current?.localToClient(point);
+    return panel && client ? { x: client.x - panel.left, y: client.y - panel.top } : undefined;
+  };
+  const dragOverlayStart = overlayPoint(dragStart);
+  const dragOverlayEnd = overlayPoint(dragCurrent);
+  const marqueeOverlayStart = overlayPoint(marqueeStart);
+  const marqueeOverlayEnd = overlayPoint(marqueeCurrent);
+  const smartGuideOverlayX = smartGuide.x === undefined ? undefined : overlayPoint({ x: smartGuide.x, y: 0 })?.x;
+  const smartGuideOverlayY = smartGuide.y === undefined ? undefined : overlayPoint({ x: 0, y: smartGuide.y })?.y;
 
   return (
     <section
       ref={panelRef}
       className={`topology-panel topology-panel--${props.mode}`}
+      data-active-tool={props.activeTool}
       aria-label="Topology canvas"
       tabIndex={0}
       onPaste={pasteIntoCanvas}
+      onCopy={copyFromCanvas}
+      onKeyDown={handleCanvasKeyDown}
       onContextMenu={(event) => event.preventDefault()}
     >
       <input
@@ -473,6 +738,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         onChange={(event) => {
           const file = event.target.files?.[0];
           if (file) void insertImageFile(file, pendingImagePosition.current);
+          else props.onActiveTool("select");
           pendingImagePosition.current = undefined;
           event.target.value = "";
         }}
@@ -494,60 +760,91 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         </button>
       </div>
 
-      <div className="diagram-insert-toolbar" aria-label="Insert diagram element">
-        <span>Insert</span>
+      <div className="diagram-insert-toolbar" role="toolbar" aria-label="Diagram tools">
+        <span>Diagram</span>
+        <button type="button" title="Select (Escape)" onClick={() => props.onActiveTool("select")} aria-pressed={props.activeTool === "select"}><MousePointer2 size={13} /> Select</button>
+        <button type="button" title="Hand / Pan" onClick={() => props.onActiveTool("pan")} aria-pressed={props.activeTool === "pan"}><Hand size={13} /> Hand</button>
+        <span className="diagram-insert-toolbar__separator" />
         <button type="button" onClick={() => props.onActiveTool("annotation-text")} aria-pressed={props.activeTool === "annotation-text"}><Type size={13} /> Text</button>
-        <button type="button" onClick={() => openImagePicker()}><ImagePlus size={13} /> Image</button>
         <button type="button" onClick={() => props.onActiveTool("annotation-rectangle")} aria-pressed={props.activeTool === "annotation-rectangle"}><Square size={13} /> Rectangle</button>
         <button type="button" onClick={() => props.onActiveTool("annotation-ellipse")} aria-pressed={props.activeTool === "annotation-ellipse"}><Circle size={13} /> Ellipse</button>
         <button type="button" onClick={() => props.onActiveTool("annotation-line")} aria-pressed={props.activeTool === "annotation-line"}><Minus size={13} /> Line</button>
         <button type="button" onClick={() => props.onActiveTool("annotation-arrow")} aria-pressed={props.activeTool === "annotation-arrow"}><ArrowUpToLine size={13} /> Arrow</button>
+        <button type="button" onClick={() => { props.onActiveTool("annotation-image"); openImagePicker(); }} aria-pressed={props.activeTool === "annotation-image"}><ImagePlus size={13} /> Image</button>
+        <span className="diagram-insert-toolbar__separator" />
+        <button type="button" disabled={!structuralEditable} title={structuralEditable ? "Create a physical network connection" : "Stop the lab to edit connectivity"} onClick={() => props.onActiveTool("add-link")} aria-pressed={props.activeTool === "add-link"}><Cable size={13} /> Connection</button>
+        <label className="diagram-toolbar-toggle"><input type="checkbox" checked={snapToGrid} onChange={(event) => { setSnapToGrid(event.target.checked); storeDiagramPreference("simulatornet.diagram.snapToGrid", event.target.checked); }} /> Grid snap</label>
+        <label className="diagram-toolbar-toggle"><input type="checkbox" checked={smartGuides} onChange={(event) => { setSmartGuides(event.target.checked); storeDiagramPreference("simulatornet.diagram.smartGuides", event.target.checked); }} /> Guides</label>
       </div>
 
       {(selectedAnnotation || ANNOTATION_TOOLS.has(props.activeTool)) && (
         <div className="annotation-toolbar" aria-label="Annotation formatting">
+          {selectedAnnotationIds.length > 1 && <strong>{selectedAnnotationIds.length} selected</strong>}
           {selectedAnnotation?.type === "text" && <>
             <button type="button" onClick={() => startTextEditing(selectedAnnotation.id)} disabled={selectedAnnotation.locked}>Edit text</button>
-            <label>Size <input type="number" min={8} max={72} value={selectedAnnotation.fontSize} onChange={(event) => updateSelected({ ...selectedAnnotation, fontSize: Number(event.target.value) })} /></label>
+            <label>Size <input type="number" min={8} max={72} value={selectedAnnotation.fontSize} onChange={(event) => updateSelected({ ...selectedAnnotation, fontSize: boundedDiagramNumber(event.target.value, 8, 72, selectedAnnotation.fontSize) })} /></label>
             <button type="button" aria-label="Bold" aria-pressed={selectedAnnotation.bold} onClick={() => updateSelected({ ...selectedAnnotation, bold: !selectedAnnotation.bold })}><Bold size={13} /></button>
             <button type="button" aria-label="Italic" aria-pressed={selectedAnnotation.italic} onClick={() => updateSelected({ ...selectedAnnotation, italic: !selectedAnnotation.italic })}><Italic size={13} /></button>
             <button type="button" aria-label="Align left" onClick={() => updateSelected({ ...selectedAnnotation, alignment: "left" })}><AlignLeft size={13} /></button>
             <button type="button" aria-label="Align center" onClick={() => updateSelected({ ...selectedAnnotation, alignment: "center" })}><AlignCenter size={13} /></button>
             <button type="button" aria-label="Align right" onClick={() => updateSelected({ ...selectedAnnotation, alignment: "right" })}><AlignRight size={13} /></button>
-            <label title="Text color"><input aria-label="Text color" type="color" value={selectedAnnotation.foreground.startsWith("#") ? selectedAnnotation.foreground : "#284158"} onChange={(event) => updateSelected({ ...selectedAnnotation, foreground: event.target.value })} /></label>
-            <label title="Background"><input aria-label="Annotation background" type="color" value={selectedAnnotation.background ?? "#ffffff"} onChange={(event) => updateSelected({ ...selectedAnnotation, background: event.target.value })} /></label>
-            <label title="Border"><input aria-label="Annotation border" type="color" value={selectedAnnotation.border ?? "#4d7fa9"} onChange={(event) => updateSelected({ ...selectedAnnotation, border: event.target.value })} /></label>
+            <DiagramColorControl label="Text" value={selectedAnnotation.foreground} onChange={(foreground) => updateSelected({ ...selectedAnnotation, foreground: foreground as typeof selectedAnnotation.foreground })} />
+            <DiagramColorControl label="Background" transparent value={selectedAnnotation.background} onChange={(background) => updateSelected({ ...selectedAnnotation, background: background as typeof selectedAnnotation.background })} />
+            <DiagramColorControl label="Border" transparent value={selectedAnnotation.border} onChange={(border) => updateSelected({ ...selectedAnnotation, border: border as typeof selectedAnnotation.border })} />
+            <label>Border <input aria-label="Text border width" type="number" min={0} max={12} step={0.5} value={selectedAnnotation.borderWidth ?? 0} onChange={(event) => updateSelected({ ...selectedAnnotation, borderWidth: boundedDiagramNumber(event.target.value, 0, 12, selectedAnnotation.borderWidth ?? 0) })} /></label>
+            <label className="annotation-toolbar__check"><input type="checkbox" checked={selectedAnnotation.autoHeight !== false} onChange={(event) => updateSelected({ ...selectedAnnotation, autoHeight: event.target.checked })} /> Auto height</label>
+          </>}
+          {(selectedAnnotation?.type === "rectangle" || selectedAnnotation?.type === "ellipse") && <>
+            <DiagramColorControl label="Fill" transparent value={selectedAnnotation.fill} onChange={(fill) => updateSelected({ ...selectedAnnotation, fill: fill as typeof selectedAnnotation.fill })} />
+            <DiagramColorControl label="Border" value={selectedAnnotation.stroke} onChange={(stroke) => updateSelected({ ...selectedAnnotation, stroke: stroke as typeof selectedAnnotation.stroke })} />
+            <label>Width <input aria-label="Shape border width" type="number" min={0.5} max={12} step={0.5} value={selectedAnnotation.strokeWidth} onChange={(event) => updateSelected({ ...selectedAnnotation, strokeWidth: boundedDiagramNumber(event.target.value, 0.5, 12, selectedAnnotation.strokeWidth) })} /></label>
+            <label>Dash <select aria-label="Shape dash" value={selectedAnnotation.strokeDash ?? "solid"} onChange={(event) => updateSelected({ ...selectedAnnotation, strokeDash: event.target.value as typeof selectedAnnotation.strokeDash })}><option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option></select></label>
+            {selectedAnnotation.type === "rectangle" && <label>Radius <input aria-label="Rectangle radius" type="number" min={0} max={200} value={selectedAnnotation.radius ?? 0} onChange={(event) => updateSelected({ ...selectedAnnotation, radius: boundedDiagramNumber(event.target.value, 0, 200, selectedAnnotation.radius ?? 0) })} /></label>}
+          </>}
+          {(selectedAnnotation?.type === "line" || selectedAnnotation?.type === "arrow") && <>
+            <DiagramColorControl label="Stroke" value={selectedAnnotation.stroke} onChange={(stroke) => updateSelected({ ...selectedAnnotation, stroke: stroke as typeof selectedAnnotation.stroke })} />
+            <label>Width <input aria-label="Line width" type="number" min={0.5} max={12} step={0.5} value={selectedAnnotation.strokeWidth} onChange={(event) => updateSelected({ ...selectedAnnotation, strokeWidth: boundedDiagramNumber(event.target.value, 0.5, 12, selectedAnnotation.strokeWidth) })} /></label>
+            <label>Dash <select aria-label="Line dash" value={selectedAnnotation.strokeDash ?? "solid"} onChange={(event) => updateSelected({ ...selectedAnnotation, strokeDash: event.target.value as typeof selectedAnnotation.strokeDash })}><option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option></select></label>
+            <label>Start <select aria-label="Start marker" value={selectedAnnotation.startMarker ?? "none"} onChange={(event) => updateSelected({ ...selectedAnnotation, startMarker: event.target.value as typeof selectedAnnotation.startMarker })}><option value="none">None</option><option value="arrow">Arrow</option><option value="circle">Circle</option><option value="diamond">Diamond</option></select></label>
+            <label>End <select aria-label="End marker" value={selectedAnnotation.endMarker ?? (selectedAnnotation.type === "arrow" ? "arrow" : "none")} onChange={(event) => updateSelected({ ...selectedAnnotation, endMarker: event.target.value as typeof selectedAnnotation.endMarker })}><option value="none">None</option><option value="arrow">Arrow</option><option value="circle">Circle</option><option value="diamond">Diamond</option></select></label>
+            <label>Label <input aria-label="Line label" value={selectedAnnotation.label ?? ""} maxLength={512} onChange={(event) => updateSelected({ ...selectedAnnotation, label: event.target.value || undefined })} /></label>
+            <button type="button" onClick={() => updateSelected({ ...selectedAnnotation, bend: selectedAnnotation.bend ? undefined : { x: (selectedAnnotation.start.x + selectedAnnotation.end.x) / 2, y: (selectedAnnotation.start.y + selectedAnnotation.end.y) / 2 } })}>{selectedAnnotation.bend ? "Remove bend" : "Add bend"}</button>
           </>}
           {selectedAnnotation?.type === "image" && <>
             <label>W <input aria-label="Image width" type="number" min={8} max={4096} value={selectedAnnotation.width} onChange={(event) => {
-              const width = Math.max(8, Math.min(4096, Number(event.target.value)));
+              const width = boundedDiagramNumber(event.target.value, 8, 4096, selectedAnnotation.width);
               const height = selectedAnnotation.preserveAspectRatio
                 ? Math.max(8, Math.min(4096, Math.round(width * selectedAnnotation.height / selectedAnnotation.width)))
                 : selectedAnnotation.height;
               updateSelected({ ...selectedAnnotation, width, height });
             }} /></label>
             <label>H <input aria-label="Image height" type="number" min={8} max={4096} value={selectedAnnotation.height} onChange={(event) => {
-              const height = Math.max(8, Math.min(4096, Number(event.target.value)));
+              const height = boundedDiagramNumber(event.target.value, 8, 4096, selectedAnnotation.height);
               const width = selectedAnnotation.preserveAspectRatio
                 ? Math.max(8, Math.min(4096, Math.round(height * selectedAnnotation.width / selectedAnnotation.height)))
                 : selectedAnnotation.width;
               updateSelected({ ...selectedAnnotation, width, height });
             }} /></label>
             <label className="annotation-toolbar__check"><input aria-label="Preserve aspect ratio" type="checkbox" checked={selectedAnnotation.preserveAspectRatio} onChange={(event) => updateSelected({ ...selectedAnnotation, preserveAspectRatio: event.target.checked })} /> Aspect</label>
-            <label>Opacity <input aria-label="Image opacity" type="range" min={5} max={100} value={Math.round(selectedAnnotation.opacity * 100)} onChange={(event) => updateSelected({ ...selectedAnnotation, opacity: Number(event.target.value) / 100 })} /></label>
+            <label>Alt <input aria-label="Image alt description" value={selectedAnnotation.alt ?? ""} maxLength={512} onChange={(event) => updateSelected({ ...selectedAnnotation, alt: event.target.value })} /></label>
+            <button type="button" onClick={() => { pendingReplaceImageId.current = selectedAnnotation.id; openImagePicker(); }}>Replace</button>
           </>}
           {selectedAnnotation && <>
-            {"rotation" in selectedAnnotation && <label>Rotate <input aria-label="Annotation rotation" type="number" min={-360} max={360} value={selectedAnnotation.rotation} onChange={(event) => updateSelected({ ...selectedAnnotation, rotation: Number(event.target.value) })} /></label>}
-            <button type="button" aria-label={selectedAnnotation.locked ? "Unlock annotation" : "Lock annotation"} onClick={() => updateSelected({ ...selectedAnnotation, locked: !selectedAnnotation.locked })}>{selectedAnnotation.locked ? <Lock size={13} /> : <LockOpen size={13} />}</button>
-            <button type="button" aria-label="Duplicate annotation" onClick={() => {
-              const next = duplicateDiagramAnnotation(document, selectedAnnotation.id);
-              props.onChange(next, "presentation");
-              const ids = new Set(document.diagram?.annotations.map((annotation) => annotation.id) ?? []);
-              setSelectedAnnotationId(next.diagram?.annotations.find((annotation) => !ids.has(annotation.id))?.id);
-            }}><Copy size={13} /></button>
-            <button type="button" aria-label="Bring forward" onClick={() => props.onChange(changeDiagramAnnotationZOrder(document, selectedAnnotation.id, "forward"), "presentation")}><ArrowUpToLine size={13} /></button>
-            <button type="button" aria-label="Send backward" onClick={() => props.onChange(changeDiagramAnnotationZOrder(document, selectedAnnotation.id, "backward"), "presentation")}><ArrowDownToLine size={13} /></button>
-            <button type="button" aria-label="Delete annotation" onClick={() => { props.onChange(removeDiagramAnnotation(document, selectedAnnotation.id), "presentation"); setSelectedAnnotationId(undefined); }}><Trash2 size={13} /></button>
+            {"opacity" in selectedAnnotation && <label>Opacity <input aria-label={selectedAnnotation.type === "image" ? "Image opacity" : "Annotation opacity"} type="range" min={5} max={100} value={Math.round((selectedAnnotation.opacity ?? 1) * 100)} onChange={(event) => updateSelected({ ...selectedAnnotation, opacity: Number(event.target.value) / 100 })} /></label>}
+            {"rotation" in selectedAnnotation && <label>Rotate <input aria-label="Annotation rotation" type="number" min={-360} max={360} value={selectedAnnotation.rotation} onChange={(event) => updateSelected({ ...selectedAnnotation, rotation: boundedDiagramNumber(event.target.value, -360, 360, selectedAnnotation.rotation) })} /></label>}
+            <button type="button" aria-label={selectedAnnotation.locked ? "Unlock annotation" : "Lock annotation"} onClick={() => props.onChange(setAnnotationLock(document, selectedAnnotationIds, !selectedAnnotation.locked), "presentation")}>{selectedAnnotation.locked ? <Lock size={13} /> : <LockOpen size={13} />}</button>
+            <button type="button" aria-label="Duplicate annotation" onClick={duplicateSelectedAnnotations}><Copy size={13} /></button>
+            <button type="button" aria-label="Bring forward" onClick={() => props.onChange(changeAnnotationsZOrder(document, selectedAnnotationIds, "forward"), "presentation")}><ArrowUpToLine size={13} /></button>
+            <button type="button" aria-label="Send backward" onClick={() => props.onChange(changeAnnotationsZOrder(document, selectedAnnotationIds, "backward"), "presentation")}><ArrowDownToLine size={13} /></button>
+            <button type="button" onClick={() => props.onChange(changeAnnotationsZOrder(document, selectedAnnotationIds, "front"), "presentation")}>Front</button>
+            <button type="button" onClick={() => props.onChange(changeAnnotationsZOrder(document, selectedAnnotationIds, "back"), "presentation")}>Back</button>
+            <button type="button" aria-label="Delete annotation" onClick={deleteSelectedAnnotations}><Trash2 size={13} /></button>
+          </>}
+          {selectedAnnotationIds.length > 1 && <>
+            <button type="button" aria-label="Align left edges" onClick={() => props.onChange(alignAnnotations(document, selectedAnnotationIds, "left"), "presentation")}><AlignLeft size={13} /></button>
+            <button type="button" aria-label="Align vertical centers" onClick={() => props.onChange(alignAnnotations(document, selectedAnnotationIds, "middle"), "presentation")}><AlignCenter size={13} /></button>
+            <button type="button" aria-label="Distribute horizontally" onClick={() => props.onChange(distributeAnnotations(document, selectedAnnotationIds, "horizontal"), "presentation")}><AlignHorizontalDistributeCenter size={13} /></button>
+            <button type="button" aria-label="Distribute vertically" onClick={() => props.onChange(distributeAnnotations(document, selectedAnnotationIds, "vertical"), "presentation")}><AlignVerticalDistributeCenter size={13} /></button>
           </>}
         </div>
       )}
@@ -558,6 +855,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         readonly={false}
         draggable={props.activeTool === "select" || Boolean(selectedAnnotation)}
         connectable={structuralEditable}
+        pannable={props.activeTool === "pan"}
         fitRequest={props.fitRequest}
         zoomResetRequest={props.zoomResetRequest}
         zoomInRequest={props.zoomInRequest}
@@ -565,7 +863,8 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         onReady={(handle) => { graphApi.current = handle; }}
         onNodeMoved={(id, position) => props.onChange(withNodePosition(document, id, position), "presentation")}
         onSelectNode={(id) => {
-          setSelectedAnnotationId(undefined);
+          panelRef.current?.focus();
+          setSelectedAnnotationIds([]);
           props.onSelectLink(undefined);
           props.onSelectNode(id);
         }}
@@ -573,30 +872,106 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         onConnectionIntent={(sourceId, targetId, sourcePort, targetPort) => {
           if (!structuralEditable) return;
           setContextMenu(undefined);
-          setSelectedAnnotationId(undefined);
+          setSelectedAnnotationIds([]);
           setPendingConnectionSourceId(undefined);
           props.onSelectLink(undefined);
           props.onSelectNode(sourceId);
           setConnectionIntent({ sourceId, targetId, sourcePort, targetPort });
         }}
-        onAnnotationMoved={(id, position) => props.onChange(moveDiagramAnnotation(document, id, position), "presentation")}
-        onSelectAnnotation={(id) => {
-          setSelectedAnnotationId(id);
+        onAnnotationMoved={(id, position) => {
+          const annotation = document.diagram?.annotations.find((candidate) => candidate.id === id);
+          if (!annotation || !("position" in annotation)) return;
+          const ids = selectedAnnotationIds.includes(id) ? selectedAnnotationIds : [id];
+          const guided = snapTranslationToSmartGuides(
+            document,
+            ids,
+            position.x - annotation.position.x,
+            position.y - annotation.position.y,
+            smartGuides,
+          );
+          setSmartGuide({ x: guided.guideX, y: guided.guideY });
+          window.setTimeout(() => setSmartGuide({}), 350);
+          props.onChange(moveAnnotations(
+            document,
+            ids,
+            guided.dx,
+            guided.dy,
+            snapToGrid,
+          ), "presentation");
+        }}
+        onAnnotationResized={(id, width, height) => {
+          const annotation = document.diagram?.annotations.find((candidate) => candidate.id === id);
+          if (annotation) props.onChange(updateDiagramAnnotation(document, resizeAnnotation(annotation, width, height)), "presentation");
+        }}
+        onAnnotationRotated={(id, rotation) => {
+          const annotation = document.diagram?.annotations.find((candidate) => candidate.id === id);
+          if (annotation) props.onChange(updateDiagramAnnotation(document, rotateAnnotation(annotation, rotation)), "presentation");
+        }}
+        onAnnotationEndpointMoved={(id, endpoint, point) => {
+          const annotation = document.diagram?.annotations.find((candidate) => candidate.id === id);
+          if (annotation) props.onChange(updateDiagramAnnotation(document, updateLineEndpoint(annotation, endpoint, point)), "presentation");
+        }}
+        onSelectAnnotation={(id, additive) => {
+          panelRef.current?.focus();
+          setSelectedAnnotationIds((current) => additive
+            ? current.includes(id) ? current.filter((candidate) => candidate !== id) : [...current, id]
+            : [id]);
           props.onSelectNode(undefined);
           props.onSelectLink(undefined);
         }}
-        onEditAnnotation={startTextEditing}
+        onEditAnnotation={editAnnotation}
         onConnect={(source, sourcePort, target, targetPort) => {
           if (!structuralEditable) return;
           props.onChange(createLink(document, source, sourcePort, target, targetPort).document, "structural");
         }}
         onConnectionRejected={props.onError}
-        onSelectLink={(id) => { setSelectedAnnotationId(undefined); props.onSelectLink(id); }}
-        onLinkContextMenu={(id, x, y) => { setSelectedAnnotationId(undefined); props.onSelectLink(id); setContextMenu({ kind: "link", id, x, y }); }}
+        onSelectLink={(id) => { setSelectedAnnotationIds([]); props.onSelectLink(id); }}
+        onLinkContextMenu={(id, x, y) => { setSelectedAnnotationIds([]); props.onSelectLink(id); setContextMenu({ kind: "link", id, x, y }); }}
         onPaneClick={paneClick}
+        onPanePointerDown={panePointerDown}
+        onPanePointerMove={panePointerMove}
+        onPanePointerUp={panePointerUp}
         onPaneContextMenu={(x, y) => setContextMenu({ kind: "pane", x, y })}
         onDropDevice={(kind, local) => { if ((DEVICE_TYPES as readonly string[]).includes(kind)) addAt(kind as NodeSpec["kind"], local); }}
+        onDropImage={(file, local) => { void insertImageFile(file, local); }}
       />
+
+      {dragOverlayStart && dragOverlayEnd && (
+        <svg className="diagram-drag-preview" aria-hidden="true">
+          {(props.activeTool === "annotation-line" || props.activeTool === "annotation-arrow") ? (
+            <line
+              x1={dragOverlayStart.x}
+              y1={dragOverlayStart.y}
+              x2={dragOverlayEnd.x}
+              y2={dragOverlayEnd.y}
+              markerEnd={props.activeTool === "annotation-arrow" ? "url(#diagram-preview-arrow)" : undefined}
+            />
+          ) : (
+            <rect
+              x={Math.min(dragOverlayStart.x, dragOverlayEnd.x)}
+              y={Math.min(dragOverlayStart.y, dragOverlayEnd.y)}
+              width={Math.abs(dragOverlayEnd.x - dragOverlayStart.x)}
+              height={Math.abs(dragOverlayEnd.y - dragOverlayStart.y)}
+              rx={props.activeTool === "annotation-ellipse" ? 999 : 4}
+            />
+          )}
+          <defs><marker id="diagram-preview-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" /></marker></defs>
+        </svg>
+      )}
+      {marqueeOverlayStart && marqueeOverlayEnd && (
+        <div
+          className="diagram-marquee"
+          aria-hidden="true"
+          style={{
+            left: Math.min(marqueeOverlayStart.x, marqueeOverlayEnd.x),
+            top: Math.min(marqueeOverlayStart.y, marqueeOverlayEnd.y),
+            width: Math.abs(marqueeOverlayEnd.x - marqueeOverlayStart.x),
+            height: Math.abs(marqueeOverlayEnd.y - marqueeOverlayStart.y),
+          }}
+        />
+      )}
+      {smartGuideOverlayX !== undefined && <span className="diagram-smart-guide diagram-smart-guide--vertical" style={{ left: smartGuideOverlayX }} />}
+      {smartGuideOverlayY !== undefined && <span className="diagram-smart-guide diagram-smart-guide--horizontal" style={{ top: smartGuideOverlayY }} />}
 
       {connectionIntent && structuralEditable && (
         <DeviceConnectionDialog
@@ -631,20 +1006,22 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       )}
 
       {editingAnnotation && (
-        <div className="dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingTextId(undefined); }}>
+        <div className="dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) cancelTextEditing(); }}>
           <form
             className="workspace-dialog annotation-text-dialog"
             role="dialog"
             aria-label="Edit text annotation"
             onSubmit={(event) => {
               event.preventDefault();
-              updateSelected({ ...editingAnnotation, content: editingText.slice(0, 4_096) });
-              setEditingTextId(undefined);
+              commitTextEditing();
             }}
           >
-            <header><div><p>Diagram annotation</p><h2>Edit text</h2></div><button type="button" className="dialog-close" aria-label="Close text editor" onClick={() => setEditingTextId(undefined)}><X size={15} /></button></header>
-            <div className="workspace-dialog__body"><label className="annotation-text-field">Text<textarea aria-label="Annotation text" rows={7} value={editingText} autoFocus maxLength={4_096} onChange={(event) => setEditingText(event.target.value)} /></label></div>
-            <div className="dialog-actions"><Button type="button" variant="ghost" onClick={() => setEditingTextId(undefined)}>Cancel</Button><Button type="submit" variant="primary">Apply</Button></div>
+            <header><div><p>Diagram annotation</p><h2>{newTextId ? "Add text" : "Edit text"}</h2></div><button type="button" className="dialog-close" aria-label="Close text editor" onClick={cancelTextEditing}><X size={15} /></button></header>
+            <div className="workspace-dialog__body"><label className="annotation-text-field">Plain text<textarea aria-label="Annotation text" rows={7} value={editingText} autoFocus maxLength={4_096} onKeyDown={(event) => {
+              if (event.key === "Escape") { event.preventDefault(); cancelTextEditing(); }
+              if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); commitTextEditing(); }
+            }} onChange={(event) => setEditingText(event.target.value)} /></label><p className="field-help">Multiline plain text. Ctrl/Cmd+Enter applies; Escape cancels.</p></div>
+            <div className="dialog-actions"><Button type="button" variant="ghost" onClick={cancelTextEditing}>Cancel</Button><Button type="submit" variant="primary">Apply</Button></div>
           </form>
         </div>
       )}

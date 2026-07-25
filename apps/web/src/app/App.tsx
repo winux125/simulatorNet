@@ -417,6 +417,7 @@ export function App({ client }: AppProps) {
       else if (commandKey && key === "s") { event.preventDefault(); save(); }
       else if (commandKey && key === "z" && event.shiftKey) { event.preventDefault(); useWorkspaceStore.getState().redo(); }
       else if (commandKey && key === "z") { event.preventDefault(); useWorkspaceStore.getState().undo(); }
+      else if (commandKey && key === "y") { event.preventDefault(); useWorkspaceStore.getState().redo(); }
       else if (commandKey && !event.altKey && event.key === "Enter") { event.preventDefault(); run(); }
       else if (event.key === "Delete" || event.key === "Backspace") deleteSelection();
       else if (key === "f") workspace.requestFit();
@@ -524,7 +525,7 @@ export function App({ client }: AppProps) {
     { id: "tools", label: "Tools", items: [
       { id: "tools-terminal", label: "Open Terminal", icon: <TerminalSquare size={14} />, disabled: !labOpen, onSelect: openTerminalFromMenu },
       { id: "tools-arrange", label: "Auto Arrange Topology", icon: <Grid3X3 size={14} />, disabled: !editMode, onSelect: arrange },
-      { id: "tools-annotations", label: "Add Diagram Annotation", disabled: !editMode, submenu: [
+      { id: "tools-annotations", label: "Add Diagram Annotation", disabled: !labOpen, submenu: [
         { id: "annotation-text", label: "Text", onSelect: () => workspace.setActiveTool("annotation-text") },
         { id: "annotation-rectangle", label: "Rectangle", onSelect: () => workspace.setActiveTool("annotation-rectangle") },
         { id: "annotation-ellipse", label: "Ellipse", onSelect: () => workspace.setActiveTool("annotation-ellipse") },
@@ -618,7 +619,7 @@ export function App({ client }: AppProps) {
         onLogout={() => void launchSession.logout().catch((error) => reportError(error, "validation"))}
       />
       <input id="load-lab-file" className="visually-hidden" type="file" accept="application/json,.json,.unl,.zip,.gns3,.gns3project,.yml,.yaml,.virl,.pkt,.pka" onChange={(event) => { const file = event.target.files?.[0]; if (file) loadFile(file); event.target.value = ""; }} />
-      {launchSession.state.status === "authenticated" && <AssignmentPanel client={client} onOpenDocument={(document) => initialize(document, "simulate")} onError={(message) => reportError(message, "validation")} />}
+      {launchSession.state.status === "authenticated" && <AssignmentPanel client={client} document={workspace.draft} onOpenDocument={(document) => initialize(document, "simulate")} onError={(message) => reportError(message, "validation")} />}
       {launchSession.state.status === "exchanging" && <div className="launch-status" role="status">Exchanging secure launch code…</div>}
       {launchSession.state.status === "error" && <div className="workspace-error" role="alert"><AlertTriangle size={14} /><span>{launchSession.state.message}</span></div>}
       {validation && <div className="workspace-notice" role="status"><CheckCircle2 size={14} /><span>{validation}</span><IconButton label="Dismiss notice" icon={<X size={13} />} onClick={() => setValidation(undefined)} /></div>}

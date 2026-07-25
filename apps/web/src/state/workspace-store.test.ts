@@ -184,3 +184,45 @@ describe("M10.3.2c unified terminal state", () => {
     });
   });
 });
+
+describe("M10.3.2d presentation history", () => {
+  it("keeps diagram and position history bounded to 150 documents", () => {
+    const store = useWorkspaceStore.getState();
+    store.reset();
+    store.replaceDraft(HUB_ETHERNET_DEMO);
+
+    for (let index = 1; index <= 155; index += 1) {
+      const current = useWorkspaceStore.getState().draft!;
+      store.applyDraft(withNodePosition(current, "pc-1", { x: 90 + index, y: 130 }), "presentation");
+    }
+
+    expect(useWorkspaceStore.getState().past).toHaveLength(150);
+    for (let index = 0; index < 150; index += 1) store.undo();
+    expect(useWorkspaceStore.getState().draft?.topology.nodes.find((node) => node.id === "pc-1")?.position?.x).toBe(95);
+  });
+
+  it("rebases network configuration across presentation undo and redo", () => {
+    const store = useWorkspaceStore.getState();
+    store.reset();
+    store.replaceDraft(HUB_ETHERNET_DEMO);
+    store.applyDraft(withNodePosition(HUB_ETHERNET_DEMO, "pc-1", { x: 190, y: 130 }), "presentation");
+    const configured = structuredClone(useWorkspaceStore.getState().draft!);
+    configured.configurations["pc-1"]!.hostname = "RENAMED-PC";
+
+    store.applyDraft(configured, "configuration");
+    store.undo();
+    expect(useWorkspaceStore.getState().draft?.configurations["pc-1"]?.hostname).toBe("RENAMED-PC");
+    expect(useWorkspaceStore.getState().draft?.topology.nodes.find((node) => node.id === "pc-1")?.position?.x).toBe(90);
+    store.redo();
+    expect(useWorkspaceStore.getState().draft?.configurations["pc-1"]?.hostname).toBe("RENAMED-PC");
+    expect(useWorkspaceStore.getState().draft?.topology.nodes.find((node) => node.id === "pc-1")?.position?.x).toBe(190);
+
+    store.undo();
+    const reconfigured = structuredClone(useWorkspaceStore.getState().draft!);
+    reconfigured.configurations["pc-1"]!.hostname = "RENAMED-AGAIN";
+    store.applyDraft(reconfigured, "configuration");
+    store.redo();
+    expect(useWorkspaceStore.getState().draft?.configurations["pc-1"]?.hostname).toBe("RENAMED-AGAIN");
+    expect(useWorkspaceStore.getState().draft?.topology.nodes.find((node) => node.id === "pc-1")?.position?.x).toBe(190);
+  });
+});

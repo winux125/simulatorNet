@@ -7,6 +7,7 @@ import { assignmentClient, AssignmentApiError, type StudentAssignment } from "./
 
 interface AssignmentPanelProps {
   client: SimulatorClient;
+  document?: LabDocument;
   onOpenDocument(document: LabDocument): Promise<void>;
   onError(message: string): void;
 }
@@ -18,7 +19,7 @@ type SaveStatus = "idle" | "saving" | "saved" | "submitting";
  * mounts its LabDocument into the workspace and offers revision-checked Save and
  * an immutable Submit. The anonymous Local Lab is used whenever this is absent.
  */
-export function AssignmentPanel({ client, onOpenDocument, onError }: AssignmentPanelProps) {
+export function AssignmentPanel({ client, document, onOpenDocument, onError }: AssignmentPanelProps) {
   const [assignment, setAssignment] = useState<StudentAssignment>();
   const [instanceId, setInstanceId] = useState<string>();
   const [revision, setRevision] = useState(0);
@@ -50,8 +51,11 @@ export function AssignmentPanel({ client, onOpenDocument, onError }: AssignmentP
   if (!assignment || !instanceId) return null;
 
   const persist = async (): Promise<boolean> => {
-    const document = await client.request({ type: "SERIALIZE_LAB" });
-    const saved = await assignmentClient.saveInstance(instanceId, revision, document);
+    // Presentation data is owned by the main-thread domain draft rather than
+    // worker runtime. Prefer that canonical LabDocument so annotations, image
+    // assets and positions survive academic persistence.
+    const currentDocument = document ?? await client.request({ type: "SERIALIZE_LAB" });
+    const saved = await assignmentClient.saveInstance(instanceId, revision, currentDocument);
     setRevision(saved.revision);
     return true;
   };

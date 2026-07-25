@@ -16,7 +16,7 @@ export function createGraph(options: CreateGraphOptions): Graph {
     autoResize: false,
     background: { color: "transparent" },
     grid: false,
-    panning: { enabled: true, eventTypes: ["leftMouseDown", "mouseWheel"] },
+    panning: { enabled: false, eventTypes: ["leftMouseDown", "mouseWheel"] },
     mousewheel: { enabled: true, modifiers: [], minScale: 0.3, maxScale: 1.8 },
     interacting: (cellView) => ({
       nodeMovable: options.isNodeMovable(cellView.cell.id),

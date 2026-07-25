@@ -394,7 +394,12 @@ export function canonicalizeLabDocument(document: LabDocument): LabDocument {
           annotations: [...parsed.diagram.annotations].sort(byId).map((annotation) => (
             "position" in annotation
               ? { ...annotation, position: { ...annotation.position } }
-              : { ...annotation, start: { ...annotation.start }, end: { ...annotation.end } }
+              : {
+                  ...annotation,
+                  start: { ...annotation.start },
+                  end: { ...annotation.end },
+                  ...(annotation.bend ? { bend: { ...annotation.bend } } : {}),
+                }
           )),
           linkLabels: [...parsed.diagram.linkLabels]
             .sort((a, b) => a.linkId.localeCompare(b.linkId))
