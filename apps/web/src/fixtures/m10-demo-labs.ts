@@ -291,6 +291,7 @@ export const LARGE_TOPOLOGY_DEMO: LabDocument = {
     linkLabels: [
       { linkId: "core-wan", text: "WAN 10.0.0.0/31", position: 0.5, followLink: true, offset: -16, visible: true },
     ],
+    linkStyles: [],
   },
 };
 

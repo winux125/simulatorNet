@@ -5,8 +5,44 @@ import type { GraphLinkModel, LinkView } from "./types";
 // Edge creation/update. Edges reference specific ports so a link always binds a
 // pair of interfaces, never whole devices.
 
-function attrs(view: LinkView | undefined) {
-  return { line: edgeLineAttrs(view?.operational ?? false, view?.selected ?? false) };
+export const TOPOLOGY_EDGE_Z_INDEX = 100;
+
+export interface DomainLinkEdgeData {
+  kind: "topology-link";
+  linkId: string;
+  sourceDeviceId: string;
+  sourceInterfaceId: string;
+  targetDeviceId: string;
+  targetInterfaceId: string;
+}
+
+export function domainLinkEdgeData(link: GraphLinkModel): DomainLinkEdgeData {
+  return {
+    kind: "topology-link",
+    linkId: link.id,
+    sourceDeviceId: link.source,
+    sourceInterfaceId: link.sourcePort,
+    targetDeviceId: link.target,
+    targetInterfaceId: link.targetPort,
+  };
+}
+
+function attrs(link: GraphLinkModel, view: LinkView | undefined) {
+  return {
+    line: {
+      ...edgeLineAttrs(view?.operational ?? false, view?.selected ?? false),
+      "data-link-id": link.id,
+      "data-source-device": link.source,
+      "data-source-interface": link.sourcePort,
+      "data-target-device": link.target,
+      "data-target-interface": link.targetPort,
+    },
+    wrap: {
+      stroke: "transparent",
+      strokeWidth: 12,
+      cursor: "pointer",
+    },
+  };
 }
 
 function labels(view: LinkView | undefined) {
@@ -36,15 +72,24 @@ export function addLinkEdge(graph: Graph, link: GraphLinkModel, view: LinkView |
     id: link.id,
     source: { cell: link.source, port: link.sourcePort },
     target: { cell: link.target, port: link.targetPort },
-    attrs: attrs(view),
+    data: domainLinkEdgeData(link),
+    attrs: attrs(link, view),
     labels: labels(view),
-    router: { name: "normal" },
+    vertices: link.vertices,
+    router: { name: link.route === "orthogonal" ? "orth" : "normal" },
     connector: { name: "normal" },
-    zIndex: -1,
+    zIndex: TOPOLOGY_EDGE_Z_INDEX,
   });
 }
 
-export function updateLinkEdge(edge: Edge, view: LinkView | undefined): void {
-  edge.setAttrs(attrs(view));
+export function updateLinkEdge(edge: Edge, link: GraphLinkModel, view: LinkView | undefined): void {
+  edge.setSource({ cell: link.source, port: link.sourcePort });
+  edge.setTarget({ cell: link.target, port: link.targetPort });
+  edge.setData(domainLinkEdgeData(link), { overwrite: true });
+  edge.setAttrs(attrs(link, view));
   edge.setLabels(labels(view));
+  edge.setVertices(link.vertices);
+  edge.setRouter(link.route === "orthogonal" ? "orth" : "normal");
+  edge.setConnector("normal");
+  edge.setZIndex(TOPOLOGY_EDGE_Z_INDEX);
 }

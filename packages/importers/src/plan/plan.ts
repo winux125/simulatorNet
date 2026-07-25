@@ -235,7 +235,12 @@ function assemble(
     height: asset.height,
   }));
   const diagram: LabDiagram | undefined = annotations.length > 0 || assets.length > 0
-    ? { assets: assets.length > 0 ? assets : undefined, annotations: [...annotations], linkLabels: [] }
+    ? {
+        assets: assets.length > 0 ? assets : undefined,
+        annotations: [...annotations],
+        linkLabels: [],
+        linkStyles: [],
+      }
     : undefined;
 
   const report = builder.build({

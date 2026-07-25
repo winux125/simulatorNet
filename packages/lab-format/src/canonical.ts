@@ -399,6 +399,12 @@ export function canonicalizeLabDocument(document: LabDocument): LabDocument {
           linkLabels: [...parsed.diagram.linkLabels]
             .sort((a, b) => a.linkId.localeCompare(b.linkId))
             .map((label) => ({ ...label })),
+          linkStyles: [...parsed.diagram.linkStyles]
+            .sort((a, b) => a.linkId.localeCompare(b.linkId))
+            .map((style) => ({
+              ...style,
+              vertices: style.vertices.map((vertex) => ({ ...vertex })),
+            })),
         },
     simulation: { seed: parsed.simulation.seed },
     topology: {

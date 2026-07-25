@@ -135,6 +135,19 @@ function validateDiagram(document: LabDocument): void {
   }
   requireUnique(assets.map((asset) => asset.id), "diagram.assets", "diagram asset id");
   requireUnique(diagram.annotations.map((annotation) => annotation.id), "diagram.annotations", "diagram annotation id");
+  requireUnique(diagram.linkLabels.map((label) => label.linkId), "diagram.linkLabels", "diagram link label");
+  requireUnique(diagram.linkStyles.map((style) => style.linkId), "diagram.linkStyles", "diagram link style");
+  const topologyLinkIds = new Set(document.topology.links.map((link) => link.id));
+  diagram.linkLabels.forEach((label, index) => {
+    if (!topologyLinkIds.has(label.linkId)) {
+      fail("unknown-diagram-link", `diagram.linkLabels[${index}].linkId`, `Unknown topology link '${label.linkId}'`);
+    }
+  });
+  diagram.linkStyles.forEach((style, index) => {
+    if (!topologyLinkIds.has(style.linkId)) {
+      fail("unknown-diagram-link", `diagram.linkStyles[${index}].linkId`, `Unknown topology link '${style.linkId}'`);
+    }
+  });
   const assetIds = new Set(assets.map((asset) => asset.id));
   let totalBytes = 0;
   assets.forEach((asset: DiagramAsset, index) => {

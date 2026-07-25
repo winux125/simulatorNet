@@ -56,6 +56,7 @@ describe("diagram image ingestion", () => {
         })),
         annotations: [],
         linkLabels: [],
+        linkStyles: [],
       },
     };
     await expect(createDiagramAsset(file([], "next.png", "image/png"), "asset-next", full))

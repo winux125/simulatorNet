@@ -63,6 +63,7 @@ export function TopologyGraphSurface(props: TopologyGraphSurfaceProps) {
       },
     });
     controllerRef.current = controller;
+    controller.resize(container.clientWidth, container.clientHeight);
     controller.updateReadonlyState(propsRef.current.readonly);
     controller.updateDraggable(propsRef.current.draggable);
     controller.updateConnectable(propsRef.current.connectable);
@@ -72,7 +73,15 @@ export function TopologyGraphSurface(props: TopologyGraphSurfaceProps) {
       clientToLocal: (point) => controller.clientToLocal(point),
       fit: () => controller.fitToContent(),
     });
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? undefined
+      : new ResizeObserver(([entry]) => {
+          if (!entry) return;
+          controller.resize(entry.contentRect.width, entry.contentRect.height);
+        });
+    resizeObserver?.observe(container);
     return () => {
+      resizeObserver?.disconnect();
       controller.destroy();
       controllerRef.current = undefined;
     };

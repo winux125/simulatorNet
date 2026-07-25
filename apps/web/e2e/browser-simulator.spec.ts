@@ -48,6 +48,150 @@ async function chooseIconProfile(
   await page.getByRole("menuitemradio", { name: profile, exact: true }).click();
 }
 
+async function topologyEdgeGeometry(page: import("@playwright/test").Page) {
+  return page.locator(".x6-edge [data-link-id]").evaluateAll((lines) => lines.map((line) => {
+    const path = line as SVGPathElement;
+    const cell = line.closest<SVGGElement>(".x6-edge");
+    const sourceDevice = line.getAttribute("data-source-device") ?? "";
+    const sourceInterface = line.getAttribute("data-source-interface") ?? "";
+    const targetDevice = line.getAttribute("data-target-device") ?? "";
+    const targetInterface = line.getAttribute("data-target-interface") ?? "";
+    const portCenter = (deviceId: string, interfaceId: string) => {
+      const device = document.querySelector(`[data-cell-id="${deviceId}"]`);
+      const portRoot = [...(device?.querySelectorAll<SVGElement>("[port]") ?? [])]
+        .find((candidate) => candidate.getAttribute("port") === interfaceId);
+      const port = portRoot?.matches("circle, rect, path")
+        ? portRoot
+        : portRoot?.querySelector<SVGElement>("circle, rect, path");
+      if (!port) return undefined;
+      const bounds = port.getBBox();
+      const matrix = port.getScreenCTM();
+      if (!matrix) return undefined;
+      const center = new DOMPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2).matrixTransform(matrix);
+      return { x: center.x, y: center.y };
+    };
+    const screenPoint = (distance: number) => {
+      const point = path.getPointAtLength(distance);
+      const matrix = path.getScreenCTM();
+      if (!matrix) return undefined;
+      const transformed = new DOMPoint(point.x, point.y).matrixTransform(matrix);
+      return { x: transformed.x, y: transformed.y };
+    };
+    const sourcePort = portCenter(sourceDevice, sourceInterface);
+    const targetPort = portCenter(targetDevice, targetInterface);
+    const source = screenPoint(0);
+    const target = screenPoint(path.getTotalLength());
+    const distance = (
+      first: { x: number; y: number } | undefined,
+      second: { x: number; y: number } | undefined,
+    ) => first && second ? Math.hypot(first.x - second.x, first.y - second.y) : Number.POSITIVE_INFINITY;
+    return {
+      id: line.getAttribute("data-link-id"),
+      cellId: cell?.getAttribute("data-cell-id"),
+      sourceDevice,
+      sourceInterface,
+      targetDevice,
+      targetInterface,
+      sourceDistance: distance(source, sourcePort),
+      targetDistance: distance(target, targetPort),
+    };
+  }));
+}
+
+async function expectTopologyLinksAttached(page: import("@playwright/test").Page, expectedCount: number) {
+  await expect.poll(async () => (await topologyEdgeGeometry(page)).length).toBe(expectedCount);
+  await expect.poll(async () => (await topologyEdgeGeometry(page)).every((edge) =>
+    edge.id === edge.cellId
+    && Boolean(edge.sourceDevice && edge.sourceInterface && edge.targetDevice && edge.targetInterface))).toBe(true);
+  await expect.poll(async () => Math.max(...(await topologyEdgeGeometry(page))
+    .flatMap((edge) => [edge.sourceDistance, edge.targetDistance]))).toBeLessThanOrEqual(6);
+}
+
+test("responsive topology links preserve domain endpoints across workspace changes", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await chooseDemo(page, /Large Campus Topology/);
+  await page.getByRole("button", { name: "Fit topology" }).click();
+  await expectTopologyLinksAttached(page, 12);
+  await page.screenshot({ path: "/tmp/m10-3-2-responsive-links-1440x900.png", animations: "disabled" });
+  const initialIdentity = (await topologyEdgeGeometry(page)).map((edge) => ({
+    id: edge.id,
+    sourceDevice: edge.sourceDevice,
+    sourceInterface: edge.sourceInterface,
+    targetDevice: edge.targetDevice,
+    targetInterface: edge.targetInterface,
+  }));
+
+  const router = page.locator('[data-device-id="router-1"]').locator("xpath=ancestor::*[contains(@class,'x6-node')]");
+  const routerBounds = await router.boundingBox();
+  expect(routerBounds).not.toBeNull();
+  await page.mouse.move(routerBounds!.x + routerBounds!.width / 2, routerBounds!.y + routerBounds!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(routerBounds!.x + routerBounds!.width / 2 + 55, routerBounds!.y + routerBounds!.height / 2 + 24, { steps: 8 });
+  await page.mouse.up();
+  await expectTopologyLinksAttached(page, 12);
+
+  await page.getByRole("button", { name: "Select CORE-R1" }).click();
+  await expect(page.getByRole("region", { name: "Inspector" })).toBeVisible();
+  await expectTopologyLinksAttached(page, 12);
+  await closeInspector(page);
+  await expectTopologyLinksAttached(page, 12);
+
+  const separator = page.locator(".resize-handle--horizontal");
+  const separatorBounds = await separator.boundingBox();
+  expect(separatorBounds).not.toBeNull();
+  await page.mouse.move(separatorBounds!.x + separatorBounds!.width / 2, separatorBounds!.y);
+  await page.mouse.down();
+  await page.mouse.move(separatorBounds!.x + separatorBounds!.width / 2, separatorBounds!.y - 90, { steps: 6 });
+  await page.mouse.up();
+  await expectTopologyLinksAttached(page, 12);
+
+  for (const profile of ["Education Flat", "Minimal Network", "Classic Lab"] as const) {
+    await chooseIconProfile(page, profile);
+    await expectTopologyLinksAttached(page, 12);
+  }
+  await page.getByRole("button", { name: "Zoom in" }).click();
+  await page.getByRole("button", { name: "Zoom out" }).click();
+  await expectTopologyLinksAttached(page, 12);
+
+  const canvas = page.getByTestId("topology-graph");
+  const canvasBounds = await canvas.boundingBox();
+  expect(canvasBounds).not.toBeNull();
+  await page.mouse.move(canvasBounds!.x + 40, canvasBounds!.y + 120);
+  await page.mouse.down();
+  await page.mouse.move(canvasBounds!.x + 90, canvasBounds!.y + 150, { steps: 5 });
+  await page.mouse.up();
+  await expectTopologyLinksAttached(page, 12);
+
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await expectTopologyLinksAttached(page, 12);
+  await page.screenshot({ path: "/tmp/m10-3-2-responsive-links-1280x720.png", animations: "disabled" });
+  const resizedIdentity = (await topologyEdgeGeometry(page)).map((edge) => ({
+    id: edge.id,
+    sourceDevice: edge.sourceDevice,
+    sourceInterface: edge.sourceInterface,
+    targetDevice: edge.targetDevice,
+    targetInterface: edge.targetInterface,
+  }));
+  expect(resizedIdentity).toEqual(initialIdentity);
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("menuitem", { name: "File", exact: true }).click();
+  await page.getByRole("menuitem", { name: /Save \/ Export Lab/ }).click();
+  const exportedPath = await (await downloadPromise).path();
+  expect(exportedPath).not.toBeNull();
+  await page.locator("#load-lab-file").setInputFiles(exportedPath!);
+  await expectTopologyLinksAttached(page, 12);
+  expect((await topologyEdgeGeometry(page)).map((edge) => ({
+    id: edge.id,
+    sourceDevice: edge.sourceDevice,
+    sourceInterface: edge.sourceInterface,
+    targetDevice: edge.targetDevice,
+    targetInterface: edge.targetInterface,
+  }))).toEqual(initialIdentity);
+});
+
 test("topology visual profiles and domain diagram tools persist", async ({ page }) => {
   test.setTimeout(60_000);
   await page.setViewportSize({ width: 1440, height: 900 });

@@ -528,6 +528,47 @@ describe("M6.1 simulator workspace", () => {
     expect(screen.getByRole("dialog", { name: "Configure connection" })).toBeTruthy();
   });
 
+  it("keeps running links selectable and label-editable while reconnect stays locked", async () => {
+    const client = new RuntimeClient();
+    const prompt = vi.spyOn(window, "prompt").mockReturnValue("Campus trunk");
+    await loadDemo(client);
+    const linkButton = screen.getAllByRole("button", { name: /^Select link / })[0]!;
+    const linkId = linkButton.getAttribute("aria-label")!.replace("Select link ", "");
+
+    fireEvent.contextMenu(linkButton);
+    expect((screen.getByRole("menuitem", { name: "Reconnect…" }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole("menuitem", { name: "Edit link label…" }));
+    expect(useWorkspaceStore.getState().draft?.diagram?.linkLabels)
+      .toContainEqual(expect.objectContaining({ linkId, text: "Campus trunk" }));
+
+    fireEvent.contextMenu(linkButton);
+    await userEvent.click(screen.getByRole("menuitemradio", { name: "Orthogonal route" }));
+    expect(useWorkspaceStore.getState().draft?.diagram?.linkStyles)
+      .toContainEqual(expect.objectContaining({ linkId, route: "orthogonal" }));
+    prompt.mockRestore();
+  });
+
+  it("reconnects an existing stopped link without changing its domain ID", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await userEvent.click(screen.getByRole("button", { name: "Stop Lab" }));
+    const confirmation = screen.queryByRole("dialog", { name: "Stop this lab?" });
+    if (confirmation) {
+      await userEvent.click(within(confirmation).getByRole("button", { name: "Stop Lab" }));
+    }
+    await waitFor(() => expect(useWorkspaceStore.getState().powerState).toBe("stopped"));
+
+    const linkButton = screen.getAllByRole("button", { name: /^Select link / })[0]!;
+    const linkId = linkButton.getAttribute("aria-label")!.replace("Select link ", "");
+    fireEvent.contextMenu(linkButton);
+    const reconnect = screen.getByRole("menuitem", { name: "Reconnect…" }) as HTMLButtonElement;
+    expect(reconnect.disabled).toBe(false);
+    await userEvent.click(reconnect);
+    const dialog = screen.getByRole("dialog", { name: "Reconnect link" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Reconnect" }));
+    expect(useWorkspaceStore.getState().draft?.topology.links.find((link) => link.id === linkId)?.id).toBe(linkId);
+  });
+
   it("pastes plain text into the topology canvas but not into form fields", async () => {
     const client = new RuntimeClient();
     render(<App client={client} />);

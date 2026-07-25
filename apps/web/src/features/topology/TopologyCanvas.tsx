@@ -62,6 +62,7 @@ import {
   renameDraftDevice,
   updateDiagramAnnotation,
   withDiagramLinkLabel,
+  withDiagramLinkStyle,
   withNodePosition,
 } from "../lab/document";
 import { DeviceConnectionDialog } from "./DeviceConnectionDialog";
@@ -110,6 +111,7 @@ interface ConnectionIntent {
   targetId: string;
   sourcePort?: string;
   targetPort?: string;
+  replaceLinkId?: string;
 }
 
 const ANNOTATION_TOOLS = new Set<WorkspaceTool>([
@@ -400,6 +402,24 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         const next = window.prompt("Link annotation", current);
         if (next !== null) props.onChange(withDiagramLinkLabel(document, contextMenu.id, { text: next, visible: true }), "presentation");
       }
+      if (action === "route-straight") {
+        props.onChange(withDiagramLinkStyle(document, contextMenu.id, { route: "straight", vertices: [] }), "presentation");
+      }
+      if (action === "route-orthogonal") {
+        props.onChange(withDiagramLinkStyle(document, contextMenu.id, { route: "orthogonal" }), "presentation");
+      }
+      if (action === "reconnect" && structuralEditable) {
+        const link = document.topology.links.find((candidate) => candidate.id === contextMenu.id);
+        if (link) {
+          setConnectionIntent({
+            sourceId: link.a.node,
+            sourcePort: link.a.iface,
+            targetId: link.b.node,
+            targetPort: link.b.iface,
+            replaceLinkId: link.id,
+          });
+        }
+      }
       if (action === "delete") props.onChange(removeDraftLink(document, contextMenu.id), "structural");
     }
     if (contextMenu.kind === "pane") {
@@ -586,9 +606,23 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           targetId={connectionIntent.targetId}
           preferredSourcePort={connectionIntent.sourcePort}
           preferredTargetPort={connectionIntent.targetPort}
+          reconnectLinkId={connectionIntent.replaceLinkId}
           onClose={() => { setConnectionIntent(undefined); setPendingConnectionSourceId(undefined); }}
           onConnect={(sourceId, sourcePort, targetId, targetPort) => {
-            const result = createLink(document, sourceId, sourcePort, targetId, targetPort);
+            const result = connectionIntent.replaceLinkId
+              ? {
+                  document: {
+                    ...document,
+                    topology: {
+                      ...document.topology,
+                      links: document.topology.links.map((link) => link.id === connectionIntent.replaceLinkId
+                        ? { ...link, a: { node: sourceId, iface: sourcePort }, b: { node: targetId, iface: targetPort } }
+                        : link),
+                    },
+                  },
+                  link: { id: connectionIntent.replaceLinkId },
+                }
+              : createLink(document, sourceId, sourcePort, targetId, targetPort);
             props.onChange(result.document, "structural");
             props.onSelectNode(undefined);
             props.onSelectLink(result.link.id);
@@ -643,6 +677,25 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           {contextMenu.kind === "link" && <>
             <button role="menuitem" type="button" onClick={() => contextAction("inspect")}>Inspect link</button>
             <button role="menuitem" type="button" onClick={() => contextAction("label")}>Edit link label…</button>
+            <span className="context-menu__separator" />
+            <button
+              role="menuitemradio"
+              aria-checked={(document.diagram?.linkStyles.find((style) => style.linkId === contextMenu.id)?.route ?? "straight") === "straight"}
+              type="button"
+              onClick={() => contextAction("route-straight")}
+            >
+              Straight route
+            </button>
+            <button
+              role="menuitemradio"
+              aria-checked={document.diagram?.linkStyles.find((style) => style.linkId === contextMenu.id)?.route === "orthogonal"}
+              type="button"
+              onClick={() => contextAction("route-orthogonal")}
+            >
+              Orthogonal route
+            </button>
+            <span className="context-menu__separator" />
+            <button role="menuitem" type="button" disabled={!structuralEditable} onClick={() => contextAction("reconnect")}>Reconnect…</button>
             {structuralEditable && <button role="menuitem" type="button" className="is-danger" onClick={() => contextAction("delete")}>Delete link</button>}
           </>}
           {contextMenu.kind === "pane" && <>

@@ -24,6 +24,8 @@ export function portBodyAttrs(occupied: boolean, operationalUp: boolean) {
   return {
     r: 4,
     magnet: "active",
+    cursor: occupied ? "not-allowed" : "crosshair",
+    "data-occupied": String(occupied),
     stroke: "var(--color-handle-border, #94a3b8)",
     strokeWidth: 1,
     fill: operationalUp
@@ -40,13 +42,19 @@ export function edgeLabelAttrs(text: string, kind: "port" | "diagram" = "port") 
       strokeWidth: 1,
       rx: kind === "diagram" ? 2 : 5,
       ry: kind === "diagram" ? 2 : 5,
+      pointerEvents: "none",
     },
     label: {
       text,
+      textWrap: kind === "diagram"
+        ? { width: 220, height: 30, ellipsis: true }
+        : undefined,
+      "data-full-text": text,
       fill: "var(--color-link-label, #33485f)",
       fontSize: kind === "diagram" ? 11 : 9,
       fontWeight: kind === "diagram" ? 600 : 500,
       fontFamily: "var(--font-mono, monospace)",
+      pointerEvents: "none",
     },
   };
 }

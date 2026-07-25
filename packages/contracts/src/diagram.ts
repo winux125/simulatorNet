@@ -114,9 +114,25 @@ export const DiagramLinkLabelSchema = z.object({
 }).strict();
 export type DiagramLinkLabel = z.infer<typeof DiagramLinkLabelSchema>;
 
+export const DiagramLinkRouteSchema = z.enum(["straight", "orthogonal"]);
+export type DiagramLinkRoute = z.infer<typeof DiagramLinkRouteSchema>;
+
+/**
+ * Presentation-only route data for a physical topology link. Device and
+ * interface identity remains in Topology.links; these values never affect
+ * forwarding, grading, or verification.
+ */
+export const DiagramLinkStyleSchema = z.object({
+  linkId: z.string().min(1),
+  route: DiagramLinkRouteSchema.default("straight"),
+  vertices: z.array(DiagramPointSchema).max(32).default([]),
+}).strict();
+export type DiagramLinkStyle = z.infer<typeof DiagramLinkStyleSchema>;
+
 export const LabDiagramSchema = z.object({
   assets: z.array(DiagramAssetSchema).max(MAX_DIAGRAM_ASSETS).optional(),
   annotations: z.array(DiagramAnnotationSchema).default([]),
   linkLabels: z.array(DiagramLinkLabelSchema).default([]),
+  linkStyles: z.array(DiagramLinkStyleSchema).max(2_000).default([]),
 }).strict();
 export type LabDiagram = z.infer<typeof LabDiagramSchema>;

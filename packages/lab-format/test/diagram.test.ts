@@ -66,6 +66,11 @@ const document: LabDocument = {
       offset: -14,
       visible: true,
     }],
+    linkStyles: [{
+      linkId: "link-1",
+      route: "orthogonal",
+      vertices: [{ x: 300, y: 160 }],
+    }],
   },
 };
 
@@ -83,6 +88,11 @@ describe("diagram metadata", () => {
     const serialized = serializeLabDocument(buildLabFromDocument(canonical), metadata);
     expect(stringifyLabDocument(serialized)).toBe(stringifyLabDocument(canonical));
     expect(serialized.diagram?.annotations.map((annotation) => annotation.id)).toEqual(["a-box", "z-note"]);
+    expect(serialized.diagram?.linkStyles).toEqual([{
+      linkId: "link-1",
+      route: "orthogonal",
+      vertices: [{ x: 300, y: 160 }],
+    }]);
   });
 
   it("does not add a diagram section to legacy documents", () => {
@@ -178,5 +188,17 @@ describe("diagram metadata", () => {
       height: 10,
     }];
     expect(() => parseLabDocument(input)).toThrowError();
+  });
+
+  it("loads older diagram metadata without presentation routing", () => {
+    const input = structuredClone(document) as unknown as Record<string, any>;
+    delete input.diagram.linkStyles;
+    expect(parseLabDocument(input).diagram?.linkStyles).toEqual([]);
+  });
+
+  it("rejects presentation routing for an unknown topology link", () => {
+    const input = structuredClone(document);
+    input.diagram!.linkStyles.push({ linkId: "missing-link", route: "straight", vertices: [] });
+    expect(() => parseLabDocument(input)).toThrowError(expect.objectContaining({ code: "unknown-diagram-link" }));
   });
 });

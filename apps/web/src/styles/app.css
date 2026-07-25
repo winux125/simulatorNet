@@ -207,9 +207,11 @@ label.ui-icon-button { display: inline-grid; }
 .lab-information { position: absolute; z-index: var(--z-canvas-overlay); bottom: 14px; left: 14px; width: 260px; padding: 10px 11px; border: var(--border); border-radius: var(--radius-md); background: var(--color-overlay-panel); box-shadow: var(--shadow-soft); pointer-events: none; }
 .lab-information small, .section-eyebrow { color: var(--color-accent); font-size: 8px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
 .lab-information strong { display: block; margin-top: 3px; font-size: var(--font-size-11); }.lab-information p { margin: 4px 0; color: var(--color-text-muted); font-size: 9px; line-height: 1.4; }.lab-information span { color: var(--color-text-faint); font-size: 8px; }
-.x6-edge:hover path[stroke], .x6-edge.is-selected path[stroke] { stroke: var(--color-accent) !important; stroke-width: 2.6 !important; }
+.x6-edge:hover [data-selector="line"] { stroke: var(--color-accent) !important; stroke-width: 2.6 !important; }
 .x6-edge-label rect { fill: var(--color-link-label-bg); }.x6-edge-label text { fill: var(--color-link-label); font: 10px var(--font-mono); }
 .x6-node foreignObject { overflow: hidden; }
+.topology-graph [data-occupied="true"] { opacity: .72; }.topology-graph .x6-highlight-stroke { pointer-events: none; }
+.topology-graph .x6-node.is-connection-invalid .device-node__surface { cursor: not-allowed; outline: 2px solid var(--color-danger); outline-offset: 2px; }
 
 .device-node { position: relative; width: 108px; height: 88px; user-select: none; }
 .device-node > .device-node__surface { position: relative; display: grid; width: 100%; height: 100%; grid-template-rows: 52px 17px 13px; place-items: center; padding: 2px 4px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--color-text); cursor: pointer; transition: border-color var(--transition-fast), background var(--transition-fast); }
@@ -236,7 +238,7 @@ label.ui-icon-button { display: inline-grid; }
 .topology-panel:not(.topology-panel--edit) .x6-port { display: none; }
 
 .context-menu { position: fixed; z-index: var(--z-menu); display: grid; width: 178px; padding: 5px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); background: var(--color-menu); box-shadow: var(--elevation-menu); }
-.context-menu button { display: flex; width: 100%; height: 28px; align-items: center; justify-content: space-between; gap: 8px; padding: 0 8px; border-radius: 4px; background: transparent; color: var(--color-text-soft); cursor: pointer; font-size: var(--font-size-11); text-align: left; }.context-menu button:hover { background: var(--color-panel-hover); color: var(--color-text); }.context-menu button.is-danger { color: var(--color-error); }.context-menu kbd { margin-left: auto; color: var(--color-text-faint); font-size: 9px; }.context-menu__separator { height: 1px; margin: 4px; background: var(--color-border); }
+.context-menu button { display: flex; width: 100%; height: 28px; align-items: center; justify-content: space-between; gap: 8px; padding: 0 8px; border-radius: 4px; background: transparent; color: var(--color-text-soft); cursor: pointer; font-size: var(--font-size-11); text-align: left; }.context-menu button:hover:not(:disabled) { background: var(--color-panel-hover); color: var(--color-text); }.context-menu button:disabled { color: var(--color-text-faint); cursor: not-allowed; }.context-menu button[role="menuitemradio"][aria-checked="true"]::after { color: var(--color-accent); content: "✓"; }.context-menu button.is-danger { color: var(--color-error); }.context-menu kbd { margin-left: auto; color: var(--color-text-faint); font-size: 9px; }.context-menu__separator { height: 1px; margin: 4px; background: var(--color-border); }
 
 /* Inspector */
 .inspector-panel { width: 100%; height: 100%; border-left: 0; }

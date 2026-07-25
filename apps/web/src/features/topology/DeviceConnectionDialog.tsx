@@ -11,21 +11,24 @@ interface DeviceConnectionDialogProps {
   targetId: string;
   preferredSourcePort?: string;
   preferredTargetPort?: string;
+  reconnectLinkId?: string;
   onConnect(sourceId: string, sourcePort: string, targetId: string, targetPort: string): void;
   onClose(): void;
 }
 
-function endpointOccupied(document: LabDocument, nodeId: string, interfaceId: string): boolean {
+function endpointOccupied(document: LabDocument, nodeId: string, interfaceId: string, ignoreLinkId?: string): boolean {
   return document.topology.links.some((link) =>
-    (link.a.node === nodeId && link.a.iface === interfaceId)
-    || (link.b.node === nodeId && link.b.iface === interfaceId));
+    link.id !== ignoreLinkId && (
+      (link.a.node === nodeId && link.a.iface === interfaceId)
+      || (link.b.node === nodeId && link.b.iface === interfaceId)
+    ));
 }
 
-function freeInterfaces(document: LabDocument, nodeId: string): string[] {
+function freeInterfaces(document: LabDocument, nodeId: string, ignoreLinkId?: string): string[] {
   const node = document.topology.nodes.find((candidate) => candidate.id === nodeId);
   return node?.interfaces
     .map((iface) => iface.id)
-    .filter((interfaceId) => !endpointOccupied(document, nodeId, interfaceId)) ?? [];
+    .filter((interfaceId) => !endpointOccupied(document, nodeId, interfaceId, ignoreLinkId)) ?? [];
 }
 
 function hostname(document: LabDocument, node: NodeSpec): string {
@@ -40,8 +43,8 @@ function preferredFreePort(ports: string[], preferred: string | undefined): stri
 export function DeviceConnectionDialog(props: DeviceConnectionDialogProps) {
   const sourceNode = props.document.topology.nodes.find((node) => node.id === props.sourceId);
   const targetNode = props.document.topology.nodes.find((node) => node.id === props.targetId);
-  const sourcePorts = freeInterfaces(props.document, props.sourceId);
-  const targetPorts = freeInterfaces(props.document, props.targetId);
+  const sourcePorts = freeInterfaces(props.document, props.sourceId, props.reconnectLinkId);
+  const targetPorts = freeInterfaces(props.document, props.targetId, props.reconnectLinkId);
   const [sourcePort, setSourcePort] = useState(preferredFreePort(sourcePorts, props.preferredSourcePort));
   const [targetPort, setTargetPort] = useState(preferredFreePort(targetPorts, props.preferredTargetPort));
   const [error, setError] = useState<string>();
@@ -61,6 +64,7 @@ export function DeviceConnectionDialog(props: DeviceConnectionDialogProps) {
       sourcePort,
       targetNode.id,
       targetPort,
+      { ignoreLinkId: props.reconnectLinkId },
     );
     if (!validation.ok) {
       setError(validation.message);
@@ -85,8 +89,8 @@ export function DeviceConnectionDialog(props: DeviceConnectionDialogProps) {
       >
         <header>
           <div>
-            <p>Topology connection</p>
-            <h2 id={titleId}>Configure connection</h2>
+            <p>{props.reconnectLinkId ? "Topology reconnection" : "Topology connection"}</p>
+            <h2 id={titleId}>{props.reconnectLinkId ? "Reconnect link" : "Configure connection"}</h2>
           </div>
           <button type="button" className="dialog-close" aria-label="Close connection dialog" onClick={props.onClose}>
             <X size={15} />
@@ -161,7 +165,7 @@ export function DeviceConnectionDialog(props: DeviceConnectionDialogProps) {
         </div>
         <div className="dialog-actions">
           <Button type="button" variant="ghost" onClick={props.onClose}>Cancel</Button>
-          <Button type="submit" variant="primary" icon={<Cable size={14} />} disabled={!canConnect}>Connect</Button>
+          <Button type="submit" variant="primary" icon={<Cable size={14} />} disabled={!canConnect}>{props.reconnectLinkId ? "Reconnect" : "Connect"}</Button>
         </div>
       </form>
     </div>

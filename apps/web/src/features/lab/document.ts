@@ -6,6 +6,7 @@ import {
   type DiagramAnnotation,
   type DiagramAsset,
   type DiagramLinkLabel,
+  type DiagramLinkStyle,
   type HostIpConfiguration,
   type HostStaticConfiguration,
   type LabDocument,
@@ -204,6 +205,7 @@ export function removeDraftDevice(document: LabDocument, nodeId: string): LabDoc
       : {
           ...document.diagram,
           linkLabels: document.diagram.linkLabels.filter((label) => !removedLinkIds.has(label.linkId)),
+          linkStyles: document.diagram.linkStyles.filter((style) => !removedLinkIds.has(style.linkId)),
         },
   };
 }
@@ -352,7 +354,7 @@ export function withNodePosition(document: LabDocument, nodeId: string, position
 }
 
 function diagram(document: LabDocument) {
-  return document.diagram ?? { assets: [], annotations: [], linkLabels: [] };
+  return document.diagram ?? { assets: [], annotations: [], linkLabels: [], linkStyles: [] };
 }
 
 export function addDiagramImage(
@@ -485,6 +487,31 @@ export function withDiagramLinkLabel(
   };
 }
 
+export function withDiagramLinkStyle(
+  document: LabDocument,
+  linkId: string,
+  patch: Partial<Omit<DiagramLinkStyle, "linkId">>,
+): LabDocument {
+  if (!document.topology.links.some((link) => link.id === linkId)) return document;
+  const current = diagram(document);
+  const existing = current.linkStyles.find((style) => style.linkId === linkId);
+  const next: DiagramLinkStyle = {
+    linkId,
+    route: existing?.route ?? "straight",
+    ...patch,
+    vertices: patch.vertices?.map((vertex) => ({ ...vertex }))
+      ?? existing?.vertices.map((vertex) => ({ ...vertex }))
+      ?? [],
+  };
+  return {
+    ...document,
+    diagram: {
+      ...current,
+      linkStyles: [...current.linkStyles.filter((style) => style.linkId !== linkId), next],
+    },
+  };
+}
+
 export function removeDraftLink(document: LabDocument, linkId: string): LabDocument {
   return {
     ...document,
@@ -497,6 +524,7 @@ export function removeDraftLink(document: LabDocument, linkId: string): LabDocum
       : {
           ...document.diagram,
           linkLabels: document.diagram.linkLabels.filter((label) => label.linkId !== linkId),
+          linkStyles: document.diagram.linkStyles.filter((style) => style.linkId !== linkId),
         },
   };
 }

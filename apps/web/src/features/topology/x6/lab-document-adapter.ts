@@ -9,9 +9,10 @@ function endpointKey(node: string, iface: string): string {
   return `${node}␟${iface}`;
 }
 
-function occupancy(topology: Topology): Set<string> {
+function occupancy(topology: Topology, ignoreLinkId?: string): Set<string> {
   const used = new Set<string>();
   for (const link of topology.links) {
+    if (link.id === ignoreLinkId) continue;
     used.add(endpointKey(link.a.node, link.a.iface));
     used.add(endpointKey(link.b.node, link.b.iface));
   }
@@ -33,13 +34,18 @@ export function toGraphNodes(document: LabDocument): GraphNodeModel[] {
 
 /** Project every LabDocument link, preserving domain node + interface IDs. */
 export function toGraphLinks(document: LabDocument): GraphLinkModel[] {
-  return document.topology.links.map((link) => ({
-    id: link.id,
-    source: link.a.node,
-    sourcePort: link.a.iface,
-    target: link.b.node,
-    targetPort: link.b.iface,
-  }));
+  return document.topology.links.map((link) => {
+    const presentation = document.diagram?.linkStyles.find((style) => style.linkId === link.id);
+    return {
+      id: link.id,
+      source: link.a.node,
+      sourcePort: link.a.iface,
+      target: link.b.node,
+      targetPort: link.b.iface,
+      route: presentation?.route ?? "straight",
+      vertices: presentation?.vertices.map((vertex) => ({ ...vertex })) ?? [],
+    };
+  });
 }
 
 function findInterface(topology: Topology, nodeId: string, ifaceId: string): boolean {
@@ -51,7 +57,7 @@ export function validateDeviceConnection(
   document: LabDocument,
   source: string,
   target: string,
-  options: { locked?: boolean } = {},
+  options: { locked?: boolean; ignoreLinkId?: string } = {},
 ): ConnectionValidation {
   if (options.locked) {
     return { ok: false, code: "TOPOLOGY_LOCKED", message: "Stop the lab before changing links." };
@@ -68,7 +74,7 @@ export function validateDeviceConnection(
   if (source === target) {
     return { ok: false, code: "SELF_LINK", message: "A device cannot be connected to itself." };
   }
-  const used = occupancy(topology);
+  const used = occupancy(topology, options.ignoreLinkId);
   if (!sourceNode.interfaces.some((iface) => !used.has(endpointKey(source, iface.id)))) {
     return { ok: false, code: "SOURCE_OCCUPIED", message: `All interfaces on '${source}' are already connected.` };
   }
@@ -89,7 +95,7 @@ export function validateConnection(
   sourcePort: string,
   target: string,
   targetPort: string,
-  options: { locked?: boolean } = {},
+  options: { locked?: boolean; ignoreLinkId?: string } = {},
 ): ConnectionValidation {
   if (options.locked) {
     return { ok: false, code: "TOPOLOGY_LOCKED", message: "Stop the lab before changing links." };
@@ -110,16 +116,17 @@ export function validateConnection(
   if (source === target && sourcePort === targetPort) {
     return { ok: false, code: "SELF_LINK", message: "An interface cannot be connected to itself." };
   }
-  const used = occupancy(topology);
+  const used = occupancy(topology, options.ignoreLinkId);
   if (used.has(endpointKey(source, sourcePort))) {
     return { ok: false, code: "SOURCE_OCCUPIED", message: `${sourcePort} on ${source} is already connected.` };
   }
   if (used.has(endpointKey(target, targetPort))) {
     return { ok: false, code: "TARGET_OCCUPIED", message: `${targetPort} on ${target} is already connected.` };
   }
-  const duplicate = topology.links.some((link) =>
+  const duplicate = topology.links.some((link) => link.id !== options.ignoreLinkId && (
     (link.a.node === source && link.a.iface === sourcePort && link.b.node === target && link.b.iface === targetPort)
-    || (link.a.node === target && link.a.iface === targetPort && link.b.node === source && link.b.iface === sourcePort));
+    || (link.a.node === target && link.a.iface === targetPort && link.b.node === source && link.b.iface === sourcePort)
+  ));
   if (duplicate) {
     return { ok: false, code: "DUPLICATE_LINK", message: "That link already exists." };
   }

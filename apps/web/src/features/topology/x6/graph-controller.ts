@@ -1,7 +1,7 @@
 import type { CellAttrs, Node as X6Node } from "@antv/x6";
 import type { DiagramAnnotation, LabDocument } from "@sim/contracts";
 import { createGraph } from "./create-graph";
-import { addLinkEdge, updateLinkEdge } from "./edge-registry";
+import { addLinkEdge, TOPOLOGY_EDGE_Z_INDEX, updateLinkEdge } from "./edge-registry";
 import { attachGraphEvents } from "./graph-events";
 import {
   createLink as adapterCreateLink,
@@ -23,6 +23,12 @@ export interface CreateControllerOptions {
 
 const EMPTY_DOCUMENT_TOPOLOGY = { schemaVersion: 1 as const, nodes: [], links: [] };
 const ANNOTATION_PREFIX = "diagram:";
+const ANNOTATION_Z_BASE = -10_000;
+const DEVICE_NODE_Z_INDEX = 1_000;
+
+function annotationLayerZIndex(zIndex: number): number {
+  return Math.min(TOPOLOGY_EDGE_Z_INDEX - 1, ANNOTATION_Z_BASE + zIndex);
+}
 
 function annotationCellId(id: string): string {
   return `${ANNOTATION_PREFIX}${id}`;
@@ -50,6 +56,22 @@ function devicePresentationKey(data: DeviceCellData): string {
 export function createTopologyGraphController(options: CreateControllerOptions): TopologyGraphController {
   registerDeviceNode();
 
+  const clearConnectionTargetState = () => {
+    for (const element of options.container.querySelectorAll(".x6-node.is-connection-invalid")) {
+      element.classList.remove("is-connection-invalid");
+    }
+  };
+  const showConnectionTargetState = (cellId: string, valid: boolean) => {
+    clearConnectionTargetState();
+    if (valid) return;
+    for (const element of options.container.querySelectorAll<HTMLElement>("[data-cell-id]")) {
+      if (element.dataset.cellId === cellId) {
+        element.classList.add("is-connection-invalid");
+        break;
+      }
+    }
+  };
+
   const state = {
     document: undefined as LabDocument | undefined,
     view: { nodes: {}, links: {} } as TopologyView,
@@ -69,11 +91,21 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     validateConnection: (sourcePort, targetPort, sourceCell, targetCell) => {
       if (!sourceCell || !targetCell || !state.document) return false;
       if (!sourcePort || !targetPort) {
-        return validateDeviceConnection(state.document, sourceCell, targetCell, { locked: state.readonly }).ok;
+        const valid = validateDeviceConnection(state.document, sourceCell, targetCell, { locked: state.readonly }).ok;
+        showConnectionTargetState(targetCell, valid);
+        return valid;
       }
-      return validateConnection(state.document, sourceCell, sourcePort, targetCell, targetPort, { locked: state.readonly }).ok;
+      const valid = validateConnection(state.document, sourceCell, sourcePort, targetCell, targetPort, { locked: state.readonly }).ok;
+      showConnectionTargetState(targetCell, valid);
+      return valid;
     },
   });
+  const clearConnectionTargetOnPointerEnd = () => clearConnectionTargetState();
+  const clearConnectionTargetOnEscape = (event: KeyboardEvent) => {
+    if (event.key === "Escape") clearConnectionTargetState();
+  };
+  window.addEventListener("pointerup", clearConnectionTargetOnPointerEnd);
+  window.addEventListener("keydown", clearConnectionTargetOnEscape);
 
   const detach = attachGraphEvents(graph, {
     onNodeMoved: (id, position) => {
@@ -91,6 +123,7 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       else options.callbacks.onOpenDevice(id);
     },
     onEdgeConnected: (edge) => {
+      clearConnectionTargetState();
       const sourceCell = edge.getSourceCell();
       const targetCell = edge.getTargetCell();
       const sourcePort = edge.getSourcePortId();
@@ -204,14 +237,14 @@ export function createTopologyGraphController(options: CreateControllerOptions):
         existing.setSource(annotation.start);
         existing.setTarget(annotation.end);
         existing.setAttrs(attrs);
-        existing.setZIndex(annotation.zIndex);
+        existing.setZIndex(annotationLayerZIndex(annotation.zIndex));
       } else {
         graph.addEdge({
           id,
           source: annotation.start,
           target: annotation.end,
           attrs,
-          zIndex: annotation.zIndex,
+          zIndex: annotationLayerZIndex(annotation.zIndex),
         });
       }
       return;
@@ -226,7 +259,7 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       existing.resize(annotation.width, height);
       existing.setAttrs(attrs);
       existing.rotate(annotation.rotation, { absolute: true });
-      existing.setZIndex(annotation.zIndex);
+      existing.setZIndex(annotationLayerZIndex(annotation.zIndex));
     } else {
       graph.addNode({
         id,
@@ -243,7 +276,7 @@ export function createTopologyGraphController(options: CreateControllerOptions):
         height,
         angle: annotation.rotation,
         attrs,
-        zIndex: annotation.zIndex,
+        zIndex: annotationLayerZIndex(annotation.zIndex),
       });
     }
   }
@@ -267,6 +300,7 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       const occupied = new Set(model.occupiedInterfaces);
       const existing = graph.getCellById(model.id);
       if (existing && existing.isNode()) {
+        existing.setZIndex(DEVICE_NODE_Z_INDEX);
         if (data) {
           const previous = existing.getData<DeviceCellData>();
           if (!previous || devicePresentationKey(previous) !== devicePresentationKey(data)) {
@@ -299,6 +333,7 @@ export function createTopologyGraphController(options: CreateControllerOptions):
           height: NODE_HEIGHT,
           data,
           ports: buildPorts(model, up),
+          zIndex: DEVICE_NODE_Z_INDEX,
         });
       }
     }
@@ -316,11 +351,19 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     for (const link of links) {
       const linkView = state.view.links[link.id];
       const existing = graph.getCellById(link.id);
-      if (existing && existing.isEdge()) updateLinkEdge(existing, linkView);
+      if (existing && existing.isEdge()) updateLinkEdge(existing, link, linkView);
       else addLinkEdge(graph, link, linkView);
     }
     for (const cell of graph.getEdges()) {
       if (!linkIds.has(cell.id)) graph.removeCell(cell);
+    }
+  }
+
+  function reanchorRenderedLinks(): void {
+    if (!state.document) return;
+    for (const link of toGraphLinks(state.document)) {
+      const edge = graph.getCellById(link.id);
+      if (edge?.isEdge()) updateLinkEdge(edge, link, state.view.links[link.id]);
     }
   }
 
@@ -341,6 +384,14 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     },
     updateConnectable(connectable) {
       state.connectable = connectable;
+    },
+    resize(width, height) {
+      if (width <= 0 || height <= 0) return;
+      graph.resize(width, height);
+      reanchorRenderedLinks();
+    },
+    reanchorLinks() {
+      reanchorRenderedLinks();
     },
     fitToContent() {
       graph.zoomToFit({ padding: 24, maxScale: 1.4 });
@@ -377,6 +428,8 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     },
     destroy() {
       detach();
+      window.removeEventListener("pointerup", clearConnectionTargetOnPointerEnd);
+      window.removeEventListener("keydown", clearConnectionTargetOnEscape);
       graph.dispose();
     },
   };

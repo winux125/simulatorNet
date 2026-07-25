@@ -26,6 +26,8 @@ export interface GraphLinkModel {
   sourcePort: string;
   target: string;
   targetPort: string;
+  route: "straight" | "orthogonal";
+  vertices: Point[];
 }
 
 /** Per-node live presentation overlay (status, badges, selection, handlers). */
@@ -104,6 +106,10 @@ export interface TopologyGraphController {
   /** Fine tool gating within edit mode. */
   updateDraggable(draggable: boolean): void;
   updateConnectable(connectable: boolean): void;
+  /** Resize the paper without changing world coordinates, translation, or zoom. */
+  resize(width: number, height: number): void;
+  /** Rebind every rendered edge to its stable device/interface endpoints. */
+  reanchorLinks(): void;
   fitToContent(): void;
   zoomIn(): void;
   zoomOut(): void;
