@@ -27,6 +27,16 @@ const ROOT_DESCRIPTIONS: Record<string, string> = {
   switchport: "Configure Layer 2 interface settings",
   tracert: "Trace a route to an IPv4 destination",
   vlan: "Configure a VLAN",
+  "spanning-tree": "Configure PVST / Rapid-PVST spanning tree",
+  "channel-group": "Add the interface to an EtherChannel",
+  cdp: "Configure Cisco Discovery Protocol",
+  lldp: "Configure Link Layer Discovery Protocol",
+  router: "Enable an IP routing process",
+  "router-id": "Set the OSPF router id",
+  network: "Advertise a network into OSPF",
+  "passive-interface": "Advertise the interface but send no hellos",
+  clear: "Reset protocol runtime state",
+  errdisable: "Recover an error-disabled interface",
 };
 
 const ARGUMENT_HELP: Record<string, string> = {
@@ -39,6 +49,12 @@ const ARGUMENT_HELP: Record<string, string> = {
   "sim tftp get": "<server-ip> <filename>   Download a file",
   "sim ntp query": "<server-ip>   Query virtual server time",
   "sim syslog send": "<server-ip> <severity> <message>   Send a structured log message",
+  "router ospf": "<1-65535>   OSPF process id (one process per device)",
+  "router-id": "<a.b.c.d>   OSPF router id",
+  "passive-interface": "<interface-name>   Interface to advertise without hellos",
+  "interface range": "<first> - <last>   Configure several interfaces at once",
+  "interface loopback": "<0-2147483647>   Logical interface with no cable",
+  "channel-group": "<1-64> mode on|active|passive|desirable|auto",
 };
 
 function available(session: SessionApi): CommandSpec[] {

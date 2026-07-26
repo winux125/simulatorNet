@@ -17,7 +17,10 @@ interface Gi0/1
  ip address 10.0.9.1 255.255.255.0
  no shutdown
 router ospf 1
- network 10.0.0.0 0.0.0.255 area 0]]></config>
+ router-id 1.1.1.1
+ network 10.0.0.0 0.0.0.255 area 0
+router bgp 65000
+ neighbor 10.0.9.2 remote-as 65001]]></config>
       </node>
       <node id="2" name="SW1" type="iol" template="iol-l2-adventerprise" left="300" top="120">
         <interface id="0" name="e0/0" network_id="1"/>

@@ -131,3 +131,31 @@ document.
 The conversion persists domain data only. It never stores parser objects,
 archive entry handles, vendor runtime state, X6 internal JSON, imported scores,
 or transient simulation caches.
+
+## Control-protocol configuration (M10.4)
+
+The IOS-like startup-config subset now also recognises:
+
+| Command | Applied as |
+| --- | --- |
+| `spanning-tree mode pvst` / `rapid-pvst` | spanning-tree mode |
+| `spanning-tree vlan <id> priority <n>` | per-VLAN bridge priority |
+| `spanning-tree portfast` | PortFast on the interface |
+| `spanning-tree bpduguard enable` | BPDU Guard (only together with PortFast) |
+| `spanning-tree cost` / `port-priority` | per-port cost and priority |
+| `channel-group <id> mode <mode>` | EtherChannel membership |
+| `cdp run` / `no cdp run`, `cdp enable` / `no cdp enable` | CDP configuration |
+| `lldp run` / `no lldp run`, `lldp transmit` / `receive` | LLDP configuration |
+| `interface Loopback<n>` with `ip address`, `description`, `shutdown` | loopback interface |
+| `router ospf <id>`, `router-id`, `network … area 0`, `passive-interface` | OSPF process |
+| `ip ospf <id> area 0`, `ip ospf cost/priority/network/hello-interval/dead-interval` | OSPF interface configuration |
+
+Deliberately **not** imported, and reported as unparsed rather than silently
+applied: MST and MST regions, a non-zero OSPF area, OSPF authentication,
+redistribution, other routing protocols (EIGRP, BGP, IS-IS), advanced
+EtherChannel features and vendor-specific extensions. A firewall is not an OSPF
+speaker in this release, so its OSPF lines are preserved and reported too.
+
+Import safety is unchanged: nothing is executed, unknown lines are preserved as
+bounded redacted artifacts, and every recognised-but-unsupported construct is
+listed honestly in the import report.

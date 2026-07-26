@@ -892,3 +892,68 @@ implemented TCP/UDP/ICMP model, dynamic routing, real Internet access,
 bandwidth shaping, arbitrary grading code or vendor-image emulation. Traffic
 and security tables are intentionally bounded and reset with transient runtime
 state.
+
+## Milestone 10.4 — layer-2 control protocols, neighbour discovery and OSPFv2
+
+M10.4 adds four deterministic control protocols to the shared engine, so a
+redundant topology now breaks its own loops protocol-side instead of relying on
+the frame traversal budget, and a routed topology learns its paths dynamically.
+
+**Spanning tree** implements an 802.1D-like PVST and an 802.1w-like Rapid-PVST
+with one instance per active VLAN, root/designated/alternate/backup roles, the
+full 802.1D state set and the 802.1w discarding set, PortFast, BPDU Guard with
+runtime error-disable and explicit recovery, and topology changes that apply
+scoped per-VLAN forwarding-database ageing. Bridge and port identifiers come
+from configured priorities and stable MAC/interface identity; insertion order is
+never a hidden tie-breaker. Spanning tree is disabled by default so that
+existing loop-free labs keep their exact deterministic traces.
+
+**EtherChannel** bundles layer-2 links with static `on`, LACP `active`/`passive`
+and PAgP `desirable`/`auto`. Spanning tree sees a bundle as one logical port, a
+member with its own conflicting switchport configuration is suspended with a
+reason rather than silently rewritten, and per-flow member selection is a pure
+hash so a conversation never reorders. The topology keeps every physical cable;
+no fake link is invented for a Port-channel.
+
+**CDP and LLDP** discover directly connected neighbours. Both are strictly
+link-local: they are never routed, never cross a router, never depend on
+end-user VLAN forwarding, are never evaluated by an IP ACL, and are still
+exchanged across a spanning-tree blocking port. Both are disabled by default,
+and a server is a vendor-neutral station that speaks LLDP but never CDP.
+
+**OSPFv2** runs one process per device in area 0 over broadcast and
+point-to-point Ethernet, with loopback interfaces, deterministic router-id
+selection, hello/dead timers, a wait timer before a non-preemptive DR/BDR
+election, a full ExStart-to-Full adjacency, Router and Network LSAs, bounded
+reliable flooding and a deterministic Dijkstra SPF. Learned routes carry
+administrative distance 110 and take part in a longest-prefix, then distance,
+then metric, then stable tie-break selection alongside connected and static
+routes. OSPF control traffic is terminated before the ACL and NAT pipeline, so
+the existing security behaviour is untouched.
+
+Every protocol runs inside a **bounded activity window**: it ticks while it has
+work and goes quiescent afterwards, so `runUntilIdle()`, Auto execution and
+headless grading always terminate. Timers that measure the absence of messages
+are only charged while the protocol is actually running, and every resource
+limit is finite and centralized.
+
+The milestone is integrated end to end: schema-v1 documents gained structured
+configuration with canonical ordering and semantic validation (older documents
+remain valid), the Cisco-like CLI gained the spanning-tree, EtherChannel,
+discovery, loopback and OSPF subsets plus an atomic `interface range`, the
+worker protocol gained typed read-only views and bounded runtime actions, the
+verifier gained twenty new grading checks, the IOS importer recognises the
+supported subset and honestly reports the rest, and nine new demo labs cover
+STP, Rapid-PVST, BPDU Guard, LACP, PAgP, discovery and three OSPF topologies.
+
+Elected roots, port roles and states, negotiation state, neighbour tables, OSPF
+adjacencies, DR/BDR results, the LSDB, the SPF tree and learned routes are all
+runtime and are never written into a `LabDocument`.
+
+Known M10.4 limits are no MSTP or MST regions, no Loop Guard, Root Guard or
+UDLD, no UplinkFast, BackboneFast or Flex Links, no multi-chassis EtherChannel,
+no LACP fast rate, no PAgP silent modes, no layer-3 EtherChannel, no LLDP-MED or
+PoE, and for OSPF no multiple areas, ABR/ASBR, external LSAs, redistribution,
+stub or NSSA areas, summaries, virtual links, authentication, ECMP, graceful
+restart or OSPFv3. See `docs/layer2-control-protocols.md`,
+`docs/neighbor-discovery.md` and `docs/ospf-simulation.md`.

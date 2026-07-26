@@ -498,7 +498,10 @@ export class EtherChannelStack {
     if (!this.host.etherChannelMemberAdminUp(member.port)) {
       return { state: "detached", reason: "administratively down" };
     }
-    if (signature !== undefined) {
+    // A member that was never configured on its own simply inherits the
+    // bundle. Only a member carrying its own conflicting switchport
+    // configuration is suspended, and its configuration is left untouched.
+    if (signature !== undefined && this.host.etherChannelSwitchportConfigured(member.port)) {
       const memberSignature = this.host.etherChannelSwitchportSignature(member.port);
       if (memberSignature !== signature) {
         return {

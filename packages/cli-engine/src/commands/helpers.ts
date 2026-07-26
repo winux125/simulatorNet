@@ -7,6 +7,7 @@ import {
   Pc,
   Router,
   Server,
+  supportsCdp,
 } from "@sim/sim-core";
 import { ValidationError } from "../errors/errors";
 import type { DeviceFilter } from "../types";
@@ -36,6 +37,21 @@ export function isServer(d: Device): d is Server {
   return d instanceof Server;
 }
 
+/** Router and L3 Switch: the two devices that can run an OSPF process. */
+export function isOspfDevice(d: Device): d is Router | Layer3Switch {
+  return (isRouter(d) && d.deviceType === "router") || isLayer3Switch(d);
+}
+
+/** Devices that speak the Cisco-like CDP subset. */
+export function isCdpDevice(d: Device): boolean {
+  return supportsCdp(d.deviceType) && (isRouter(d) || isSwitch(d));
+}
+
+/** Devices that speak LLDP: every CDP speaker plus the vendor-neutral Server. */
+export function isLldpDevice(d: Device): boolean {
+  return isCdpDevice(d) || isServer(d);
+}
+
 export function deviceMatches(filter: DeviceFilter | undefined, device: Device): boolean {
   if (!filter || filter === "any") return true;
   if (filter === "switch") return isSwitch(device);
@@ -45,7 +61,45 @@ export function deviceMatches(filter: DeviceFilter | undefined, device: Device):
   if (filter === "pc") return isPc(device);
   if (filter === "server") return isServer(device);
   if (filter === "host") return isEndHost(device);
+  if (filter === "ospf") return isOspfDevice(device);
+  if (filter === "cdp") return isCdpDevice(device);
+  if (filter === "lldp") return isLldpDevice(device);
   return !isEndHost(device);
+}
+
+/** Every port a range command must touch; a single interface is a range of one. */
+export function contextPorts(ctx: { physical: string; range: string[] | undefined }): string[] {
+  return ctx.range ?? [ctx.physical];
+}
+
+/**
+ * Expand `Gi0/1 - 4` / `Gi0/1 - Gi0/4` into concrete interface names. Every name
+ * must resolve, so a range is validated before anything is configured.
+ */
+export function expandInterfaceRange(device: Device, spec: string): string[] {
+  const [startToken, endToken] = spec.split("-").map((part) => part.trim());
+  if (!startToken) throw new ValidationError("Interface range requires a start interface.");
+  const start = resolveInterface(device, startToken);
+  if (!start) throw new ValidationError(`Interface ${startToken} not found.`);
+  if (endToken === undefined) return [start.physical];
+
+  const prefixMatch = /^(.*?)(\d+)$/.exec(start.physical);
+  if (!prefixMatch) throw new ValidationError(`Interface ${start.physical} cannot be used in a range.`);
+  const prefix = prefixMatch[1]!;
+  const first = Number(prefixMatch[2]);
+  const endNumber = /^\d+$/.test(endToken)
+    ? Number(endToken)
+    : Number(/^(.*?)(\d+)$/.exec(resolveInterface(device, endToken)?.physical ?? "")?.[2]);
+  if (!Number.isInteger(endNumber) || endNumber < first) {
+    throw new ValidationError(`Invalid interface range '${spec}'.`);
+  }
+  const ports: string[] = [];
+  for (let index = first; index <= endNumber; index++) {
+    const name = `${prefix}${index}`;
+    if (!device.interfaces.has(name)) throw new ValidationError(`Interface ${name} not found.`);
+    ports.push(name);
+  }
+  return ports;
 }
 
 /** Normalize a typed interface token for comparison (lowercase, no spaces). */

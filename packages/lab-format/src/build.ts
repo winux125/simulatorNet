@@ -1,5 +1,7 @@
 import {
   asDeviceId,
+  DEFAULT_NEIGHBOR_DISCOVERY_CONFIG,
+  DEFAULT_SPANNING_TREE_CONFIG,
   type DeviceConfig,
   type DeviceId,
   type LabDocument,
@@ -29,6 +31,18 @@ import {
 } from "@sim/sim-core";
 import { canonicalizeLabDocument } from "./canonical";
 import { LabSemanticError } from "./errors";
+import {
+  applyDiscoveryConfiguration,
+  applyEtherChannelConfiguration,
+  applyLoopbackConfiguration,
+  applyOspfConfiguration,
+  applySpanningTreeConfiguration,
+  serializeDiscoveryConfiguration,
+  serializeEtherChannelConfiguration,
+  serializeLoopbackConfiguration,
+  serializeOspfConfiguration,
+  serializeSpanningTreeConfiguration,
+} from "./protocol-config";
 
 export interface BuiltLab {
   readonly engine: SimulationEngine;
@@ -181,6 +195,8 @@ function applyConfiguration(device: Device, config: DeviceConfig): void {
     if (config.dnsServer !== undefined) device.applications.setDnsServer(config.dnsServer);
     if (config.dhcpClientEnabled) device.setDhcpEnabled(true);
     device.configureServices(config.enabledServices);
+    // A server is a vendor-neutral station: LLDP only, never CDP.
+    applyDiscoveryConfiguration(device, config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG);
     return;
   }
   if (device instanceof TrafficGenerator && config.kind === "traffic-generator") {
@@ -226,11 +242,17 @@ function applyConfiguration(device: Device, config: DeviceConfig): void {
   }
   if (device instanceof L2Switch && config.kind === "l2-switch") {
     for (const vlan of config.vlans) device.setVlanName(vlan.id, vlan.name);
+    // Bundles first: spanning tree must see the logical ports, not the members,
+    // and a member inherits the Port-channel's switchport configuration.
+    applyEtherChannelConfiguration(device, config.etherChannels ?? []);
     for (const iface of config.interfaces) {
       applyPhysical(device, iface);
+      if (device.etherChannel.channelOf(iface.id) !== undefined) continue;
       if (iface.mode === "access") device.setAccess(iface.id, iface.accessVlan);
       else device.setTrunk(iface.id, { nativeVlan: iface.nativeVlan, allowedVlans: iface.allowedVlans });
     }
+    applySpanningTreeConfiguration(device, config.spanningTree ?? DEFAULT_SPANNING_TREE_CONFIG);
+    applyDiscoveryConfiguration(device, config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG);
     return;
   }
   if (device instanceof Router
@@ -273,13 +295,18 @@ function applyConfiguration(device: Device, config: DeviceConfig): void {
       for (const impairment of config.impairments) device.configureImpairment(impairment);
       device.validateInterfaceCount();
     }
+    applyLoopbackConfiguration(device, config.loopbacks ?? []);
+    applyDiscoveryConfiguration(device, config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG);
+    if (config.ospf) applyOspfConfiguration(device, config.ospf);
   }
 }
 
 function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3SwitchDeviceConfig): void {
   for (const vlan of config.vlans) device.setVlanName(vlan.id, vlan.name);
+  applyEtherChannelConfiguration(device, config.etherChannels ?? []);
   for (const iface of config.interfaces) {
     applyPhysical(device, iface);
+    if (device.etherChannel.channelOf(iface.id) !== undefined) continue;
     if (iface.mode === "routed") {
       device.setPortRouted(iface.id, true);
       if (iface.ipv4) device.configureRoutedInterface(iface.id, iface.ipv4.address, iface.ipv4.prefixLength);
@@ -300,6 +327,10 @@ function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3Swit
   for (const route of config.staticRoutes) device.addStaticRoute(route.network, route.prefixLength, route.nextHop);
   device.setIpRouting(config.ipRoutingEnabled);
   applyAclConfiguration(device, config);
+  applySpanningTreeConfiguration(device, config.spanningTree ?? DEFAULT_SPANNING_TREE_CONFIG);
+  applyDiscoveryConfiguration(device, config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG);
+  applyLoopbackConfiguration(device, config.loopbacks ?? []);
+  if (config.ospf) applyOspfConfiguration(device, config.ospf);
 }
 
 export function buildLabFromDocument(document: LabDocument): BuiltLab {
@@ -381,6 +412,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       dhcpClientEnabled: state.dhcpEnabled,
       dnsServer: state.dnsServer,
       enabledServices: device.services.configurations(),
+      discovery: serializeDiscoveryConfiguration(device),
     };
   }
   if (device instanceof Pc) {
@@ -466,6 +498,11 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       ipRoutingEnabled: device.ipRoutingEnabled,
       acls: serializeAcls(device),
       aclBindings: device.aclBindings(),
+      spanningTree: serializeSpanningTreeConfiguration(device),
+      etherChannels: serializeEtherChannelConfiguration(device),
+      discovery: serializeDiscoveryConfiguration(device),
+      loopbacks: serializeLoopbackConfiguration(device),
+      ospf: serializeOspfConfiguration(device),
     };
   }
   if (device instanceof L2Switch) {
@@ -484,6 +521,9 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
           allowedVlans: summary.allowedVlans === "all" ? undefined : summary.allowedVlans,
         };
       }),
+      spanningTree: serializeSpanningTreeConfiguration(device),
+      etherChannels: serializeEtherChannelConfiguration(device),
+      discovery: serializeDiscoveryConfiguration(device),
     };
   }
 
@@ -550,6 +590,9 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
         const role = device.natRole(iface.name);
         return role ? [{ interfaceName: iface.name, role }] : [];
       }),
+    discovery: serializeDiscoveryConfiguration(device),
+    loopbacks: serializeLoopbackConfiguration(device),
+    ospf: serializeOspfConfiguration(device),
   };
   if (device instanceof Firewall) {
     return {

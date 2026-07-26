@@ -16,6 +16,7 @@ import {
   EndHost,
   Firewall,
   ipToInt,
+  L2Switch,
   Layer3Switch,
   maskToInt,
   normalizeDnsName,
@@ -193,6 +194,13 @@ function executePing(
     trace: runtime.built.engine.traceLog.slice(traceStart),
     failure,
   };
+}
+
+/** Router or L3 Switch: the two devices that can run an OSPF process. */
+function ospfDeviceOf(built: BuiltLab, deviceId: string): Router | Layer3Switch | undefined {
+  const device = built.getDevice(deviceId);
+  if (device instanceof Layer3Switch) return device;
+  return device instanceof Router && device.deviceType === "router" ? device : undefined;
 }
 
 function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCheckResult {
@@ -549,6 +557,239 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
         failure: execution.failure,
       });
     }
+    // --- M10.4 control protocols ---------------------------------------
+    case "stp-root": {
+      const expected = built.getSwitch(check.configuration.expectedDeviceId);
+      if (!expected) return errorResult(check, "Expected root switch was not found");
+      const instance = expected.spanningTreeSummary().instances
+        .find((entry) => entry.vlanId === check.configuration.vlanId);
+      if (!instance) return errorResult(check, `VLAN ${check.configuration.vlanId} has no spanning-tree instance`);
+      // Every switch in the VLAN must agree on that root bridge id.
+      const agreeing = [...built.devices.values()]
+        .filter((device): device is typeof expected => device instanceof L2Switch)
+        .map((device) => device.spanningTreeSummary().instances
+          .find((entry) => entry.vlanId === check.configuration.vlanId))
+        .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined);
+      const passed = instance.isRoot && agreeing.every((entry) => entry.rootId === instance.bridgeId);
+      return result(check, passed, `${expected.name} ${passed ? "is" : "is not"} the root bridge for VLAN ${check.configuration.vlanId}`, {
+        expectedRoot: check.configuration.expectedDeviceId,
+        actualRootId: instance.rootId,
+        bridgeId: instance.bridgeId,
+        agreement: agreeing.length,
+      });
+    }
+    case "stp-mode": {
+      const device = built.getSwitch(check.configuration.deviceId);
+      if (!device) return errorResult(check, "Switch was not found");
+      const passed = device.spanningTreeMode === check.configuration.expectedMode;
+      return result(check, passed, `${device.name} spanning tree is ${device.spanningTreeMode}`, {
+        actualMode: device.spanningTreeMode,
+        expectedMode: check.configuration.expectedMode,
+      });
+    }
+    case "stp-port-role":
+    case "stp-port-state": {
+      const device = built.getSwitch(check.configuration.deviceId);
+      if (!device) return errorResult(check, "Switch was not found");
+      const port = device.spanningTreeSummary().instances
+        .find((entry) => entry.vlanId === check.configuration.vlanId)?.ports
+        .find((entry) => entry.port === check.configuration.interfaceId);
+      if (!port) {
+        return errorResult(check, `${check.configuration.interfaceId} has no spanning-tree state in VLAN ${check.configuration.vlanId}`);
+      }
+      const isRole = check.type === "stp-port-role";
+      const actual = isRole ? port.role : port.state;
+      const expected = isRole ? check.configuration.expectedRole : check.configuration.expectedState;
+      return result(check, actual === expected, `${device.name} ${port.port} is ${port.role}/${port.state}`, {
+        actualRole: port.role,
+        actualState: port.state,
+        expected,
+      });
+    }
+    case "stp-portfast": {
+      const device = built.getSwitch(check.configuration.deviceId);
+      if (!device) return errorResult(check, "Switch was not found");
+      const configuration = device.spanningTree.portConfigurationOf(check.configuration.interfaceId);
+      const passed = configuration.portFast === check.configuration.expected;
+      return result(check, passed, `PortFast is ${configuration.portFast ? "enabled" : "disabled"} on ${check.configuration.interfaceId}`, {
+        actual: configuration.portFast,
+        expected: check.configuration.expected,
+      });
+    }
+    case "bpdu-guard-state": {
+      const device = built.getSwitch(check.configuration.deviceId);
+      if (!device) return errorResult(check, "Switch was not found");
+      const errorDisabled = device.spanningTree.isErrorDisabled(check.configuration.interfaceId);
+      const passed = errorDisabled === check.configuration.expectedErrorDisabled;
+      return result(check, passed, `${check.configuration.interfaceId} is ${errorDisabled ? "" : "not "}error-disabled`, {
+        actualErrorDisabled: errorDisabled,
+        expectedErrorDisabled: check.configuration.expectedErrorDisabled,
+        bpduGuard: device.spanningTree.portConfigurationOf(check.configuration.interfaceId).bpduGuard,
+      });
+    }
+    case "etherchannel-formed": {
+      const device = built.getSwitch(check.configuration.deviceId);
+      if (!device) return errorResult(check, "Switch was not found");
+      const channel = device.etherChannelSummaries()
+        .find((entry) => entry.channelId === check.configuration.channelId);
+      if (!channel) return errorResult(check, `Port-channel${check.configuration.channelId} is not configured`);
+      const expectedMembers = check.configuration.expectedMembers;
+      const membersMatch = expectedMembers === undefined
+        || (expectedMembers.length === channel.activeMembers.length
+          && [...expectedMembers].sort().every((member, index) => member === [...channel.activeMembers].sort()[index]));
+      const passed = channel.status === "up" && membersMatch;
+      return result(check, passed, `${channel.name} is ${channel.status} with ${channel.activeMembers.length} active member(s)`, {
+        status: channel.status,
+        actualMembers: channel.activeMembers,
+        expectedMembers,
+        suspendedMembers: channel.suspendedMembers,
+      });
+    }
+    case "etherchannel-protocol": {
+      const device = built.getSwitch(check.configuration.deviceId);
+      if (!device) return errorResult(check, "Switch was not found");
+      const channel = device.etherChannelSummaries()
+        .find((entry) => entry.channelId === check.configuration.channelId);
+      if (!channel) return errorResult(check, `Port-channel${check.configuration.channelId} is not configured`);
+      const passed = channel.protocol === check.configuration.expectedProtocol
+        && (check.configuration.expectedMode === undefined || channel.mode === check.configuration.expectedMode);
+      return result(check, passed, `${channel.name} negotiates with ${channel.protocol} (${channel.mode})`, {
+        actualProtocol: channel.protocol,
+        actualMode: channel.mode,
+        expectedProtocol: check.configuration.expectedProtocol,
+        expectedMode: check.configuration.expectedMode,
+      });
+    }
+    case "etherchannel-member-state": {
+      const device = built.getSwitch(check.configuration.deviceId);
+      if (!device) return errorResult(check, "Switch was not found");
+      const member = device.etherChannelSummaries()
+        .find((entry) => entry.channelId === check.configuration.channelId)?.members
+        .find((entry) => entry.port === check.configuration.interfaceId);
+      if (!member) return errorResult(check, `${check.configuration.interfaceId} is not a member of that channel`);
+      const passed = member.state === check.configuration.expectedState;
+      return result(check, passed, `${member.port} is ${member.state}`, {
+        actualState: member.state,
+        expectedState: check.configuration.expectedState,
+        reason: member.reason,
+      });
+    }
+    case "cdp-neighbor":
+    case "lldp-neighbor": {
+      const candidate = built.getDevice(check.configuration.deviceId) as { discovery?: Router["discovery"] } | undefined;
+      if (!candidate?.discovery) return errorResult(check, "Device does not support neighbour discovery");
+      const protocol = check.type === "cdp-neighbor" ? "cdp" : "lldp";
+      const neighbor = candidate.discovery.neighborTable().find((entry) =>
+        entry.protocol === protocol
+        && entry.localInterface === check.configuration.localInterfaceId
+        && entry.deviceId === check.configuration.expectedNeighborId
+        && (check.configuration.expectedRemoteInterfaceId === undefined
+          || entry.remoteInterface === check.configuration.expectedRemoteInterfaceId));
+      return result(check, !!neighbor, `${protocol.toUpperCase()} neighbour ${check.configuration.expectedNeighborId} ${neighbor ? "was" : "was not"} discovered on ${check.configuration.localInterfaceId}`, {
+        found: !!neighbor,
+        actualRemoteInterface: neighbor?.remoteInterface,
+        expectedNeighbor: check.configuration.expectedNeighborId,
+      });
+    }
+    case "ospf-router-id": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "OSPF-capable device was not found");
+      const routerId = device.ospf.overview().routerId;
+      const passed = routerId === check.configuration.expectedRouterId;
+      return result(check, passed, `${device.name} router id is ${routerId ?? "unassigned"}`, {
+        actualRouterId: routerId,
+        expectedRouterId: check.configuration.expectedRouterId,
+        source: device.ospf.overview().routerIdSource,
+      });
+    }
+    case "ospf-neighbor-state": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "OSPF-capable device was not found");
+      const neighbor = device.ospf.neighborSummaries()
+        .find((entry) => entry.neighborRouterId === check.configuration.neighborRouterId);
+      const actual = neighbor?.state ?? "down";
+      const passed = actual === check.configuration.expectedState;
+      return result(check, passed, `Neighbour ${check.configuration.neighborRouterId} is ${actual}`, {
+        actualState: actual,
+        expectedState: check.configuration.expectedState,
+        interfaceId: neighbor?.interfaceId,
+      });
+    }
+    case "ospf-interface": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "OSPF-capable device was not found");
+      const iface = device.ospf.interfaceSummaries()
+        .find((entry) => entry.interfaceId === check.configuration.interfaceId);
+      if (!iface) return errorResult(check, `${check.configuration.interfaceId} is not running OSPF`);
+      const passed = (check.configuration.expectedCost === undefined || iface.cost === check.configuration.expectedCost)
+        && (check.configuration.expectedPassive === undefined || iface.passive === check.configuration.expectedPassive)
+        && (check.configuration.expectedNetworkType === undefined || iface.networkType === check.configuration.expectedNetworkType);
+      return result(check, passed, `${iface.interfaceId} cost ${iface.cost}, ${iface.networkType}${iface.passive ? ", passive" : ""}`, {
+        actualCost: iface.cost,
+        actualPassive: iface.passive,
+        actualNetworkType: iface.networkType,
+        expectedCost: check.configuration.expectedCost,
+        expectedPassive: check.configuration.expectedPassive,
+        expectedNetworkType: check.configuration.expectedNetworkType,
+      });
+    }
+    case "ospf-dr":
+    case "ospf-bdr": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "OSPF-capable device was not found");
+      const iface = device.ospf.interfaceSummaries()
+        .find((entry) => entry.interfaceId === check.configuration.interfaceId);
+      if (!iface) return errorResult(check, `${check.configuration.interfaceId} is not running OSPF`);
+      const isDr = check.type === "ospf-dr";
+      const actual = isDr ? iface.designatedRouter : iface.backupDesignatedRouter;
+      const expected = isDr
+        ? check.configuration.expectedDesignatedRouter
+        : check.configuration.expectedBackupDesignatedRouter;
+      return result(check, actual === expected, `${iface.interfaceId} ${isDr ? "DR" : "BDR"} is ${actual ?? "none"}`, {
+        actual,
+        expected,
+        designatedRouter: iface.designatedRouter,
+        backupDesignatedRouter: iface.backupDesignatedRouter,
+      });
+    }
+    case "ospf-route":
+    case "ospf-path-cost": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "OSPF-capable device was not found");
+      const expectedMask = maskToInt(check.configuration.prefixLength);
+      const route = device.routingTable().find((entry) =>
+        entry.kind === "ospf"
+        && entry.network === check.configuration.network
+        && entry.maskInt === expectedMask);
+      if (check.type === "ospf-path-cost") {
+        const passed = route?.metric === check.configuration.expectedCost;
+        return result(check, passed, `OSPF cost to ${check.configuration.network} is ${route?.metric ?? "unknown"}`, {
+          actualCost: route?.metric,
+          expectedCost: check.configuration.expectedCost,
+        });
+      }
+      const passed = route !== undefined
+        && (check.configuration.expectedNextHop === undefined || route.viaIp === check.configuration.expectedNextHop);
+      return result(check, passed, `OSPF route ${check.configuration.network}/${check.configuration.prefixLength} ${route ? "exists" : "is missing"}`, {
+        found: route !== undefined,
+        actualNextHop: route?.viaIp,
+        expectedNextHop: check.configuration.expectedNextHop,
+        administrativeDistance: route?.administrativeDistance,
+      });
+    }
+    case "ospf-lsdb-entry": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "OSPF-capable device was not found");
+      const entry = device.ospf.database().find((candidate) =>
+        candidate.type === check.configuration.lsaType
+        && candidate.advertisingRouter === check.configuration.advertisingRouter);
+      return result(check, !!entry, `${check.configuration.lsaType} LSA from ${check.configuration.advertisingRouter} ${entry ? "is" : "is not"} in the database`, {
+        found: !!entry,
+        sequence: entry?.sequence,
+        linkCount: entry?.linkCount,
+        databaseSize: device.ospf.database().length,
+      });
+    }
     case "traffic-flow-result": {
       const device = built.getTrafficGenerator(check.configuration.deviceId);
       if (!(device instanceof TrafficGenerator)) return errorResult(check, "Traffic Generator was not found");
@@ -612,6 +853,8 @@ export function verifySubmission(input: unknown, limits: VerificationLimits = DE
   runtime.runUntil(() => built.engine.nextEventTime() === undefined);
   const internalChecks = request.gradingSpec.checks.map((check) => {
     try {
+      // Each check is one bounded operation for the control protocols too.
+      built.engine.controlProtocolBudget.reset();
       return runCheck(check, runtime);
     } catch (error) {
       if (error instanceof VerificationResourceLimitError) throw error;

@@ -160,12 +160,105 @@ current CLI creation subset exposes `eq`, while structured configuration may
 use either matcher. NAT supports static one-to-one, bounded dynamic pools and
 PAT; it does not support hairpin NAT.
 
+## Control protocols (M10.4)
+
+Spanning tree, EtherChannel, neighbour discovery and OSPFv2. See
+[`layer2-control-protocols.md`](layer2-control-protocols.md),
+[`neighbor-discovery.md`](neighbor-discovery.md) and
+[`ospf-simulation.md`](ospf-simulation.md) for the modelled subsets.
+
+```
+spanning-tree mode pvst
+spanning-tree mode rapid-pvst
+no spanning-tree mode
+spanning-tree vlan 10 priority 24576
+spanning-tree vlan 10 root primary
+spanning-tree vlan 10 root secondary
+
+interface Gi0/1
+ spanning-tree cost 19
+ spanning-tree port-priority 64
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+
+interface range Gi0/1 - 2
+ channel-group 1 mode on | active | passive | desirable | auto
+
+interface Port-channel1
+ switchport mode trunk
+ switchport trunk allowed vlan 10,20
+
+cdp run
+lldp run
+interface Gi0/1
+ cdp enable
+ lldp transmit
+ lldp receive
+
+interface Loopback0
+ ip address 10.255.0.1 255.255.255.255
+
+router ospf 1
+ router-id 1.1.1.1
+ network 10.0.0.0 0.0.0.255 area 0
+ passive-interface Loopback0
+
+interface Gi0/0
+ ip ospf 1 area 0
+ ip ospf cost 10
+ ip ospf priority 100
+ ip ospf network point-to-point
+ ip ospf hello-interval 10
+ ip ospf dead-interval 40
+
+show spanning-tree
+show spanning-tree vlan 10
+show spanning-tree interface Gi0/1
+show spanning-tree summary
+show etherchannel summary
+show etherchannel port-channel
+show interfaces port-channel
+show lacp neighbor
+show pagp neighbor
+show cdp neighbors [detail]
+show cdp interface
+show lldp neighbors [detail]
+show lldp interface
+show ip ospf
+show ip ospf neighbor [detail]
+show ip ospf interface [brief]
+show ip ospf database
+show ip route ospf
+
+clear ip ospf process
+clear cdp table
+clear lldp table
+errdisable recovery Gi0/1
+```
+
+`clear ip ospf process` asks for confirmation, resets the OSPF runtime, keeps
+the configuration and starts the process again. `errdisable recovery` clears the
+runtime error-disabled state left by BPDU Guard.
+
+`interface range <first> - <last>` configures several interfaces at once. The
+range is expanded and validated **before** anything is changed, so one bad
+member never leaves a half-applied range.
+
+Useful abbreviations: `show span`, `show etherchannel sum`, `show cdp nei`,
+`show lldp nei`, `show ip ospf nei`, `show ip ospf int br`. An abbreviation that
+still matches more than one command remains an error.
+
+`root primary` / `root secondary` set a deterministic low priority (24576 /
+28672); they do not promise full Cisco automation.
+
 ## Deliberate omissions
 
 The following familiar IOS operations are not implemented and are omitted from
 contextual help: startup configuration, `copy`, `write`, `erase`, `reload`,
-`no ip address`, `no ip route`, dynamic routing, STP/RSTP, EtherChannel, CDP,
-LLDP, port security, reflexive/time-based ACLs, NAT hairpinning and IPv6. There
-is no Tab completion, fuzzy matching, network-device `traceroute`, arbitrary
-command scripting, real DNS/network access or full Cisco contextual-help
-parity.
+`no ip address`, `no ip route`, EIGRP/BGP/IS-IS, multi-area OSPF, OSPF
+authentication and redistribution, MSTP and MST regions, Loop Guard, Root Guard,
+UDLD, UplinkFast/BackboneFast/Flex Links, multi-chassis EtherChannel, LACP fast
+rate, PAgP silent modes, LLDP-MED, port security, reflexive/time-based ACLs, NAT
+hairpinning and IPv6. There is no Tab completion, fuzzy matching, network-device
+`traceroute`, arbitrary command scripting, real DNS/network access or full Cisco
+contextual-help parity.

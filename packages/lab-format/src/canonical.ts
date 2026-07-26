@@ -1,3 +1,13 @@
+import {
+  DEFAULT_CDP_HOLD_SECONDS,
+  DEFAULT_CDP_INTERVAL_SECONDS,
+  DEFAULT_LLDP_HOLD_SECONDS,
+  DEFAULT_LLDP_INTERVAL_SECONDS,
+  DEFAULT_STP_FORWARD_DELAY_SECONDS,
+  DEFAULT_STP_HELLO_SECONDS,
+  DEFAULT_STP_MAX_AGE_SECONDS,
+  type NeighborDiscoveryConfig,
+} from "@sim/contracts";
 import type {
   ConsoleAccessConfiguration,
   DeviceConfig,
@@ -105,6 +115,7 @@ function serverConfiguration(node: NodeSpec, config: ServerDeviceConfig | undefi
     enabledServices: [...(config?.enabledServices ?? [])]
       .sort(byId)
       .map((service) => normalizeServiceConfiguration(service)),
+    discovery: canonicalDiscovery(config?.discovery),
     consoleAccess: canonicalConsoleAccess(config),
   };
 }
@@ -149,7 +160,88 @@ function switchConfiguration(node: NodeSpec, config: SwitchDeviceConfig | undefi
           : undefined,
       };
     }),
+    ...canonicalSwitchProtocols(config),
     consoleAccess: canonicalConsoleAccess(config),
+  };
+}
+
+/**
+ * Control-protocol configuration in canonical order: spanning-tree VLANs by
+ * VLAN id, ports by interface id, EtherChannels by channel id with members by
+ * interface id, and discovery interfaces by id. Ordering is observable in the
+ * serialized document, so it must never depend on insertion order.
+ */
+function canonicalSwitchProtocols(
+  config: Partial<Pick<SwitchDeviceConfig, "spanningTree" | "etherChannels" | "discovery">> | undefined,
+) {
+  const spanningTree = config?.spanningTree;
+  const discovery = config?.discovery;
+  return {
+    spanningTree: {
+      mode: spanningTree?.mode ?? "disabled",
+      helloTimeSeconds: spanningTree?.helloTimeSeconds ?? DEFAULT_STP_HELLO_SECONDS,
+      maxAgeSeconds: spanningTree?.maxAgeSeconds ?? DEFAULT_STP_MAX_AGE_SECONDS,
+      forwardDelaySeconds: spanningTree?.forwardDelaySeconds ?? DEFAULT_STP_FORWARD_DELAY_SECONDS,
+      vlans: [...(spanningTree?.vlans ?? [])]
+        .sort((a, b) => a.vlanId - b.vlanId)
+        .map((vlan) => ({ ...vlan })),
+      ports: [...(spanningTree?.ports ?? [])]
+        .sort((a, b) => a.interfaceId.localeCompare(b.interfaceId))
+        .map((port) => ({ ...port })),
+    },
+    etherChannels: [...(config?.etherChannels ?? [])]
+      .sort((a, b) => a.channelId - b.channelId)
+      .map((channel) => ({
+        ...channel,
+        members: [...channel.members].sort((a, b) => a.localeCompare(b)),
+        switchport: channel.switchport
+          ? {
+              ...channel.switchport,
+              allowedVlans: channel.switchport.allowedVlans
+                ? [...channel.switchport.allowedVlans].sort((a, b) => a - b)
+                : undefined,
+            }
+          : undefined,
+      })),
+    discovery: canonicalDiscovery(discovery),
+  };
+}
+
+function canonicalDiscovery(discovery: NeighborDiscoveryConfig | undefined): NeighborDiscoveryConfig {
+  return {
+    cdpEnabled: discovery?.cdpEnabled ?? false,
+    lldpEnabled: discovery?.lldpEnabled ?? false,
+    cdpIntervalSeconds: discovery?.cdpIntervalSeconds ?? DEFAULT_CDP_INTERVAL_SECONDS,
+    cdpHoldTimeSeconds: discovery?.cdpHoldTimeSeconds ?? DEFAULT_CDP_HOLD_SECONDS,
+    lldpIntervalSeconds: discovery?.lldpIntervalSeconds ?? DEFAULT_LLDP_INTERVAL_SECONDS,
+    lldpHoldTimeSeconds: discovery?.lldpHoldTimeSeconds ?? DEFAULT_LLDP_HOLD_SECONDS,
+    interfaces: [...(discovery?.interfaces ?? [])]
+      .sort((a, b) => a.interfaceId.localeCompare(b.interfaceId))
+      .map((iface) => ({ ...iface })),
+  };
+}
+
+/** Loopbacks by numeric id, OSPF networks by network then wildcard. */
+function canonicalRoutedProtocols(
+  config: Partial<Pick<RouterDeviceConfig, "loopbacks" | "ospf">> | undefined,
+) {
+  return {
+    loopbacks: [...(config?.loopbacks ?? [])]
+      .sort((a, b) => a.id - b.id)
+      .map((loopback) => ({ ...loopback })),
+    ospf: config?.ospf === undefined
+      ? undefined
+      : {
+          processId: config.ospf.processId,
+          routerId: config.ospf.routerId,
+          networks: [...config.ospf.networks]
+            .sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || ipToInt(a.wildcard) - ipToInt(b.wildcard))
+            .map((statement) => ({ ...statement })),
+          passiveInterfaces: [...config.ospf.passiveInterfaces].sort((a, b) => a.localeCompare(b)),
+          interfaces: [...config.ospf.interfaces]
+            .sort((a, b) => a.interfaceId.localeCompare(b.interfaceId))
+            .map((iface) => ({ ...iface })),
+        },
   };
 }
 
@@ -217,6 +309,8 @@ function routerConfiguration(node: NodeSpec, config: RouterDeviceConfig | undefi
     dhcpPools: [...(config?.dhcpPools ?? [])].sort(byId).map((pool) => ({ ...pool })),
     ...canonicalAcls(config),
     ...canonicalNat(config),
+    ...canonicalRoutedProtocols(config),
+    discovery: canonicalDiscovery(config?.discovery),
     consoleAccess: canonicalConsoleAccess(config),
   };
 }
@@ -308,6 +402,8 @@ function layer3SwitchConfiguration(
       .map((route) => ({ ...route })),
     ipRoutingEnabled: config?.ipRoutingEnabled ?? false,
     ...canonicalAcls(config),
+    ...canonicalSwitchProtocols(config),
+    ...canonicalRoutedProtocols(config),
     consoleAccess: canonicalConsoleAccess(config),
   };
 }

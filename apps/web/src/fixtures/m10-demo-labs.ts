@@ -1,5 +1,6 @@
 import type { LabDocument } from "@sim/contracts";
 import { DEMO_LAB } from "./demo-lab";
+import { PROTOCOL_DEMO_LABS } from "./protocol-demo-labs";
 import { SECURITY_DEMO_LABS } from "./security-demo-labs";
 
 function ports(prefix: string, count: number): Array<{ id: string }> {
@@ -306,6 +307,9 @@ export const DEMO_LABS = [
   { id: "tftp-backup", label: TFTP_BACKUP_DEMO.title, document: TFTP_BACKUP_DEMO },
   { id: "ntp-syslog", label: NTP_SYSLOG_DEMO.title, document: NTP_SYSLOG_DEMO },
   ...SECURITY_DEMO_LABS,
+  // M10.4 control protocols. Like every demo, they are only ever opened from
+  // the Demo Labs dialog, never loaded automatically.
+  ...PROTOCOL_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
 ] as const;
 
 export type DemoLabId = (typeof DEMO_LABS)[number]["id"];

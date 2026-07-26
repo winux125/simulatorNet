@@ -41,7 +41,27 @@ const packetTypes = new Set([
   "firewall-permitted", "firewall-denied", "firewall-connection-expired",
   "cloud-packet-dropped", "cloud-packet-delayed",
   "traffic-flow-queued", "traffic-flow-completed",
+  // M10.4 control protocols: spanning tree, EtherChannel, discovery and OSPF.
+  "bpdu-sent", "bpdu-received", "stp-root-elected", "stp-port-role-changed", "stp-port-state-changed",
+  "stp-topology-change", "stp-frame-blocked", "bpdu-guard-triggered", "stp-portfast-cancelled",
+  "stp-message-age-expired", "stp-port-recovered", "rstp-proposal", "rstp-agreement",
+  "lacpdu-sent", "lacpdu-received", "lacp-member-selected", "lacp-member-suspended",
+  "pagp-message-sent", "pagp-message-received", "etherchannel-formed", "etherchannel-down",
+  "etherchannel-member-state-changed", "etherchannel-frame-member-selected",
+  "cdp-advertisement-sent", "cdp-advertisement-received", "cdp-neighbor-added", "cdp-neighbor-expired",
+  "lldp-advertisement-sent", "lldp-advertisement-received", "lldp-neighbor-added", "lldp-neighbor-expired",
+  "ospf-hello-sent", "ospf-hello-received", "ospf-neighbor-state-changed", "ospf-dr-elected", "ospf-bdr-elected",
+  "ospf-lsa-originated", "ospf-lsa-flooded", "ospf-lsa-acknowledged", "ospf-lsdb-changed",
+  "ospf-spf-started", "ospf-spf-completed", "ospf-route-installed", "ospf-route-withdrawn",
+  "ospf-adjacency-rejected", "ospf-routing-table-changed",
 ]);
+
+/** Packet-trace protocol filters, in the order the dropdown lists them. */
+export const TRACE_PROTOCOL_FILTERS = [
+  "ALL", "ARP", "ICMP", "UDP", "TCP", "DNS", "HTTP", "TFTP", "NTP", "SYSLOG",
+  "ACL", "NAT", "FIREWALL", "CLOUD", "TRAFFIC",
+  "STP", "RSTP", "LACP", "PAGP", "CDP", "LLDP", "OSPF",
+] as const;
 
 export function BottomDock(props: BottomDockProps) {
   const packetEvents = props.traces.filter((event) => packetTypes.has(event.type));
@@ -137,7 +157,7 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
   const [filter, setFilter] = useState("ALL");
   if (events.length === 0) return <EmptyState icon={<Network size={26} />} title="No packet trace" description="ARP, ICMP and forwarding events will appear here without inventing protocol data the engine does not expose." />;
   const visible = events.filter((event) => filter === "ALL" || traceProtocol(event) === filter);
-  return <div className="dock-table-wrap"><div className="trace-filter"><label>Protocol filter <select aria-label="Packet trace protocol filter" value={filter} onChange={(event) => setFilter(event.target.value)}>{["ALL", "ARP", "ICMP", "UDP", "TCP", "DNS", "HTTP", "TFTP", "NTP", "SYSLOG", "ACL", "NAT", "FIREWALL", "CLOUD", "TRAFFIC"].map((protocol) => <option key={protocol}>{protocol}</option>)}</select></label><span>{visible.length} records</span></div><table className="data-table packet-table"><thead><tr><th>Time</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Ports</th><th>Event</th><th>Result</th></tr></thead><tbody>{visible.slice(-300).reverse().map((event, index) => {
+  return <div className="dock-table-wrap"><div className="trace-filter"><label>Protocol filter <select aria-label="Packet trace protocol filter" value={filter} onChange={(event) => setFilter(event.target.value)}>{TRACE_PROTOCOL_FILTERS.map((protocol) => <option key={protocol}>{protocol}</option>)}</select></label><span>{visible.length} records</span></div><table className="data-table packet-table"><thead><tr><th>Time</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Ports</th><th>Event</th><th>Result</th></tr></thead><tbody>{visible.slice(-300).reverse().map((event, index) => {
     const detail = event.detail ?? {};
     const source = String(detail.src ?? detail.sourceAddress ?? detail.localAddress ?? event.deviceId);
     const destination = String(detail.dst ?? detail.destinationAddress ?? detail.remoteAddress ?? detail.targetIp ?? "—");
@@ -152,6 +172,20 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
 
 function traceProtocol(event: SimulationTraceEvent): string {
   const type = event.type.toLowerCase();
+  // Control protocols first: their event names are unambiguous prefixes.
+  if (type.startsWith("rstp-")) return "RSTP";
+  if (type.startsWith("stp-") || type.startsWith("bpdu")) {
+    // A Rapid-PVST BPDU carries its version, so the filter can separate them.
+    return event.detail?.version === "rstp" ? "RSTP" : "STP";
+  }
+  if (type.startsWith("lacp")) return "LACP";
+  if (type.startsWith("pagp-")) return "PAGP";
+  if (type.startsWith("etherchannel-")) {
+    return event.detail?.protocol === "pagp" ? "PAGP" : "LACP";
+  }
+  if (type.startsWith("cdp-")) return "CDP";
+  if (type.startsWith("lldp-")) return "LLDP";
+  if (type.startsWith("ospf-")) return "OSPF";
   if (type.startsWith("acl-")) return "ACL";
   if (type.startsWith("nat-")) return "NAT";
   if (type.startsWith("firewall-")) return "FIREWALL";

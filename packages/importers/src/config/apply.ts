@@ -6,8 +6,134 @@
  * preserve as an unparsed artifact, so an import can never produce a lab that
  * refuses to open.
  */
-import type { DeviceConfig, DeviceType } from "@sim/contracts";
+import type {
+  DeviceConfig,
+  DeviceType,
+  EtherChannelConfig,
+  LoopbackInterfaceConfig,
+  NeighborDiscoveryConfig,
+  OspfProcessConfig,
+  SpanningTreeConfig,
+} from "@sim/contracts";
+import {
+  DEFAULT_CDP_HOLD_SECONDS,
+  DEFAULT_CDP_INTERVAL_SECONDS,
+  DEFAULT_LLDP_HOLD_SECONDS,
+  DEFAULT_LLDP_INTERVAL_SECONDS,
+  DEFAULT_STP_FORWARD_DELAY_SECONDS,
+  DEFAULT_STP_HELLO_SECONDS,
+  DEFAULT_STP_MAX_AGE_SECONDS,
+  DEFAULT_STP_PORT_PRIORITY_VALUE,
+} from "@sim/contracts";
 import type { ImportedDeviceConfiguration } from "./ios-config";
+
+/** Discovery defaults for a device whose config never mentioned CDP or LLDP. */
+function discoveryFrom(applied: ImportedDeviceConfiguration): NeighborDiscoveryConfig {
+  const interfaces = applied.interfaces
+    .filter((iface) => iface.cdpEnabled !== undefined
+      || iface.lldpTransmit !== undefined
+      || iface.lldpReceive !== undefined)
+    .map((iface) => ({
+      interfaceId: iface.id,
+      cdpEnabled: iface.cdpEnabled ?? true,
+      lldpTransmit: iface.lldpTransmit ?? true,
+      lldpReceive: iface.lldpReceive ?? true,
+    }))
+    .sort((a, b) => a.interfaceId.localeCompare(b.interfaceId));
+  return {
+    cdpEnabled: applied.cdpEnabled ?? false,
+    lldpEnabled: applied.lldpEnabled ?? false,
+    cdpIntervalSeconds: DEFAULT_CDP_INTERVAL_SECONDS,
+    cdpHoldTimeSeconds: DEFAULT_CDP_HOLD_SECONDS,
+    lldpIntervalSeconds: DEFAULT_LLDP_INTERVAL_SECONDS,
+    lldpHoldTimeSeconds: DEFAULT_LLDP_HOLD_SECONDS,
+    interfaces,
+  };
+}
+
+function spanningTreeFrom(
+  applied: ImportedDeviceConfiguration,
+  knownVlans: ReadonlySet<number>,
+): SpanningTreeConfig {
+  const ports = applied.interfaces
+    .filter((iface) => iface.portFast !== undefined
+      || iface.bpduGuard !== undefined
+      || iface.spanningTreeCost !== undefined
+      || iface.spanningTreePriority !== undefined)
+    .map((iface) => ({
+      interfaceId: iface.id,
+      cost: iface.spanningTreeCost,
+      priority: iface.spanningTreePriority ?? DEFAULT_STP_PORT_PRIORITY_VALUE,
+      portFast: iface.portFast ?? false,
+      // BPDU Guard only protects an edge port, so it needs PortFast alongside.
+      bpduGuard: (iface.bpduGuard ?? false) && (iface.portFast ?? false),
+    }))
+    .sort((a, b) => a.interfaceId.localeCompare(b.interfaceId));
+  return {
+    mode: applied.spanningTreeMode ?? "disabled",
+    helloTimeSeconds: DEFAULT_STP_HELLO_SECONDS,
+    maxAgeSeconds: DEFAULT_STP_MAX_AGE_SECONDS,
+    forwardDelaySeconds: DEFAULT_STP_FORWARD_DELAY_SECONDS,
+    vlans: applied.spanningTreeVlanPriorities
+      .filter((entry) => knownVlans.has(entry.vlanId))
+      .sort((a, b) => a.vlanId - b.vlanId),
+    ports,
+  };
+}
+
+function etherChannelsFrom(applied: ImportedDeviceConfiguration): EtherChannelConfig[] {
+  const groups = new Map<number, EtherChannelConfig>();
+  for (const iface of applied.interfaces) {
+    const group = iface.channelGroup;
+    if (!group) continue;
+    const existing = groups.get(group.id);
+    if (existing) {
+      // A group can only negotiate one way; a conflicting mode is ignored.
+      if (existing.mode !== group.mode) continue;
+      groups.set(group.id, { ...existing, members: [...existing.members, iface.id].sort() });
+      continue;
+    }
+    groups.set(group.id, { channelId: group.id, mode: group.mode, members: [iface.id] });
+  }
+  return [...groups.values()].sort((a, b) => a.channelId - b.channelId);
+}
+
+function loopbacksFrom(applied: ImportedDeviceConfiguration): LoopbackInterfaceConfig[] {
+  return applied.loopbacks.map((loopback) => ({
+    id: loopback.id,
+    description: loopback.description,
+    shutdown: loopback.shutdown,
+    ipv4: loopback.ipv4,
+  }));
+}
+
+function ospfFrom(applied: ImportedDeviceConfiguration): OspfProcessConfig | undefined {
+  if (!applied.ospf) return undefined;
+  const interfaces = applied.interfaces
+    .filter((iface) => iface.ospf !== undefined)
+    .map((iface) => ({
+      interfaceId: iface.id,
+      area: iface.ospf?.enabled ? (0 as const) : undefined,
+      cost: iface.ospf?.cost,
+      priority: iface.ospf?.priority,
+      networkType: iface.ospf?.networkType,
+      helloIntervalSeconds: iface.ospf?.helloIntervalSeconds,
+      deadIntervalSeconds: iface.ospf?.deadIntervalSeconds,
+      enabled: iface.ospf?.enabled,
+    }))
+    .sort((a, b) => a.interfaceId.localeCompare(b.interfaceId));
+  return {
+    processId: applied.ospf.processId,
+    routerId: applied.ospf.routerId,
+    networks: applied.ospf.networks.map((statement) => ({
+      network: statement.network,
+      wildcard: statement.wildcard,
+      area: 0 as const,
+    })),
+    passiveInterfaces: [...applied.ospf.passiveInterfaces].sort(),
+    interfaces,
+  };
+}
 
 const ipToInt = (ip: string): number => ip.split(".").reduce((acc, octet) => ((acc << 8) + Number(octet)) >>> 0, 0) >>> 0;
 const maskToInt = (prefix: number): number => (prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0);
@@ -75,6 +201,8 @@ export function buildDeviceConfigFromIos(
         defaultGateway: gateway && primary?.ipv4 && inSubnet(gateway, primary.ipv4.address, primary.ipv4.prefixLength) ? gateway : undefined,
         dhcpClientEnabled: false,
         enabledServices: [],
+        // A server is a vendor-neutral station: never CDP, LLDP only.
+        discovery: { ...discoveryFrom(applied), cdpEnabled: false },
       },
     };
   }
@@ -94,24 +222,46 @@ export function buildDeviceConfigFromIos(
       natPools: [],
       natRules: [],
       natInterfaceRoles: [],
+      discovery: discoveryFrom(applied),
+      loopbacks: loopbacksFrom(applied),
     };
     if (deviceType === "firewall") {
-      return { droppedRoutes, config: { kind: "firewall", ...routed, zones: [], firewallPolicies: [], defaultPolicy: "deny" } };
+      // A firewall is not an OSPF speaker in this release; the process lines
+      // stay in the unparsed report rather than being silently applied.
+      return {
+        droppedRoutes,
+        config: { kind: "firewall", ...routed, ospf: undefined, zones: [], firewallPolicies: [], defaultPolicy: "deny" },
+      };
     }
-    return { droppedRoutes, config: { kind: "router", ...routed } };
+    return { droppedRoutes, config: { kind: "router", ...routed, ospf: ospfFrom(applied) } };
   }
 
   if (deviceType === "l2-switch") {
+    const vlans = applied.vlans.length > 0 ? applied.vlans : [];
+    const knownVlans = new Set<number>([1, ...vlans.map((vlan) => vlan.id)]);
+    for (const iface of applied.interfaces) {
+      if (iface.accessVlan !== undefined) knownVlans.add(iface.accessVlan);
+    }
+    const channels = etherChannelsFrom(applied)
+      // Members must exist on the mapped device, or the lab would not open.
+      .map((channel) => ({ ...channel, members: channel.members.filter((member) => interfaceIds.includes(member)) }))
+      .filter((channel) => channel.members.length > 0);
     return {
       droppedRoutes: 0,
       config: {
         kind: "l2-switch",
         hostname,
-        vlans: applied.vlans,
+        vlans: [...knownVlans].sort((a, b) => a - b).map((id) => ({
+          id,
+          name: vlans.find((vlan) => vlan.id === id)?.name ?? (id === 1 ? "default" : `VLAN${String(id).padStart(4, "0")}`),
+        })),
         interfaces: interfaceIds.map((id) => {
           const iface = byId.get(id);
           return { id, shutdown: iface?.shutdown ?? false, description: iface?.description, mode: iface?.switchportMode ?? "access", accessVlan: iface?.accessVlan ?? 1, nativeVlan: 1 };
         }),
+        spanningTree: spanningTreeFrom(applied, knownVlans),
+        etherChannels: channels,
+        discovery: discoveryFrom(applied),
       },
     };
   }

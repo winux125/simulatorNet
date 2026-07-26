@@ -63,6 +63,20 @@ export class UnsupportedCapabilityError extends CliError {
 }
 
 /** A recognised command carried an invalid argument (bad VLAN id, IP, etc.). */
+/**
+ * A structured error raised by a sim-core control protocol (an out-of-range
+ * timer, an unsupported area, an exhausted resource bound). It crosses the
+ * package boundary as a typed error and is rendered here rather than escaping
+ * to the worker as an unhandled exception.
+ */
+export function renderProtocolError(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code !== "string" || !code.startsWith("control-protocol")) return undefined;
+  const message = (error as { message?: unknown }).message;
+  return `% ${typeof message === "string" ? message : "Control protocol error"}`;
+}
+
 export class ValidationError extends CliError {
   constructor(message: string) {
     super(message);

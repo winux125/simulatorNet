@@ -13,6 +13,12 @@ export type DeviceFilter =
   | "network"
   | "bridge"
   | "l3-switch"
+  /** Devices that run an OSPF process: Router and L3 Switch. */
+  | "ospf"
+  /** Devices that speak the Cisco-like CDP subset. */
+  | "cdp"
+  /** Devices that speak LLDP: every network device plus the Server. */
+  | "lldp"
   | "any";
 
 /** The interface-configuration context (`config-if`). */
@@ -29,11 +35,23 @@ export interface InterfaceContext {
   subCreated: boolean;
   /** Present when `interface vlan <id>` selected an SVI. */
   sviVlan: number | undefined;
+  /** Present when `interface loopback <id>` selected a logical loopback. */
+  loopback: number | undefined;
+  /**
+   * Every port selected by `interface range`. A range command validates all of
+   * them before it changes any, so a range is never half-applied.
+   */
+  range: string[] | undefined;
 }
 
 export interface AclContext {
   id: string;
   type: "standard" | "extended";
+}
+
+/** The `router ospf <process-id>` configuration context. */
+export interface RouterProcessContext {
+  processId: number;
 }
 
 /**
@@ -47,6 +65,7 @@ export interface SessionApi {
   ifaceCtx: InterfaceContext | undefined;
   vlanId: number | undefined;
   aclCtx: AclContext | undefined;
+  routerCtx: RouterProcessContext | undefined;
   /** Transition to another mode (clears context as appropriate). */
   enter(mode: CliMode): void;
   /**
@@ -56,6 +75,11 @@ export interface SessionApi {
    * `undefined` after scheduling its next bounded phase.
    */
   runNetworkOperation(start: () => void, complete: () => string | undefined): string;
+  /**
+   * Ask before a destructive runtime action. The next line the learner types is
+   * consumed as the answer; anything other than an explicit yes cancels.
+   */
+  requestConfirmation(prompt: string, onConfirm: () => string): string;
 }
 
 export interface CommandSpec {

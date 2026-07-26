@@ -5,6 +5,7 @@ import {
   AmbiguousCommandError,
   CliError,
   IncompleteCommandError,
+  renderProtocolError,
   SyntaxError,
   UnsupportedCapabilityError,
   ValidationError,
@@ -16,7 +17,7 @@ import {
   matchPatternDetailed,
   usageFromPattern,
 } from "../parser/matcher";
-import type { AclContext, InterfaceContext, SessionApi } from "../types";
+import type { AclContext, InterfaceContext, RouterProcessContext, SessionApi } from "../types";
 import { type CliMode, promptSuffix } from "./mode";
 
 export type NetworkExecutionMode = "auto" | "step";
@@ -36,9 +37,11 @@ export class CliSession implements SessionApi {
   ifaceCtx: InterfaceContext | undefined;
   vlanId: number | undefined;
   aclCtx: AclContext | undefined;
+  routerCtx: RouterProcessContext | undefined;
   private pendingInput: "ping-target" | undefined;
   private executionMode: NetworkExecutionMode = "auto";
   private pendingOperation: (() => string | undefined) | undefined;
+  private pendingConfirmation: { prompt: string; onConfirm: () => string } | undefined;
 
   constructor(
     readonly device: Device,
@@ -47,6 +50,7 @@ export class CliSession implements SessionApi {
 
   /** The prompt shown before the next command, e.g. "S1(config-if)#". */
   prompt(): string {
+    if (this.pendingConfirmation) return this.pendingConfirmation.prompt;
     if (this.pendingInput === "ping-target") return "Target IP address:";
     if (isPc(this.device)) return "C:\\>";
     return `${this.device.name}${promptSuffix(this.mode)}`;
@@ -56,7 +60,13 @@ export class CliSession implements SessionApi {
     if (mode !== "config-if") this.ifaceCtx = undefined;
     if (mode !== "config-vlan") this.vlanId = undefined;
     if (mode !== "config-acl") this.aclCtx = undefined;
+    if (mode !== "config-router") this.routerCtx = undefined;
     this.mode = mode;
+  }
+
+  requestConfirmation(prompt: string, onConfirm: () => string): string {
+    this.pendingConfirmation = { prompt, onConfirm };
+    return "";
   }
 
   setExecutionMode(mode: NetworkExecutionMode): void {
@@ -112,6 +122,21 @@ export class CliSession implements SessionApi {
 
   /** Execute one command line; returns its textual output ("" if none). */
   execute(line: string): string {
+    const confirmation = this.pendingConfirmation;
+    if (confirmation) {
+      this.pendingConfirmation = undefined;
+      const answer = line.trim().toLowerCase();
+      // An empty line accepts the default, exactly like IOS.
+      if (answer === "" || answer === "y" || answer === "yes") {
+        try {
+          return confirmation.onConfirm();
+        } catch (error) {
+          if (error instanceof CliError) return error.render();
+          throw error;
+        }
+      }
+      return "% Cancelled.";
+    }
     if (this.pendingInput === "ping-target") {
       if (line.trim().length === 0) return "";
       this.pendingInput = undefined;
@@ -173,6 +198,8 @@ export class CliSession implements SessionApi {
         return best.spec.run(this, best.match.params) ?? "";
       } catch (err) {
         if (err instanceof CliError) return err.render();
+        const protocolError = renderProtocolError(err);
+        if (protocolError !== undefined) return protocolError;
         throw err;
       }
     }

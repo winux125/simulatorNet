@@ -421,6 +421,11 @@ export class Router extends Device {
     return [...this.loopbacks.keys()].sort((a, b) => a - b);
   }
 
+  /** Loopback rows only, for `show ip interface brief` and serialization. */
+  loopbackSummaries(): RouterInterfaceRow[] {
+    return this.interfaceSummaries().filter((row) => this.isLoopback(row.name));
+  }
+
   loopbackInterface(index: number): EthernetInterface | undefined {
     return this.loopbacks.get(index);
   }

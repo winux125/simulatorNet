@@ -2,23 +2,28 @@ import { z } from "zod";
 import { TopologySchema } from "./topology";
 import { LabDiagramSchema } from "./diagram";
 import { ConsoleAccessConfigurationSchema } from "./console";
+import {
+  Ipv4InterfaceConfigSchema,
+  Ipv4Schema,
+  PrefixLengthSchema,
+  VlanIdSchema,
+} from "./primitives";
+import {
+  NeighborDiscoveryConfigSchema,
+  RoutedControlProtocolShape,
+  SwitchControlProtocolShape,
+} from "./protocols";
 
 /** The only lab JSON schema understood by this release. */
 export const CURRENT_LAB_SCHEMA_VERSION = 1 as const;
 
-export const Ipv4Schema = z.string().refine((value) => {
-  const octets = value.split(".");
-  return octets.length === 4 && octets.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
-}, "Invalid IPv4 address");
-
-export const PrefixLengthSchema = z.number().int().min(0).max(32);
-export const VlanIdSchema = z.number().int().min(1).max(4094);
-
-export const Ipv4InterfaceConfigSchema = z.object({
-  address: Ipv4Schema,
-  prefixLength: PrefixLengthSchema,
-});
-export type Ipv4InterfaceConfig = z.infer<typeof Ipv4InterfaceConfigSchema>;
+export {
+  Ipv4InterfaceConfigSchema,
+  Ipv4Schema,
+  PrefixLengthSchema,
+  VlanIdSchema,
+  type Ipv4InterfaceConfig,
+} from "./primitives";
 
 export const PhysicalInterfaceConfigSchema = z.object({
   id: z.string().min(1),
@@ -129,6 +134,8 @@ export const ServerDeviceConfigSchema = z.object({
   dhcpClientEnabled: z.boolean().default(false),
   dnsServer: Ipv4Schema.optional(),
   enabledServices: z.array(ServerServiceConfigSchema).max(16).default([]),
+  /** A server is a vendor-neutral station: LLDP only, never CDP. */
+  discovery: NeighborDiscoveryConfigSchema.optional(),
   consoleAccess: ConsoleAccessConfigurationSchema.optional(),
 });
 export type ServerDeviceConfig = z.infer<typeof ServerDeviceConfigSchema>;
@@ -170,6 +177,7 @@ export const SwitchDeviceConfigSchema = z.object({
   hostname: z.string().min(1).optional(),
   vlans: z.array(VlanConfigSchema).default([]),
   interfaces: z.array(SwitchInterfaceConfigSchema).default([]),
+  ...SwitchControlProtocolShape,
   consoleAccess: ConsoleAccessConfigurationSchema.optional(),
 });
 export type SwitchDeviceConfig = z.infer<typeof SwitchDeviceConfigSchema>;
@@ -323,6 +331,8 @@ export const RouterDeviceConfigSchema = z.object({
   natPools: z.array(NatPoolConfigSchema).max(32).default([]),
   natRules: z.array(NatRuleConfigSchema).max(128).default([]),
   natInterfaceRoles: z.array(NatInterfaceRoleConfigSchema).max(64).default([]),
+  ...RoutedControlProtocolShape,
+  discovery: NeighborDiscoveryConfigSchema.optional(),
   consoleAccess: ConsoleAccessConfigurationSchema.optional(),
 });
 export type RouterDeviceConfig = z.infer<typeof RouterDeviceConfigSchema>;
@@ -428,6 +438,8 @@ export const Layer3SwitchDeviceConfigSchema = z.object({
   staticRoutes: z.array(StaticRouteConfigSchema).default([]),
   ipRoutingEnabled: z.boolean().default(false),
   ...RoutedSecurityConfigShape,
+  ...SwitchControlProtocolShape,
+  ...RoutedControlProtocolShape,
   consoleAccess: ConsoleAccessConfigurationSchema.optional(),
 });
 export type Layer3SwitchDeviceConfig = z.infer<typeof Layer3SwitchDeviceConfigSchema>;
@@ -523,6 +535,20 @@ export const LabDocumentSchema = LabMetadataSchema.extend({
   configurations: z.record(z.string(), DeviceConfigSchema).default({}),
 });
 export type LabDocument = z.infer<typeof LabDocumentSchema>;
+
+/** Device configuration as it may be *written*: schema defaults may be omitted. */
+export type DeviceConfigInput = z.input<typeof DeviceConfigSchema>;
+
+/**
+ * A lab document that is about to be canonicalized. The topology is already
+ * complete, but device configuration may omit anything with a schema default —
+ * so a demo lab does not have to spell out `spanningTree: { mode: "disabled" }`
+ * on every switch. `canonicalizeLabDocument` fills the defaults and returns a
+ * fully-populated `LabDocument`.
+ */
+export type LabDocumentDraft = Omit<LabDocument, "configurations"> & {
+  readonly configurations: Record<string, DeviceConfigInput>;
+};
 
 /** Browser-to-server submission boundary. Hidden grading rules live elsewhere. */
 export const LabSubmissionDocumentSchema = z.object({

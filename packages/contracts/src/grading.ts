@@ -245,6 +245,187 @@ export const TrafficFlowResultGradingCheckSchema = CheckIdentitySchema.extend({
   }),
 });
 
+// --- M10.4 control-protocol checks -----------------------------------------
+
+export const StpRootGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("stp-root"),
+  configuration: z.object({ vlanId: VlanIdSchema, expectedDeviceId: z.string().min(1) }),
+});
+
+export const StpModeGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("stp-mode"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    expectedMode: z.enum(["disabled", "stp", "rstp"]),
+  }),
+});
+
+export const SpanningTreePortRoleSchema = z.enum(["root", "designated", "alternate", "backup", "disabled"]);
+export const SpanningTreePortStateSchema = z.enum([
+  "disabled",
+  "blocking",
+  "listening",
+  "learning",
+  "forwarding",
+  "discarding",
+]);
+
+export const StpPortRoleGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("stp-port-role"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    interfaceId: z.string().min(1),
+    vlanId: VlanIdSchema.default(1),
+    expectedRole: SpanningTreePortRoleSchema,
+  }),
+});
+
+export const StpPortStateGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("stp-port-state"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    interfaceId: z.string().min(1),
+    vlanId: VlanIdSchema.default(1),
+    expectedState: SpanningTreePortStateSchema,
+  }),
+});
+
+export const StpPortFastGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("stp-portfast"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    interfaceId: z.string().min(1),
+    expected: z.boolean().default(true),
+  }),
+});
+
+export const BpduGuardStateGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bpdu-guard-state"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    interfaceId: z.string().min(1),
+    expectedErrorDisabled: z.boolean().default(true),
+  }),
+});
+
+export const EtherChannelFormedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("etherchannel-formed"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    channelId: z.number().int().min(1).max(64),
+    expectedMembers: z.array(z.string().min(1)).max(8).optional(),
+  }),
+});
+
+export const EtherChannelProtocolGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("etherchannel-protocol"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    channelId: z.number().int().min(1).max(64),
+    expectedProtocol: z.enum(["static", "lacp", "pagp"]),
+    expectedMode: z.enum(["on", "active", "passive", "desirable", "auto"]).optional(),
+  }),
+});
+
+export const EtherChannelMemberStateGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("etherchannel-member-state"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    channelId: z.number().int().min(1).max(64),
+    interfaceId: z.string().min(1),
+    expectedState: z.enum(["detached", "waiting", "attached", "collecting", "distributing", "suspended"]),
+  }),
+});
+
+const DiscoveryNeighborConfigurationSchema = z.object({
+  deviceId: z.string().min(1),
+  localInterfaceId: z.string().min(1),
+  expectedNeighborId: z.string().min(1),
+  expectedRemoteInterfaceId: z.string().min(1).optional(),
+});
+
+export const CdpNeighborGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("cdp-neighbor"),
+  configuration: DiscoveryNeighborConfigurationSchema,
+});
+
+export const LldpNeighborGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("lldp-neighbor"),
+  configuration: DiscoveryNeighborConfigurationSchema,
+});
+
+export const OspfRouterIdGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ospf-router-id"),
+  configuration: z.object({ deviceId: z.string().min(1), expectedRouterId: Ipv4Schema }),
+});
+
+export const OspfNeighborStateGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ospf-neighbor-state"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    neighborRouterId: Ipv4Schema,
+    expectedState: z.enum(["down", "init", "two-way", "exstart", "exchange", "loading", "full"]),
+  }),
+});
+
+export const OspfInterfaceGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ospf-interface"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    interfaceId: z.string().min(1),
+    expectedCost: z.number().int().min(1).max(65_535).optional(),
+    expectedPassive: z.boolean().optional(),
+    expectedNetworkType: z.enum(["broadcast", "point-to-point"]).optional(),
+  }),
+});
+
+export const OspfDrGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ospf-dr"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    interfaceId: z.string().min(1),
+    expectedDesignatedRouter: Ipv4Schema,
+  }),
+});
+
+export const OspfBdrGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ospf-bdr"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    interfaceId: z.string().min(1),
+    expectedBackupDesignatedRouter: Ipv4Schema,
+  }),
+});
+
+export const OspfRouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ospf-route"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    network: Ipv4Schema,
+    prefixLength: PrefixLengthSchema,
+    expectedNextHop: Ipv4Schema.optional(),
+  }),
+});
+
+export const OspfLsdbEntryGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ospf-lsdb-entry"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    lsaType: z.enum(["router", "network"]),
+    advertisingRouter: Ipv4Schema,
+  }),
+});
+
+export const OspfPathCostGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ospf-path-cost"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    network: Ipv4Schema,
+    prefixLength: PrefixLengthSchema,
+    expectedCost: z.number().int().min(0),
+  }),
+});
+
 export const GradingCheckSchema = z.discriminatedUnion("type", [
   PingGradingCheckSchema,
   InterfaceStateGradingCheckSchema,
@@ -273,6 +454,25 @@ export const GradingCheckSchema = z.discriminatedUnion("type", [
   FirewallSessionGradingCheckSchema,
   ExternalConnectivityGradingCheckSchema,
   TrafficFlowResultGradingCheckSchema,
+  StpRootGradingCheckSchema,
+  StpModeGradingCheckSchema,
+  StpPortRoleGradingCheckSchema,
+  StpPortStateGradingCheckSchema,
+  StpPortFastGradingCheckSchema,
+  BpduGuardStateGradingCheckSchema,
+  EtherChannelFormedGradingCheckSchema,
+  EtherChannelProtocolGradingCheckSchema,
+  EtherChannelMemberStateGradingCheckSchema,
+  CdpNeighborGradingCheckSchema,
+  LldpNeighborGradingCheckSchema,
+  OspfRouterIdGradingCheckSchema,
+  OspfNeighborStateGradingCheckSchema,
+  OspfInterfaceGradingCheckSchema,
+  OspfDrGradingCheckSchema,
+  OspfBdrGradingCheckSchema,
+  OspfRouteGradingCheckSchema,
+  OspfLsdbEntryGradingCheckSchema,
+  OspfPathCostGradingCheckSchema,
 ]);
 export type GradingCheck = z.infer<typeof GradingCheckSchema>;
 

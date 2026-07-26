@@ -4,6 +4,7 @@ import type {
   DiagramAssetMime,
   Layer3SwitchDeviceConfig,
   LabDocument,
+  NeighborDiscoveryConfig,
   NodeSpec,
   RouterDeviceConfig,
   SwitchDeviceConfig,
@@ -14,6 +15,7 @@ import {
   MAX_DIAGRAM_ASSET_TOTAL_BYTES,
   MAX_DIAGRAM_ASSETS,
 } from "@sim/contracts";
+import { DEFAULT_NEIGHBOR_DISCOVERY_CONFIG, DEFAULT_SPANNING_TREE_CONFIG } from "@sim/contracts";
 import { ipToInt, maskToInt, normalizeDnsName, normalizeHttpPath, normalizeTftpFilename } from "@sim/sim-core";
 import { LabSemanticError } from "./errors";
 
@@ -192,6 +194,7 @@ function validateSwitch(config: SwitchDeviceConfig, node: NodeSpec, path: string
       requireUnique(iface.allowedVlans.map(String), `${path}.interfaces[${index}].allowedVlans`, "VLAN id");
     }
   });
+  validateSwitchProtocols(config, node, path, true);
 }
 
 function validatePhysicalInterfaces(
@@ -219,6 +222,7 @@ function validateServer(config: ServerDeviceConfig, node: NodeSpec, path: string
     iface.ipv4 && inSubnet(config.defaultGateway!, iface.ipv4.address, iface.ipv4.prefixLength))) {
     fail("server-unreachable-default-gateway", `${path}.defaultGateway`, "Server default gateway is not on its connected subnet");
   }
+  validateDiscovery(config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG, node, `${path}.discovery`, false);
   requireUnique(config.enabledServices.map((service) => service.id), `${path}.enabledServices`, "service id");
   config.enabledServices.forEach((service, index) => {
     const servicePath = `${path}.enabledServices[${index}]`;
@@ -270,6 +274,8 @@ function validateLayer3Switch(config: Layer3SwitchDeviceConfig, node: NodeSpec, 
     ...config.svis.map((svi) => `Vlan${svi.vlanId}`),
   ]);
   validateAclConfiguration(config, l3Interfaces, path);
+  validateSwitchProtocols(config, node, path, true);
+  validateRoutedProtocols(config, node, path, l3Interfaces, true);
 }
 
 function validateRouter(config: RouterDeviceConfig, node: NodeSpec, path: string): void {
@@ -383,6 +389,190 @@ function validateRouter(config: RouterDeviceConfig, node: NodeSpec, path: string
       fail("missing-nat-role", `${path}.natInterfaceRoles`, "NAT requires inside and outside interface roles");
     }
   }
+  validateDiscovery(config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG, node, `${path}.discovery`, true);
+  // OSPF runs on the router itself; the firewall and cloud reuse this shape but
+  // are not OSPF speakers in this release.
+  validateRoutedProtocols(config, node, path, l3Interfaces, node.kind === "router");
+}
+
+/**
+ * Layer-2 control protocols: spanning tree and EtherChannel. Every reference
+ * must resolve to a real interface or VLAN, a member may belong to exactly one
+ * channel, and the negotiation mode must match the channel's protocol.
+ */
+function validateSwitchProtocols(
+  config: Pick<SwitchDeviceConfig, "spanningTree" | "etherChannels" | "discovery" | "vlans">,
+  node: NodeSpec,
+  path: string,
+  spanningTreeCapable: boolean,
+): void {
+  const physical = new Set(node.interfaces.map((iface) => iface.id));
+  const vlans = new Set(config.vlans.map((vlan) => vlan.id));
+  vlans.add(1);
+
+  const tree = config.spanningTree ?? DEFAULT_SPANNING_TREE_CONFIG;
+  const etherChannels = config.etherChannels ?? [];
+  if (tree.mode !== "disabled" && !spanningTreeCapable) {
+    fail("spanning-tree-unsupported", `${path}.spanningTree.mode`, `${node.kind} does not support spanning tree`);
+  }
+  if (tree.maxAgeSeconds < 2 * (tree.helloTimeSeconds + 1)) {
+    fail("invalid-spanning-tree-timers", `${path}.spanningTree.maxAgeSeconds`,
+      "Max age must be at least 2 x (hello time + 1)");
+  }
+  if (2 * (tree.forwardDelaySeconds - 1) < tree.maxAgeSeconds) {
+    fail("invalid-spanning-tree-timers", `${path}.spanningTree.forwardDelaySeconds`,
+      "2 x (forward delay - 1) must be at least max age");
+  }
+  requireUnique(tree.vlans.map((vlan) => String(vlan.vlanId)), `${path}.spanningTree.vlans`, "VLAN id");
+  tree.vlans.forEach((vlan, index) => {
+    if (!vlans.has(vlan.vlanId)) {
+      fail("unknown-spanning-tree-vlan", `${path}.spanningTree.vlans[${index}].vlanId`,
+        `Spanning tree references undefined VLAN ${vlan.vlanId}`);
+    }
+  });
+  requireUnique(tree.ports.map((port) => port.interfaceId), `${path}.spanningTree.ports`, "interface id");
+  tree.ports.forEach((port, index) => {
+    if (!physical.has(port.interfaceId) && parsePortChannelId(port.interfaceId) === undefined) {
+      fail("unknown-spanning-tree-interface", `${path}.spanningTree.ports[${index}].interfaceId`,
+        `Unknown interface '${port.interfaceId}'`);
+    }
+    if (port.bpduGuard && !port.portFast) {
+      fail("bpdu-guard-requires-portfast", `${path}.spanningTree.ports[${index}].bpduGuard`,
+        "BPDU Guard protects an edge port; enable PortFast on the same interface");
+    }
+  });
+
+  requireUnique(etherChannels.map((channel) => String(channel.channelId)), `${path}.etherChannels`, "channel id");
+  const claimed = new Map<string, number>();
+  etherChannels.forEach((channel, index) => {
+    const channelPath = `${path}.etherChannels[${index}]`;
+    requireUnique(channel.members, `${channelPath}.members`, "member interface");
+    for (const member of channel.members) {
+      if (!physical.has(member)) {
+        fail("unknown-channel-member", `${channelPath}.members`, `Unknown interface '${member}'`);
+      }
+      const owner = claimed.get(member);
+      if (owner !== undefined) {
+        fail("duplicate-channel-member", `${channelPath}.members`,
+          `Interface '${member}' already belongs to Port-channel${owner}`);
+      }
+      claimed.set(member, channel.channelId);
+    }
+    if (channel.minimumLinks !== undefined && channel.minimumLinks > channel.members.length) {
+      fail("invalid-minimum-links", `${channelPath}.minimumLinks`,
+        "Minimum links cannot exceed the number of members");
+    }
+    const switchport = channel.switchport;
+    if (switchport?.mode === "access" && !vlans.has(switchport.accessVlan)) {
+      fail("unknown-channel-vlan", `${channelPath}.switchport.accessVlan`,
+        `Port-channel${channel.channelId} references undefined VLAN ${switchport.accessVlan}`);
+    }
+    for (const vlan of switchport?.allowedVlans ?? []) {
+      if (!vlans.has(vlan)) {
+        fail("unknown-channel-vlan", `${channelPath}.switchport.allowedVlans`,
+          `Port-channel${channel.channelId} allows undefined VLAN ${vlan}`);
+      }
+    }
+  });
+
+  validateDiscovery(config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG, node, `${path}.discovery`, node.kind !== "server");
+}
+
+function validateDiscovery(
+  config: NeighborDiscoveryConfig,
+  node: NodeSpec,
+  path: string,
+  cdpCapable: boolean,
+): void {
+  if (config.cdpEnabled && !cdpCapable) {
+    fail("cdp-unsupported", `${path}.cdpEnabled`, `${node.kind} does not speak CDP; use LLDP instead`);
+  }
+  if (config.cdpHoldTimeSeconds <= config.cdpIntervalSeconds) {
+    fail("invalid-discovery-timers", `${path}.cdpHoldTimeSeconds`, "CDP hold time must exceed the interval");
+  }
+  if (config.lldpHoldTimeSeconds <= config.lldpIntervalSeconds) {
+    fail("invalid-discovery-timers", `${path}.lldpHoldTimeSeconds`, "LLDP hold time must exceed the interval");
+  }
+  requireUnique(config.interfaces.map((iface) => iface.interfaceId), `${path}.interfaces`, "interface id");
+  const physical = new Set(node.interfaces.map((iface) => iface.id));
+  config.interfaces.forEach((iface, index) => {
+    if (!physical.has(iface.interfaceId)) {
+      fail("unknown-discovery-interface", `${path}.interfaces[${index}].interfaceId`,
+        `Unknown interface '${iface.interfaceId}'`);
+    }
+  });
+}
+
+/** Loopback interfaces and the single area-0 OSPF process. */
+function validateRoutedProtocols(
+  config: Pick<RouterDeviceConfig, "loopbacks" | "ospf">,
+  node: NodeSpec,
+  path: string,
+  l3Interfaces: ReadonlySet<string>,
+  ospfCapable: boolean,
+): void {
+  const loopbacks = config.loopbacks ?? [];
+  requireUnique(loopbacks.map((loopback) => String(loopback.id)), `${path}.loopbacks`, "loopback id");
+  const loopbackNames = new Set(loopbacks.map((loopback) => `Loopback${loopback.id}`));
+
+  const ospf = config.ospf;
+  if (ospf === undefined) return;
+  if (!ospfCapable) {
+    fail("ospf-unsupported", `${path}.ospf`, `${node.kind} does not support OSPF in this release`);
+  }
+  const ospfInterfaces = new Set([...l3Interfaces, ...loopbackNames]);
+  ospf.networks.forEach((statement, index) => {
+    if (statement.area !== 0) {
+      fail("unsupported-ospf-area", `${path}.ospf.networks[${index}].area`, "Only OSPF area 0 is supported");
+    }
+    // A wildcard is the inverse of a mask: its set bits form a contiguous run
+    // of low bits, so adding one must clear every one of them.
+    const wildcard = ipToInt(statement.wildcard);
+    if ((((wildcard + 1) & wildcard) >>> 0) !== 0) {
+      fail("invalid-ospf-wildcard", `${path}.ospf.networks[${index}].wildcard`,
+        `'${statement.wildcard}' is not a contiguous wildcard mask`);
+    }
+    if ((ipToInt(statement.network) & wildcard) !== 0) {
+      fail("invalid-ospf-network", `${path}.ospf.networks[${index}].network`,
+        "OSPF network statement must use a network address for its wildcard");
+    }
+  });
+  requireUnique(
+    ospf.networks.map((statement) => `${statement.network} ${statement.wildcard}`),
+    `${path}.ospf.networks`,
+    "network statement",
+  );
+  requireUnique(ospf.passiveInterfaces, `${path}.ospf.passiveInterfaces`, "passive interface");
+  ospf.passiveInterfaces.forEach((interfaceId, index) => {
+    if (!ospfInterfaces.has(interfaceId)) {
+      fail("unknown-ospf-interface", `${path}.ospf.passiveInterfaces[${index}]`,
+        `Unknown L3 interface '${interfaceId}'`);
+    }
+  });
+  requireUnique(ospf.interfaces.map((iface) => iface.interfaceId), `${path}.ospf.interfaces`, "interface id");
+  ospf.interfaces.forEach((iface, index) => {
+    const ifacePath = `${path}.ospf.interfaces[${index}]`;
+    if (!ospfInterfaces.has(iface.interfaceId)) {
+      fail("unknown-ospf-interface", `${ifacePath}.interfaceId`, `Unknown L3 interface '${iface.interfaceId}'`);
+    }
+    if (iface.area !== undefined && iface.area !== 0) {
+      fail("unsupported-ospf-area", `${ifacePath}.area`, "Only OSPF area 0 is supported");
+    }
+    if (iface.cost !== undefined && iface.cost < 1) {
+      fail("invalid-ospf-cost", `${ifacePath}.cost`, "OSPF interface cost must be positive");
+    }
+    if (iface.helloIntervalSeconds !== undefined
+      && iface.deadIntervalSeconds !== undefined
+      && iface.deadIntervalSeconds <= iface.helloIntervalSeconds) {
+      fail("invalid-ospf-timers", `${ifacePath}.deadIntervalSeconds`,
+        "OSPF dead interval must exceed the hello interval");
+    }
+  });
+}
+
+function parsePortChannelId(name: string): number | undefined {
+  const match = /^Port-channel(\d+)$/i.exec(name);
+  return match ? Number(match[1]) : undefined;
 }
 
 function validateAclConfiguration(

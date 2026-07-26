@@ -51,8 +51,11 @@ describe("PNETLab / EVE UNL adapter", () => {
     expect(pc1.ipv4?.address).toBe("10.0.0.10");
     expect(report.mappedDeviceTypes).toMatchObject({ router: 1, "l2-switch": 1, pc: 2 });
 
-    // Unsupported config is preserved and reported, not applied.
-    expect(sourceArtifacts.find((artifact) => artifact.nodeId === "n1")?.text).toContain("router ospf 1");
+    // The supported OSPF subset is applied ...
+    expect(router.ospf).toMatchObject({ processId: 1, routerId: "1.1.1.1" });
+    expect(router.ospf?.networks).toEqual([{ network: "10.0.0.0", wildcard: "0.0.0.255", area: 0 }]);
+    // ... while BGP stays unsupported: preserved and reported, never applied.
+    expect(sourceArtifacts.find((artifact) => artifact.nodeId === "n1")?.text).toContain("router bgp 65000");
     expect(report.entries.some((entry) => entry.code === "config-unparsed" && entry.nodeId === "n1")).toBe(true);
     expect(report.entries.some((entry) => entry.code === "config-applied" && entry.nodeId === "n1")).toBe(true);
   });

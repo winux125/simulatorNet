@@ -169,6 +169,61 @@ export class SimulationWorkerRuntime {
         return this.runTrafficFlow(requireString(request, "deviceId"), requireString(request, "flowId"));
       case "CLEAR_SECURITY_RUNTIME":
         return this.clearSecurityRuntime(requireString(request, "deviceId"));
+      case "GET_SPANNING_TREE_STATE":
+        return this.spanningTreeState(requireString(request, "deviceId"));
+      case "RESET_BPDU_GUARD_PORT": {
+        const deviceId = requireString(request, "deviceId");
+        const interfaceId = requireString(request, "interfaceId");
+        const device = this.requireSwitch(deviceId);
+        if (!device.spanningTree.resetErrorDisabled(interfaceId)) {
+          throw new SimulationWorkerError(
+            "port-not-error-disabled",
+            `Interface '${interfaceId}' on '${deviceId}' is not error-disabled`,
+          );
+        }
+        this.runProtocolConvergence();
+        return this.spanningTreeState(deviceId);
+      }
+      case "GET_ETHERCHANNEL_STATE": {
+        const deviceId = requireString(request, "deviceId");
+        return { deviceId, channels: this.requireSwitch(deviceId).etherChannelSummaries() };
+      }
+      case "GET_DISCOVERY_NEIGHBORS":
+        return this.discoveryNeighbors(requireString(request, "deviceId"));
+      case "CLEAR_DISCOVERY_NEIGHBORS": {
+        const deviceId = requireString(request, "deviceId");
+        const protocol = request.protocol;
+        if (protocol !== undefined && protocol !== "cdp" && protocol !== "lldp") {
+          throw new SimulationWorkerError("invalid-request", "protocol must be 'cdp' or 'lldp'");
+        }
+        this.requireDiscovery(deviceId).clearNeighbors(protocol);
+        this.emitStateChanged();
+        return this.discoveryNeighbors(deviceId);
+      }
+      case "GET_OSPF_OVERVIEW": {
+        const deviceId = requireString(request, "deviceId");
+        return { deviceId, overview: this.requireOspf(deviceId).ospf.overview() };
+      }
+      case "GET_OSPF_NEIGHBORS": {
+        const deviceId = requireString(request, "deviceId");
+        return { deviceId, neighbors: this.requireOspf(deviceId).ospf.neighborSummaries() };
+      }
+      case "GET_OSPF_INTERFACES": {
+        const deviceId = requireString(request, "deviceId");
+        return { deviceId, interfaces: this.requireOspf(deviceId).ospf.interfaceSummaries() };
+      }
+      case "GET_OSPF_DATABASE": {
+        const deviceId = requireString(request, "deviceId");
+        const device = this.requireOspf(deviceId);
+        return { deviceId, entries: device.ospf.database(), routes: device.ospf.routeTable() };
+      }
+      case "RESTART_OSPF_PROCESS": {
+        const deviceId = requireString(request, "deviceId");
+        const device = this.requireOspf(deviceId);
+        device.ospf.restart();
+        this.runProtocolConvergence();
+        return { deviceId, overview: device.ospf.overview() };
+      }
       case "SERIALIZE_LAB":
         return this.serialize();
       default:
@@ -246,6 +301,9 @@ export class SimulationWorkerRuntime {
 
   private runUntilIdle(): SimulationRunResult {
     const built = this.requireRunnable();
+    // Each Auto run is one bounded operation, so the control-protocol event
+    // budget starts fresh; a long session can never exhaust it by accident.
+    built.engine.controlProtocolBudget.reset();
     this.engineState = "running";
     let processedEvents = 0;
     try {
@@ -296,6 +354,7 @@ export class SimulationWorkerRuntime {
       throw new SimulationWorkerError("invalid-time-step", "milliseconds must be a finite non-negative number");
     }
     const built = this.requireRunnable();
+    built.engine.controlProtocolBudget.reset();
     this.engineState = "running";
     const target = built.engine.now() + Math.round(milliseconds * 1_000_000);
     const processedEvents = built.engine.advanceTo(target);
@@ -837,6 +896,58 @@ export class SimulationWorkerRuntime {
     const server = this.requireBuiltLab().getServer(deviceId);
     if (!server) throw new SimulationWorkerError("not-a-server", `Device '${deviceId}' is not a server`);
     return server;
+  }
+
+  // --- M10.4 control protocols -------------------------------------------
+
+  private requireSwitch(deviceId: string): L2Switch {
+    const device = this.requireBuiltLab().getSwitch(deviceId);
+    if (!device) {
+      throw new SimulationWorkerError("not-a-switch", `Device '${deviceId}' does not run layer-2 control protocols`);
+    }
+    return device;
+  }
+
+  private requireOspf(deviceId: string): Router | Layer3Switch {
+    const device = this.requireBuiltLab().getDevice(deviceId);
+    if (device instanceof Layer3Switch) return device;
+    if (device instanceof Router && device.deviceType === "router") return device;
+    throw new SimulationWorkerError("ospf-not-supported", `Device '${deviceId}' cannot run an OSPF process`);
+  }
+
+  private requireDiscovery(deviceId: string) {
+    const device = this.requireBuiltLab().getDevice(deviceId) as { discovery?: Router["discovery"] } | undefined;
+    if (!device?.discovery) {
+      throw new SimulationWorkerError("discovery-not-supported", `Device '${deviceId}' has no neighbour discovery`);
+    }
+    return device.discovery;
+  }
+
+  private spanningTreeState(deviceId: string) {
+    return { deviceId, summary: this.requireSwitch(deviceId).spanningTreeSummary() };
+  }
+
+  private discoveryNeighbors(deviceId: string) {
+    const discovery = this.requireDiscovery(deviceId);
+    return {
+      deviceId,
+      neighbors: discovery.neighborTable(),
+      interfaces: discovery.interfaceStatuses(),
+      cdpRunning: discovery.cdpRunning,
+      lldpRunning: discovery.lldpRunning,
+    };
+  }
+
+  /**
+   * Let the protocols reconverge after a bounded runtime action. In Step mode
+   * the events stay queued so the learner can walk through them instead.
+   */
+  private runProtocolConvergence(): void {
+    if (this.executionMode === "auto") this.runUntilIdle();
+    else {
+      this.emitStateChanged();
+      this.flushTrace();
+    }
   }
 
   private flushTrace(): void {

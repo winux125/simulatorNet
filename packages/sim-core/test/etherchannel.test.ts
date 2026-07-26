@@ -204,16 +204,30 @@ describe("EtherChannel member compatibility", () => {
     expect(sw1.trunkSummary().map((row) => row.port)).toEqual(["Port-channel1"]);
   });
 
-  it("takes the bundle configuration from an explicitly configured Port-channel", () => {
+  it("lets an unconfigured member inherit an explicitly configured Port-channel", () => {
     const { engine, sw1 } = buildPair("on", "on");
     sw1.defineVlan(30);
     sw1.setTrunk("Port-channel1", { allowedVlans: [30] });
     engine.runUntilIdle();
 
-    // Members default to access VLAN 1 and therefore no longer match Po1.
-    expect(channel(sw1).suspendedMembers).toEqual(["Gi0/1", "Gi0/2"]);
+    // The members never carried their own switchport configuration, so they
+    // inherit Po1 instead of being suspended, and their stored configuration
+    // is left exactly as it was.
+    expect(channel(sw1).suspendedMembers).toEqual([]);
+    expect(channel(sw1).activeMembers).toEqual(["Gi0/1", "Gi0/2"]);
     expect(sw1.portConfigOf("Gi0/1").mode).toBe("trunk");
     expect(sw1.rawPortConfigOf("Gi0/1").mode).toBe("access");
+  });
+
+  it("suspends a member that carries its own conflicting configuration", () => {
+    const { engine, sw1 } = buildPair("on", "on");
+    sw1.defineVlan(30);
+    sw1.setTrunk("Port-channel1", { allowedVlans: [30] });
+    sw1.setAccess("Gi0/2", 30);
+    engine.runUntilIdle();
+
+    expect(channel(sw1).suspendedMembers).toEqual(["Gi0/2"]);
+    expect(channel(sw1).activeMembers).toEqual(["Gi0/1"]);
   });
 });
 

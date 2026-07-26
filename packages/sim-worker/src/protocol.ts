@@ -9,9 +9,18 @@ import type {
 } from "@sim/contracts";
 import type { CliMode } from "@sim/cli-engine";
 import type {
+  DiscoveryInterfaceStatus,
+  DiscoveryNeighbor,
   DnsResolutionResult,
+  EtherChannelSummary,
   HttpClientResult,
   NtpClientResult,
+  OspfInterfaceSummary,
+  OspfLsdbEntry,
+  OspfNeighborSummary,
+  OspfOverview,
+  OspfRoute,
+  SpanningTreeSummary,
   ServerServiceRuntimeSnapshot,
   ServerServiceSummary,
   TcpConnectionInspection,
@@ -228,6 +237,50 @@ export interface SecurityConfigurationView {
   };
 }
 
+/**
+ * Read-only control-protocol views. Everything here is runtime state that never
+ * reaches a `LabDocument`; the UI renders it and the worker recomputes it from
+ * the engine on demand.
+ */
+export interface SpanningTreeView {
+  deviceId: string;
+  summary: SpanningTreeSummary;
+}
+
+export interface EtherChannelView {
+  deviceId: string;
+  channels: EtherChannelSummary[];
+}
+
+export interface DiscoveryNeighborsView {
+  deviceId: string;
+  neighbors: DiscoveryNeighbor[];
+  interfaces: DiscoveryInterfaceStatus[];
+  cdpRunning: boolean;
+  lldpRunning: boolean;
+}
+
+export interface OspfOverviewView {
+  deviceId: string;
+  overview: OspfOverview;
+}
+
+export interface OspfNeighborsView {
+  deviceId: string;
+  neighbors: OspfNeighborSummary[];
+}
+
+export interface OspfInterfacesView {
+  deviceId: string;
+  interfaces: OspfInterfaceSummary[];
+}
+
+export interface OspfDatabaseView {
+  deviceId: string;
+  entries: OspfLsdbEntry[];
+  routes: OspfRoute[];
+}
+
 export type SimWorkerRequest =
   | { type: "INITIALIZE_LAB"; requestId: string; document: LabDocument }
   | { type: "REBUILD_LAB"; requestId: string; document: LabDocument }
@@ -257,6 +310,17 @@ export type SimWorkerRequest =
   | { type: "SET_SECURITY_CONFIGURATION"; requestId: string; deviceId: string; configuration: SecurityDeviceConfiguration }
   | { type: "RUN_TRAFFIC_FLOW"; requestId: string; deviceId: string; flowId: string }
   | { type: "CLEAR_SECURITY_RUNTIME"; requestId: string; deviceId: string }
+  // --- M10.4 control protocols (inspection + bounded runtime actions) ---
+  | { type: "GET_SPANNING_TREE_STATE"; requestId: string; deviceId: string }
+  | { type: "RESET_BPDU_GUARD_PORT"; requestId: string; deviceId: string; interfaceId: string }
+  | { type: "GET_ETHERCHANNEL_STATE"; requestId: string; deviceId: string }
+  | { type: "GET_DISCOVERY_NEIGHBORS"; requestId: string; deviceId: string }
+  | { type: "CLEAR_DISCOVERY_NEIGHBORS"; requestId: string; deviceId: string; protocol?: "cdp" | "lldp" }
+  | { type: "GET_OSPF_OVERVIEW"; requestId: string; deviceId: string }
+  | { type: "GET_OSPF_NEIGHBORS"; requestId: string; deviceId: string }
+  | { type: "GET_OSPF_INTERFACES"; requestId: string; deviceId: string }
+  | { type: "GET_OSPF_DATABASE"; requestId: string; deviceId: string }
+  | { type: "RESTART_OSPF_PROCESS"; requestId: string; deviceId: string }
   | { type: "SERIALIZE_LAB"; requestId: string };
 
 export type SimWorkerPayload =
@@ -269,6 +333,13 @@ export type SimWorkerPayload =
   | ServerServicesView
   | ServerServiceRuntimeSnapshot
   | SecurityConfigurationView
+  | SpanningTreeView
+  | EtherChannelView
+  | DiscoveryNeighborsView
+  | OspfOverviewView
+  | OspfNeighborsView
+  | OspfInterfacesView
+  | OspfDatabaseView
   | LabDocument
   | { closed: boolean }
   | { paused: boolean; snapshot: LabUiSnapshot };
@@ -322,6 +393,16 @@ export interface SimWorkerPayloadByType {
   SET_SECURITY_CONFIGURATION: SecurityConfigurationView;
   RUN_TRAFFIC_FLOW: SecurityConfigurationView;
   CLEAR_SECURITY_RUNTIME: SecurityConfigurationView;
+  GET_SPANNING_TREE_STATE: SpanningTreeView;
+  RESET_BPDU_GUARD_PORT: SpanningTreeView;
+  GET_ETHERCHANNEL_STATE: EtherChannelView;
+  GET_DISCOVERY_NEIGHBORS: DiscoveryNeighborsView;
+  CLEAR_DISCOVERY_NEIGHBORS: DiscoveryNeighborsView;
+  GET_OSPF_OVERVIEW: OspfOverviewView;
+  GET_OSPF_NEIGHBORS: OspfNeighborsView;
+  GET_OSPF_INTERFACES: OspfInterfacesView;
+  GET_OSPF_DATABASE: OspfDatabaseView;
+  RESTART_OSPF_PROCESS: OspfOverviewView;
   SERIALIZE_LAB: LabDocument;
 }
 

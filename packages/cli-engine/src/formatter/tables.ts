@@ -12,3 +12,16 @@ export function row(cells: Array<[text: string, width: number]>): string {
 export function dashes(width: number): string {
   return "-".repeat(width);
 }
+
+/**
+ * A simple header + rows table whose columns are as wide as their widest cell.
+ * Column widths are derived from the data, so output stays stable for a given
+ * device state and golden transcripts keep working.
+ */
+export function table(headers: readonly string[], rows: ReadonlyArray<readonly string[]>): string {
+  const widths = headers.map((header, index) =>
+    Math.max(header.length, ...rows.map((cells) => (cells[index] ?? "").length)) + 2);
+  const line = (cells: readonly string[]): string =>
+    row(cells.map((text, index) => [text, widths[index] ?? text.length + 2]));
+  return [line(headers), line(widths.map((width) => dashes(width - 2))), ...rows.map(line)].join("\n");
+}

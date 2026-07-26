@@ -160,6 +160,16 @@ export class Layer3Switch extends L2Switch {
     return this.routingPlane.loopbackNumbers();
   }
 
+  loopbackSummaries(): RouterInterfaceRow[] {
+    return this.routingPlane.loopbackSummaries();
+  }
+
+  /** Address a routed port, an SVI or a loopback by its logical name. */
+  setInterfaceIp(name: string, ip: Ipv4, mask: Ipv4 | number): void {
+    this.syncRoutingPlane();
+    this.routingPlane.setInterfaceIp(name, ip, mask);
+  }
+
   isLoopback(name: string): boolean {
     return this.routingPlane.isLoopback(name);
   }
