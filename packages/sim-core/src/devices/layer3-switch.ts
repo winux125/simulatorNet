@@ -228,7 +228,7 @@ export class Layer3Switch extends L2Switch {
   }
 
   protected override switchingEnabledOnPort(port: string): boolean {
-    return !this.routedPorts.has(port);
+    return !this.routedPorts.has(port) && super.switchingEnabledOnPort(port);
   }
 
   protected override receiveLocal(frame: EthernetFrame, _ingress: EthernetInterface, vlan: number): boolean {

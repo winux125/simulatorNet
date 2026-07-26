@@ -12,6 +12,10 @@ export function normalizeMac(mac: Mac): Mac {
 export const STP_BPDU_MAC: Mac = "01:80:c2:00:00:00";
 /** Cisco-like per-VLAN spanning-tree (PVST+) group address. */
 export const PVST_BPDU_MAC: Mac = "01:00:0c:cc:cc:cd";
+/** IEEE 802.3ad slow-protocols group address used by LACP. */
+export const SLOW_PROTOCOL_MAC: Mac = "01:80:c2:00:00:02";
+/** Cisco-like group address shared by PAgP and CDP. */
+export const CISCO_SHARED_MAC: Mac = "01:00:0c:cc:cc:cc";
 
 export function isBroadcastMac(mac: Mac): boolean {
   return normalizeMac(mac) === BROADCAST_MAC;

@@ -1,14 +1,30 @@
 import type { EthernetInterface } from "../net/interface";
 import type { BpduPacket } from "../packets/bpdu";
 import { type EthernetFrame, isControlPayload } from "../packets/ethernet";
+import type { LacpPacket, PagpPacket } from "../packets/etherchannel";
 import { EtherType } from "@sim/contracts";
+import {
+  EtherChannelStack,
+  type EtherChannelConfiguration,
+  type EtherChannelMode,
+  type EtherChannelSummary,
+  parsePortChannelName,
+  portChannelName,
+} from "../protocols/etherchannel";
 import {
   SpanningTree,
   type SpanningTreeLogicalPort,
   type SpanningTreeMode,
   type SpanningTreeSummary,
 } from "../protocols/spanning-tree";
-import { isBroadcastMac, type Mac, normalizeMac, PVST_BPDU_MAC } from "../util/mac";
+import {
+  CISCO_SHARED_MAC,
+  isBroadcastMac,
+  type Mac,
+  normalizeMac,
+  PVST_BPDU_MAC,
+  SLOW_PROTOCOL_MAC,
+} from "../util/mac";
 import { Device } from "./device";
 import { ForwardingDatabase } from "./forwarding-database";
 
@@ -96,6 +112,8 @@ export class L2Switch extends Device {
   readonly macTable = new Map<Mac, MacTableEntry>();
   /** Deterministic PVST/Rapid-PVST control plane; disabled until configured. */
   readonly spanningTree = new SpanningTree(this);
+  /** Layer-2 EtherChannel bundles with static, LACP or PAgP negotiation. */
+  readonly etherChannel = new EtherChannelStack(this);
   /** Forwarding database keyed per VLAN, so one MAC can live in several VLANs. */
   private readonly fdb = new ForwardingDatabase<number>();
   private readonly portConfig = new Map<string, SwitchPortConfig>();
@@ -117,18 +135,139 @@ export class L2Switch extends Device {
   }
 
   override onInterfaceStateChanged(iface: EthernetInterface): void {
+    this.etherChannel.onPortStateChanged(iface.name);
     this.spanningTree.onPortStateChanged(this.logicalPortOf(iface.name));
   }
 
-  /** Logical STP/forwarding port for a physical interface; a bundle overrides it. */
-  logicalPortOf(port: string): string {
-    return port;
+  // --- EtherChannel -------------------------------------------------------
+
+  /** `channel-group <id> mode <mode>` on the selected interface. */
+  addChannelGroupMember(channelId: number, port: string, mode: EtherChannelMode): void {
+    this.etherChannel.addMember(channelId, port, mode);
   }
 
-  /** Physical interfaces behind a logical port; a bundle overrides it. */
+  /** `no channel-group` on the selected interface. */
+  removeChannelGroupMember(port: string): void {
+    this.etherChannel.removeMember(port);
+  }
+
+  etherChannelConfigurations(): EtherChannelConfiguration[] {
+    return this.etherChannel.configurations();
+  }
+
+  etherChannelSummaries(): EtherChannelSummary[] {
+    return this.etherChannel.summaries();
+  }
+
+  etherChannelSystemId(): Mac {
+    return this.spanningTreeBridgeMac();
+  }
+
+  etherChannelPortNumber(port: string): number {
+    return [...this.interfaces.keys()].sort((a, b) => a.localeCompare(b)).indexOf(port) + 1;
+  }
+
+  etherChannelHasPort(port: string): boolean {
+    return this.interfaces.has(port);
+  }
+
+  etherChannelMemberAdminUp(port: string): boolean {
+    return this.interfaces.get(port)?.adminUp === true;
+  }
+
+  etherChannelMemberOperationalUp(port: string): boolean {
+    return this.interfaces.get(port)?.operationalUp === true;
+  }
+
+  /**
+   * Every switchport attribute members of one bundle must agree on.
+   * Administrative state is deliberately excluded: a shut member simply detaches
+   * from the bundle, and including it would make the remaining members look
+   * incompatible as soon as the reference port was shut down.
+   */
+  etherChannelSwitchportSignature(port: string): string {
+    const cfg = this.rawPortConfigOf(port);
+    const allowed = cfg.allowedVlans ? [...cfg.allowedVlans].sort((a, b) => a - b).join(",") : "all";
+    return `${cfg.mode}/access=${cfg.accessVlan}/native=${cfg.nativeVlan}/allowed=${allowed}`;
+  }
+
+  etherChannelSwitchportConfigured(port: string): boolean {
+    return this.portConfig.has(port);
+  }
+
+  etherChannelSend(port: string, payload: LacpPacket | PagpPacket): void {
+    const iface = this.interfaces.get(port);
+    if (!iface?.operationalUp) return;
+    iface.transmit({
+      src: iface.mac,
+      dst: payload.kind === "lacp" ? SLOW_PROTOCOL_MAC : CISCO_SHARED_MAC,
+      etherType: EtherType.LLC,
+      payload,
+    });
+  }
+
+  etherChannelTopologyChanged(): void {
+    this.spanningTree.arm();
+  }
+
+  /** Logical STP/forwarding port for a physical interface. */
+  logicalPortOf(port: string): string {
+    const channelId = this.etherChannel.channelOf(port);
+    return channelId === undefined ? port : portChannelName(channelId);
+  }
+
+  /** Physical interfaces currently behind a logical port. */
   physicalPortsOf(logicalPort: string): EthernetInterface[] {
-    const iface = this.interfaces.get(logicalPort);
-    return iface ? [iface] : [];
+    const direct = this.interfaces.get(logicalPort);
+    if (direct) return [direct];
+    const channelId = parsePortChannelName(logicalPort);
+    if (channelId === undefined) return [];
+    return this.etherChannel.activeMembers(channelId)
+      .flatMap((port) => {
+        const iface = this.interfaces.get(port);
+        return iface ? [iface] : [];
+      });
+  }
+
+  /**
+   * Stable per-flow key. Only fields the engine actually models take part, so
+   * every frame of one conversation always leaves through the same member.
+   */
+  protected flowKeyOf(frame: EthernetFrame): string {
+    const parts = [normalizeMac(frame.src), normalizeMac(frame.dst)];
+    if (frame.payload.kind === "ipv4") parts.push(frame.payload.src, frame.payload.dst);
+    return parts.join("|");
+  }
+
+  /** Which physical interface actually carries a frame out of a logical port. */
+  protected egressInterfaceFor(logicalPort: string, frame: EthernetFrame): EthernetInterface | undefined {
+    const direct = this.interfaces.get(logicalPort);
+    if (direct) return direct;
+    const channelId = parsePortChannelName(logicalPort);
+    if (channelId === undefined) return undefined;
+    const member = this.etherChannel.selectMember(channelId, this.flowKeyOf(frame));
+    if (member === undefined) return undefined;
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "etherchannel-frame-member-selected",
+      device: this.id,
+      detail: { channel: channelId, port: logicalPort, interface: member, flow: this.flowKeyOf(frame) },
+    });
+    return this.interfaces.get(member);
+  }
+
+  /** Deduplicated logical egress ports, preserving stable interface order. */
+  protected egressLogicalPorts(): string[] {
+    const ports: string[] = [];
+    const seen = new Set<string>();
+    for (const name of this.interfaces.keys()) {
+      if (!this.switchingEnabledOnPort(name)) continue;
+      const logical = this.logicalPortOf(name);
+      if (seen.has(logical)) continue;
+      seen.add(logical);
+      ports.push(logical);
+    }
+    return ports;
   }
 
   spanningTreeBridgeMac(): Mac {
@@ -150,6 +289,8 @@ export class L2Switch extends Device {
       if (seen.has(logical)) return;
       seen.add(logical);
       ports.push({
+        // A bundle is one logical port: STP must never run an independent
+        // instance per member, or the bundle would look like a loop.
         id: logical,
         number: index + 1,
         adminUp: this.logicalPortAdminUp(logical),
@@ -295,7 +436,8 @@ export class L2Switch extends Device {
     for (const info of this.vlans.values()) {
       rows.set(info.id, { id: info.id, name: info.name, ports: [] });
     }
-    for (const name of this.interfaces.keys()) {
+    // Bundled members are represented by their Port-channel, as on a real switch.
+    for (const name of this.egressLogicalPorts()) {
       const cfg = this.portConfigOf(name);
       if (cfg.mode !== "access") continue; // trunk ports are not listed under a VLAN
       let row = rows.get(cfg.accessVlan);
@@ -318,7 +460,7 @@ export class L2Switch extends Device {
   /** `show interfaces trunk`: the trunk ports and their VLAN scope. */
   trunkSummary(): TrunkRow[] {
     const rows: TrunkRow[] = [];
-    for (const name of this.interfaces.keys()) {
+    for (const name of this.egressLogicalPorts()) {
       const cfg = this.portConfigOf(name);
       if (cfg.mode !== "trunk") continue;
       rows.push({
@@ -343,7 +485,9 @@ export class L2Switch extends Device {
   portSummaries(): SwitchPortRow[] {
     const rows: SwitchPortRow[] = [];
     for (const [name, iface] of this.interfaces) {
-      const cfg = this.portConfigOf(name);
+      // Report what was configured on this port, never the bundle's inherited
+      // values, so saving a lab can never rewrite a member's configuration.
+      const cfg = this.rawPortConfigOf(name);
       rows.push({
         name,
         mode: cfg.mode,
@@ -358,8 +502,21 @@ export class L2Switch extends Device {
     return rows;
   }
 
-  /** The effective config for a port; unconfigured ports are access VLAN 1. */
+  /**
+   * The effective config used by the data plane. A member of an EtherChannel
+   * inherits the bundle's switchport configuration without its own stored
+   * configuration ever being rewritten.
+   */
   portConfigOf(port: string): SwitchPortConfig {
+    const memberChannel = this.etherChannel.channelOf(port);
+    if (memberChannel !== undefined) return this.bundleConfigOf(memberChannel);
+    const channelId = parsePortChannelName(port);
+    if (channelId !== undefined && this.etherChannel.hasChannel(channelId)) return this.bundleConfigOf(channelId);
+    return this.rawPortConfigOf(port);
+  }
+
+  /** The configuration stored for this exact port; used by `show` and saving. */
+  rawPortConfigOf(port: string): SwitchPortConfig {
     return (
       this.portConfig.get(port) ?? {
         mode: "access",
@@ -367,6 +524,18 @@ export class L2Switch extends Device {
         nativeVlan: DEFAULT_VLAN,
       }
     );
+  }
+
+  /**
+   * A bundle takes its switchport configuration from the Port-channel
+   * interface when one was configured, otherwise from its first member.
+   */
+  private bundleConfigOf(channelId: number): SwitchPortConfig {
+    const logical = portChannelName(channelId);
+    if (this.portConfig.has(logical)) return this.rawPortConfigOf(logical);
+    const reference = this.etherChannel.configurations()
+      .find((channel) => channel.channelId === channelId)?.members[0];
+    return this.rawPortConfigOf(reference ?? logical);
   }
 
   override onReceive(frame: EthernetFrame, ingress: EthernetInterface): void {
@@ -400,14 +569,16 @@ export class L2Switch extends Device {
     }
 
     const src = normalizeMac(frame.src);
-    const entry = { port: ingress.name, vlan, learnedAt: this.engine.now() };
+    // Addresses are learned against the logical port, so an EtherChannel shows
+    // up once in the forwarding database instead of once per member.
+    const entry = { port: logical, vlan, learnedAt: this.engine.now() };
     this.macTable.set(src, entry);
-    this.fdb.learn(vlan, src, ingress.name, this.engine.now());
+    this.fdb.learn(vlan, src, logical, this.engine.now());
     this.engine.trace({
       time: this.engine.now(),
       type: "mac-learn",
       device: this.id,
-      detail: { mac: src, port: ingress.name, vlan },
+      detail: { mac: src, port: logical, vlan },
     });
 
     // Learning state learns addresses but must not yet relay user data.
@@ -432,24 +603,31 @@ export class L2Switch extends Device {
       return;
     }
 
-    const egress = this.interfaces.get(dstEntry.port);
-    if (!egress || egress === ingress) return; // same-port destination: drop
-    if (!this.portCarriesVlan(egress.name, vlan)) return;
-    if (!this.egressAllowedBySpanningTree(egress.name, vlan)) return;
+    const egressLogical = dstEntry.port;
+    if (egressLogical === logical) return; // same-port destination: drop
+    if (!this.portCarriesVlan(egressLogical, vlan)) return;
+    if (!this.egressAllowedBySpanningTree(egressLogical, vlan)) return;
+    const egress = this.egressInterfaceFor(egressLogical, frame);
+    if (!egress?.operationalUp) return;
     this.engine.trace({
       time: this.engine.now(),
       type: "forward",
       device: this.id,
-      detail: { dst, port: egress.name, vlan },
+      detail: { dst, port: egressLogical, interface: egress.name, vlan },
     });
-    egress.transmit(this.egressFrame(egress.name, vlan, frame));
+    egress.transmit(this.egressFrame(egressLogical, vlan, frame));
   }
 
   /** Dispatch a link-local control payload to the matching control plane. */
   protected receiveControlFrame(frame: EthernetFrame, ingress: EthernetInterface): void {
-    if (frame.payload.kind === "bpdu") {
-      this.spanningTree.onBpdu(frame.payload, this.logicalPortOf(ingress.name));
+    const payload = frame.payload;
+    if (payload.kind === "bpdu") {
+      this.spanningTree.onBpdu(payload, this.logicalPortOf(ingress.name));
+      return;
     }
+    // Negotiation messages belong to the physical member, never to the bundle.
+    if (payload.kind === "lacp") this.etherChannel.onLacpdu(payload, ingress.name);
+    else if (payload.kind === "pagp") this.etherChannel.onPagp(payload, ingress.name);
   }
 
   protected egressAllowedBySpanningTree(port: string, vlan: number): boolean {
@@ -478,13 +656,15 @@ export class L2Switch extends Device {
       device: this.id,
       detail: { dst: normalizeMac(frame.dst), vlan },
     });
-    for (const iface of this.interfaces.values()) {
-      if (iface === ingress) continue;
-      if (!this.switchingEnabledOnPort(iface.name)) continue;
-      if (!iface.operationalUp) continue;
-      if (!this.portCarriesVlan(iface.name, vlan)) continue;
-      if (!this.egressAllowedBySpanningTree(iface.name, vlan)) continue;
-      iface.transmit(this.egressFrame(iface.name, vlan, frame));
+    const ingressLogical = ingress ? this.logicalPortOf(ingress.name) : undefined;
+    for (const logical of this.egressLogicalPorts()) {
+      if (logical === ingressLogical) continue;
+      if (!this.portCarriesVlan(logical, vlan)) continue;
+      if (!this.egressAllowedBySpanningTree(logical, vlan)) continue;
+      // One copy per bundle, never one per member.
+      const iface = this.egressInterfaceFor(logical, frame);
+      if (!iface?.operationalUp) continue;
+      iface.transmit(this.egressFrame(logical, vlan, frame));
     }
   }
 
@@ -520,8 +700,9 @@ export class L2Switch extends Device {
     return frame.vlan === undefined ? frame : { ...frame, vlan: undefined };
   }
 
-  protected switchingEnabledOnPort(_port: string): boolean {
-    return true;
+  /** A suspended EtherChannel member carries no user data at all. */
+  protected switchingEnabledOnPort(port: string): boolean {
+    return !this.etherChannel.isSuspended(port);
   }
 
   /** Hook for a local control/L3 plane. Broadcasts may be consumed and flooded. */
@@ -532,12 +713,14 @@ export class L2Switch extends Device {
   protected transmitFromLocal(frame: EthernetFrame, vlan: number): void {
     const destination = normalizeMac(frame.dst);
     const learned = isBroadcastMac(destination) ? undefined : this.fdb.lookup(vlan, destination, this.engine.now());
-    const egress = learned ? this.interfaces.get(learned.port) : undefined;
-    if (egress?.operationalUp
-      && this.portCarriesVlan(egress.name, vlan)
-      && this.egressAllowedBySpanningTree(egress.name, vlan)) {
-      egress.transmit(this.egressFrame(egress.name, vlan, frame));
-      return;
+    if (learned
+      && this.portCarriesVlan(learned.port, vlan)
+      && this.egressAllowedBySpanningTree(learned.port, vlan)) {
+      const egress = this.egressInterfaceFor(learned.port, frame);
+      if (egress?.operationalUp) {
+        egress.transmit(this.egressFrame(learned.port, vlan, frame));
+        return;
+      }
     }
     this.flood(frame, vlan);
   }
