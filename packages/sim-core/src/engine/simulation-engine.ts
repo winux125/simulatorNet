@@ -1,6 +1,7 @@
 import type { Device } from "../devices/device";
 import { Link } from "../net/link";
 import { AclRuleBudget } from "../policy/packet-policy-engine";
+import { ControlProtocolBudget } from "../protocols/limits";
 import { DEFAULT_LINK_DELAY_NS } from "./constants";
 import { EventQueue } from "./event-queue";
 import { SeededRandom } from "./seeded-random";
@@ -34,6 +35,8 @@ export class SimulationEngine {
   readonly traceLog: TraceEntry[] = [];
   /** Shared 2,048-rule ACL budget across every routed device in this lab. */
   readonly aclRuleBudget = new AclRuleBudget();
+  /** Shared per-operation event budget for STP, EtherChannel, discovery, OSPF. */
+  readonly controlProtocolBudget = new ControlProtocolBudget();
 
   private readonly clock = new VirtualClock();
   private readonly queue = new EventQueue();
@@ -72,6 +75,8 @@ export class SimulationEngine {
     a.link = link;
     b.link = link;
     this.links.push(link);
+    // Cabling changes both ports' operational state, which arms control protocols.
+    a.notifyStateChanged();
     return link;
   }
 

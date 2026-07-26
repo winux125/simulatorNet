@@ -21,8 +21,16 @@ export const DeviceKind = {
 export type DeviceKind = (typeof DeviceKind)[keyof typeof DeviceKind];
 
 export const EtherType = {
+  /**
+   * IEEE 802.3 length/LLC encapsulation. STP, LACP, PAgP and CDP are carried
+   * over 802.2 LLC rather than an EtherType; SimulatorNet never serializes
+   * frames to bytes, so this discriminator stands in for that encapsulation.
+   */
+  LLC: 0x0000,
   IPv4: 0x0800,
   ARP: 0x0806,
+  /** IEEE 802.1AB LLDP, which really does use its own EtherType. */
+  LLDP: 0x88cc,
   IPv6: 0x86dd,
 } as const;
 export type EtherType = (typeof EtherType)[keyof typeof EtherType];

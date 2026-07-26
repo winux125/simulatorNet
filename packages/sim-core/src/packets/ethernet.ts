@@ -1,10 +1,22 @@
 import type { EtherType } from "@sim/contracts";
 import type { Mac } from "../util/mac";
 import type { ArpPacket } from "./arp";
+import type { BpduPacket } from "./bpdu";
 import type { Ipv4Packet } from "./ipv4";
 
-/** Layer-3 payloads an Ethernet frame can carry, discriminated by `kind`. */
-export type L2Payload = ArpPacket | Ipv4Packet;
+/**
+ * Link-local control payloads. They are consumed by the receiving device's
+ * control plane and are never routed, NATed, or filtered by an IP ACL.
+ */
+export type L2ControlPayload = BpduPacket;
+
+/** Payloads an Ethernet frame can carry, discriminated by `kind`. */
+export type L2Payload = ArpPacket | Ipv4Packet | L2ControlPayload;
+
+/** True for a payload handled by a device's link-local control plane. */
+export function isControlPayload(payload: L2Payload): payload is L2ControlPayload {
+  return payload.kind === "bpdu";
+}
 
 export interface EthernetFrame {
   readonly src: Mac;

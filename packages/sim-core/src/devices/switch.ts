@@ -1,6 +1,14 @@
 import type { EthernetInterface } from "../net/interface";
-import type { EthernetFrame } from "../packets/ethernet";
-import { isBroadcastMac, type Mac, normalizeMac } from "../util/mac";
+import type { BpduPacket } from "../packets/bpdu";
+import { type EthernetFrame, isControlPayload } from "../packets/ethernet";
+import { EtherType } from "@sim/contracts";
+import {
+  SpanningTree,
+  type SpanningTreeLogicalPort,
+  type SpanningTreeMode,
+  type SpanningTreeSummary,
+} from "../protocols/spanning-tree";
+import { isBroadcastMac, type Mac, normalizeMac, PVST_BPDU_MAC } from "../util/mac";
 import { Device } from "./device";
 import { ForwardingDatabase } from "./forwarding-database";
 
@@ -74,23 +82,141 @@ function defaultVlanName(id: number): string {
  * VLAN only: known unicast out the single learned port, broadcast/unknown
  * unicast flooded to every other port that carries the VLAN. Egress framing is
  * re-derived per port, so a frame can leave tagged on a trunk and untagged on an
- * access port. STP is not modelled yet — topologies must be loop-free.
+ * access port.
+ *
+ * A deterministic PVST/Rapid-PVST spanning tree gates the data plane once it is
+ * enabled with `spanning-tree mode`. It is disabled by default so that existing
+ * loop-free labs keep forwarding from the first virtual nanosecond; a redundant
+ * topology must enable it explicitly, and the frame traversal budget stays as
+ * the last-resort protection for labs that deliberately leave it off.
  */
 export class L2Switch extends Device {
   readonly deviceType: import("@sim/contracts").DeviceType = "l2-switch";
   /** Last-seen location of each MAC (for inspection / `show mac address-table`). */
   readonly macTable = new Map<Mac, MacTableEntry>();
+  /** Deterministic PVST/Rapid-PVST control plane; disabled until configured. */
+  readonly spanningTree = new SpanningTree(this);
   /** Forwarding database keyed per VLAN, so one MAC can live in several VLANs. */
   private readonly fdb = new ForwardingDatabase<number>();
   private readonly portConfig = new Map<string, SwitchPortConfig>();
   /** The VLAN database (`vlan <id>` / `name <name>`); VLAN 1 always exists. */
   private readonly vlans = new Map<number, VlanInfo>([[DEFAULT_VLAN, { id: DEFAULT_VLAN, name: "default" }]]);
 
+  // --- spanning tree ------------------------------------------------------
+
+  setSpanningTreeMode(mode: SpanningTreeMode): void {
+    this.spanningTree.setMode(mode);
+  }
+
+  get spanningTreeMode(): SpanningTreeMode {
+    return this.spanningTree.currentMode;
+  }
+
+  spanningTreeSummary(): SpanningTreeSummary {
+    return this.spanningTree.summary();
+  }
+
+  override onInterfaceStateChanged(iface: EthernetInterface): void {
+    this.spanningTree.onPortStateChanged(this.logicalPortOf(iface.name));
+  }
+
+  /** Logical STP/forwarding port for a physical interface; a bundle overrides it. */
+  logicalPortOf(port: string): string {
+    return port;
+  }
+
+  /** Physical interfaces behind a logical port; a bundle overrides it. */
+  physicalPortsOf(logicalPort: string): EthernetInterface[] {
+    const iface = this.interfaces.get(logicalPort);
+    return iface ? [iface] : [];
+  }
+
+  spanningTreeBridgeMac(): Mac {
+    let lowest: Mac | undefined;
+    for (const iface of this.interfaces.values()) {
+      const mac = normalizeMac(iface.mac);
+      if (lowest === undefined || mac.localeCompare(lowest) < 0) lowest = mac;
+    }
+    return lowest ?? "00:00:00:00:00:00";
+  }
+
+  spanningTreeLogicalPorts(): readonly SpanningTreeLogicalPort[] {
+    const names = [...this.interfaces.keys()].sort((a, b) => a.localeCompare(b));
+    const ports: SpanningTreeLogicalPort[] = [];
+    const seen = new Set<string>();
+    names.forEach((name, index) => {
+      if (!this.switchingEnabledOnPort(name)) return;
+      const logical = this.logicalPortOf(name);
+      if (seen.has(logical)) return;
+      seen.add(logical);
+      ports.push({
+        id: logical,
+        number: index + 1,
+        adminUp: this.logicalPortAdminUp(logical),
+        operationalUp: this.logicalPortOperationalUp(logical),
+        vlans: this.vlansCarriedBy(logical),
+        pointToPoint: true,
+      });
+    });
+    return ports;
+  }
+
+  spanningTreeSendBpdu(logicalPort: string, bpdu: BpduPacket): void {
+    const iface = this.bpduEgressInterface(logicalPort);
+    if (!iface) return;
+    iface.transmit({
+      src: iface.mac,
+      dst: PVST_BPDU_MAC,
+      etherType: EtherType.LLC,
+      // PVST-like BPDUs ride the VLAN they describe; VLAN 1 goes untagged.
+      vlan: bpdu.vlanId === DEFAULT_VLAN ? undefined : bpdu.vlanId,
+      payload: bpdu,
+    });
+  }
+
+  spanningTreeFlushForwarding(vlanId: number): void {
+    this.fdb.clearScope(vlanId);
+    for (const [mac, entry] of [...this.macTable]) {
+      if (entry.vlan === vlanId) this.macTable.delete(mac);
+    }
+  }
+
+  /** Which physical interface actually carries a logical port's BPDUs. */
+  protected bpduEgressInterface(logicalPort: string): EthernetInterface | undefined {
+    return this.physicalPortsOf(logicalPort).find((iface) => iface.operationalUp);
+  }
+
+  protected logicalPortAdminUp(logicalPort: string): boolean {
+    return this.physicalPortsOf(logicalPort).some((iface) => iface.adminUp);
+  }
+
+  protected logicalPortOperationalUp(logicalPort: string): boolean {
+    return this.physicalPortsOf(logicalPort).some((iface) => iface.operationalUp);
+  }
+
+  /** Every VLAN a logical port participates in, used to size STP instances. */
+  protected vlansCarriedBy(logicalPort: string): number[] {
+    const cfg = this.portConfigOf(logicalPort);
+    if (cfg.mode === "access") return [cfg.accessVlan];
+    const database = [...this.vlans.keys()];
+    const allowed = cfg.allowedVlans ? database.filter((vlan) => cfg.allowedVlans!.has(vlan)) : database;
+    const withNative = new Set(allowed);
+    if (cfg.allowedVlans === undefined || cfg.allowedVlans.has(cfg.nativeVlan)) withNative.add(cfg.nativeVlan);
+    return [...withNative].sort((a, b) => a - b);
+  }
+
   // --- configuration (public API called by the CLI) ----------------------
+
+  /** VLAN membership or port mode changed: let the spanning tree reconverge. */
+  protected switchportChanged(): void {
+    this.spanningTree.arm();
+  }
 
   /** `vlan <id>`: create the VLAN in the database if absent. */
   defineVlan(id: number): void {
-    if (!this.vlans.has(id)) this.vlans.set(id, { id, name: defaultVlanName(id) });
+    if (this.vlans.has(id)) return;
+    this.vlans.set(id, { id, name: defaultVlanName(id) });
+    this.switchportChanged();
   }
 
   hasVlan(id: number): boolean {
@@ -106,33 +232,39 @@ export class L2Switch extends Device {
   /** `switchport mode access`. */
   setPortModeAccess(port: string): void {
     this.ensureConfig(port).mode = "access";
+    this.switchportChanged();
   }
 
   /** `switchport mode trunk`. */
   setPortModeTrunk(port: string): void {
     this.ensureConfig(port).mode = "trunk";
+    this.switchportChanged();
   }
 
   /** `switchport access vlan <id>`. */
   setAccessVlan(port: string, vlan: number): void {
     this.defineVlan(vlan);
     this.ensureConfig(port).accessVlan = vlan;
+    this.switchportChanged();
   }
 
   /** `switchport trunk native vlan <id>`. */
   setTrunkNativeVlan(port: string, vlan: number): void {
     this.ensureConfig(port).nativeVlan = vlan;
+    this.switchportChanged();
   }
 
   /** `switchport trunk allowed vlan <list>`. */
   setTrunkAllowedVlans(port: string, vlans: Iterable<number>): void {
     this.ensureConfig(port).allowedVlans = new Set(vlans);
+    this.switchportChanged();
   }
 
   /** Convenience: configure an access port in one call. */
   setAccess(port: string, vlan: number): void {
     this.defineVlan(vlan);
     this.portConfig.set(port, { mode: "access", accessVlan: vlan, nativeVlan: DEFAULT_VLAN });
+    this.switchportChanged();
   }
 
   /** Convenience: configure an 802.1Q trunk in one call. */
@@ -143,6 +275,7 @@ export class L2Switch extends Device {
       nativeVlan: opts.nativeVlan ?? DEFAULT_VLAN,
       allowedVlans: opts.allowedVlans ? new Set(opts.allowedVlans) : undefined,
     });
+    this.switchportChanged();
   }
 
   private ensureConfig(port: string): SwitchPortConfig {
@@ -238,8 +371,33 @@ export class L2Switch extends Device {
 
   override onReceive(frame: EthernetFrame, ingress: EthernetInterface): void {
     if (!this.switchingEnabledOnPort(ingress.name)) return;
+    // Link-local control frames are consumed here: a blocking port still
+    // receives and sends BPDUs, which is exactly how a loop stays broken.
+    if (isControlPayload(frame.payload)) {
+      this.receiveControlFrame(frame, ingress);
+      return;
+    }
     const vlan = this.ingressVlan(ingress.name, frame);
     if (vlan === undefined) return; // frame not permitted on this port: drop
+
+    const logical = this.logicalPortOf(ingress.name);
+    const stpState = this.spanningTree.portState(logical, vlan);
+    if (!this.spanningTree.allowsLearning(logical, vlan)) {
+      this.engine.trace({
+        time: this.engine.now(),
+        type: "stp-frame-blocked",
+        device: this.id,
+        detail: {
+          interface: ingress.name,
+          port: logical,
+          vlan,
+          state: stpState,
+          role: this.spanningTree.portRole(logical, vlan),
+          direction: "ingress",
+        },
+      });
+      return;
+    }
 
     const src = normalizeMac(frame.src);
     const entry = { port: ingress.name, vlan, learnedAt: this.engine.now() };
@@ -251,6 +409,17 @@ export class L2Switch extends Device {
       device: this.id,
       detail: { mac: src, port: ingress.name, vlan },
     });
+
+    // Learning state learns addresses but must not yet relay user data.
+    if (!this.spanningTree.allowsForwarding(logical, vlan)) {
+      this.engine.trace({
+        time: this.engine.now(),
+        type: "stp-frame-blocked",
+        device: this.id,
+        detail: { interface: ingress.name, port: logical, vlan, state: stpState, direction: "learning-only" },
+      });
+      return;
+    }
 
     const dst = normalizeMac(frame.dst);
     const consumed = this.receiveLocal(frame, ingress, vlan);
@@ -266,6 +435,7 @@ export class L2Switch extends Device {
     const egress = this.interfaces.get(dstEntry.port);
     if (!egress || egress === ingress) return; // same-port destination: drop
     if (!this.portCarriesVlan(egress.name, vlan)) return;
+    if (!this.egressAllowedBySpanningTree(egress.name, vlan)) return;
     this.engine.trace({
       time: this.engine.now(),
       type: "forward",
@@ -273,6 +443,32 @@ export class L2Switch extends Device {
       detail: { dst, port: egress.name, vlan },
     });
     egress.transmit(this.egressFrame(egress.name, vlan, frame));
+  }
+
+  /** Dispatch a link-local control payload to the matching control plane. */
+  protected receiveControlFrame(frame: EthernetFrame, ingress: EthernetInterface): void {
+    if (frame.payload.kind === "bpdu") {
+      this.spanningTree.onBpdu(frame.payload, this.logicalPortOf(ingress.name));
+    }
+  }
+
+  protected egressAllowedBySpanningTree(port: string, vlan: number): boolean {
+    const logical = this.logicalPortOf(port);
+    if (this.spanningTree.allowsForwarding(logical, vlan)) return true;
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "stp-frame-blocked",
+      device: this.id,
+      detail: {
+        interface: port,
+        port: logical,
+        vlan,
+        state: this.spanningTree.portState(logical, vlan),
+        role: this.spanningTree.portRole(logical, vlan),
+        direction: "egress",
+      },
+    });
+    return false;
   }
 
   protected flood(frame: EthernetFrame, vlan: number, ingress?: EthernetInterface): void {
@@ -287,6 +483,7 @@ export class L2Switch extends Device {
       if (!this.switchingEnabledOnPort(iface.name)) continue;
       if (!iface.operationalUp) continue;
       if (!this.portCarriesVlan(iface.name, vlan)) continue;
+      if (!this.egressAllowedBySpanningTree(iface.name, vlan)) continue;
       iface.transmit(this.egressFrame(iface.name, vlan, frame));
     }
   }
@@ -303,7 +500,7 @@ export class L2Switch extends Device {
     return this.trunkAllows(cfg, vlan) ? vlan : undefined;
   }
 
-  protected portCarriesVlan(port: string, vlan: number): boolean {
+  portCarriesVlan(port: string, vlan: number): boolean {
     if (!this.switchingEnabledOnPort(port)) return false;
     const cfg = this.portConfigOf(port);
     return cfg.mode === "access" ? cfg.accessVlan === vlan : this.trunkAllows(cfg, vlan);
@@ -336,7 +533,9 @@ export class L2Switch extends Device {
     const destination = normalizeMac(frame.dst);
     const learned = isBroadcastMac(destination) ? undefined : this.fdb.lookup(vlan, destination, this.engine.now());
     const egress = learned ? this.interfaces.get(learned.port) : undefined;
-    if (egress?.operationalUp && this.portCarriesVlan(egress.name, vlan)) {
+    if (egress?.operationalUp
+      && this.portCarriesVlan(egress.name, vlan)
+      && this.egressAllowedBySpanningTree(egress.name, vlan)) {
       egress.transmit(this.egressFrame(egress.name, vlan, frame));
       return;
     }

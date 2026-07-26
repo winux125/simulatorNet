@@ -47,6 +47,13 @@ export class ForwardingDatabase<Scope extends string | number> {
     this.table.clear();
   }
 
+  /** Scoped ageing: discard only the entries learned inside one VLAN/bridge. */
+  clearScope(scope: Scope): void {
+    for (const entry of [...this.table.values()]) {
+      if (entry.scope === scope) this.table.delete(this.key(entry.scope, entry.mac));
+    }
+  }
+
   private key(scope: Scope, mac: Mac): string {
     return `${String(scope)}\u0000${mac}`;
   }

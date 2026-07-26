@@ -23,12 +23,27 @@ export class EthernetInterface {
 
   /** `shutdown`: administratively disable the port. */
   shutdown(): void {
+    if (!this.adminUp) return;
     this.adminUp = false;
+    this.notifyStateChanged();
   }
 
   /** `no shutdown`: administratively enable the port. */
   noShutdown(): void {
+    if (this.adminUp) return;
     this.adminUp = true;
+    this.notifyStateChanged();
+  }
+
+  /**
+   * Tell both ends that this port's operational state may have changed, so a
+   * control protocol can reconverge. Both sides are notified because
+   * `operationalUp` depends on the peer's administrative state too.
+   */
+  notifyStateChanged(): void {
+    this.device.onInterfaceStateChanged(this);
+    const peer = this.peer();
+    if (peer) peer.device.onInterfaceStateChanged(peer);
   }
 
   setDescription(text: string): void {

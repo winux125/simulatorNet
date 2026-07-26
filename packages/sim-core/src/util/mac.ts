@@ -8,8 +8,19 @@ export function normalizeMac(mac: Mac): Mac {
   return mac.trim().toLowerCase();
 }
 
+/** IEEE 802.1D spanning-tree group address. */
+export const STP_BPDU_MAC: Mac = "01:80:c2:00:00:00";
+/** Cisco-like per-VLAN spanning-tree (PVST+) group address. */
+export const PVST_BPDU_MAC: Mac = "01:00:0c:cc:cc:cd";
+
 export function isBroadcastMac(mac: Mac): boolean {
   return normalizeMac(mac) === BROADCAST_MAC;
+}
+
+/** True for a group (multicast) address; the low bit of the first octet is set. */
+export function isMulticastMac(mac: Mac): boolean {
+  const first = Number.parseInt(normalizeMac(mac).slice(0, 2), 16);
+  return Number.isFinite(first) && (first & 1) === 1;
 }
 
 export function macEquals(a: Mac, b: Mac): boolean {

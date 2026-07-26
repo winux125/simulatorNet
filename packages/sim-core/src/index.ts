@@ -27,6 +27,7 @@ export * from "./devices/external-appliance";
 // Packets / frames
 export * from "./packets/ethernet";
 export * from "./packets/arp";
+export * from "./packets/bpdu";
 export * from "./packets/ipv4";
 export * from "./packets/icmp";
 export * from "./packets/udp";
@@ -36,6 +37,11 @@ export * from "./packets/dhcp";
 // Reusable L3 packet policy (Router, L3 switch, and future Firewall)
 export * from "./policy/packet-policy-engine";
 export * from "./policy/nat-engine";
+
+// Deterministic control protocols
+export * from "./protocols/limits";
+export * from "./protocols/protocol-activity";
+export * from "./protocols/spanning-tree";
 
 // Host transport
 export * from "./transport/errors";

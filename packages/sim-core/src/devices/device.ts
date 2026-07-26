@@ -51,6 +51,12 @@ export abstract class Device {
   /** Lifecycle hook for deterministic lab-scoped resources such as ACL budgets. */
   onAddedToEngine(): void {}
 
+  /**
+   * Hook invoked when a port is cabled, shut down, or brought back up. Control
+   * protocols use it to re-open their bounded activity window and reconverge.
+   */
+  onInterfaceStateChanged(_iface: EthernetInterface): void {}
+
   getInterface(name: string): EthernetInterface | undefined {
     return this.interfaces.get(name);
   }
