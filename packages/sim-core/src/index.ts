@@ -29,6 +29,7 @@ export * from "./packets/ethernet";
 export * from "./packets/arp";
 export * from "./packets/bpdu";
 export * from "./packets/etherchannel";
+export * from "./packets/discovery";
 export * from "./packets/ipv4";
 export * from "./packets/icmp";
 export * from "./packets/udp";
@@ -44,6 +45,8 @@ export * from "./protocols/limits";
 export * from "./protocols/protocol-activity";
 export * from "./protocols/spanning-tree";
 export * from "./protocols/etherchannel";
+export * from "./protocols/discovery-support";
+export * from "./protocols/neighbor-discovery";
 
 // Host transport
 export * from "./transport/errors";

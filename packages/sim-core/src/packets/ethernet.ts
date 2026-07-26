@@ -2,6 +2,7 @@ import type { EtherType } from "@sim/contracts";
 import type { Mac } from "../util/mac";
 import type { ArpPacket } from "./arp";
 import type { BpduPacket } from "./bpdu";
+import type { CdpPacket, LldpPacket } from "./discovery";
 import type { LacpPacket, PagpPacket } from "./etherchannel";
 import type { Ipv4Packet } from "./ipv4";
 
@@ -9,9 +10,9 @@ import type { Ipv4Packet } from "./ipv4";
  * Link-local control payloads. They are consumed by the receiving device's
  * control plane and are never routed, NATed, or filtered by an IP ACL.
  */
-export type L2ControlPayload = BpduPacket | LacpPacket | PagpPacket;
+export type L2ControlPayload = BpduPacket | LacpPacket | PagpPacket | CdpPacket | LldpPacket;
 
-const CONTROL_PAYLOAD_KINDS = new Set(["bpdu", "lacp", "pagp"]);
+const CONTROL_PAYLOAD_KINDS = new Set(["bpdu", "lacp", "pagp", "cdp", "lldp"]);
 
 /** Payloads an Ethernet frame can carry, discriminated by `kind`. */
 export type L2Payload = ArpPacket | Ipv4Packet | L2ControlPayload;

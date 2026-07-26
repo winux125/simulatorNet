@@ -16,6 +16,8 @@ export const PVST_BPDU_MAC: Mac = "01:00:0c:cc:cc:cd";
 export const SLOW_PROTOCOL_MAC: Mac = "01:80:c2:00:00:02";
 /** Cisco-like group address shared by PAgP and CDP. */
 export const CISCO_SHARED_MAC: Mac = "01:00:0c:cc:cc:cc";
+/** IEEE 802.1AB nearest-bridge group address used by LLDP. */
+export const LLDP_MAC: Mac = "01:80:c2:00:00:0e";
 
 export function isBroadcastMac(mac: Mac): boolean {
   return normalizeMac(mac) === BROADCAST_MAC;

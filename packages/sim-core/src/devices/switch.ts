@@ -1,8 +1,11 @@
 import type { EthernetInterface } from "../net/interface";
 import type { BpduPacket } from "../packets/bpdu";
 import { type EthernetFrame, isControlPayload } from "../packets/ethernet";
+import type { CdpPacket, DiscoveryCapability, LldpPacket } from "../packets/discovery";
 import type { LacpPacket, PagpPacket } from "../packets/etherchannel";
 import { EtherType } from "@sim/contracts";
+import { discoveryCapabilitiesFor, discoveryPlatformFor, supportsCdp } from "../protocols/discovery-support";
+import { NeighborDiscovery } from "../protocols/neighbor-discovery";
 import {
   EtherChannelStack,
   type EtherChannelConfiguration,
@@ -20,6 +23,7 @@ import {
 import {
   CISCO_SHARED_MAC,
   isBroadcastMac,
+  LLDP_MAC,
   type Mac,
   normalizeMac,
   PVST_BPDU_MAC,
@@ -114,6 +118,8 @@ export class L2Switch extends Device {
   readonly spanningTree = new SpanningTree(this);
   /** Layer-2 EtherChannel bundles with static, LACP or PAgP negotiation. */
   readonly etherChannel = new EtherChannelStack(this);
+  /** CDP/LLDP neighbour discovery; both start disabled until configured. */
+  readonly discovery = new NeighborDiscovery(this, supportsCdp(this.deviceType));
   /** Forwarding database keyed per VLAN, so one MAC can live in several VLANs. */
   private readonly fdb = new ForwardingDatabase<number>();
   private readonly portConfig = new Map<string, SwitchPortConfig>();
@@ -137,6 +143,55 @@ export class L2Switch extends Device {
   override onInterfaceStateChanged(iface: EthernetInterface): void {
     this.etherChannel.onPortStateChanged(iface.name);
     this.spanningTree.onPortStateChanged(this.logicalPortOf(iface.name));
+    this.discovery.onPortStateChanged(iface.name);
+  }
+
+  // --- neighbour discovery ------------------------------------------------
+
+  discoveryInterfaceIds(): readonly string[] {
+    return [...this.interfaces.keys()];
+  }
+
+  discoveryInterfaceOperationalUp(port: string): boolean {
+    return this.interfaces.get(port)?.operationalUp === true;
+  }
+
+  discoveryChassisId(): Mac {
+    return this.spanningTreeBridgeMac();
+  }
+
+  discoveryPlatform(): string {
+    return discoveryPlatformFor(this.deviceType);
+  }
+
+  discoveryCapabilities(): readonly DiscoveryCapability[] {
+    return discoveryCapabilitiesFor(this.deviceType);
+  }
+
+  discoveryManagementAddress(): string | undefined {
+    return undefined;
+  }
+
+  discoveryPortDescription(port: string): string | undefined {
+    return this.interfaces.get(port)?.description;
+  }
+
+  discoveryNativeVlan(port: string): number | undefined {
+    const cfg = this.portConfigOf(port);
+    return cfg.mode === "trunk" ? cfg.nativeVlan : cfg.accessVlan;
+  }
+
+  discoverySend(port: string, payload: CdpPacket | LldpPacket): void {
+    const iface = this.interfaces.get(port);
+    if (!iface?.operationalUp) return;
+    // Discovery is link-local: it leaves untagged and is consumed by the peer,
+    // so a spanning-tree blocking port still exchanges it.
+    iface.transmit({
+      src: iface.mac,
+      dst: payload.kind === "cdp" ? CISCO_SHARED_MAC : LLDP_MAC,
+      etherType: payload.kind === "cdp" ? EtherType.LLC : EtherType.LLDP,
+      payload,
+    });
   }
 
   // --- EtherChannel -------------------------------------------------------
@@ -628,6 +683,8 @@ export class L2Switch extends Device {
     // Negotiation messages belong to the physical member, never to the bundle.
     if (payload.kind === "lacp") this.etherChannel.onLacpdu(payload, ingress.name);
     else if (payload.kind === "pagp") this.etherChannel.onPagp(payload, ingress.name);
+    else if (payload.kind === "cdp") this.discovery.onCdp(payload, ingress.name);
+    else if (payload.kind === "lldp") this.discovery.onLldp(payload, ingress.name);
   }
 
   protected egressAllowedBySpanningTree(port: string, vlan: number): boolean {

@@ -1,4 +1,11 @@
-import type { ServerServiceConfig } from "@sim/contracts";
+import { EtherType, type ServerServiceConfig } from "@sim/contracts";
+import type { EthernetInterface } from "../net/interface";
+import type { CdpPacket, DiscoveryCapability, LldpPacket } from "../packets/discovery";
+import { type EthernetFrame, isControlPayload } from "../packets/ethernet";
+import { discoveryCapabilitiesFor, discoveryPlatformFor } from "../protocols/discovery-support";
+import { NeighborDiscovery } from "../protocols/neighbor-discovery";
+import type { Ipv4 } from "../util/ipv4";
+import { LLDP_MAC, type Mac, normalizeMac, ZERO_MAC } from "../util/mac";
 import { EndHost } from "./pc";
 import { ServerServiceRegistry, type ServerServiceRuntimeSnapshot, type ServerServiceSummary } from "../services/server-services";
 
@@ -6,10 +13,15 @@ import { ServerServiceRegistry, type ServerServiceRuntimeSnapshot, type ServerSe
  * Server reuses the end-host IPv4/ARP/ICMP/DHCP/transport stack and owns the
  * deterministic application-service registry. Runtime state is never part of
  * the persistent lab document.
+ *
+ * A server is a vendor-neutral station: it can transmit and receive LLDP when a
+ * lab enables it, but it never speaks the Cisco-like CDP subset.
  */
 export class Server extends EndHost {
   readonly deviceType = "server" as const;
   readonly services: ServerServiceRegistry;
+  /** LLDP only; `supportsCdp` is false so `cdp run` is rejected outright. */
+  readonly discovery = new NeighborDiscovery(this, false);
 
   constructor(id: string, name: string) {
     super(id, name);
@@ -52,5 +64,64 @@ export class Server extends EndHost {
 
   protected override onNetworkConfigurationChanged(): void {
     this.services.restartRuntime();
+  }
+
+  override onReceive(frame: EthernetFrame, ingress: EthernetInterface): void {
+    // LLDP is link-local: it is consumed here and never enters the IP stack.
+    if (isControlPayload(frame.payload)) {
+      if (frame.payload.kind === "lldp") this.discovery.onLldp(frame.payload, ingress.name);
+      return;
+    }
+    super.onReceive(frame, ingress);
+  }
+
+  override onInterfaceStateChanged(iface: EthernetInterface): void {
+    this.discovery.onPortStateChanged(iface.name);
+  }
+
+  // --- neighbour discovery ------------------------------------------------
+
+  discoveryInterfaceIds(): readonly string[] {
+    return [...this.interfaces.keys()];
+  }
+
+  discoveryInterfaceOperationalUp(port: string): boolean {
+    return this.interfaces.get(port)?.operationalUp === true;
+  }
+
+  discoveryChassisId(): Mac {
+    let lowest: Mac | undefined;
+    for (const iface of this.interfaces.values()) {
+      const mac = normalizeMac(iface.mac);
+      if (lowest === undefined || mac.localeCompare(lowest) < 0) lowest = mac;
+    }
+    return lowest ?? ZERO_MAC;
+  }
+
+  discoveryPlatform(): string {
+    return discoveryPlatformFor(this.deviceType);
+  }
+
+  discoveryCapabilities(): readonly DiscoveryCapability[] {
+    return discoveryCapabilitiesFor(this.deviceType);
+  }
+
+  discoveryManagementAddress(): Ipv4 | undefined {
+    return this.ip;
+  }
+
+  discoveryPortDescription(port: string): string | undefined {
+    return this.interfaces.get(port)?.description;
+  }
+
+  discoveryNativeVlan(_port: string): number | undefined {
+    return undefined;
+  }
+
+  discoverySend(port: string, payload: CdpPacket | LldpPacket): void {
+    if (payload.kind !== "lldp") return;
+    const iface = this.interfaces.get(port);
+    if (!iface?.operationalUp) return;
+    iface.transmit({ src: iface.mac, dst: LLDP_MAC, etherType: EtherType.LLDP, payload });
   }
 }

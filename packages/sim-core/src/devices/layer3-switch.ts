@@ -1,6 +1,6 @@
-import type { EthernetFrame } from "../packets/ethernet";
+import { type EthernetFrame, isControlPayload } from "../packets/ethernet";
 import { EthernetInterface } from "../net/interface";
-import type { Ipv4 } from "../util/ipv4";
+import { ipToInt, type Ipv4 } from "../util/ipv4";
 import type { Mac } from "../util/mac";
 import { normalizeMac } from "../util/mac";
 import type {
@@ -220,11 +220,23 @@ export class Layer3Switch extends L2Switch {
 
   override onReceive(frame: EthernetFrame, ingress: EthernetInterface): void {
     this.syncRoutingPlane();
-    if (this.routedPorts.has(ingress.name)) {
+    // Link-local control frames belong to this switch's own control plane, on
+    // routed ports just as much as on switchports.
+    if (this.routedPorts.has(ingress.name) && !isControlPayload(frame.payload)) {
       this.routingPlane.onReceive(frame, ingress);
       return;
     }
     super.onReceive(frame, ingress);
+  }
+
+  /** Management address for discovery: the lowest SVI or routed-port address. */
+  override discoveryManagementAddress(): Ipv4 | undefined {
+    let lowest: Ipv4 | undefined;
+    for (const row of this.routingPlane.interfaceSummaries()) {
+      if (row.ip === undefined) continue;
+      if (lowest === undefined || ipToInt(row.ip) < ipToInt(lowest)) lowest = row.ip;
+    }
+    return lowest;
   }
 
   protected override switchingEnabledOnPort(port: string): boolean {
