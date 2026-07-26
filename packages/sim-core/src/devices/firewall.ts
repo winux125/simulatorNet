@@ -2,6 +2,7 @@ import { IpProtocol } from "@sim/contracts";
 import type { Ipv4Packet } from "../packets/ipv4";
 import type {
   Ipv4AddressMatcher,
+  PolicyProtocol,
   PortMatcher,
 } from "../policy/packet-policy-engine";
 import type { Ipv4 } from "../util/ipv4";
@@ -28,7 +29,7 @@ export interface FirewallPolicyRule {
   readonly sourceZone: string | "*";
   readonly destinationZone: string | "*";
   readonly action: FirewallAction;
-  readonly protocol: "ip" | IpProtocol;
+  readonly protocol: PolicyProtocol;
   readonly source?: Ipv4AddressMatcher;
   readonly destination?: Ipv4AddressMatcher;
   readonly sourcePort?: PortMatcher;

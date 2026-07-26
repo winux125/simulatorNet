@@ -14,14 +14,25 @@ import {
   DHCP_CLIENT_PORT,
   DHCP_SERVER_PORT,
 } from "../engine/constants";
-import type { EthernetInterface } from "../net/interface";
+import { EthernetInterface } from "../net/interface";
 import type { ArpPacket } from "../packets/arp";
 import type { DhcpMessage } from "../packets/dhcp";
 import type { CdpPacket, DiscoveryCapability, LldpPacket } from "../packets/discovery";
 import { type EthernetFrame, isControlPayload } from "../packets/ethernet";
 import type { IcmpMessage } from "../packets/icmp";
+import {
+  OSPF_ALL_DESIGNATED_ROUTERS_MAC,
+  OSPF_ALL_ROUTERS_MAC,
+  OSPF_PROTOCOL,
+  type OspfPacket,
+} from "../packets/ospf";
 import { discoveryCapabilitiesFor, discoveryPlatformFor, supportsCdp } from "../protocols/discovery-support";
 import { NeighborDiscovery } from "../protocols/neighbor-discovery";
+import {
+  OSPF_ADMINISTRATIVE_DISTANCE,
+  OspfProcess,
+  type OspfInterfaceDescriptor,
+} from "../protocols/ospf";
 import type { Ipv4Packet } from "../packets/ipv4";
 import type { UdpDatagram } from "../packets/udp";
 import {
@@ -92,13 +103,24 @@ export interface RouterInterfaceRow {
   description: string | undefined;
 }
 
+export type RouteSource = "connected" | "static" | "ospf";
+
+/** Cisco-like administrative distances for the sources this release models. */
+export const ROUTE_ADMINISTRATIVE_DISTANCE: Readonly<Record<RouteSource, number>> = Object.freeze({
+  connected: 0,
+  static: 1,
+  ospf: OSPF_ADMINISTRATIVE_DISTANCE,
+});
+
 export interface RouteRow {
-  kind: "connected" | "static";
+  kind: RouteSource;
   network: Ipv4;
   maskInt: number;
-  /** Next-hop IP for a static route; undefined for a connected route. */
+  /** Next-hop IP for a learned route; undefined for a connected route. */
   viaIp: Ipv4 | undefined;
   egressName: string;
+  administrativeDistance: number;
+  metric: number;
 }
 
 interface StaticRoute {
@@ -111,6 +133,16 @@ interface StaticRoute {
 interface ResolvedRoute {
   egress: L3Interface;
   nextHopIp: Ipv4;
+}
+
+/** A logical interface with no cable; it is up whenever it is not shut down. */
+class LoopbackInterface extends EthernetInterface {
+  override get operationalUp(): boolean {
+    return this.adminUp;
+  }
+
+  /** A loopback never puts a frame on a wire. */
+  override transmit(): void {}
 }
 
 interface DhcpPool {
@@ -153,7 +185,10 @@ export class Router extends Device {
   readonly nat = new NatEngine();
   /** CDP/LLDP neighbour discovery; both start disabled until configured. */
   readonly discovery = new NeighborDiscovery(this, supportsCdp(this.deviceType));
+  /** Deterministic OSPFv2 area-0 process; inert until `router ospf` runs. */
+  readonly ospf = new OspfProcess(this);
   private readonly l3 = new Map<string, L3Interface>();
+  private readonly loopbacks = new Map<number, LoopbackInterface>();
   private readonly natRoles = new Map<string, NatInterfaceRole>();
   private readonly staticRoutes: StaticRoute[] = [];
   private readonly dhcpPools: DhcpPool[] = [];
@@ -337,6 +372,65 @@ export class Router extends Device {
     if (!iface) throw new Error(`Router ${this.id} has no L3 interface ${name}`);
     iface.ip = ip;
     iface.maskInt = maskToInt(mask);
+    this.ospf.arm();
+  }
+
+  // --- loopback interfaces -----------------------------------------------
+
+  /**
+   * `interface Loopback<n>`: a logical interface with no cable. It has an
+   * administrative state and an address, produces a connected route, takes part
+   * in router-id selection, and can be advertised by OSPF — but it is never a
+   * diagram connection point, so the canvas cable handle ignores it.
+   */
+  getOrCreateLoopback(index: number): L3Interface {
+    if (!Number.isInteger(index) || index < 0 || index > 2_147_483_647) {
+      throw new Error(`Invalid loopback number ${index}`);
+    }
+    const name = loopbackName(index);
+    const existing = this.l3.get(name);
+    if (existing) return existing;
+    const loopback = new LoopbackInterface(this, name, this.logicalMac(name));
+    this.loopbacks.set(index, loopback);
+    const iface: L3Interface = {
+      name,
+      physical: loopback,
+      vlan: undefined,
+      native: false,
+      ip: undefined,
+      maskInt: maskToInt(32),
+    };
+    this.l3.set(name, iface);
+    this.ospf.arm();
+    return iface;
+  }
+
+  removeLoopback(index: number): void {
+    const name = loopbackName(index);
+    this.l3.delete(name);
+    this.loopbacks.delete(index);
+    this.ospf.arm();
+  }
+
+  isLoopback(name: string): boolean {
+    return this.l3.get(name)?.physical instanceof LoopbackInterface;
+  }
+
+  /** Loopback numbers currently configured, in numeric order. */
+  loopbackNumbers(): number[] {
+    return [...this.loopbacks.keys()].sort((a, b) => a - b);
+  }
+
+  loopbackInterface(index: number): EthernetInterface | undefined {
+    return this.loopbacks.get(index);
+  }
+
+  /** Deterministic locally-administered MAC for a logical interface. */
+  private logicalMac(name: string): Mac {
+    let hash = 2_166_136_261;
+    for (const char of `${this.id}:${name}`) hash = Math.imul(hash ^ char.charCodeAt(0), 16_777_619) >>> 0;
+    const octets = [0x02, 0x4c, (hash >>> 24) & 0xff, (hash >>> 16) & 0xff, (hash >>> 8) & 0xff, hash & 0xff];
+    return octets.map((octet) => octet.toString(16).padStart(2, "0")).join(":");
   }
 
   /** Add a static route: `ip route <network> <mask> <nextHop>`. */
@@ -418,7 +512,7 @@ export class Router extends Device {
     }));
   }
 
-  /** `show ip route`: connected routes followed by static routes. */
+  /** `show ip route`: connected, then static, then OSPF-learned routes. */
   routingTable(): RouteRow[] {
     const rows: RouteRow[] = [];
     for (const iface of this.l3.values()) {
@@ -429,6 +523,8 @@ export class Router extends Device {
         maskInt: iface.maskInt,
         viaIp: undefined,
         egressName: iface.name,
+        administrativeDistance: ROUTE_ADMINISTRATIVE_DISTANCE.connected,
+        metric: 0,
       });
     }
     for (const route of this.staticRoutes) {
@@ -439,9 +535,38 @@ export class Router extends Device {
         maskInt: route.maskInt,
         viaIp: route.nextHop,
         egressName: egress?.name ?? "",
+        administrativeDistance: ROUTE_ADMINISTRATIVE_DISTANCE.static,
+        metric: 0,
+      });
+    }
+    for (const route of this.ospfRoutes()) {
+      rows.push({
+        kind: "ospf",
+        network: route.network,
+        maskInt: route.maskInt,
+        viaIp: route.nextHop,
+        egressName: route.interfaceId,
+        administrativeDistance: ROUTE_ADMINISTRATIVE_DISTANCE.ospf,
+        metric: route.cost,
       });
     }
     return rows;
+  }
+
+  /**
+   * OSPF-learned routes that survive the local table: a prefix already known
+   * from a connected interface or a static route keeps its better distance.
+   */
+  private ospfRoutes(): ReturnType<OspfProcess["routeTable"]> {
+    if (!this.ospf.enabled) return [];
+    return this.ospf.routeTable().filter((route) => {
+      const network = (ipToInt(route.network) & route.maskInt) >>> 0;
+      for (const iface of this.l3.values()) {
+        if (iface.ip === undefined || iface.maskInt !== route.maskInt) continue;
+        if (((ipToInt(iface.ip) & iface.maskInt) >>> 0) === network) return false;
+      }
+      return !this.staticRoutes.some((entry) => entry.maskInt === route.maskInt && entry.network === network);
+    });
   }
 
   /** Originate an ICMP echo from the address selected by longest-prefix match. */
@@ -489,7 +614,8 @@ export class Router extends Device {
 
     const dstMac = normalizeMac(frame.dst);
     const myMac = normalizeMac(iface.physical.mac);
-    if (dstMac !== myMac && !isBroadcastMac(dstMac)) return; // not addressed to us
+    const ospfGroup = dstMac === OSPF_ALL_ROUTERS_MAC || dstMac === OSPF_ALL_DESIGNATED_ROUTERS_MAC;
+    if (dstMac !== myMac && !isBroadcastMac(dstMac) && !ospfGroup) return; // not addressed to us
 
     const payload = frame.payload;
     if (payload.kind === "arp") {
@@ -508,6 +634,60 @@ export class Router extends Device {
 
   override onInterfaceStateChanged(iface: EthernetInterface): void {
     this.discovery.onPortStateChanged(iface.name);
+    this.ospf.onInterfaceStateChanged(iface.name);
+  }
+
+  // --- OSPF host ----------------------------------------------------------
+
+  ospfInterfaces(): readonly OspfInterfaceDescriptor[] {
+    return [...this.l3.values()]
+      .map((iface): OspfInterfaceDescriptor => ({
+        id: iface.name,
+        address: iface.ip,
+        maskInt: iface.maskInt,
+        operationalUp: iface.physical.operationalUp,
+        loopback: iface.physical instanceof LoopbackInterface,
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  ospfSend(interfaceId: string, destination: Ipv4, packet: OspfPacket): void {
+    const iface = this.l3.get(interfaceId);
+    if (!iface?.ip || !iface.physical.operationalUp) return;
+    const ipv4: Ipv4Packet = {
+      kind: "ipv4",
+      src: iface.ip,
+      dst: destination,
+      protocol: OSPF_PROTOCOL,
+      // OSPF is single-hop; a TTL of one keeps it from leaving the segment.
+      ttl: 1,
+      payload: packet,
+    };
+    // Multicast OSPF resolves its own MAC; a unicast reply uses the ARP cache.
+    const mac = destination === "224.0.0.5"
+      ? OSPF_ALL_ROUTERS_MAC
+      : destination === "224.0.0.6"
+        ? OSPF_ALL_DESIGNATED_ROUTERS_MAC
+        : this.arpTable.get(destination);
+    if (mac === undefined) {
+      this.egressSendPublic(ipv4, iface, destination);
+      return;
+    }
+    this.transmit(iface, mac, EtherType.IPv4, ipv4);
+  }
+
+  ospfRoutesChanged(): void {
+    this.engine?.trace({
+      time: this.engine.now(),
+      type: "ospf-routing-table-changed",
+      device: this.id,
+      detail: { routes: this.ospf.routeTable().length },
+    });
+  }
+
+  /** Send through the normal ARP-resolving egress path (used by OSPF unicast). */
+  private egressSendPublic(packet: Ipv4Packet, egress: L3Interface, nextHopIp: Ipv4): void {
+    this.egressSend(packet, egress, nextHopIp);
   }
 
   // --- neighbour discovery ------------------------------------------------
@@ -641,6 +821,13 @@ export class Router extends Device {
   // --- IPv4 / ICMP -------------------------------------------------------
 
   private handleIpv4(packet: Ipv4Packet, frame: EthernetFrame, ingress: L3Interface): void {
+    // OSPF is this router's own control traffic. It is delivered to the local
+    // process before the NAT and ACL pipeline, so a lab can never accidentally
+    // filter away its own adjacencies while learning about ACLs.
+    if (packet.protocol === OSPF_PROTOCOL && packet.payload.kind === "ospf") {
+      this.ospf.onPacket(packet.payload, ingress.name, packet.src);
+      return;
+    }
     let acceptedPacket = packet;
     if (this.nat.hasRules() && this.natRoles.get(ingress.name) === "outside") {
       this.validateNatRoles();
@@ -824,29 +1011,78 @@ export class Router extends Device {
 
   // --- routing table -----------------------------------------------------
 
-  /** Longest-prefix match over connected + static routes. */
+  /**
+   * Route selection: longest prefix wins first, then the lowest administrative
+   * distance, then the lowest metric, then a stable tie-break on the next hop
+   * and egress name so two engines always choose the same path.
+   */
   private resolve(dst: Ipv4): ResolvedRoute | undefined {
     const dstInt = ipToInt(dst);
-    let best: { prefixLen: number; egress: L3Interface; nextHopIp: Ipv4 } | undefined;
+    interface Candidate {
+      prefixLen: number;
+      distance: number;
+      metric: number;
+      egress: L3Interface;
+      nextHopIp: Ipv4;
+    }
+    let best: Candidate | undefined;
+    const consider = (candidate: Candidate): void => {
+      if (!best
+        || candidate.prefixLen > best.prefixLen
+        || (candidate.prefixLen === best.prefixLen && (
+          candidate.distance < best.distance
+          || (candidate.distance === best.distance && (
+            candidate.metric < best.metric
+            || (candidate.metric === best.metric && (
+              ipToInt(candidate.nextHopIp) < ipToInt(best.nextHopIp)
+              || (candidate.nextHopIp === best.nextHopIp
+                && candidate.egress.name.localeCompare(best.egress.name) < 0)))))))) {
+        best = candidate;
+      }
+    };
 
     // Connected routes: directly reachable, next hop is the destination itself.
     for (const iface of this.l3.values()) {
       if (iface.ip === undefined) continue;
       const network = (ipToInt(iface.ip) & iface.maskInt) >>> 0;
       if (((dstInt & iface.maskInt) >>> 0) !== network) continue;
-      const prefixLen = popcount(iface.maskInt);
-      if (!best || prefixLen > best.prefixLen) {
-        best = { prefixLen, egress: iface, nextHopIp: dst };
-      }
+      consider({
+        prefixLen: popcount(iface.maskInt),
+        distance: ROUTE_ADMINISTRATIVE_DISTANCE.connected,
+        metric: 0,
+        egress: iface,
+        nextHopIp: dst,
+      });
     }
 
     // Static routes: resolve the configured next hop against a connected subnet.
     for (const route of this.staticRoutes) {
       if (((dstInt & route.maskInt) >>> 0) !== route.network) continue;
-      if (best && route.prefixLen <= best.prefixLen) continue;
       const egress = this.connectedInterfaceFor(route.nextHop);
       if (!egress) continue; // next hop not directly connected: unusable
-      best = { prefixLen: route.prefixLen, egress, nextHopIp: route.nextHop };
+      consider({
+        prefixLen: route.prefixLen,
+        distance: ROUTE_ADMINISTRATIVE_DISTANCE.static,
+        metric: 0,
+        egress,
+        nextHopIp: route.nextHop,
+      });
+    }
+
+    // OSPF-learned routes.
+    if (this.ospf.enabled) {
+      for (const route of this.ospf.routeTable()) {
+        if (((dstInt & route.maskInt) >>> 0) !== ((ipToInt(route.network) & route.maskInt) >>> 0)) continue;
+        const egress = this.l3.get(route.interfaceId);
+        if (!egress || route.nextHop === undefined) continue;
+        consider({
+          prefixLen: popcount(route.maskInt),
+          distance: ROUTE_ADMINISTRATIVE_DISTANCE.ospf,
+          metric: route.cost,
+          egress,
+          nextHopIp: route.nextHop,
+        });
+      }
     }
 
     return best ? { egress: best.egress, nextHopIp: best.nextHopIp } : undefined;
@@ -1084,6 +1320,17 @@ export class Router extends Device {
     if (!physical) throw new Error(`Router ${this.id} has no interface ${name}`);
     return physical;
   }
+}
+
+export function loopbackName(index: number): string {
+  return `Loopback${index}`;
+}
+
+/** Parse "Loopback0"; returns undefined for anything else. */
+export function parseLoopbackName(name: string): number | undefined {
+  if (!/^loopback\d+$/i.test(name)) return undefined;
+  const index = Number(name.slice("Loopback".length));
+  return Number.isInteger(index) ? index : undefined;
 }
 
 /** Count set bits in a 32-bit mask -> prefix length. */

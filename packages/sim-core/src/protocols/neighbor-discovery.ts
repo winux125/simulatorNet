@@ -561,5 +561,5 @@ function neighborKey(
   deviceId: string,
   remoteInterface: string,
 ): string {
-  return [protocol, localInterface, deviceId, remoteInterface].join(" ");
+  return [protocol, localInterface, deviceId, remoteInterface].join("\u0000");
 }

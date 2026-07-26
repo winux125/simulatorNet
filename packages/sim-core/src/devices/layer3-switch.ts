@@ -141,6 +141,29 @@ export class Layer3Switch extends L2Switch {
     this.routingPlane.addStaticRoute(network, mask, nextHop);
   }
 
+  /** The composed routing plane owns OSPF, exactly as it owns ACLs and routes. */
+  get ospf(): Router["ospf"] {
+    this.syncRoutingPlane();
+    return this.routingPlane.ospf;
+  }
+
+  getOrCreateLoopback(index: number): ReturnType<Router["getOrCreateLoopback"]> {
+    this.syncRoutingPlane();
+    return this.routingPlane.getOrCreateLoopback(index);
+  }
+
+  removeLoopback(index: number): void {
+    this.routingPlane.removeLoopback(index);
+  }
+
+  loopbackNumbers(): number[] {
+    return this.routingPlane.loopbackNumbers();
+  }
+
+  isLoopback(name: string): boolean {
+    return this.routingPlane.isLoopback(name);
+  }
+
   defineAcl(acl: Ipv4Acl): void {
     this.syncRoutingPlane();
     this.routingPlane.defineAcl(acl);
@@ -184,7 +207,8 @@ export class Layer3Switch extends L2Switch {
   }
 
   routedInterfaceSummaries(): RouterInterfaceRow[] {
-    return this.routingPlane.interfaceSummaries().filter((row) => !row.name.startsWith("Vlan"));
+    return this.routingPlane.interfaceSummaries()
+      .filter((row) => !row.name.startsWith("Vlan") && !this.routingPlane.isLoopback(row.name));
   }
 
   sviSummaries(): SviRow[] {

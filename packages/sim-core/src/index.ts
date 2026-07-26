@@ -30,6 +30,7 @@ export * from "./packets/arp";
 export * from "./packets/bpdu";
 export * from "./packets/etherchannel";
 export * from "./packets/discovery";
+export * from "./packets/ospf";
 export * from "./packets/ipv4";
 export * from "./packets/icmp";
 export * from "./packets/udp";
@@ -47,6 +48,7 @@ export * from "./protocols/spanning-tree";
 export * from "./protocols/etherchannel";
 export * from "./protocols/discovery-support";
 export * from "./protocols/neighbor-discovery";
+export * from "./protocols/ospf";
 
 // Host transport
 export * from "./transport/errors";

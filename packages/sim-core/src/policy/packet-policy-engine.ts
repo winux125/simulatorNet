@@ -12,6 +12,20 @@ export const ACL_RESOURCE_LIMITS = {
 export type AclAction = "permit" | "deny";
 export type AclDirection = "in" | "out";
 
+/**
+ * Protocols an ACL, NAT rule or firewall policy can match. Deliberately not the
+ * whole `IpProtocol` set: OSPF control traffic is terminated by the local
+ * process before the policy pipeline and is never a policy subject.
+ */
+export type PolicyProtocol = "ip" | typeof IpProtocol.ICMP | typeof IpProtocol.TCP | typeof IpProtocol.UDP;
+
+/** Narrow an IPv4 protocol number to the policy set; anything else is "ip". */
+export function policyProtocolOf(protocol: IpProtocol): PolicyProtocol {
+  return protocol === IpProtocol.ICMP || protocol === IpProtocol.TCP || protocol === IpProtocol.UDP
+    ? protocol
+    : "ip";
+}
+
 export type Ipv4AddressMatcher =
   | { readonly kind: "any" }
   | { readonly kind: "host"; readonly address: Ipv4 }
@@ -37,7 +51,7 @@ export interface ExtendedAclRule {
   readonly sequence: number;
   readonly action: AclAction;
   /** `ip` matches every IPv4 protocol supported by the simulator. */
-  readonly protocol: "ip" | IpProtocol;
+  readonly protocol: PolicyProtocol;
   readonly source: Ipv4AddressMatcher;
   readonly destination: Ipv4AddressMatcher;
   readonly sourcePort?: PortMatcher;

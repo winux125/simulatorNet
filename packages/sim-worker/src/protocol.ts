@@ -119,11 +119,13 @@ export interface DeviceInspection {
   capabilities: DeviceCapability[];
   macEntries: Array<{ vlan?: number; macAddress: string; interfaceId: string }>;
   routes: Array<{
-    kind: "connected" | "static";
+    kind: "connected" | "static" | "ospf";
     network: string;
     prefixLength: number;
     nextHop?: string;
     interfaceId: string;
+    administrativeDistance?: number;
+    metric?: number;
   }>;
   vlans: Array<{ id: number; name: string; interfaces: string[] }>;
   svis?: Array<{

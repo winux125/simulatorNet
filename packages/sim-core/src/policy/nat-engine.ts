@@ -5,6 +5,7 @@ import {
   NS_PER_S,
 } from "../engine/constants";
 import type { Ipv4Packet } from "../packets/ipv4";
+import { policyProtocolOf, type PolicyProtocol } from "./packet-policy-engine";
 import type { Ipv4 } from "../util/ipv4";
 import { intToIp, ipToInt } from "../util/ipv4";
 
@@ -60,7 +61,7 @@ export interface NatPool {
   readonly endAddress: Ipv4;
 }
 
-export type NatTranslationProtocol = "ip" | IpProtocol;
+export type NatTranslationProtocol = PolicyProtocol;
 
 export interface NatTranslation {
   readonly id: string;
@@ -386,16 +387,16 @@ export class NatEngine {
       translation = this.createTranslation(key, {
         ruleId: rule.id,
         kind: "pat",
-        protocol: packet.protocol,
+        protocol: policyProtocolOf(packet.protocol),
         insideLocalAddress: packet.src,
         insideGlobalAddress: globalAddress,
         insideLocalToken: localToken,
         insideGlobalToken: translatedToken,
         remoteAddress: packet.dst,
         remoteToken,
-      }, context.nowNs, this.timeoutFor(packet.protocol));
+      }, context.nowNs, this.timeoutFor(policyProtocolOf(packet.protocol)));
     } else {
-      touchTranslation(translation, context.nowNs, this.timeoutFor(packet.protocol));
+      touchTranslation(translation, context.nowNs, this.timeoutFor(policyProtocolOf(packet.protocol)));
     }
     return {
       packet: translateOutboundPacket(packet, translation),

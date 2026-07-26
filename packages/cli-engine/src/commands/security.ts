@@ -9,6 +9,7 @@ import {
   type Ipv4Acl,
   type Ipv4AddressMatcher,
   type NatRule,
+  type PolicyProtocol,
   type StaticNatRule,
   type DynamicNatRule,
   type PatNatRule,
@@ -39,7 +40,7 @@ function action(token: string): AclAction {
   throw new ValidationError("ACL action must be permit or deny.");
 }
 
-function protocol(token: string): "ip" | IpProtocol {
+function protocol(token: string): PolicyProtocol {
   if (token === "ip") return "ip";
   if (token === "icmp") return IpProtocol.ICMP;
   if (token === "tcp") return IpProtocol.TCP;
@@ -188,7 +189,7 @@ function formatAddress(matcher: Ipv4AddressMatcher): string {
   return `${matcher.address} ${matcher.wildcard}`;
 }
 
-function formatProtocol(value: "ip" | IpProtocol): string {
+function formatProtocol(value: PolicyProtocol): string {
   if (value === "ip") return value;
   if (value === IpProtocol.ICMP) return "icmp";
   if (value === IpProtocol.TCP) return "tcp";

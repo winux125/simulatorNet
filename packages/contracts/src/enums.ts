@@ -45,6 +45,8 @@ export const IpProtocol = {
   ICMP: 1,
   TCP: 6,
   UDP: 17,
+  /** OSPFv2 control traffic; carried directly over IPv4, never over a port. */
+  OSPF: 89,
 } as const;
 export type IpProtocol = (typeof IpProtocol)[keyof typeof IpProtocol];
 
