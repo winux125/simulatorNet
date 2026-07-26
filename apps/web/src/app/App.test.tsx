@@ -7,6 +7,7 @@ import type {
   SimWorkerRequestInputOf,
 } from "@sim/sim-worker";
 import { createSimulationWorkerRuntime } from "@sim/sim-worker";
+import { canonicalizeLabDocument, stringifyLabDocument } from "@sim/lab-format";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -49,6 +50,10 @@ const graphHarness = vi.hoisted(() => ({
   selectAnnotation: undefined as ((id: string, additive: boolean) => void) | undefined,
   resizeAnnotation: undefined as ((id: string, width: number, height: number) => void) | undefined,
   endpointMoved: undefined as ((id: string, endpoint: "start" | "end" | "bend", point: { x: number; y: number }) => void) | undefined,
+  editAnnotation: undefined as ((id: string) => void) | undefined,
+  editLinkLabel: undefined as ((id: string) => void) | undefined,
+  viewportChanged: undefined as ((viewport: { scale: number; translateX: number; translateY: number }) => void) | undefined,
+  viewport: { scale: 1, translateX: 0, translateY: 0 },
 }));
 
 vi.mock("@xterm/xterm", () => {
@@ -97,9 +102,19 @@ vi.mock("../features/topology/TopologyGraphSurface", async () => {
       annotations?: Record<string, { selected: boolean }>;
     };
     React.useEffect(() => {
-      (props.onReady as ((handle: { clientToLocal(p: { x: number; y: number }): { x: number; y: number }; localToClient(p: { x: number; y: number }): { x: number; y: number }; fit(): void }) => void) | undefined)?.({
+      (props.onReady as ((handle: {
+        clientToLocal(p: { x: number; y: number }): { x: number; y: number };
+        localToClient(p: { x: number; y: number }): { x: number; y: number };
+        getViewport(): { scale: number; translateX: number; translateY: number };
+        getEdgeLabelAnchor(id: string, ratio?: number): { x: number; y: number } | undefined;
+        fit(): void;
+      }) => void) | undefined)?.({
         clientToLocal: ({ x, y }) => ({ x, y }),
         localToClient: ({ x, y }) => ({ x, y }),
+        getViewport: () => graphHarness.viewport,
+        // jsdom has no SVG geometry; a stable anchor is enough to place the
+        // inline label editor in tests.
+        getEdgeLabelAnchor: () => ({ x: 120, y: 90 }),
         fit: graphHarness.fit,
       });
     }, []);
@@ -115,6 +130,9 @@ vi.mock("../features/topology/TopologyGraphSurface", async () => {
       graphHarness.selectAnnotation = props.onSelectAnnotation as typeof graphHarness.selectAnnotation;
       graphHarness.resizeAnnotation = props.onAnnotationResized as typeof graphHarness.resizeAnnotation;
       graphHarness.endpointMoved = props.onAnnotationEndpointMoved as typeof graphHarness.endpointMoved;
+      graphHarness.editAnnotation = props.onEditAnnotation as typeof graphHarness.editAnnotation;
+      graphHarness.editLinkLabel = props.onEditLinkLabel as typeof graphHarness.editLinkLabel;
+      graphHarness.viewportChanged = props.onViewportChanged as typeof graphHarness.viewportChanged;
       return () => {
         graphHarness.connectionIntent = undefined;
         graphHarness.nodeMoved = undefined;
@@ -124,8 +142,11 @@ vi.mock("../features/topology/TopologyGraphSurface", async () => {
         graphHarness.selectAnnotation = undefined;
         graphHarness.resizeAnnotation = undefined;
         graphHarness.endpointMoved = undefined;
+        graphHarness.editAnnotation = undefined;
+        graphHarness.editLinkLabel = undefined;
+        graphHarness.viewportChanged = undefined;
       };
-    }, [props.onConnectionIntent, props.onNodeMoved, props.onPanePointerDown, props.onPanePointerMove, props.onPanePointerUp, props.onSelectAnnotation, props.onAnnotationResized, props.onAnnotationEndpointMoved]);
+    }, [props.onConnectionIntent, props.onNodeMoved, props.onPanePointerDown, props.onPanePointerMove, props.onPanePointerUp, props.onSelectAnnotation, props.onAnnotationResized, props.onAnnotationEndpointMoved, props.onEditAnnotation, props.onEditLinkLabel, props.onViewportChanged]);
     return React.createElement("div", {
       "data-testid": "topology-graph",
       onClick: (event: React.MouseEvent) => {
@@ -560,7 +581,6 @@ describe("M6.1 simulator workspace", () => {
 
   it("keeps running links selectable and label-editable while reconnect stays locked", async () => {
     const client = new RuntimeClient();
-    const prompt = vi.spyOn(window, "prompt").mockReturnValue("Campus trunk");
     await loadDemo(client);
     const linkButton = screen.getAllByRole("button", { name: /^Select link / })[0]!;
     const linkId = linkButton.getAttribute("aria-label")!.replace("Select link ", "");
@@ -568,6 +588,11 @@ describe("M6.1 simulator workspace", () => {
     fireEvent.contextMenu(linkButton);
     expect((screen.getByRole("menuitem", { name: "Reconnect…" }) as HTMLButtonElement).disabled).toBe(true);
     await userEvent.click(screen.getByRole("menuitem", { name: "Edit link label…" }));
+    // The label is edited inline on the canvas, never in a modal window.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    const labelEditor = await screen.findByRole("textbox", { name: "Editing link label" });
+    await userEvent.type(labelEditor, "Campus trunk");
+    fireEvent.keyDown(labelEditor, { key: "Enter" });
     expect(useWorkspaceStore.getState().draft?.diagram?.linkLabels)
       .toContainEqual(expect.objectContaining({ linkId, text: "Campus trunk" }));
 
@@ -575,7 +600,6 @@ describe("M6.1 simulator workspace", () => {
     await userEvent.click(screen.getByRole("menuitemradio", { name: "Orthogonal route" }));
     expect(useWorkspaceStore.getState().draft?.diagram?.linkStyles)
       .toContainEqual(expect.objectContaining({ linkId, route: "orthogonal" }));
-    prompt.mockRestore();
   });
 
   it("reconnects an existing stopped link without changing its domain ID", async () => {
@@ -1383,6 +1407,9 @@ describe("M10.2.3c change-impact and rebuild semantics", () => {
     await loadDemo(client);
     await userEvent.click(screen.getByRole("button", { name: "Text" }));
     fireEvent.click(screen.getByTestId("topology-graph"), { clientX: 280, clientY: 160 });
+    const editor = await screen.findByRole("textbox", { name: "Editing topology text" });
+    await userEvent.type(editor, "Core note");
+    fireEvent.keyDown(editor, { key: "Enter", ctrlKey: true });
 
     expect(useWorkspaceStore.getState().draft?.diagram?.annotations).toHaveLength(1);
     expect(useWorkspaceStore.getState()).toMatchObject({
@@ -1591,7 +1618,8 @@ describe("M10.3.2d professional diagram workspace", () => {
     await openEmptyLab();
     await userEvent.click(screen.getByRole("button", { name: "Text" }));
     fireEvent.click(screen.getByTestId("topology-graph"), { clientX: 160, clientY: 180 });
-    const editor = await screen.findByRole("textbox", { name: "Annotation text" });
+    const editor = await screen.findByRole("textbox", { name: "Editing topology text" });
+    expect(screen.queryByRole("dialog")).toBeNull();
     await userEvent.type(editor, "Loopback 10.0.0.1{enter}Management");
     fireEvent.keyDown(editor, { key: "Enter", ctrlKey: true });
     expect(useWorkspaceStore.getState().draft?.diagram?.annotations[0]).toMatchObject({
@@ -1629,5 +1657,276 @@ describe("M10.3.2d professional diagram workspace", () => {
     expect(window.localStorage.getItem("simulatornet.diagram.snapToGrid")).toBe("false");
     expect(window.localStorage.getItem("simulatornet.diagram.smartGuides")).toBe("false");
     expect(JSON.stringify(useWorkspaceStore.getState().draft)).toBe(before);
+  });
+});
+
+describe("M10.3.3b inline diagram text editing", () => {
+  const TEXT_EDITOR = { name: "Editing topology text" } as const;
+
+  /** jsdom has no DataTransfer; the editor only ever reads `text/plain`. */
+  function clipboardStub(plain: string, html?: string) {
+    return {
+      getData: (type: string) => type === "text/plain" ? plain : type === "text/html" ? html ?? "" : "",
+      types: html ? ["text/plain", "text/html"] : ["text/plain"],
+      items: [],
+      files: [],
+    };
+  }
+
+  async function openEmptyLab() {
+    render(<App client={new RuntimeClient()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New Lab" }));
+  }
+
+  async function createTextAt(x = 160, y = 180) {
+    await userEvent.click(screen.getByRole("button", { name: "Text" }));
+    fireEvent.click(screen.getByTestId("topology-graph"), { clientX: x, clientY: y });
+    return screen.findByRole("textbox", TEXT_EDITOR) as Promise<HTMLTextAreaElement>;
+  }
+
+  async function createCommittedText(content: string) {
+    const editor = await createTextAt();
+    await userEvent.type(editor, content);
+    fireEvent.keyDown(editor, { key: "Enter", ctrlKey: true });
+    await waitFor(() => expect(screen.queryByRole("textbox", TEXT_EDITOR)).toBeNull());
+  }
+
+  function annotations() {
+    return useWorkspaceStore.getState().draft?.diagram?.annotations ?? [];
+  }
+
+  it("1. opens an inline editor on the canvas, never a modal dialog", async () => {
+    await openEmptyLab();
+    const editor = await createTextAt();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(editor.closest(".dialog-backdrop")).toBeNull();
+    expect(editor.closest(".topology-panel")).toBeTruthy();
+    expect(editor.closest("[role='dialog']")).toBeNull();
+  });
+
+  it("2. gives the inline editor focus immediately", async () => {
+    await openEmptyLab();
+    const editor = await createTextAt();
+    await waitFor(() => expect(window.document.activeElement).toBe(editor));
+  });
+
+  it("3. accepts multiline Enter and commits with Ctrl+Enter", async () => {
+    await openEmptyLab();
+    const editor = await createTextAt();
+    await userEvent.type(editor, "Core{enter}Distribution{enter}Access");
+    expect(editor.value).toBe("Core\nDistribution\nAccess");
+    fireEvent.keyDown(editor, { key: "Enter", ctrlKey: true });
+    expect(annotations()[0]).toMatchObject({ type: "text", content: "Core\nDistribution\nAccess" });
+  });
+
+  it("4. opens existing text on double-click with the text selected", async () => {
+    await openEmptyLab();
+    await createCommittedText("Campus core");
+    await act(async () => { graphHarness.editAnnotation?.("annotation-1"); });
+    const editor = await screen.findByRole("textbox", TEXT_EDITOR) as HTMLTextAreaElement;
+    expect(editor.value).toBe("Campus core");
+    await waitFor(() => expect(editor.selectionStart).toBe(0));
+    expect(editor.selectionEnd).toBe("Campus core".length);
+  });
+
+  it("5. cancels an edit with Escape and restores the previous text", async () => {
+    await openEmptyLab();
+    await createCommittedText("Original");
+    await act(async () => { graphHarness.editAnnotation?.("annotation-1"); });
+    const editor = await screen.findByRole("textbox", TEXT_EDITOR);
+    await userEvent.clear(editor);
+    await userEvent.type(editor, "Discarded");
+    fireEvent.keyDown(editor, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("textbox", TEXT_EDITOR)).toBeNull());
+    expect(annotations()[0]).toMatchObject({ content: "Original" });
+  });
+
+  it("6. removes a new empty annotation and leaves no history entry", async () => {
+    await openEmptyLab();
+    const historyBefore = useWorkspaceStore.getState().past.length;
+    const editor = await createTextAt();
+    fireEvent.keyDown(editor, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("textbox", TEXT_EDITOR)).toBeNull());
+    expect(annotations()).toHaveLength(0);
+    expect(useWorkspaceStore.getState().past.length).toBe(historyBefore);
+
+    const blurred = await createTextAt();
+    fireEvent.blur(blurred);
+    await waitFor(() => expect(screen.queryByRole("textbox", TEXT_EDITOR)).toBeNull());
+    expect(annotations()).toHaveLength(0);
+    expect(useWorkspaceStore.getState().past.length).toBe(historyBefore);
+  });
+
+  it("7. commits on blur and keeps an existing annotation that became empty", async () => {
+    await openEmptyLab();
+    await createCommittedText("Blur commit");
+    await act(async () => { graphHarness.editAnnotation?.("annotation-1"); });
+    const editor = await screen.findByRole("textbox", TEXT_EDITOR);
+    await userEvent.clear(editor);
+    fireEvent.blur(editor);
+    await waitFor(() => expect(screen.queryByRole("textbox", TEXT_EDITOR)).toBeNull());
+    expect(annotations()).toHaveLength(1);
+    expect(annotations()[0]).toMatchObject({ type: "text", content: "" });
+  });
+
+  it("8. treats one edit session as a single undo step", async () => {
+    await openEmptyLab();
+    await createCommittedText("First version");
+    await act(async () => { graphHarness.editAnnotation?.("annotation-1"); });
+    const editor = await screen.findByRole("textbox", TEXT_EDITOR);
+    await userEvent.clear(editor);
+    await userEvent.type(editor, "Second version");
+    fireEvent.keyDown(editor, { key: "Enter", ctrlKey: true });
+    expect(annotations()[0]).toMatchObject({ content: "Second version" });
+
+    act(() => useWorkspaceStore.getState().undo());
+    expect(annotations()[0]).toMatchObject({ content: "First version" });
+    act(() => useWorkspaceStore.getState().redo());
+    expect(annotations()[0]).toMatchObject({ content: "Second version" });
+    // Creating the text was also exactly one step.
+    act(() => useWorkspaceStore.getState().undo());
+    act(() => useWorkspaceStore.getState().undo());
+    expect(annotations()).toHaveLength(0);
+  });
+
+  it("9. pastes plain text only and never clipboard HTML", async () => {
+    await openEmptyLab();
+    const editor = await createTextAt();
+    const transfer = clipboardStub("VLAN 10\r\nVLAN 20", "<b onclick='alert(1)'>VLAN 10</b>");
+    fireEvent.paste(editor, { clipboardData: transfer });
+    await waitFor(() => expect((editor as HTMLTextAreaElement).value).toBe("VLAN 10\nVLAN 20"));
+    fireEvent.keyDown(editor, { key: "Enter", ctrlKey: true });
+    expect(annotations()[0]).toMatchObject({ content: "VLAN 10\nVLAN 20" });
+    expect(JSON.stringify(annotations())).not.toContain("<b");
+  });
+
+  it("10. bounds the stored text length", async () => {
+    await openEmptyLab();
+    const editor = await createTextAt() as HTMLTextAreaElement;
+    expect(editor.maxLength).toBe(4_096);
+    fireEvent.paste(editor, { clipboardData: clipboardStub("x".repeat(5_000)) });
+    await waitFor(() => expect(editor.value.length).toBe(4_096));
+  });
+
+  it("11. applies contextual styles without closing the editor", async () => {
+    await openEmptyLab();
+    const editor = await createTextAt();
+    await userEvent.type(editor, "Styled note");
+    await userEvent.click(screen.getByRole("button", { name: "Bold" }));
+    await userEvent.click(screen.getByRole("button", { name: "Align right" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Size" }), { target: { value: "24" } });
+    // Still inline, still holding the typed text.
+    expect((screen.getByRole("textbox", TEXT_EDITOR) as HTMLTextAreaElement).value).toBe("Styled note");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.keyDown(screen.getByRole("textbox", TEXT_EDITOR), { key: "Enter", ctrlKey: true });
+    expect(annotations()[0]).toMatchObject({
+      type: "text",
+      content: "Styled note",
+      bold: true,
+      alignment: "right",
+      fontSize: 24,
+    });
+  });
+
+  it("12. grows automatically while typing and stays bounded", async () => {
+    await openEmptyLab();
+    const editor = await createTextAt();
+    const overlay = editor.parentElement as HTMLElement;
+    const initialHeight = Number.parseFloat(overlay.style.height);
+    await userEvent.type(editor, "one{enter}two{enter}three{enter}four");
+    const grownHeight = Number.parseFloat(overlay.style.height);
+    expect(grownHeight).toBeGreaterThan(initialHeight);
+    expect(grownHeight).toBeLessThanOrEqual(2_000);
+  });
+
+  it("13. follows the canvas pan and zoom transform while open", async () => {
+    await openEmptyLab();
+    const editor = await createTextAt();
+    const overlay = editor.parentElement as HTMLElement;
+    const initialFontSize = Number.parseFloat(overlay.querySelector("textarea")!.style.fontSize);
+    await act(async () => { graphHarness.viewportChanged?.({ scale: 2, translateX: 40, translateY: 25 }); });
+    const zoomedFontSize = Number.parseFloat(overlay.querySelector("textarea")!.style.fontSize);
+    expect(zoomedFontSize).toBeCloseTo(initialFontSize * 2, 4);
+    expect(Number.parseFloat(overlay.style.width)).toBeGreaterThan(0);
+  });
+
+  it("14. ignores global Delete and workspace shortcuts while editing", async () => {
+    await openEmptyLab();
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
+    await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
+    await placeDevice("PC");
+    await userEvent.click(screen.getByRole("button", { name: "Select PC1" }));
+    const editor = await createTextAt();
+    await userEvent.type(editor, "Note");
+    fireEvent.keyDown(editor, { key: "Delete", bubbles: true });
+    fireEvent.keyDown(editor, { key: "f", bubbles: true });
+    expect(useWorkspaceStore.getState().draft?.topology.nodes).toHaveLength(1);
+    expect((screen.getByRole("textbox", TEXT_EDITOR) as HTMLTextAreaElement).value).toBe("Note");
+  });
+
+  it("15. edits text while the lab runs without a rebuild or trace reset", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const traces = useWorkspaceStore.getState().traces.length;
+    const requestsBefore = client.requestTypes.length;
+    const editor = await createTextAt(300, 200);
+    await userEvent.type(editor, "Running note");
+    fireEvent.keyDown(editor, { key: "Enter", ctrlKey: true });
+    expect(annotations()).toHaveLength(1);
+    expect(useWorkspaceStore.getState()).toMatchObject({ powerState: "running", pendingTopologyChanges: false });
+    expect(useWorkspaceStore.getState().traces.length).toBe(traces);
+    expect(client.requestTypes.slice(requestsBefore)).not.toContain("REBUILD_LAB");
+  });
+
+  it("16. edits a diagram line label inline", async () => {
+    await openEmptyLab();
+    await userEvent.click(screen.getByRole("button", { name: "Line" }));
+    await act(async () => { graphHarness.panePointerDown?.({ x: 40, y: 40 }, { shift: false, alt: false }); });
+    await act(async () => { graphHarness.panePointerUp?.({ x: 240, y: 120 }, { shift: false, alt: false }); });
+    await act(async () => { graphHarness.editAnnotation?.("annotation-1"); });
+    const editor = await screen.findByRole("textbox", { name: "Editing diagram line label" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await userEvent.type(editor, "Uplink");
+    fireEvent.keyDown(editor, { key: "Enter" });
+    expect(annotations()[0]).toMatchObject({ type: "line", label: "Uplink" });
+  });
+
+  it("17. removes a link label when the inline editor is emptied", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const linkId = screen.getAllByRole("button", { name: /^Select link / })[0]!
+      .getAttribute("aria-label")!.replace("Select link ", "");
+    await act(async () => { graphHarness.editLinkLabel?.(linkId); });
+    const editor = await screen.findByRole("textbox", { name: "Editing link label" });
+    await userEvent.type(editor, "Trunk");
+    fireEvent.keyDown(editor, { key: "Enter" });
+    expect(useWorkspaceStore.getState().draft?.diagram?.linkLabels)
+      .toContainEqual(expect.objectContaining({ linkId, text: "Trunk" }));
+
+    await act(async () => { graphHarness.editLinkLabel?.(linkId); });
+    const again = await screen.findByRole("textbox", { name: "Editing link label" });
+    await userEvent.clear(again);
+    fireEvent.keyDown(again, { key: "Enter" });
+    expect(useWorkspaceStore.getState().draft?.diagram?.linkLabels ?? [])
+      .not.toContainEqual(expect.objectContaining({ linkId }));
+    // Connectivity is untouched by a presentation label edit.
+    expect(useWorkspaceStore.getState().draft?.topology.links.some((link) => link.id === linkId)).toBe(true);
+    expect(useWorkspaceStore.getState().pendingTopologyChanges).toBe(false);
+  });
+
+  it("18. keeps exported and re-imported text and styles intact", async () => {
+    await openEmptyLab();
+    const editor = await createTextAt();
+    await userEvent.type(editor, "Exported{enter}note");
+    await userEvent.click(screen.getByRole("button", { name: "Italic" }));
+    fireEvent.keyDown(screen.getByRole("textbox", TEXT_EDITOR), { key: "Enter", ctrlKey: true });
+    const exported = JSON.parse(stringifyLabDocument(
+      canonicalizeLabDocument(useWorkspaceStore.getState().draft!),
+    )) as { diagram?: { annotations: Array<Record<string, unknown>> } };
+    expect(exported.diagram?.annotations[0]).toMatchObject({
+      type: "text",
+      content: "Exported\nnote",
+      italic: true,
+    });
   });
 });

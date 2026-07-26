@@ -1,5 +1,18 @@
-import type { DiagramAnnotation, LabDocument } from "@sim/contracts";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { DiagramAnnotationSchema, type DiagramAnnotation, type LabDocument } from "@sim/contracts";
 import { describe, expect, it } from "vitest";
+import { withDiagramLinkLabel, withoutDiagramLinkLabel } from "../lab/document";
+import {
+  MAX_ANNOTATION_TEXT_LENGTH,
+  MAX_LABEL_TEXT_LENGTH,
+  normalizeDiagramText,
+  TEXT_ANNOTATION_MAX_HEIGHT,
+  TEXT_ANNOTATION_MIN_HEIGHT,
+  textAnnotationHeight,
+  type TextDiagramAnnotation,
+} from "./diagram-editor";
 import {
   alignAnnotations,
   annotationBounds,
@@ -32,6 +45,16 @@ const empty: LabDocument = {
   topology: { schemaVersion: 1, nodes: [], links: [] },
   configurations: {},
 };
+
+function walkSources(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) out.push(...walkSources(full));
+    else if (/\.(ts|tsx)$/.test(full)) out.push(full);
+  }
+  return out;
+}
 
 function documentWith(...annotations: DiagramAnnotation[]): LabDocument {
   return {
@@ -232,5 +255,120 @@ describe("professional diagram editing model", () => {
     expect(line).not.toHaveProperty("a");
     expect(line).not.toHaveProperty("b");
     expect(empty.topology.links).toHaveLength(0);
+  });
+});
+
+describe("M10.3.3b inline text model", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const webSrc = resolve(here, "../../");
+  const text = (patch: Partial<TextDiagramAnnotation> = {}): TextDiagramAnnotation => ({
+    id: "annotation-1",
+    type: "text",
+    position: { x: 0, y: 0 },
+    width: 200,
+    height: 40,
+    autoHeight: true,
+    content: "",
+    fontSize: 16,
+    bold: false,
+    italic: false,
+    alignment: "left",
+    foreground: "auto",
+    background: "transparent",
+    border: "transparent",
+    borderWidth: 0,
+    opacity: 1,
+    zIndex: 1,
+    rotation: 0,
+    locked: false,
+    ...patch,
+  });
+
+  it("1. grows the rendered height with the content that is being typed", () => {
+    const annotation = text({ content: "one" });
+    const single = textAnnotationHeight(annotation);
+    const multi = textAnnotationHeight(annotation, "one\ntwo\nthree\nfour");
+    expect(multi).toBeGreaterThan(single);
+    expect(single).toBeGreaterThanOrEqual(TEXT_ANNOTATION_MIN_HEIGHT);
+  });
+
+  it("2. bounds the automatic height", () => {
+    const tall = textAnnotationHeight(text({ fontSize: 72 }), "x\n".repeat(4_000));
+    expect(tall).toBe(TEXT_ANNOTATION_MAX_HEIGHT);
+    expect(textAnnotationHeight(text({ fontSize: 8 }))).toBe(TEXT_ANNOTATION_MIN_HEIGHT);
+  });
+
+  it("3. honours a fixed height when auto height is disabled", () => {
+    expect(textAnnotationHeight(text({ autoHeight: false, height: 128 }), "a\nb\nc\nd")).toBe(128);
+  });
+
+  it("4. keeps pasted content as plain text with normalized line endings", () => {
+    expect(normalizeDiagramText("Core\r\nEdge\rAccess")).toBe("Core\nEdge\nAccess");
+    expect(normalizeDiagramText("safe\u0000te\u0007xt")).toBe("safetext");
+    expect(normalizeDiagramText("keep\ttabs")).toBe("keep\ttabs");
+  });
+
+  it("5. bounds annotation and label text lengths", () => {
+    expect(normalizeDiagramText("x".repeat(9_000)).length).toBe(MAX_ANNOTATION_TEXT_LENGTH);
+    expect(normalizeDiagramText("x".repeat(9_000), MAX_LABEL_TEXT_LENGTH).length).toBe(MAX_LABEL_TEXT_LENGTH);
+  });
+
+  it("6. leaves no text modal, dialog or prompt in the topology canvas", () => {
+    const canvas = readFileSync(join(here, "TopologyCanvas.tsx"), "utf8");
+    expect(canvas).toContain('className="inline-text-editor"');
+    expect(canvas).not.toContain("annotation-text-dialog");
+    expect(canvas).not.toContain("Edit text annotation");
+    expect(canvas).not.toMatch(/window\.prompt\((\s*)["'`]Link annotation/);
+    // The only remaining dialog on the canvas is the connection modal.
+    const dialogRoles = [...canvas.matchAll(/role="dialog"/g)];
+    expect(dialogRoles).toHaveLength(0);
+  });
+
+  it("7. never renders diagram text through raw HTML", () => {
+    for (const file of ["TopologyCanvas.tsx", "DeviceNode.tsx", "x6/graph-controller.ts"]) {
+      const source = readFileSync(join(here, file), "utf8");
+      expect(source).not.toContain("dangerouslySetInnerHTML");
+      expect(source).not.toContain(".innerHTML");
+    }
+  });
+
+  it("8. shares one height formula between the canvas node and the editor", () => {
+    const controller = readFileSync(join(here, "x6/graph-controller.ts"), "utf8");
+    const canvas = readFileSync(join(here, "TopologyCanvas.tsx"), "utf8");
+    expect(controller).toContain("textAnnotationHeight(annotation)");
+    expect(canvas).toContain("textAnnotationHeight(editingAnnotation, editingText)");
+    // No second copy of the formula anywhere in the web sources.
+    const duplicates = walkSources(webSrc)
+      .filter((file) => !/\.test\.(ts|tsx)$/.test(file))
+      .filter((file) => /Math\.max\(1\.8,/.test(readFileSync(file, "utf8")));
+    expect(duplicates.map((file) => file.replace(webSrc, ""))).toEqual(["/features/topology/diagram-editor.ts"]);
+  });
+
+  it("9. loads an older annotation that has no autoHeight field", () => {
+    const legacy = text({ content: "Legacy note", autoHeight: undefined });
+    expect(textAnnotationHeight(legacy)).toBeGreaterThanOrEqual(TEXT_ANNOTATION_MIN_HEIGHT);
+    const parsed = DiagramAnnotationSchema.parse({ ...legacy, autoHeight: undefined });
+    expect(parsed).toMatchObject({ type: "text", content: "Legacy note" });
+  });
+
+  it("10. drops a link label without touching topology connectivity", () => {
+    const linked: LabDocument = {
+      ...empty,
+      topology: {
+        schemaVersion: 1,
+        nodes: [
+          { id: "pc-1", kind: "pc", position: { x: 0, y: 0 }, interfaces: [{ id: "eth0" }] },
+          { id: "sw-1", kind: "l2-switch", position: { x: 100, y: 0 }, interfaces: [{ id: "Gi0/1" }] },
+        ],
+        links: [{ id: "link-1", a: { node: "pc-1", iface: "eth0" }, b: { node: "sw-1", iface: "Gi0/1" } }],
+      },
+    };
+    const labelled = withDiagramLinkLabel(linked, "link-1", { text: "Trunk", visible: true });
+    expect(labelled.diagram?.linkLabels).toHaveLength(1);
+    const cleared = withoutDiagramLinkLabel(labelled, "link-1");
+    expect(cleared.diagram?.linkLabels).toEqual([]);
+    expect(cleared.topology.links).toEqual(linked.topology.links);
+    // Removing a label that does not exist is a no-op, not a new document.
+    expect(withoutDiagramLinkLabel(cleared, "link-1")).toBe(cleared);
   });
 });

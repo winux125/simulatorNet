@@ -252,6 +252,12 @@ HTML. Raster images are limited to validated PNG, JPEG, or WebP data; SVG,
 remote URLs, embedded scripts, and executable content are rejected. See
 `docs/diagram-editor.md`.
 
+Ordinary diagram text is edited inline on the canvas — never in a modal window.
+The editor is an absolutely positioned overlay that follows the graph transform;
+pasting reads `text/plain` only, and no diagram path may use
+`dangerouslySetInnerHTML` or `innerHTML`. One edit session produces exactly one
+document-history entry.
+
 Diagram data is presentation-only unless a grading spec explicitly checks
 topology structure. The standard grading submission intentionally excludes it.
 

@@ -99,6 +99,48 @@ modify `LabDocument`. Resizing the workspace, toggling the inspector, or moving
 the terminal between Docked, Floating and Maximized leaves the viewport
 unchanged.
 
+## Inline text editing
+
+Diagram text is edited directly on the canvas. Nothing in the normal text
+workflow opens a modal window or a properties dialog.
+
+- the **Text** tool places a caret where you click;
+- double-clicking existing text opens the editor exactly over it;
+- double-clicking a physical link or a diagram line/arrow edits its label
+  in place;
+- the contextual formatting toolbar stays usable while the editor is open, so
+  font size, bold, italic, alignment and colors apply without closing it.
+
+| Key | Result |
+| --- | --- |
+| `Enter` | New line in a text annotation; commits a single-line label |
+| `Ctrl` / `Cmd` + `Enter` | Commit and close |
+| `Escape` | Cancel the session — a new annotation is discarded, existing text is unchanged |
+| `Tab` | Commit and return focus to the canvas (never inserts a tab) |
+| Click outside | Commit |
+
+While the editor is focused, `Delete`, diagram tool shortcuts and global
+workspace shortcuts do not fire; terminal shortcuts still work.
+
+Text is stored and rendered as plain text. Pasting reads only `text/plain`,
+normalizes line endings, strips control characters and applies a length bound;
+clipboard HTML, styles and embedded content are discarded. Nothing in the
+diagram path uses `dangerouslySetInnerHTML` or `innerHTML`.
+
+The editor is an absolutely positioned overlay in canvas coordinates. It honours
+graph scale, translation, annotation size, rotation and theme, and it follows
+pan, zoom and workspace resizes while it is open. A wheel over the editor
+scrolls the editor, never the canvas or the page.
+
+One edit session is one undo step: intermediate keystrokes never enter the
+document history, and creating text commits the annotation and its content
+together. A new annotation that stays empty is discarded and leaves no history
+entry; existing text may become empty and stays until it is explicitly deleted.
+Emptying a link label removes the label without touching connectivity.
+
+Inline editing is allowed while the lab runs. It is presentation-only: no worker
+rebuild, no ARP/TCP/trace reset, and no effect on grading.
+
 ## Persistence
 
 Scale and translation are remembered locally for as long as the lab is open.

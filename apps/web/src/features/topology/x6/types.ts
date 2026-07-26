@@ -54,7 +54,8 @@ export interface LinkView {
 export interface TopologyView {
   nodes: Record<string, NodeView>;
   links: Record<string, LinkView>;
-  annotations?: Record<string, { selected: boolean }>;
+  /** `editing` blanks the rendered text while the inline editor draws it live. */
+  annotations?: Record<string, { selected: boolean; editing?: boolean }>;
 }
 
 /** The draft topology as currently held by the graph (positions + wiring). */
@@ -88,6 +89,8 @@ export interface TopologyGraphCallbacks {
   onLinkContextMenu(id: string, clientX: number, clientY: number): void;
   onSelectAnnotation(id: string, additive: boolean): void;
   onEditAnnotation(id: string): void;
+  /** Double-clicked a physical link: edit its presentation label inline. */
+  onEditLinkLabel(id: string): void;
   onAnnotationMoved(id: string, position: Point): void;
   onAnnotationResized(id: string, width: number, height: number): void;
   onAnnotationRotated(id: string, rotation: number): void;
@@ -131,6 +134,8 @@ export interface TopologyGraphController {
   clearSelection(): void;
   clientToLocal(point: Point): Point;
   localToClient(point: Point): Point;
+  /** Local point on an edge (domain link or diagram line) where its label sits. */
+  getEdgeLabelAnchor(id: string, ratio?: number): Point | undefined;
   getDraftTopology(): TopologyDraft;
   destroy(): void;
 }

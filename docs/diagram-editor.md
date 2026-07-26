@@ -28,8 +28,21 @@ explicit size:
 - hold `Alt` to draw a rectangle/ellipse from its center;
 - enabled grid snapping rounds placement to the 10-pixel diagram grid.
 
-Creating text enters inline editing. `Ctrl/Cmd+Enter` commits text editing.
-Text is always stored and rendered as plain text.
+Creating text enters inline editing directly on the canvas: the caret appears
+where you clicked and no modal window or properties dialog is opened.
+Double-clicking existing text reopens the editor over the annotation itself.
+Double-clicking a physical link or a diagram line/arrow edits its label the same
+way.
+
+`Ctrl/Cmd+Enter` commits, `Escape` cancels, `Tab` commits and returns focus to
+the canvas, and clicking outside commits. `Enter` adds a line to a text
+annotation but commits a single-line label. The contextual formatting toolbar
+remains usable while the editor is open.
+
+Text is always stored and rendered as plain text. Pasting reads only
+`text/plain`, normalizes line endings, strips control characters and bounds the
+length; clipboard HTML never enters a LabDocument. See
+`docs/canvas-navigation.md` for the full inline-editing contract.
 
 ## Images
 
@@ -115,7 +128,7 @@ When the topology canvas owns focus:
 | `Delete` / `Backspace` | Delete selected unlocked annotations |
 | Arrow keys | Move by 1 |
 | `Shift` + Arrow keys | Move by 10 |
-| `Enter` | Edit selected text |
+| `Enter` | Edit selected text inline |
 | `[` / `]` | Send backward / bring forward |
 | `Escape` | Cancel the active gesture, clear selection, and return to Select |
 | `Ctrl/Cmd+Z` | Undo |

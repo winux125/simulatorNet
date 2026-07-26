@@ -11,6 +11,7 @@ export interface GraphEventHandlers {
   onNodeDoubleClick(id: string): void;
   onEdgeConnected(edge: Edge): void;
   onEdgeClick(id: string, additive: boolean): void;
+  onEdgeDoubleClick?(id: string): void;
   onEdgeContextMenu(id: string, clientX: number, clientY: number): void;
   onBlankClick(client: Point): void;
   onBlankPointerDown?(client: Point, modifiers: { shift: boolean; alt: boolean }): void;
@@ -33,6 +34,7 @@ export function attachGraphEvents(graph: Graph, handlers: GraphEventHandlers): (
     ["node:dblclick", ({ node }) => handlers.onNodeDoubleClick(node.id)],
     ["edge:connected", ({ edge, isNew }) => { if (isNew) handlers.onEdgeConnected(edge); }],
     ["edge:click", ({ e, edge }) => handlers.onEdgeClick(edge.id, Boolean(e.shiftKey))],
+    ["edge:dblclick", ({ edge }) => handlers.onEdgeDoubleClick?.(edge.id)],
     ["edge:contextmenu", ({ e, edge }) => {
       e.preventDefault();
       handlers.onEdgeContextMenu(edge.id, e.clientX, e.clientY);

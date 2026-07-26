@@ -17,6 +17,7 @@ import { buildPorts, portsMatch } from "./port-registry";
 import { NODE_HEIGHT, NODE_WIDTH, portBodyAttrs, SIM_DEVICE_SHAPE } from "./styles";
 import type { Point, TopologyGraphCallbacks, TopologyGraphController, TopologyView } from "./types";
 import { diagramAssetDataUrl } from "../diagram-image-assets";
+import { textAnnotationHeight } from "../diagram-editor";
 
 export interface CreateControllerOptions {
   container: HTMLElement;
@@ -222,6 +223,13 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       if (diagramId) options.callbacks.onSelectAnnotation(diagramId, additive);
       else options.callbacks.onSelectLink(id);
     },
+    // Double-clicking an edge edits its label inline: a diagram line/arrow
+    // label, or the presentation label of a physical topology link.
+    onEdgeDoubleClick: (id) => {
+      const diagramId = annotationId(id);
+      if (diagramId) options.callbacks.onEditAnnotation(diagramId);
+      else options.callbacks.onEditLinkLabel(id);
+    },
     onEdgeContextMenu: (id, x, y) => {
       if (!annotationId(id)) options.callbacks.onLinkContextMenu(id, x, y);
     },
@@ -269,6 +277,9 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       };
     }
     if (annotation.type === "text") {
+      // While the inline editor is open it renders the live text in place, so
+      // the canvas label is blanked to avoid drawing the old text underneath.
+      const editing = state.view.annotations?.[annotation.id]?.editing ?? false;
       return {
         body: {
           fill: annotation.background ?? "transparent",
@@ -278,7 +289,7 @@ export function createTopologyGraphController(options: CreateControllerOptions):
           opacity: annotation.opacity ?? 1,
         },
         label: {
-          text: annotation.content,
+          text: editing ? "" : annotation.content,
           fill: annotation.foreground === "auto" ? "var(--color-text, #203247)" : annotation.foreground,
           fontSize: annotation.fontSize,
           fontWeight: annotation.bold ? 700 : 400,
@@ -311,9 +322,10 @@ export function createTopologyGraphController(options: CreateControllerOptions):
   function renderAnnotation(annotation: DiagramAnnotation): void {
     const id = annotationCellId(annotation.id);
     const selected = state.view.annotations?.[annotation.id]?.selected ?? false;
+    const editing = state.view.annotations?.[annotation.id]?.editing ?? false;
     const existing = graph.getCellById(id);
     if (annotation.type === "line" || annotation.type === "arrow") {
-      const labels = annotation.label
+      const labels = annotation.label && !editing
         ? [{ attrs: { label: { text: annotation.label, fill: "var(--color-text, #203247)", fontSize: 11 } }, position: 0.5 }]
         : [];
       const attrs = {
@@ -346,9 +358,7 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       }
       return;
     }
-    const height = annotation.type === "text" && annotation.autoHeight !== false
-      ? Math.max(annotation.fontSize * Math.max(1.8, annotation.content.split("\n").length * 1.25), 30)
-      : annotation.type === "text" ? annotation.height ?? 40 : annotation.height;
+    const height = annotation.type === "text" ? textAnnotationHeight(annotation) : annotation.height;
     const shape = annotation.type === "ellipse" ? "ellipse" : "rect";
     const attrs = annotationNodeAttrs(annotation);
     if (existing?.isNode()) {
@@ -582,6 +592,16 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     },
     clearSelection() {
       // Mirror of selectAll — the store clears selection; nothing to clear here.
+    },
+    // Local-coordinate anchor for an edge label, used to place the inline
+    // editor exactly over the label it edits. Accepts a domain link id or a
+    // diagram line/arrow annotation id.
+    getEdgeLabelAnchor(id: string, ratio = 0.5) {
+      const cell = graph.getCellById(id) ?? graph.getCellById(annotationCellId(id));
+      if (!cell?.isEdge()) return undefined;
+      const view = graph.findViewByCell(cell) as { getPointAtRatio?(value: number): Point | null } | null;
+      const point = view?.getPointAtRatio?.(Math.min(1, Math.max(0, ratio)));
+      return point ? { x: point.x, y: point.y } : undefined;
     },
     clientToLocal(point: Point) {
       const local = graph.clientToLocal(point);

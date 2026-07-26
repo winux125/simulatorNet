@@ -487,6 +487,19 @@ export function withDiagramLinkLabel(
   };
 }
 
+/** Drop a link's presentation label entirely; connectivity is untouched. */
+export function withoutDiagramLinkLabel(document: LabDocument, linkId: string): LabDocument {
+  const current = document.diagram;
+  if (!current?.linkLabels.some((label) => label.linkId === linkId)) return document;
+  return {
+    ...document,
+    diagram: {
+      ...current,
+      linkLabels: current.linkLabels.filter((label) => label.linkId !== linkId),
+    },
+  };
+}
+
 export function withDiagramLinkStyle(
   document: LabDocument,
   linkId: string,

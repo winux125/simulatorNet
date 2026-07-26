@@ -25,6 +25,7 @@ export interface TopologyGraphSurfaceProps {
     clientToLocal(point: Point): Point;
     localToClient(point: Point): Point;
     getViewport(): CanvasViewport;
+    getEdgeLabelAnchor(id: string, ratio?: number): Point | undefined;
     fit(): void;
   }): void;
   onViewportChanged(viewport: CanvasViewport): void;
@@ -38,6 +39,7 @@ export interface TopologyGraphSurfaceProps {
   onLinkContextMenu(id: string, clientX: number, clientY: number): void;
   onSelectAnnotation(id: string, additive: boolean): void;
   onEditAnnotation(id: string): void;
+  onEditLinkLabel(id: string): void;
   onAnnotationMoved(id: string, position: Point): void;
   onAnnotationResized(id: string, width: number, height: number): void;
   onAnnotationRotated(id: string, rotation: number): void;
@@ -73,6 +75,7 @@ export function TopologyGraphSurface(props: TopologyGraphSurfaceProps) {
         onLinkContextMenu: (id, x, y) => propsRef.current.onLinkContextMenu(id, x, y),
         onSelectAnnotation: (id, additive) => propsRef.current.onSelectAnnotation(id, additive),
         onEditAnnotation: (id) => propsRef.current.onEditAnnotation(id),
+        onEditLinkLabel: (id) => propsRef.current.onEditLinkLabel(id),
         onAnnotationMoved: (id, position) => propsRef.current.onAnnotationMoved(id, position),
         onAnnotationResized: (id, width, height) => propsRef.current.onAnnotationResized(id, width, height),
         onAnnotationRotated: (id, rotation) => propsRef.current.onAnnotationRotated(id, rotation),
@@ -102,6 +105,7 @@ export function TopologyGraphSurface(props: TopologyGraphSurfaceProps) {
       clientToLocal: (point) => controller.clientToLocal(point),
       localToClient: (point) => controller.localToClient(point),
       getViewport: () => controller.getViewport(),
+      getEdgeLabelAnchor: (id, ratio) => controller.getEdgeLabelAnchor(id, ratio),
       fit: () => controller.fitToContent(),
     });
     const resizeObserver = typeof ResizeObserver === "undefined"

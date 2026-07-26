@@ -18,6 +18,42 @@ export const DIAGRAM_MIN_SIZE = 12;
 export const DIAGRAM_DEFAULT_SHAPE_SIZE = { width: 140, height: 80 };
 export const DIAGRAM_CLIPBOARD_TYPE = "application/x-simulatornet-diagram";
 
+/** Bounds shared by the rendered text annotation and its inline editor. */
+export const TEXT_ANNOTATION_MIN_HEIGHT = 30;
+export const TEXT_ANNOTATION_MAX_HEIGHT = 2_000;
+export const TEXT_ANNOTATION_MIN_WIDTH = 60;
+export const MAX_ANNOTATION_TEXT_LENGTH = 4_096;
+export const MAX_LABEL_TEXT_LENGTH = 512;
+
+export type TextDiagramAnnotation = Extract<DiagramAnnotation, { type: "text" }>;
+
+/**
+ * Rendered height of a text annotation. The canvas node and the inline editor
+ * must agree exactly, so both call this instead of recomputing the formula.
+ */
+export function textAnnotationHeight(annotation: TextDiagramAnnotation, content = annotation.content): number {
+  if (annotation.autoHeight === false) return annotation.height ?? 40;
+  const lines = content.split("\n").length;
+  return Math.min(
+    TEXT_ANNOTATION_MAX_HEIGHT,
+    Math.max(TEXT_ANNOTATION_MIN_HEIGHT, annotation.fontSize * Math.max(1.8, lines * 1.25)),
+  );
+}
+
+/**
+ * Diagram text is plain text only. Pasted content is taken from `text/plain`,
+ * normalized to `\n` line endings, stripped of control characters, and bounded.
+ * HTML markup, styles and embedded content never enter a LabDocument.
+ */
+export function normalizeDiagramText(value: string, limit = MAX_ANNOTATION_TEXT_LENGTH): string {
+  return value
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n")
+    // Control characters other than the newline we just normalized.
+    .replaceAll(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
+    .slice(0, limit);
+}
+
 export interface DiagramModifiers {
   shift?: boolean;
   alt?: boolean;

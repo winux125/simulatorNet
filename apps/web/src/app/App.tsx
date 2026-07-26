@@ -5,7 +5,7 @@ import { Group as PanelGroup, Panel as ResizablePanel, Separator } from "react-r
 import {
   AlertTriangle, CheckCircle2, Command, Download, Eraser, FilePlus2, FlaskConical, FolderOpen, FolderX,
   Grid3X3, Info, Keyboard, Maximize2, Move, PanelRight, Play, Redo2, RotateCcw, SkipForward,
-  Square, SunMoon, Tag, TerminalSquare, Undo2, Wrench, X,
+  Square, SunMoon, Tag, TerminalSquare, Type, Undo2, Wrench, X,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { DevicePalette } from "../components/DevicePalette";
@@ -131,6 +131,7 @@ export function App({ client }: AppProps) {
   const [stepExplanationOpen, setStepExplanationOpen] = useState(false);
   const [packetModesOpen, setPacketModesOpen] = useState(false);
   const [canvasNavigationOpen, setCanvasNavigationOpen] = useState(false);
+  const [diagramTextOpen, setDiagramTextOpen] = useState(false);
   const [validation, setValidation] = useState<string>();
   const [pendingMode, setPendingMode] = useState<WorkspaceMode>();
   const [deviceWindowId, setDeviceWindowId] = useState<string>();
@@ -425,7 +426,7 @@ export function App({ client }: AppProps) {
       else if (event.key === "?") setShortcutsOpen(true);
       else if (event.key === "Escape") {
         setShortcutsOpen(false); setLabInfoOpen(false); setCliCommandsOpen(false); setAboutOpen(false);
-        setSaveAsOpen(false); setDemoLabOpen(false); setStepExplanationOpen(false); setPacketModesOpen(false); setCanvasNavigationOpen(false); setConfirmApply(false); setConfirmStop(false); setValidation(undefined);
+        setSaveAsOpen(false); setDemoLabOpen(false); setStepExplanationOpen(false); setPacketModesOpen(false); setCanvasNavigationOpen(false); setDiagramTextOpen(false); setConfirmApply(false); setConfirmStop(false); setValidation(undefined);
         workspace.setPaletteOpen(false); workspace.selectNode(undefined); workspace.selectLink(undefined);
       }
     };
@@ -539,6 +540,7 @@ export function App({ client }: AppProps) {
     ] },
     { id: "help", label: "Help", items: [
       { id: "help-canvas-navigation", label: "Canvas Navigation", icon: <Move size={14} />, onSelect: () => setCanvasNavigationOpen(true) },
+      { id: "help-diagram-text", label: "Diagram Text Editing", icon: <Type size={14} />, onSelect: () => setDiagramTextOpen(true) },
       { id: "help-packet-modes", label: "Packet Execution Modes", icon: <SkipForward size={14} />, onSelect: () => setPacketModesOpen(true) },
       { id: "help-cli", label: "CLI Commands", icon: <TerminalSquare size={14} />, onSelect: () => setCliCommandsOpen(true) },
       { id: "help-shortcuts", label: "Keyboard Shortcuts", shortcut: "?", icon: <Keyboard size={14} />, onSelect: () => setShortcutsOpen(true) },
@@ -731,6 +733,7 @@ export function App({ client }: AppProps) {
       {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
       {packetModesOpen && <PacketExecutionHelpDialog onClose={() => setPacketModesOpen(false)} />}
       {canvasNavigationOpen && <CanvasNavigationHelpDialog onClose={() => setCanvasNavigationOpen(false)} />}
+      {diagramTextOpen && <DiagramTextHelpDialog onClose={() => setDiagramTextOpen(false)} />}
       {stepExplanationOpen && <WorkspaceDialog title="Step mode" eyebrow="Packet execution" onClose={dismissStepExplanation}>
         <p>Step mode lets you inspect ARP, ICMP, TCP and other network events one at a time.</p>
         <p>Your device configurations are unchanged. Switch back to Auto for normal operation.</p>
@@ -892,6 +895,20 @@ function CanvasNavigationHelpDialog({ onClose }: { onClose(): void }) {
       <Shortcut keys="Left drag on empty canvas" label="Select / marquee" />
     </div>
     <p className="section-note">A plain wheel never zooms and never scrolls the page. Zoom is limited to 20%–300%; the status bar shows the current percentage and resets it to 100%. Fit Topology stays a separate action.</p>
+  </WorkspaceDialog>;
+}
+
+function DiagramTextHelpDialog({ onClose }: { onClose(): void }) {
+  return <WorkspaceDialog title="Diagram text editing" eyebrow="Editing on the canvas" onClose={onClose}>
+    <p>Diagram text is edited directly on the canvas. Choose the Text tool and click to place a caret, or double-click existing text, a link, or a diagram line to edit its label in place. No text editing step opens a dialog window.</p>
+    <div className="shortcut-list">
+      <Shortcut keys="Enter" label="New line in text; commits a single-line label" />
+      <Shortcut keys="Ctrl / Cmd + Enter" label="Commit and close the editor" />
+      <Shortcut keys="Escape" label="Cancel — a new annotation is discarded" />
+      <Shortcut keys="Tab" label="Commit and return focus to the canvas" />
+      <Shortcut keys="Click outside" label="Commit" />
+    </div>
+    <p className="section-note">Formatting controls stay available while the editor is open. Text is stored as plain text; pasted content uses text/plain only. One edit session is one undo step, and editing text while the lab runs never rebuilds the simulation.</p>
   </WorkspaceDialog>;
 }
 

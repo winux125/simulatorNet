@@ -47,6 +47,7 @@ import {
   useRef,
   useState,
   type ClipboardEvent as ReactClipboardEvent,
+  type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
@@ -66,6 +67,7 @@ import {
   withDiagramLinkLabel,
   withDiagramLinkStyle,
   withNodePosition,
+  withoutDiagramLinkLabel,
 } from "../lab/document";
 import { DeviceConnectionDialog } from "./DeviceConnectionDialog";
 import { createDiagramAsset } from "./diagram-image-assets";
@@ -78,7 +80,10 @@ import {
   distributeAnnotations,
   duplicateAnnotations,
   isValidDiagramHex,
+  MAX_ANNOTATION_TEXT_LENGTH,
+  MAX_LABEL_TEXT_LENGTH,
   moveAnnotations,
+  normalizeDiagramText,
   pasteDiagramClipboard,
   rectangleFromDrag,
   removeAnnotations,
@@ -87,7 +92,10 @@ import {
   serializeDiagramClipboard,
   setAnnotationLock,
   snapTranslationToSmartGuides,
+  TEXT_ANNOTATION_MIN_WIDTH,
+  textAnnotationHeight,
   updateLineEndpoint,
+  type TextDiagramAnnotation,
 } from "./diagram-editor";
 import { TopologyGraphSurface } from "./TopologyGraphSurface";
 import { formatZoomPercent, type CanvasViewport } from "./canvas-navigation";
@@ -138,6 +146,40 @@ interface ConnectionIntent {
   sourcePort?: string;
   targetPort?: string;
   replaceLinkId?: string;
+}
+
+/**
+ * What the inline canvas editor is currently editing. Diagram text is never
+ * edited in a modal window; the editor is an absolutely positioned overlay
+ * drawn over the annotation itself.
+ *
+ * A brand-new text annotation is held here as a `draft` and only enters the
+ * LabDocument when the edit is committed, so creating text is a single
+ * undo step and cancelling leaves no empty annotation behind.
+ */
+type InlineTextTarget =
+  | { kind: "annotation"; id: string; draft?: TextDiagramAnnotation }
+  | { kind: "line-label"; id: string }
+  | { kind: "link-label"; id: string };
+
+const INLINE_EDITOR_LABEL: Record<InlineTextTarget["kind"], string> = {
+  annotation: "Editing topology text",
+  "line-label": "Editing diagram line label",
+  "link-label": "Editing link label",
+};
+
+interface InlineEditorLayout {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  rotation: number;
+  fontSize: number;
+  bold: boolean;
+  italic: boolean;
+  align: "left" | "center" | "right";
+  color?: string;
+  background?: string;
 }
 
 const ANNOTATION_TOOLS = new Set<WorkspaceTool>([
@@ -230,9 +272,11 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   const [connectionIntent, setConnectionIntent] = useState<ConnectionIntent>();
   const [pendingConnectionSourceId, setPendingConnectionSourceId] = useState<string>();
   const [selectedAnnotationIds, setSelectedAnnotationIds] = useState<string[]>([]);
-  const [editingTextId, setEditingTextId] = useState<string>();
+  const [textEditing, setTextEditing] = useState<InlineTextTarget>();
   const [editingText, setEditingText] = useState("");
-  const [newTextId, setNewTextId] = useState<string>();
+  // Re-published on every canvas transform while an editor is open, so the
+  // overlay follows pan/zoom instead of blocking navigation.
+  const [liveViewport, setLiveViewport] = useState<CanvasViewport>();
   const [dragStart, setDragStart] = useState<Point>();
   const [dragCurrent, setDragCurrent] = useState<Point>();
   const [marqueeStart, setMarqueeStart] = useState<Point>();
@@ -242,6 +286,9 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   const [smartGuide, setSmartGuide] = useState<{ x?: number; y?: number }>({});
   const [instructionsOpen, setInstructionsOpen] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const textEditingRef = useRef<InlineTextTarget | undefined>(undefined);
+  textEditingRef.current = textEditing;
   const imageInputRef = useRef<HTMLInputElement>(null);
   const pendingImagePosition = useRef<Point | undefined>(undefined);
   const pendingReplaceImageId = useRef<string | undefined>(undefined);
@@ -249,6 +296,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     clientToLocal(point: Point): Point;
     localToClient(point: Point): Point;
     getViewport(): CanvasViewport;
+    getEdgeLabelAnchor(id: string, ratio?: number): Point | undefined;
     fit(): void;
   } | undefined>(undefined);
   const suppressPaneClick = useRef(false);
@@ -281,8 +329,35 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     if (viewportTimer.current !== undefined) window.clearTimeout(viewportTimer.current);
   }, []);
 
+  // Keep the inline editor glued to its annotation while the canvas moves.
+  useEffect(() => {
+    if (!textEditing || typeof ResizeObserver === "undefined") return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const observer = new ResizeObserver(() => {
+      const current = graphApi.current?.getViewport();
+      if (current) setLiveViewport({ ...current });
+    });
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [textEditing]);
+
+  useEffect(() => {
+    const element = editorRef.current;
+    if (!textEditing || !element) return;
+    element.focus();
+    // A brand-new annotation starts empty, so put the caret at the end;
+    // existing text is selected so typing replaces it.
+    if (textEditing.kind === "annotation" && textEditing.draft) {
+      element.setSelectionRange(element.value.length, element.value.length);
+    } else {
+      element.select();
+    }
+  }, [textEditing]);
+
   const viewportChanged = useCallback((viewport: CanvasViewport) => {
     latestViewport.current = viewport;
+    if (textEditingRef.current) setLiveViewport(viewport);
     if (viewportTimer.current !== undefined) return;
     viewportTimer.current = window.setTimeout(() => {
       viewportTimer.current = undefined;
@@ -353,7 +428,10 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       const targetInterface = status.get(link.b.node)?.interfaces.find((iface) => iface.id === link.b.iface);
       const selected = props.selectedLinkId === link.id;
       const showPorts = portLabelsVisible(props.portLabelMode, selected);
-      const diagramLabel = props.document.diagram?.linkLabels.find((label) => label.linkId === link.id && label.visible);
+      const editingLabel = textEditing?.kind === "link-label" && textEditing.id === link.id;
+      const diagramLabel = editingLabel
+        ? undefined
+        : props.document.diagram?.linkLabels.find((label) => label.linkId === link.id && label.visible);
       result.links[link.id] = {
         operational: Boolean(sourceInterface?.operationalUp && targetInterface?.operationalUp),
         selected,
@@ -370,10 +448,15 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       };
     }
     for (const annotation of props.document.diagram?.annotations ?? []) {
-      result.annotations![annotation.id] = { selected: selectedAnnotationIds.includes(annotation.id) };
+      result.annotations![annotation.id] = {
+        selected: selectedAnnotationIds.includes(annotation.id),
+        // The inline editor draws the live text; the canvas must not draw the
+        // committed text underneath it.
+        editing: textEditing !== undefined && textEditing.kind !== "link-label" && textEditing.id === annotation.id,
+      };
     }
     return result;
-  }, [props, status, structuralEditable, activateNode, openNodeMenu, selectedAnnotationIds, startConnection]);
+  }, [props, status, structuralEditable, activateNode, openNodeMenu, selectedAnnotationIds, startConnection, textEditing]);
 
   if (!props.document) {
     return (
@@ -393,9 +476,16 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   }
 
   const document = props.document;
-  const selectedAnnotation = document.diagram?.annotations.find((annotation) => annotation.id === selectedAnnotationIds.at(-1));
-  const editingAnnotation = document.diagram?.annotations.find((annotation) =>
-    annotation.id === editingTextId && annotation.type === "text") as Extract<DiagramAnnotation, { type: "text" }> | undefined;
+  const editingDraft = textEditing?.kind === "annotation" ? textEditing.draft : undefined;
+  const selectedAnnotation = editingDraft
+    ?? document.diagram?.annotations.find((annotation) => annotation.id === selectedAnnotationIds.at(-1));
+  const editingAnnotation: TextDiagramAnnotation | undefined = editingDraft
+    ?? (textEditing?.kind === "annotation"
+      ? document.diagram?.annotations.find((annotation) =>
+          annotation.id === textEditing.id && annotation.type === "text") as TextDiagramAnnotation | undefined
+      : undefined);
+  const editorTextLimit = textEditing?.kind === "annotation" ? MAX_ANNOTATION_TEXT_LENGTH : MAX_LABEL_TEXT_LENGTH;
+  const editorCommitsOnEnter = textEditing !== undefined && textEditing.kind !== "annotation";
   const insertImageFile = async (file: File, requestedPosition?: Point) => {
     try {
       const replacing = document.diagram?.annotations.find((annotation): annotation is Extract<DiagramAnnotation, { type: "image" }> =>
@@ -498,15 +588,9 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       props.onPlacedDevice();
       return;
     }
-    const annotation = props.activeTool === "annotation-text"
-      ? createDiagramAnnotation(document, props.activeTool, local, local, { snap: snapToGrid })
-      : undefined;
-    if (annotation?.type === "text") {
-      props.onChange(addDiagramAnnotation(document, annotation), "presentation");
-      setSelectedAnnotationIds([annotation.id]);
-      setEditingText("");
-      setEditingTextId(annotation.id);
-      setNewTextId(annotation.id);
+    if (props.activeTool === "annotation-text") {
+      // Text tool: place a caret on the canvas immediately, never a dialog.
+      startNewTextEditing(local);
       props.onPlacedDevice();
       return;
     }
@@ -580,11 +664,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     }
     if (contextMenu.kind === "link") {
       if (action === "inspect") props.onSelectLink(contextMenu.id);
-      if (action === "label") {
-        const current = document.diagram?.linkLabels.find((label) => label.linkId === contextMenu.id)?.text ?? "";
-        const next = window.prompt("Link annotation", current);
-        if (next !== null) props.onChange(withDiagramLinkLabel(document, contextMenu.id, { text: next, visible: true }), "presentation");
-      }
+      if (action === "label") startLinkLabelEditing(contextMenu.id);
       if (action === "route-straight") {
         props.onChange(withDiagramLinkStyle(document, contextMenu.id, { route: "straight", vertices: [] }), "presentation");
       }
@@ -607,16 +687,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     }
     if (contextMenu.kind === "pane") {
       const local = graphApi.current?.clientToLocal({ x: contextMenu.x, y: contextMenu.y }) ?? insertionPoint();
-      if (action === "add-text") {
-        const annotation = createDiagramAnnotation(document, "annotation-text", local, local, { snap: snapToGrid });
-        if (annotation) {
-          props.onChange(addDiagramAnnotation(document, annotation), "presentation");
-          setSelectedAnnotationIds([annotation.id]);
-          setEditingText("");
-          setEditingTextId(annotation.id);
-          setNewTextId(annotation.id);
-        }
-      }
+      if (action === "add-text") startNewTextEditing(local);
       if (action === "add-image") openImagePicker(local);
       if (action === "add-shape") {
         const annotation = createDiagramAnnotation(document, "annotation-rectangle", local, local, { snap: snapToGrid });
@@ -630,6 +701,12 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   };
 
   const updateSelected = (next: DiagramAnnotation) => {
+    // Styling an uncommitted new annotation edits the draft, so the contextual
+    // toolbar stays usable while the inline editor is open.
+    if (editingDraft && next.id === editingDraft.id && next.type === "text") {
+      setTextEditing({ kind: "annotation", id: next.id, draft: next });
+      return;
+    }
     props.onChange(updateDiagramAnnotation(document, next), "presentation");
   };
 
@@ -638,35 +715,88 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     if (annotation?.type !== "text" || annotation.locked) return;
     setSelectedAnnotationIds([annotation.id]);
     setEditingText(annotation.content);
-    setEditingTextId(annotation.id);
-    setNewTextId(undefined);
+    setTextEditing({ kind: "annotation", id: annotation.id });
+  };
+
+  const startNewTextEditing = (position: Point) => {
+    const annotation = createDiagramAnnotation(document, "annotation-text", position, position, { snap: snapToGrid });
+    if (annotation?.type !== "text") return;
+    setSelectedAnnotationIds([]);
+    setEditingText("");
+    setTextEditing({ kind: "annotation", id: annotation.id, draft: annotation });
+  };
+
+  const startLineLabelEditing = (annotationId: string) => {
+    const annotation = document.diagram?.annotations.find((candidate) => candidate.id === annotationId);
+    if (!annotation || (annotation.type !== "line" && annotation.type !== "arrow") || annotation.locked) return;
+    setSelectedAnnotationIds([annotation.id]);
+    setEditingText(annotation.label ?? "");
+    setTextEditing({ kind: "line-label", id: annotation.id });
+  };
+
+  const startLinkLabelEditing = (linkId: string) => {
+    if (!document.topology.links.some((link) => link.id === linkId)) return;
+    setContextMenu(undefined);
+    setSelectedAnnotationIds([]);
+    props.onSelectLink(linkId);
+    setEditingText(document.diagram?.linkLabels.find((label) => label.linkId === linkId)?.text ?? "");
+    setTextEditing({ kind: "link-label", id: linkId });
   };
 
   const editAnnotation = (annotationId: string) => {
     const annotation = document.diagram?.annotations.find((candidate) => candidate.id === annotationId);
     if (annotation?.type === "text") startTextEditing(annotationId);
+    else if (annotation?.type === "line" || annotation?.type === "arrow") startLineLabelEditing(annotationId);
     else if (annotation?.type === "image") setSelectedAnnotationIds([annotationId]);
   };
 
-  const cancelTextEditing = () => {
-    if (editingTextId && editingTextId === newTextId && editingText.trim() === "") {
-      props.onChange(removeAnnotations(document, [editingTextId]), "presentation");
-      setSelectedAnnotationIds([]);
-    }
-    setEditingTextId(undefined);
-    setNewTextId(undefined);
+  const closeTextEditing = () => {
+    setTextEditing(undefined);
+    setEditingText("");
+    setLiveViewport(undefined);
   };
 
+  // Escape discards the session: an uncommitted new annotation never existed,
+  // and an existing one is untouched because edits are only applied on commit.
+  const cancelTextEditing = () => closeTextEditing();
+
   const commitTextEditing = () => {
-    if (!editingAnnotation) return;
-    if (editingTextId === newTextId && editingText.trim() === "") {
-      props.onChange(removeAnnotations(document, [editingAnnotation.id]), "presentation");
-      setSelectedAnnotationIds([]);
+    const target = textEditing;
+    if (!target) return;
+    const value = normalizeDiagramText(
+      editingText,
+      target.kind === "annotation" ? MAX_ANNOTATION_TEXT_LENGTH : MAX_LABEL_TEXT_LENGTH,
+    );
+    if (target.kind === "annotation") {
+      const draft = target.draft;
+      if (draft) {
+        // An empty new annotation is discarded and leaves no history entry.
+        if (value.trim() !== "") {
+          props.onChange(addDiagramAnnotation(document, { ...draft, content: value }), "presentation");
+          setSelectedAnnotationIds([draft.id]);
+        }
+      } else if (editingAnnotation && editingAnnotation.content !== value) {
+        // Existing text may become empty; it stays until it is explicitly deleted.
+        props.onChange(updateDiagramAnnotation(document, { ...editingAnnotation, content: value }), "presentation");
+      }
+    } else if (target.kind === "line-label") {
+      const annotation = document.diagram?.annotations.find((candidate) => candidate.id === target.id);
+      const isLine = annotation?.type === "line" || annotation?.type === "arrow";
+      if (annotation && isLine && (annotation.label ?? "") !== value) {
+        props.onChange(updateDiagramAnnotation(document, { ...annotation, label: value || undefined }), "presentation");
+      }
     } else {
-      updateSelected({ ...editingAnnotation, content: editingText.slice(0, 4_096) });
+      const current = document.diagram?.linkLabels.find((label) => label.linkId === target.id);
+      if ((current?.text ?? "") !== value || (value !== "" && current?.visible === false)) {
+        props.onChange(
+          value === ""
+            ? withoutDiagramLinkLabel(document, target.id)
+            : withDiagramLinkLabel(document, target.id, { text: value, visible: true }),
+          "presentation",
+        );
+      }
     }
-    setEditingTextId(undefined);
-    setNewTextId(undefined);
+    closeTextEditing();
   };
 
   const duplicateSelectedAnnotations = () => {
@@ -747,6 +877,83 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   const marqueeOverlayEnd = overlayPoint(marqueeCurrent);
   const smartGuideOverlayX = smartGuide.x === undefined ? undefined : overlayPoint({ x: smartGuide.x, y: 0 })?.x;
   const smartGuideOverlayY = smartGuide.y === undefined ? undefined : overlayPoint({ x: 0, y: smartGuide.y })?.y;
+
+  // Place the inline editor over the object it edits, in the canvas transform.
+  // Recomputed on every render; `liveViewport` re-renders on pan/zoom/resize.
+  const editorLayout = ((): InlineEditorLayout | undefined => {
+    if (!textEditing) return undefined;
+    const scale = liveViewport?.scale ?? graphApi.current?.getViewport().scale ?? 1;
+    if (editingAnnotation) {
+      const topLeft = overlayPoint(editingAnnotation.position);
+      if (!topLeft) return undefined;
+      return {
+        left: topLeft.x,
+        top: topLeft.y,
+        width: Math.max(TEXT_ANNOTATION_MIN_WIDTH, editingAnnotation.width) * scale,
+        height: textAnnotationHeight(editingAnnotation, editingText) * scale,
+        rotation: editingAnnotation.rotation,
+        fontSize: editingAnnotation.fontSize * scale,
+        bold: editingAnnotation.bold,
+        italic: editingAnnotation.italic,
+        align: editingAnnotation.alignment,
+        color: editingAnnotation.foreground === "auto" ? undefined : editingAnnotation.foreground,
+        background: !editingAnnotation.background || editingAnnotation.background === "transparent"
+          ? undefined
+          : editingAnnotation.background,
+      };
+    }
+    if (textEditing.kind === "annotation") return undefined;
+    const ratio = textEditing.kind === "link-label"
+      ? document.diagram?.linkLabels.find((label) => label.linkId === textEditing.id)?.position ?? 0.5
+      : 0.5;
+    const anchor = overlayPoint(graphApi.current?.getEdgeLabelAnchor(textEditing.id, ratio));
+    if (!anchor) return undefined;
+    const width = 200 * scale;
+    const height = 30 * scale;
+    return {
+      left: anchor.x - width / 2,
+      top: anchor.y - height / 2,
+      width,
+      height,
+      rotation: 0,
+      fontSize: 12 * scale,
+      bold: false,
+      italic: false,
+      align: "center",
+    };
+  })();
+
+  const editorKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Escape") { event.preventDefault(); cancelTextEditing(); return; }
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); commitTextEditing(); return; }
+    // Enter adds a line to multiline text; a single-line label commits instead.
+    if (event.key === "Enter" && editorCommitsOnEnter) { event.preventDefault(); commitTextEditing(); return; }
+    // Tab always commits and returns focus to the canvas — it never inserts a tab.
+    if (event.key === "Tab") { event.preventDefault(); commitTextEditing(); panelRef.current?.focus(); }
+  };
+
+  const editorPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    // Plain text only: clipboard HTML, styles and embedded content are ignored.
+    event.preventDefault();
+    const element = event.currentTarget;
+    const pasted = normalizeDiagramText(event.clipboardData.getData("text/plain"), editorTextLimit);
+    const start = element.selectionStart ?? element.value.length;
+    const end = element.selectionEnd ?? start;
+    const next = normalizeDiagramText(
+      `${element.value.slice(0, start)}${pasted}${element.value.slice(end)}`,
+      editorTextLimit,
+    );
+    setEditingText(next);
+    const caret = Math.min(next.length, start + pasted.length);
+    window.requestAnimationFrame(() => element.setSelectionRange(caret, caret));
+  };
+
+  const editorBlur = (event: ReactFocusEvent<HTMLTextAreaElement>) => {
+    // Formatting controls keep the session alive so styles apply without
+    // closing the editor; anything else commits the text.
+    if ((event.relatedTarget as HTMLElement | null)?.closest(".annotation-toolbar, .diagram-insert-toolbar")) return;
+    commitTextEditing();
+  };
 
   return (
     <section
@@ -962,6 +1169,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           props.onSelectLink(undefined);
         }}
         onEditAnnotation={editAnnotation}
+        onEditLinkLabel={startLinkLabelEditing}
         onConnect={(source, sourcePort, target, targetPort) => {
           if (!structuralEditable) return;
           props.onChange(createLink(document, source, sourcePort, target, targetPort).document, "structural");
@@ -1047,24 +1255,38 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         />
       )}
 
-      {editingAnnotation && (
-        <div className="dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) cancelTextEditing(); }}>
-          <form
-            className="workspace-dialog annotation-text-dialog"
-            role="dialog"
-            aria-label="Edit text annotation"
-            onSubmit={(event) => {
-              event.preventDefault();
-              commitTextEditing();
+      {textEditing && editorLayout && (
+        <div
+          className="inline-text-editor"
+          data-inline-text-editor={textEditing.kind}
+          style={{
+            left: editorLayout.left,
+            top: editorLayout.top,
+            width: editorLayout.width,
+            height: editorLayout.height,
+            transform: editorLayout.rotation ? `rotate(${editorLayout.rotation}deg)` : undefined,
+          }}
+        >
+          <textarea
+            ref={editorRef}
+            aria-label={INLINE_EDITOR_LABEL[textEditing.kind]}
+            spellCheck={false}
+            maxLength={editorTextLimit}
+            value={editingText}
+            style={{
+              fontSize: editorLayout.fontSize,
+              fontWeight: editorLayout.bold ? 700 : 400,
+              fontStyle: editorLayout.italic ? "italic" : "normal",
+              textAlign: editorLayout.align,
+              color: editorLayout.color,
+              background: editorLayout.background,
             }}
-          >
-            <header><div><p>Diagram annotation</p><h2>{newTextId ? "Add text" : "Edit text"}</h2></div><button type="button" className="dialog-close" aria-label="Close text editor" onClick={cancelTextEditing}><X size={15} /></button></header>
-            <div className="workspace-dialog__body"><label className="annotation-text-field">Plain text<textarea aria-label="Annotation text" rows={7} value={editingText} autoFocus maxLength={4_096} onKeyDown={(event) => {
-              if (event.key === "Escape") { event.preventDefault(); cancelTextEditing(); }
-              if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); commitTextEditing(); }
-            }} onChange={(event) => setEditingText(event.target.value)} /></label><p className="field-help">Multiline plain text. Ctrl/Cmd+Enter applies; Escape cancels.</p></div>
-            <div className="dialog-actions"><Button type="button" variant="ghost" onClick={cancelTextEditing}>Cancel</Button><Button type="submit" variant="primary">Apply</Button></div>
-          </form>
+            onChange={(event) => setEditingText(normalizeDiagramText(event.target.value, editorTextLimit))}
+            onKeyDown={editorKeyDown}
+            onPaste={editorPaste}
+            onBlur={editorBlur}
+          />
+          <span className="visually-hidden" role="status">{INLINE_EDITOR_LABEL[textEditing.kind]}</span>
         </div>
       )}
 

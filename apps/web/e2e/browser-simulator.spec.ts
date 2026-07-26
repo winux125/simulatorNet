@@ -261,9 +261,10 @@ test("topology visual profiles and domain diagram tools persist", async ({ page 
   await page.getByRole("menuitem", { name: "Add Diagram Annotation", exact: true }).click();
   await page.getByRole("menuitem", { name: "Text", exact: true }).click();
   await page.getByTestId("topology-graph").click({ position: { x: 620, y: 180 } });
-  const textEditor = page.getByRole("dialog", { name: "Edit text annotation" });
-  await textEditor.getByLabel("Annotation text").fill("Core loopbacks\n10.255.0.0/24");
-  await textEditor.getByRole("button", { name: "Apply" }).click();
+  const textEditor = page.getByRole("textbox", { name: "Editing topology text" });
+  await expect(textEditor).toBeFocused();
+  await textEditor.fill("Core loopbacks\n10.255.0.0/24");
+  await textEditor.press("Control+Enter");
   await expect(page.getByLabel("Annotation formatting")).toBeVisible();
   const textCell = page.locator('[data-cell-id^="diagram:"]').last();
   await expect(textCell).toContainText("Core loopbacks10.255.0.0/24");
@@ -284,9 +285,12 @@ test("topology visual profiles and domain diagram tools persist", async ({ page 
   });
   await page.screenshot({ path: "/tmp/image-annotation-1440x900.png", animations: "disabled" });
 
-  page.once("dialog", (dialog) => dialog.accept("Trunk VLAN 10,20"));
   await page.locator('[data-cell-id="core-wan"] path').last().click({ button: "right", force: true });
   await page.getByRole("menuitem", { name: "Edit link label…" }).click();
+  const linkLabelEditor = page.getByRole("textbox", { name: "Editing link label" });
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await linkLabelEditor.fill("Trunk VLAN 10,20");
+  await linkLabelEditor.press("Enter");
   await expect.poll(async () => (await page.locator(".x6-edge-label").allTextContents()).join(" ").replaceAll("\u00a0", " ")).toContain("Trunk VLAN 10,20");
 
   const downloadPromise = page.waitForEvent("download");
@@ -341,9 +345,10 @@ test("M10.3.2d diagram editor supports drag creation, transforms and round-trip"
 
   await page.getByRole("button", { name: "Text", exact: true }).click();
   await canvas.click({ position: { x: 760, y: 210 } });
-  const editor = page.getByRole("dialog", { name: "Edit text annotation" });
-  await editor.getByLabel("Annotation text").fill("Management subnet\n10.255.0.0/24");
-  await editor.getByLabel("Annotation text").press("Control+Enter");
+  const editor = page.getByRole("textbox", { name: "Editing topology text" });
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await editor.fill("Management subnet\n10.255.0.0/24");
+  await editor.press("Control+Enter");
   await expect(page.locator('[data-cell-id="diagram:annotation-4"]')).toContainText("Management subnet");
 
   await page.getByLabel("Choose diagram image").setInputFiles({
@@ -827,9 +832,10 @@ test("two draft-configured PCs ping through an L2 switch after Start Lab", async
   await expect(page.getByText("Pending topology changes")).toHaveCount(0);
   await page.getByRole("button", { name: "Text", exact: true }).click();
   await canvas.click({ position: { x: 380, y: 90 } });
-  const runningTextEditor = page.getByRole("dialog", { name: "Edit text annotation" });
-  await runningTextEditor.getByLabel("Annotation text").fill("Running lab note");
-  await runningTextEditor.getByRole("button", { name: "Apply" }).click();
+  const runningTextEditor = page.getByRole("textbox", { name: "Editing topology text" });
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await runningTextEditor.fill("Running lab note");
+  await runningTextEditor.press("Control+Enter");
   await page.getByLabel("Choose diagram image").setInputFiles({
     name: "running-note.png",
     mimeType: "image/png",
