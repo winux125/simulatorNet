@@ -57,9 +57,11 @@ export function createGraph(options: CreateGraphOptions): Graph {
           zIndex: 101,
         });
       },
+      // The device cable handle is the only draggable connection control.
+      // Invisible interface ports are never magnets, so there is no direct
+      // port-to-port drag UI competing with the device-first workflow.
       validateMagnet: ({ magnet }) => options.isConnectable()
-        && magnet.getAttribute("data-occupied") !== "true"
-        && Boolean(magnet.getAttribute("port") || magnet.getAttribute("data-connection-handle")),
+        && magnet.getAttribute("data-connection-handle") === "true",
       validateConnection: ({ sourceMagnet, targetMagnet, sourceCell, targetCell }) => {
         if (!options.isConnectable() || !sourceCell || !targetCell || sourceCell.id === targetCell.id) return false;
         const sourcePort = sourceMagnet?.getAttribute("port") ?? null;
@@ -72,26 +74,15 @@ export function createGraph(options: CreateGraphOptions): Graph {
         );
       },
     },
+    // Only whole devices are highlighted as connection targets. Magnet
+    // highlights are deliberately absent: they would draw circles around the
+    // invisible interface ports.
     highlighting: {
       nodeAvailable: {
         name: "stroke",
         args: {
           padding: 4,
           attrs: { stroke: "var(--color-success, #22c55e)", strokeWidth: 1.5 },
-        },
-      },
-      magnetAvailable: {
-        name: "stroke",
-        args: {
-          padding: 3,
-          attrs: { stroke: "var(--color-success, #22c55e)", strokeWidth: 2 },
-        },
-      },
-      magnetAdsorbed: {
-        name: "stroke",
-        args: {
-          padding: 5,
-          attrs: { stroke: "var(--color-accent, #2563eb)", strokeWidth: 3 },
         },
       },
     },

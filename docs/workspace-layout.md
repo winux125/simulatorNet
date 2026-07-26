@@ -80,21 +80,25 @@ open and is never written into `LabDocument`, an export, or grading. See
 
 ## Connection workflow
 
-The default workflow is device-first, similar to professional network-lab
-editors without copying their assets:
+The workflow is device-first, similar to professional network-lab editors
+without copying their assets:
 
-1. choose Connection or drag from the visible connection handle on a device;
+1. drag the single cable handle on a device, or choose Connect… / the toolbar
+   connection tool;
 2. drop on another valid device;
-3. use the modal to choose connection type and available source/target
-   interfaces;
+3. use the modal to choose connection type and available From/To interfaces;
 4. confirm the domain link.
 
 Occupied or incompatible endpoints are not offered as valid choices. Cancelling
 the modal creates no link. The modal owns type/interface selection; dragging is
 only spatial target selection.
 
-Direct port-to-port interaction can remain available as an advanced workflow.
-Both paths create the same canonical link object.
+The cable handle is the only visual connection control. Interface ports exist
+internally as invisible anchor geometry so a link always binds exact device and
+interface IDs, but no port dots, magnets or hover markers are drawn in any icon
+profile, and there is no direct port-to-port drag UI. Port Labels display
+interface names; they are not connection points. See
+`docs/canvas-navigation.md`.
 
 ## Device and link presentation
 

@@ -803,7 +803,7 @@ test("two draft-configured PCs ping through an L2 switch after Start Lab", async
     await handle.dragTo(targetNode.locator(".device-node__surface"));
     const dialog = page.getByRole("dialog", { name: "Configure connection" });
     await expect(dialog.getByLabel("Connection type")).toHaveValue("ethernet");
-    await dialog.getByLabel("Target interface").selectOption(targetPort);
+    await dialog.getByLabel("To interface").selectOption(targetPort);
     if (source === "pc-1") await page.screenshot({ path: "/tmp/device-connection-modal-1440x900.png", animations: "disabled" });
     await dialog.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(dialog).toHaveCount(0);

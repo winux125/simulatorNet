@@ -218,13 +218,18 @@ are local workspace state and must never enter `LabDocument` or grading. See
 
 Connection creation is device-first:
 
-1. drag from a device connection handle;
+1. drag the single device cable handle;
 2. drop on a valid target device;
 3. choose connection type and endpoint interfaces in the modal;
 4. commit the resulting domain link.
 
-Direct port interaction may remain an advanced path, but link semantics always
-come from the domain document.
+The cable handle is the only visual connection control. Interface ports remain
+internally — they carry the exact source/target interface identity an edge
+anchors to — but they are invisible, non-magnetic anchor geometry configured
+centrally in the port registry. Do not render port dots, magnets or hover
+markers in any icon profile, do not offer a direct port-to-port drag UI, and do
+not hide ports with `display: none`. Port Labels show interface names and are
+not connection points. Link semantics always come from the domain document.
 
 ### Change-impact model
 

@@ -388,6 +388,13 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     setContextMenu({ kind: "node", id, x: event.clientX, y: event.clientY });
   }, []);
 
+  // The cable handle is the one visible way to start a connection, so it is
+  // hidden whenever a drag would mean something else: Hand/Pan, an annotation
+  // tool, an open inline editor, or a locked (running) topology.
+  const cableHandleAvailable = structuralEditable
+    && (props.activeTool === "select" || props.activeTool === "add-link")
+    && textEditing === undefined;
+
   const view = useMemo<TopologyView>(() => {
     const result: TopologyView = { nodes: {}, links: {}, annotations: {} };
     if (!props.document) return result;
@@ -415,7 +422,8 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           serviceBadges: live?.serviceBadges,
           terminalOpen: props.terminalTabs.includes(node.id),
           configurationChanged: changed,
-          connectable: structuralEditable,
+          // An appliance with no known/supported interfaces cannot be wired.
+          connectable: cableHandleAvailable && node.interfaces.length > 0,
           onActivate: activateNode,
           onOpen: props.onOpenDevice,
           onConnectStart: startConnection,
@@ -456,7 +464,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       };
     }
     return result;
-  }, [props, status, structuralEditable, activateNode, openNodeMenu, selectedAnnotationIds, startConnection, textEditing]);
+  }, [props, status, cableHandleAvailable, activateNode, openNodeMenu, selectedAnnotationIds, startConnection, textEditing]);
 
   if (!props.document) {
     return (
@@ -833,6 +841,9 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         setMarqueeStart(undefined);
         setMarqueeCurrent(undefined);
         setSelectedAnnotationIds([]);
+        // Cancelling also abandons a started cable connection, so the canvas
+        // never keeps prompting for a target device.
+        setPendingConnectionSourceId(undefined);
         props.onActiveTool("select");
         return;
       }

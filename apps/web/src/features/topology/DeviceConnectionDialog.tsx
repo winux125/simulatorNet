@@ -116,7 +116,7 @@ export function DeviceConnectionDialog(props: DeviceConnectionDialogProps) {
           <label>
             <span>{sourceName} interface</span>
             <select
-              aria-label="Source interface"
+              aria-label="From interface"
               value={sourcePort}
               disabled={sourcePorts.length === 0}
               onChange={(event) => { setSourcePort(event.target.value); setError(undefined); }}
@@ -135,7 +135,7 @@ export function DeviceConnectionDialog(props: DeviceConnectionDialogProps) {
           <label>
             <span>{targetName} interface</span>
             <select
-              aria-label="Target interface"
+              aria-label="To interface"
               value={targetPort}
               disabled={targetPorts.length === 0}
               onChange={(event) => { setTargetPort(event.target.value); setError(undefined); }}

@@ -240,7 +240,7 @@ label.ui-icon-button { display: inline-grid; }
 .x6-edge:hover [data-selector="line"] { stroke: var(--color-accent) !important; stroke-width: 2.6 !important; }
 .x6-edge-label rect { fill: var(--color-link-label-bg); }.x6-edge-label text { fill: var(--color-link-label); font: 10px var(--font-mono); }
 .x6-node foreignObject { overflow: hidden; }
-.topology-graph [data-occupied="true"] { opacity: .72; }.topology-graph .x6-highlight-stroke { pointer-events: none; }
+.topology-graph .x6-highlight-stroke { pointer-events: none; }
 .topology-graph .x6-node.is-connection-invalid .device-node__surface { cursor: not-allowed; outline: 2px solid var(--color-danger); outline-offset: 2px; }
 
 .device-node { position: relative; width: 108px; height: 88px; user-select: none; }
@@ -264,8 +264,10 @@ label.ui-icon-button { display: inline-grid; }
 .device-node:hover .device-node__connect, .device-node:focus-within .device-node__connect, .device-node.is-selected .device-node__connect, .x6-node.is-selected .device-node__connect { opacity: 1; transform: scale(1); }
 .device-node__connect:hover { background: var(--color-accent-muted); }
 .device-node__connect:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; opacity: 1; transform: scale(1); }
-.x6-port-body { transition: fill var(--transition-fast); }.x6-port-body:hover { fill: var(--color-accent); }
-.topology-panel:not(.topology-panel--edit) .x6-port { display: none; }
+/* Interface ports stay in the DOM as invisible edge anchors in every profile and
+   mode. They are never hidden with `display: none`, because an unrendered port
+   has no geometry and links would lose their exact endpoints. */
+.topology-graph .x6-port, .topology-graph .x6-port-body { pointer-events: none; }
 
 .context-menu { position: fixed; z-index: var(--z-menu); display: grid; width: 178px; padding: 5px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); background: var(--color-menu); box-shadow: var(--elevation-menu); }
 .context-menu button { display: flex; width: 100%; height: 28px; align-items: center; justify-content: space-between; gap: 8px; padding: 0 8px; border-radius: 4px; background: transparent; color: var(--color-text-soft); cursor: pointer; font-size: var(--font-size-11); text-align: left; }.context-menu button:hover:not(:disabled) { background: var(--color-panel-hover); color: var(--color-text); }.context-menu button:disabled { color: var(--color-text-faint); cursor: not-allowed; }.context-menu button[role="menuitemradio"][aria-checked="true"]::after { color: var(--color-accent); content: "✓"; }.context-menu button.is-danger { color: var(--color-error); }.context-menu kbd { margin-left: auto; color: var(--color-text-faint); font-size: 9px; }.context-menu__separator { height: 1px; margin: 4px; background: var(--color-border); }

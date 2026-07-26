@@ -3,7 +3,7 @@ import { canonicalizeLabDocument, stringifyLabDocument } from "@sim/lab-format";
 import type { LabUiNode, SimWorkerEvent } from "@sim/sim-worker";
 import { Group as PanelGroup, Panel as ResizablePanel, Separator } from "react-resizable-panels";
 import {
-  AlertTriangle, CheckCircle2, Command, Download, Eraser, FilePlus2, FlaskConical, FolderOpen, FolderX,
+  AlertTriangle, Cable, CheckCircle2, Command, Download, Eraser, FilePlus2, FlaskConical, FolderOpen, FolderX,
   Grid3X3, Info, Keyboard, Maximize2, Move, PanelRight, Play, Redo2, RotateCcw, SkipForward,
   Square, SunMoon, Tag, TerminalSquare, Type, Undo2, Wrench, X,
 } from "lucide-react";
@@ -132,6 +132,7 @@ export function App({ client }: AppProps) {
   const [packetModesOpen, setPacketModesOpen] = useState(false);
   const [canvasNavigationOpen, setCanvasNavigationOpen] = useState(false);
   const [diagramTextOpen, setDiagramTextOpen] = useState(false);
+  const [connectingHelpOpen, setConnectingHelpOpen] = useState(false);
   const [validation, setValidation] = useState<string>();
   const [pendingMode, setPendingMode] = useState<WorkspaceMode>();
   const [deviceWindowId, setDeviceWindowId] = useState<string>();
@@ -426,7 +427,7 @@ export function App({ client }: AppProps) {
       else if (event.key === "?") setShortcutsOpen(true);
       else if (event.key === "Escape") {
         setShortcutsOpen(false); setLabInfoOpen(false); setCliCommandsOpen(false); setAboutOpen(false);
-        setSaveAsOpen(false); setDemoLabOpen(false); setStepExplanationOpen(false); setPacketModesOpen(false); setCanvasNavigationOpen(false); setDiagramTextOpen(false); setConfirmApply(false); setConfirmStop(false); setValidation(undefined);
+        setSaveAsOpen(false); setDemoLabOpen(false); setStepExplanationOpen(false); setPacketModesOpen(false); setCanvasNavigationOpen(false); setDiagramTextOpen(false); setConnectingHelpOpen(false); setConfirmApply(false); setConfirmStop(false); setValidation(undefined);
         workspace.setPaletteOpen(false); workspace.selectNode(undefined); workspace.selectLink(undefined);
       }
     };
@@ -541,6 +542,7 @@ export function App({ client }: AppProps) {
     { id: "help", label: "Help", items: [
       { id: "help-canvas-navigation", label: "Canvas Navigation", icon: <Move size={14} />, onSelect: () => setCanvasNavigationOpen(true) },
       { id: "help-diagram-text", label: "Diagram Text Editing", icon: <Type size={14} />, onSelect: () => setDiagramTextOpen(true) },
+      { id: "help-connecting", label: "Connecting Devices", icon: <Cable size={14} />, onSelect: () => setConnectingHelpOpen(true) },
       { id: "help-packet-modes", label: "Packet Execution Modes", icon: <SkipForward size={14} />, onSelect: () => setPacketModesOpen(true) },
       { id: "help-cli", label: "CLI Commands", icon: <TerminalSquare size={14} />, onSelect: () => setCliCommandsOpen(true) },
       { id: "help-shortcuts", label: "Keyboard Shortcuts", shortcut: "?", icon: <Keyboard size={14} />, onSelect: () => setShortcutsOpen(true) },
@@ -734,6 +736,7 @@ export function App({ client }: AppProps) {
       {packetModesOpen && <PacketExecutionHelpDialog onClose={() => setPacketModesOpen(false)} />}
       {canvasNavigationOpen && <CanvasNavigationHelpDialog onClose={() => setCanvasNavigationOpen(false)} />}
       {diagramTextOpen && <DiagramTextHelpDialog onClose={() => setDiagramTextOpen(false)} />}
+      {connectingHelpOpen && <ConnectingDevicesHelpDialog onClose={() => setConnectingHelpOpen(false)} />}
       {stepExplanationOpen && <WorkspaceDialog title="Step mode" eyebrow="Packet execution" onClose={dismissStepExplanation}>
         <p>Step mode lets you inspect ARP, ICMP, TCP and other network events one at a time.</p>
         <p>Your device configurations are unchanged. Switch back to Auto for normal operation.</p>
@@ -909,6 +912,14 @@ function DiagramTextHelpDialog({ onClose }: { onClose(): void }) {
       <Shortcut keys="Click outside" label="Commit" />
     </div>
     <p className="section-note">Formatting controls stay available while the editor is open. Text is stored as plain text; pasted content uses text/plain only. One edit session is one undo step, and editing text while the lab runs never rebuilds the simulation.</p>
+  </WorkspaceDialog>;
+}
+
+function ConnectingDevicesHelpDialog({ onClose }: { onClose(): void }) {
+  return <WorkspaceDialog title="Connecting devices" eyebrow="Device-first cabling" onClose={onClose}>
+    <p>Hover or select a device to reveal its single cable handle, then drag it onto another device. A modal asks for the connection type and the From/To interfaces, and only then is the link created. The same flow is available from a device&apos;s Connect… menu item and the toolbar connection tool.</p>
+    <p>Only free interfaces are offered. Cancelling, or dropping outside a device, creates nothing.</p>
+    <p className="section-note">Devices deliberately show no port dots. Interfaces still exist and every link stays anchored to an exact interface — Port Labels (View ▸ Port Labels) display those interface names, they are not connection points. Connections are locked while the lab is running; stop the lab to change cabling.</p>
   </WorkspaceDialog>;
 }
 

@@ -141,6 +141,51 @@ Emptying a link label removes the label without touching connectivity.
 Inline editing is allowed while the lab runs. It is presentation-only: no worker
 rebuild, no ARP/TCP/trace reset, and no effect on grading.
 
+## Connecting devices
+
+A device shows exactly one connection control: a **cable handle** that appears
+on hover or selection next to the icon, labelled *Connect \<hostname\> to
+another device*.
+
+1. drag the cable handle onto a target device;
+2. the target highlights, an invalid target shows a forbidden state, and
+   cancelling or dropping outside clears the preview without creating a link;
+3. the modal fixes the two devices and asks for **Connection Type**,
+   **From Interface** and **To Interface**;
+4. **Connect** commits one canonical domain link.
+
+The same workflow is available from a device's **Connect…** context menu item
+and from the toolbar connection tool. The preview line is never a domain edge;
+only the modal creates one.
+
+Only free interfaces are offered. A single free interface is selected
+automatically but stays visible; a device with none disables **Connect** and
+explains why.
+
+The cable handle is hidden while the Hand/Pan tool is active, while an
+annotation tool is drawing, while an inline editor is open, when the lab is
+running, and for an appliance with no known interfaces.
+
+### No visible port handles
+
+There are no dots, circles, magnets or hover markers around a device in any
+icon profile, on hover, or on selection, and there is no direct port-to-port
+drag UI.
+
+Interface ports still exist internally and are required — they give each link
+an exact source and target interface for anchoring, labels, import/export and
+simulation connectivity. They are configured centrally as invisible anchor
+geometry in the port registry: zero opacity, no fill or stroke, no pointer
+events, and not a magnet. They are never removed with `display: none`, because
+an unrendered port has no geometry and links would lose their endpoints.
+
+### Port Labels are not connection points
+
+`View ▸ Port Labels` (Always / Selected / Hidden) controls the interface **name**
+drawn beside a link endpoint — for example `Gi0/1` or `eth0`. It is text, not a
+handle. With Hidden, edges remain exactly anchored and no dots appear. There is
+deliberately no "show connection points" or "advanced port drag" preference.
+
 ## Persistence
 
 Scale and translation are remembered locally for as long as the lab is open.

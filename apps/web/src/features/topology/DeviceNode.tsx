@@ -48,12 +48,17 @@ export function DeviceNode({ id, data, selected }: { id: string; data: DeviceNod
         </span>
         <small>{data.subtitle}</small>
       </button>
+      {/*
+        The single cable handle is the only visual connection control on a
+        device. Interface ports exist but are invisible anchors, so there are
+        never port dots to drag.
+      */}
       {data.connectable && (
         <button
           type="button"
           className="device-node__connect"
           aria-label={`Connect ${data.hostname} to another device`}
-          title="Connect device"
+          title="Connect"
           data-connection-handle="true"
           {...({ magnet: "true" } as Record<string, string>)}
           onClick={(event) => {

@@ -171,7 +171,8 @@ describe("M10.2.2a topology adapter", () => {
   it("16. drives canvas styles from theme-aware CSS variables", () => {
     expect(edgeLineAttrs(true, false).stroke).toContain("var(--color-topology-link");
     expect(edgeLineAttrs(false, true).stroke).toContain("var(--color-accent");
-    expect(portBodyAttrs(false, true).fill).toContain("var(");
+    // Ports are invisible anchors since M10.3.3c, so they carry no theme color.
+    expect(portBodyAttrs(false, true)).toMatchObject({ fill: "none", stroke: "none", opacity: 0 });
   });
 
   it("17. validates a device drag before opening the interface dialog", () => {

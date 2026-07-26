@@ -541,8 +541,8 @@ describe("M6.1 simulator workspace", () => {
     expect(within(dialog).getAllByText("PC1")).toHaveLength(2);
     expect(within(dialog).getAllByText("SW1")).toHaveLength(2);
     expect((within(dialog).getByLabelText("Connection type") as HTMLSelectElement).value).toBe("ethernet");
-    expect((within(dialog).getByLabelText("Source interface") as HTMLSelectElement).value).toBe("eth0");
-    expect((within(dialog).getByLabelText("Target interface") as HTMLSelectElement).value).toBe("Gi0/1");
+    expect((within(dialog).getByLabelText("From interface") as HTMLSelectElement).value).toBe("eth0");
+    expect((within(dialog).getByLabelText("To interface") as HTMLSelectElement).value).toBe("Gi0/1");
     await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(useWorkspaceStore.getState().draft?.topology.links).toHaveLength(0);
 
@@ -1657,6 +1657,110 @@ describe("M10.3.2d professional diagram workspace", () => {
     expect(window.localStorage.getItem("simulatornet.diagram.snapToGrid")).toBe("false");
     expect(window.localStorage.getItem("simulatornet.diagram.smartGuides")).toBe("false");
     expect(JSON.stringify(useWorkspaceStore.getState().draft)).toBe(before);
+  });
+});
+
+describe("M10.3.3c cable-only connection presentation", () => {
+  const cableHandle = (hostname: string) => screen.queryByRole("button", { name: `Connect ${hostname} to another device` });
+
+  async function stoppedLabWithTwoDevices() {
+    render(<App client={new RuntimeClient()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New Lab" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
+    await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
+    await placeDevice("PC");
+    await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Network Devices" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add L2 Switch" }));
+    fireEvent.click(screen.getByTestId("topology-graph"), { clientX: 520, clientY: 260 });
+  }
+
+  function deviceIds(): [string, string] {
+    const nodes = useWorkspaceStore.getState().draft?.topology.nodes ?? [];
+    return [nodes[0]!.id, nodes[1]!.id];
+  }
+
+  it("1. shows exactly one cable handle per device and no port controls", async () => {
+    await stoppedLabWithTwoDevices();
+    expect(screen.getAllByRole("button", { name: /to another device$/ })).toHaveLength(2);
+    expect(cableHandle("PC1")).toBeTruthy();
+    expect(cableHandle("PC1")?.getAttribute("title")).toBe("Connect");
+    expect(cableHandle("PC1")?.getAttribute("data-connection-handle")).toBe("true");
+    // No per-interface control is offered anywhere on a device.
+    expect(screen.queryByRole("button", { name: /^Connect .* eth0/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Connect .* Gi0/ })).toBeNull();
+  });
+
+  it("2. hides the cable handle in Hand/Pan mode and while drawing annotations", async () => {
+    await stoppedLabWithTwoDevices();
+    await userEvent.click(screen.getByRole("button", { name: "Hand" }));
+    expect(cableHandle("PC1")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Rectangle" }));
+    expect(cableHandle("PC1")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Select" }));
+    expect(cableHandle("PC1")).toBeTruthy();
+  });
+
+  it("3. hides the cable handle while inline text editing is open", async () => {
+    await stoppedLabWithTwoDevices();
+    await userEvent.click(screen.getByRole("button", { name: "Text" }));
+    fireEvent.click(screen.getByTestId("topology-graph"), { clientX: 200, clientY: 160 });
+    const editor = await screen.findByRole("textbox", { name: "Editing topology text" });
+    expect(cableHandle("PC1")).toBeNull();
+    fireEvent.keyDown(editor, { key: "Escape" });
+    await waitFor(() => expect(cableHandle("PC1")).toBeTruthy());
+  });
+
+  it("4. removes the cable handle while the lab is running and restores it after Stop", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    expect(useWorkspaceStore.getState().powerState).toBe("running");
+    expect(cableHandle("PC1")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Add link" }).every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+
+    await userEvent.click(screen.getByRole("button", { name: "Stop Lab" }));
+    const confirmation = screen.queryByRole("dialog", { name: "Stop this lab?" });
+    if (confirmation) await userEvent.click(within(confirmation).getByRole("button", { name: "Stop Lab" }));
+    await waitFor(() => expect(useWorkspaceStore.getState().mode).toBe("edit"));
+    await waitFor(() => expect(cableHandle("PC1")).toBeTruthy());
+  });
+
+  it("5. opens the interface modal from the cable handle and creates one exact link", async () => {
+    await stoppedLabWithTwoDevices();
+    const [pcId, switchId] = deviceIds();
+    await act(async () => { graphHarness.connectionIntent?.(pcId, switchId); });
+    const dialog = await screen.findByRole("dialog", { name: "Configure connection" });
+    expect(within(dialog).getByLabelText("From interface")).toBeTruthy();
+    expect(within(dialog).getByLabelText("To interface")).toBeTruthy();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+    expect(useWorkspaceStore.getState().draft?.topology.links).toEqual([
+      { id: "link-1", a: { node: pcId, iface: "eth0" }, b: { node: switchId, iface: "Gi0/1" } },
+    ]);
+  });
+
+  it("6. disables Connect and explains why when a device has no free interface", async () => {
+    await stoppedLabWithTwoDevices();
+    const [pcId, switchId] = deviceIds();
+    await act(async () => { graphHarness.connectionIntent?.(pcId, switchId); });
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Configure connection" }))
+      .getByRole("button", { name: "Connect" }));
+    expect(useWorkspaceStore.getState().draft?.topology.links).toHaveLength(1);
+
+    // PC1's single interface is now occupied.
+    await act(async () => { graphHarness.connectionIntent?.(pcId, switchId); });
+    const dialog = await screen.findByRole("dialog", { name: "Configure connection" });
+    expect(dialog.textContent).toContain("All interfaces on PC1 are already connected.");
+    expect((within(dialog).getByRole("button", { name: "Connect" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(dialog).getByLabelText("From interface") as HTMLSelectElement).disabled).toBe(true);
+  });
+
+  it("7. creates no link when the interface modal is cancelled", async () => {
+    await stoppedLabWithTwoDevices();
+    const [pcId, switchId] = deviceIds();
+    await act(async () => { graphHarness.connectionIntent?.(pcId, switchId); });
+    const dialog = await screen.findByRole("dialog", { name: "Configure connection" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(useWorkspaceStore.getState().draft?.topology.links).toEqual([]);
   });
 });
 

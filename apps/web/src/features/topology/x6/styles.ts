@@ -20,17 +20,30 @@ export function edgeLineAttrs(operational: boolean, selected: boolean) {
   };
 }
 
+/** Anchor radius kept stable so edge endpoints land in the same place. */
+export const PORT_ANCHOR_RADIUS = 4;
+
+/**
+ * Ports are invisible anchor geometry, never a user-facing control.
+ *
+ * A link still binds a specific interface, so every interface keeps a port with
+ * stable geometry and its `data-*` identity for edge anchoring, imports and
+ * tests. Nothing is painted and nothing is draggable: connections are created
+ * from the single device cable handle, so no port dots appear around a device
+ * in any icon profile, on hover, or on selection.
+ */
 export function portBodyAttrs(occupied: boolean, operationalUp: boolean) {
   return {
-    r: 4,
-    magnet: "active",
-    cursor: occupied ? "not-allowed" : "crosshair",
+    r: PORT_ANCHOR_RADIUS,
+    magnet: false,
+    pointerEvents: "none",
+    cursor: "default",
+    opacity: 0,
+    fill: "none",
+    stroke: "none",
+    strokeWidth: 0,
     "data-occupied": String(occupied),
-    stroke: "var(--color-handle-border, #94a3b8)",
-    strokeWidth: 1,
-    fill: operationalUp
-      ? "var(--color-success, #22c55e)"
-      : occupied ? "var(--color-handle-occupied, #64748b)" : "var(--color-handle, #cbd5e1)",
+    "data-operational": String(operationalUp),
   };
 }
 
