@@ -32,6 +32,7 @@ interface MockXterm {
   focused: number;
   disposed: boolean;
   selection: string;
+  selectAllCalls: number;
   dataHandler?: (data: string) => void;
   emit(data: string): void;
 }
@@ -59,11 +60,14 @@ const graphHarness = vi.hoisted(() => ({
 vi.mock("@xterm/xterm", () => {
   class MockTerminal {
     options = { theme: {} };
+    // A real xterm always reports its grid size; the pager threshold depends on it.
+    rows = 8;
     output = "";
     clears = 0;
     focused = 0;
     disposed = false;
     selection = "";
+    selectAllCalls = 0;
     dataHandler?: (data: string) => void;
     constructor() { xtermHarness.instances.push(this as unknown as MockXterm); }
     loadAddon() {}
@@ -71,6 +75,7 @@ vi.mock("@xterm/xterm", () => {
     write(chunk: string) { this.output += chunk; }
     clear() { this.clears += 1; this.output = ""; }
     getSelection() { return this.selection; }
+    selectAll() { this.selectAllCalls += 1; }
     scrollToBottom() {}
     focus() { this.focused += 1; }
     onData(handler: (data: string) => void) { this.dataHandler = handler; return { dispose: () => { this.dataHandler = undefined; } }; }
@@ -205,11 +210,15 @@ class RuntimeClient implements SimulatorClient {
 let compactViewport = false;
 let narrowViewport = false;
 let prefersDark = true;
+let clipboardText = "";
+let clipboardReadDenied = false;
 
 beforeEach(() => {
   compactViewport = false;
   narrowViewport = false;
   prefersDark = true;
+  clipboardText = "";
+  clipboardReadDenied = false;
   xtermHarness.instances.length = 0;
   fitHarness.calls = 0;
   graphHarness.fit.mockClear();
@@ -233,7 +242,13 @@ beforeEach(() => {
   Object.defineProperty(window, "requestAnimationFrame", { configurable: true, value: (callback: FrameRequestCallback) => { callback(0); return 1; } });
   Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:test") });
   Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
-  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn(async () => undefined) } });
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+    writeText: vi.fn(async () => undefined),
+    readText: vi.fn(async () => {
+      if (clipboardReadDenied) throw new Error("Read permission denied");
+      return clipboardText;
+    }),
+  } });
   HTMLAnchorElement.prototype.click = vi.fn();
 });
 
@@ -2032,5 +2047,477 @@ describe("M10.3.3b inline diagram text editing", () => {
       content: "Exported\nnote",
       italic: true,
     });
+  });
+});
+
+describe("M10.4.1a native terminal paste", () => {
+  /** Dispatch the browser paste event the terminal container listens for. */
+  async function paste(hostname: string, text: string) {
+    await act(async () => {
+      fireEvent.paste(screen.getByLabelText(`${hostname} terminal`), {
+        clipboardData: { getData: (type: string) => type === "text/plain" ? text : "" },
+      });
+    });
+    await act(async () => { await Promise.resolve(); });
+  }
+
+  async function openContextMenu(hostname: string) {
+    fireEvent.contextMenu(screen.getByLabelText(`${hostname} terminal`));
+    return screen.findByRole("menu", { name: `${hostname} terminal actions` });
+  }
+
+  function executions(client: RuntimeClient): number {
+    return client.requestTypes.filter((type) => type === "EXECUTE_CLI").length;
+  }
+
+  /** Give R1 a local-user console login plus an enable secret. */
+  async function configureConsoleLogin() {
+    const { withConsoleAccess } = await import("../features/lab/document");
+    const { createPasswordVerifier } = await import("@sim/console-auth");
+    const draft = useWorkspaceStore.getState().draft!;
+    const [password, secret] = await Promise.all([
+      createPasswordVerifier("cisco123", 1_000),
+      createPasswordVerifier("enable123", 1_000),
+    ]);
+    act(() => useWorkspaceStore.getState().applyDraft(withConsoleAccess(draft, "router-1", {
+      mode: "local-user",
+      users: [{ id: "console-user-1", username: "admin", passwordVerifier: password, privilegeLevel: 1, enabled: true }],
+      enableSecretVerifier: secret,
+      maximumAttempts: 3,
+      credentialResetRequired: false,
+    }), "configuration"));
+  }
+
+  it("1/4. Ctrl+V inserts a single line at the cursor without executing it", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await type(terminal, "ping .10");
+    await act(async () => { terminal.emit("\x1b[D"); terminal.emit("\x1b[D"); terminal.emit("\x1b[D"); });
+    const before = executions(client);
+    terminal.output = "";
+
+    await paste("PC1", "192.168.20");
+
+    expect(terminal.output).toContain("ping 192.168.20.10");
+    expect(executions(client)).toBe(before);
+    expect(screen.queryByRole("dialog", { name: /Paste/ })).toBeNull();
+
+    // Editing keys and Enter still drive the same buffer after a paste.
+    await act(async () => { terminal.emit("\r"); });
+    await waitFor(() => expect(screen.getByTestId("terminal-transcript").textContent)
+      .toContain("Success rate is 100 percent"));
+  });
+
+  it("2. Cmd+V reaches the same paste path and never triggers a global shortcut", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    const host = screen.getByLabelText("PC1 terminal");
+    const fitBefore = useWorkspaceStore.getState().fitRequest;
+    terminal.output = "";
+
+    fireEvent.keyDown(host, { key: "v", metaKey: true });
+    await paste("PC1", "ipconfig");
+
+    expect(terminal.output).toContain("ipconfig");
+    expect(useWorkspaceStore.getState().fitRequest).toBe(fitBefore);
+    expect(useWorkspaceStore.getState().draft?.id).toBe("demo-router-on-a-stick");
+  });
+
+  it("3. Shift+Insert pastes through the Clipboard API when no paste event follows", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    clipboardText = "arp -a";
+    terminal.output = "";
+
+    fireEvent.keyDown(screen.getByLabelText("PC1 terminal"), { key: "Insert", shiftKey: true });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
+
+    expect(terminal.output).toContain("arp -a");
+    expect(executions(client)).toBeGreaterThan(0);
+  });
+
+  it("5. a single line ending with a newline executes without a confirmation", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    terminal.output = "";
+
+    await paste("PC1", "ipconfig\n");
+
+    expect(screen.queryByRole("dialog", { name: /Paste/ })).toBeNull();
+    await waitFor(() => expect(terminal.output).toContain("IPv4 Address"));
+  });
+
+  it("6/7. a multi-line paste asks first, and Cancel changes nothing", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select SW1");
+    const before = executions(client);
+
+    await paste("SW1", "enable\nconfigure terminal\nvlan 30\nname Guest\nend\nshow vlan brief\n");
+
+    const dialog = await screen.findByRole("dialog", { name: "Paste 6 commands into SW1" });
+    // A compact popover over the terminal, not a generic workspace modal.
+    expect(document.querySelector(".dialog-backdrop")).toBeNull();
+    expect(within(dialog).getByText("configure terminal", { exact: false })).toBeTruthy();
+    expect(executions(client)).toBe(before);
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: /Paste/ })).toBeNull();
+    expect(executions(client)).toBe(before);
+    expect(terminal.output).not.toContain("SW1(config)#");
+  });
+
+  it("8/9/10/14. confirming runs the lines in order, changing modes and history", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select SW1");
+    terminal.output = "";
+
+    await paste("SW1", "enable\nconfigure terminal\nvlan 30\nname Guest\n\nend\nshow vlan brief\n");
+    const dialog = await screen.findByRole("dialog", { name: "Paste 7 commands into SW1" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Paste Commands" }));
+
+    await waitFor(() => expect(terminal.output).toContain("Guest"));
+    // CLI modes changed naturally between pasted commands.
+    expect(terminal.output).toContain("SW1(config)#");
+    expect(terminal.output).toContain("SW1(config-vlan)#");
+    // Order is preserved and the blank line behaved like a plain Enter.
+    expect(terminal.output.indexOf("SW1(config)#")).toBeLessThan(terminal.output.indexOf("SW1(config-vlan)#"));
+    expect(useWorkspaceStore.getState().problems).toHaveLength(0);
+
+    // History received each pasted command as its own entry.
+    terminal.output = "";
+    await act(async () => { terminal.emit("\x1b[A"); });
+    expect(terminal.output).toContain("show vlan brief");
+    terminal.output = "";
+    await act(async () => { terminal.emit("\x1b[A"); });
+    expect(terminal.output).toContain("end");
+  });
+
+  it("merges a bulk paste into the half-typed input line at the caret", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select SW1");
+    // Half-typed line with the caret parked before " brief".
+    await type(terminal, "show vlan brief");
+    for (let index = 0; index < 6; index++) await act(async () => { terminal.emit("\x1b[D"); });
+    terminal.output = "";
+
+    await paste("SW1", "\nenable\nshow mac address-table\n");
+    const dialog = await screen.findByRole("dialog", { name: "Paste 3 commands into SW1" });
+    // The typed head joins the first pasted line; the caret tail trails behind.
+    expect(dialog.querySelector("pre")?.textContent).toBe("show vlan\nenable\nshow mac address-table\n brief");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Paste Commands" }));
+
+    await waitFor(() => expect(terminal.output).toContain("SW1# show mac address-table"));
+    expect(terminal.output).toContain("SW1> show vlan");
+    // The untouched tail is redrawn into the buffer, not executed.
+    await waitFor(() => expect(terminal.output).toContain("SW1#  brief"));
+    expect(useWorkspaceStore.getState().problems).toHaveLength(0);
+  });
+
+  it("13. leaves a final line without a newline in the input buffer", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select SW1");
+
+    await paste("SW1", "enable\nconfigure terminal\nvlan 40\nname Lab");
+    await userEvent.click(await screen.findByRole("button", { name: "Paste Commands" }));
+
+    await waitFor(() => expect(terminal.output).toContain("SW1(config-vlan)#"));
+    expect(terminal.output).toContain("name Lab");
+    const before = executions(client);
+
+    // It is only executed once the user presses Enter.
+    await act(async () => { terminal.emit("\r"); });
+    await waitFor(() => expect(executions(client)).toBeGreaterThan(before));
+  });
+
+  it("15/16/22/23/24/25. pauses at Username and never echoes or records a pasted password", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await configureConsoleLogin();
+    const terminal = await openDeviceTerminal("Select R1");
+    await waitFor(() => expect(terminal.output).toContain("Username:"));
+    const before = executions(client);
+
+    // 15. An unauthenticated console stops the sequence before its first line.
+    await paste("R1", "admin\ncisco123\nshow ip route\n");
+    await userEvent.click(await screen.findByRole("button", { name: "Paste Commands" }));
+    await waitFor(() => expect(terminal.output).toContain("Pasted command sequence paused for interactive input."));
+    expect(executions(client)).toBe(before);
+    expect(terminal.output).not.toContain("cisco123");
+
+    // 16. Answering the username moves the queue on to the password prompt,
+    // where it stops again instead of submitting the next line as a secret.
+    await type(terminal, "admin");
+    await act(async () => { terminal.emit("\r"); });
+    await waitFor(() => expect(terminal.output).toContain("Password:"));
+    terminal.output = "";
+    await userEvent.click(screen.getByRole("button", { name: "Continue Paste" }));
+    await waitFor(() => expect(terminal.output).toContain("Pasted command sequence paused for interactive input."));
+    expect(executions(client)).toBe(before);
+    expect(terminal.output).not.toContain("cisco123");
+
+    // 22. A single-line credential paste is accepted but never echoed.
+    await userEvent.click(screen.getByRole("button", { name: "Cancel Remaining" }));
+    terminal.output = "";
+    await paste("R1", "cisco123");
+    expect(terminal.output).not.toContain("cisco123");
+
+    // 25. A multi-line paste is refused outright at a credential prompt.
+    await paste("R1", "cisco123\nmore");
+    expect(terminal.output).toContain("multi-line paste cannot be used for a password");
+
+    await act(async () => { terminal.emit("\r"); });
+    await waitFor(() => expect(terminal.output).toContain("R1>"));
+    // 23/24. Not in history, not in the transcript, not in Problems.
+    terminal.output = "";
+    await act(async () => { terminal.emit("\x1b[A"); });
+    expect(terminal.output).not.toContain("cisco123");
+    expect(screen.getByTestId("terminal-transcript").textContent).not.toContain("cisco123");
+    expect(useWorkspaceStore.getState().problems.map((problem) => problem.message).join(" ")).not.toContain("cisco123");
+  });
+
+  it("17. pauses when a pasted command reaches the enable secret prompt", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await configureConsoleLogin();
+    const terminal = await openDeviceTerminal("Select R1");
+    await waitFor(() => expect(terminal.output).toContain("Username:"));
+    await type(terminal, "admin");
+    await act(async () => { terminal.emit("\r"); });
+    await waitFor(() => expect(terminal.output).toContain("Password:"));
+    await type(terminal, "cisco123");
+    await act(async () => { terminal.emit("\r"); });
+    await waitFor(() => expect(terminal.output).toContain("R1>"));
+    terminal.output = "";
+
+    await paste("R1", "enable\nshow running-config\n");
+    await userEvent.click(await screen.findByRole("button", { name: "Paste Commands" }));
+
+    await waitFor(() => expect(terminal.output).toContain("Pasted command sequence paused for interactive input."));
+    expect(terminal.output).toContain("Password:");
+    expect(terminal.output).not.toContain("Building configuration");
+  });
+
+  it("18/20. pauses at an interactive ping target and continues the rest afterwards", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select R1");
+    terminal.output = "";
+
+    await paste("R1", "ping\nshow ip route\n");
+    await userEvent.click(await screen.findByRole("button", { name: "Paste Commands" }));
+    await waitFor(() => expect(terminal.output).toContain("Pasted command sequence paused for interactive input."));
+    expect(terminal.output).not.toContain("Gateway of last resort");
+    expect(document.querySelector(".terminal-paste-run")?.textContent).toContain("1 command remaining");
+
+    // Answering the prompt and continuing runs only the remaining line.
+    await type(terminal, "192.168.10.1");
+    await act(async () => { terminal.emit("\r"); });
+    await waitFor(() => expect(terminal.output).toContain("Success rate"));
+    await userEvent.click(screen.getByRole("button", { name: "Continue Paste" }));
+    await waitFor(() => expect(terminal.output).toContain("192.168.20.0"));
+    expect(screen.queryByRole("button", { name: "Continue Paste" })).toBeNull();
+  });
+
+  it("19. pauses when paged --More-- output takes over the keyboard", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select R1");
+    terminal.output = "";
+
+    await paste("R1", "show ?\nshow ip route\n");
+    await userEvent.click(await screen.findByRole("button", { name: "Paste Commands" }));
+
+    await waitFor(() => expect(terminal.output).toContain("--More--"));
+    await waitFor(() => expect(terminal.output).toContain("Pasted command sequence paused for interactive input."));
+    expect(terminal.output).not.toContain("Gateway of last resort");
+  });
+
+  it("21. Cancel Remaining drops the rest of the sequence", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select R1");
+
+    await paste("R1", "ping\nshow ip route\nshow version\n");
+    await userEvent.click(await screen.findByRole("button", { name: "Paste Commands" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Cancel Remaining" })).not.toBeNull());
+
+    await userEvent.click(screen.getByRole("button", { name: "Cancel Remaining" }));
+    expect(screen.queryByRole("button", { name: "Continue Paste" })).toBeNull();
+    const after = executions(client);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(executions(client)).toBe(after);
+    expect(terminal.output).not.toContain("Gateway of last resort");
+  });
+
+  it("26/27/28/29. sanitizes control sequences and refuses NUL or oversized clipboards", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    terminal.output = "";
+
+    await paste("PC1", "\x1b]52;c;cGF5bG9hZA==\x07\x1b]0;pwned\x07\x1b[31mipconfig\x1b[0m");
+    expect(terminal.output).toContain("ipconfig");
+    expect(terminal.output).not.toContain("52;c");
+    expect(terminal.output).not.toContain("pwned");
+
+    terminal.output = "";
+    await paste("PC1", "ipconfig\u0000/all");
+    expect(terminal.output).toContain("binary or NUL data");
+
+    terminal.output = "";
+    await paste("PC1", "a".repeat(100_001));
+    expect(terminal.output).toContain("Paste is too large.");
+
+    terminal.output = "";
+    await paste("PC1", "arp -a\n".repeat(1_001));
+    expect(terminal.output).toContain("lines");
+    expect(useWorkspaceStore.getState().problems).toHaveLength(0);
+  });
+
+  it("30/31/32/33. offers Copy, Paste, Select All, Clear, Search and Close Tab", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await type(terminal, "arp -a");
+    await act(async () => { terminal.emit("\r"); });
+
+    // 32. Copy is disabled without a selection and copies the selection with one.
+    let menu = await openContextMenu("PC1");
+    expect((within(menu).getByRole("menuitem", { name: "Copy" }) as HTMLButtonElement).disabled).toBe(true);
+    for (const label of ["Copy", "Paste", "Select All", "Clear Terminal", "Search", "Close Tab"]) {
+      expect(within(menu).getByRole("menuitem", { name: label })).toBeTruthy();
+    }
+    await userEvent.click(within(menu).getByRole("menuitem", { name: "Select All" }));
+    expect(terminal.selectAllCalls).toBe(1);
+
+    terminal.selection = "PC1 output";
+    menu = await openContextMenu("PC1");
+    await userEvent.click(within(menu).getByRole("menuitem", { name: "Copy" }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("PC1 output");
+
+    // 30. Context-menu Paste reads the clipboard after an explicit user action.
+    clipboardText = "ipconfig /all";
+    terminal.output = "";
+    menu = await openContextMenu("PC1");
+    await userEvent.click(within(menu).getByRole("menuitem", { name: "Paste" }));
+    await waitFor(() => expect(terminal.output).toContain("ipconfig /all"));
+
+    // 31. A denied clipboard shows the documented recovery message.
+    clipboardReadDenied = true;
+    terminal.output = "";
+    menu = await openContextMenu("PC1");
+    await userEvent.click(within(menu).getByRole("menuitem", { name: "Paste" }));
+    await waitFor(() => expect(terminal.output).toContain("Clipboard access was not granted."));
+    expect(terminal.output).toContain("Use Ctrl+V to paste into the terminal.");
+
+    // 33. Clear Terminal keeps the CLI session, history and tab.
+    clipboardReadDenied = false;
+    const clears = terminal.clears;
+    menu = await openContextMenu("PC1");
+    await userEvent.click(within(menu).getByRole("menuitem", { name: "Clear Terminal" }));
+    expect(terminal.clears).toBeGreaterThan(clears);
+    expect(client.requestTypes).not.toContain("CLOSE_CLI_SESSION");
+    expect(useWorkspaceStore.getState().terminalTabs).toEqual(["pc-1"]);
+    terminal.output = "";
+    await act(async () => { terminal.emit("\x1b[A"); });
+    expect(terminal.output).toContain("arp -a");
+  });
+
+  it("34/35. keeps pasted input and the caret across Dock, Float and Maximize", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await paste("PC1", "ping 192.168.20.");
+    await act(async () => { terminal.emit("\x1b[D"); });
+
+    act(() => useWorkspaceStore.getState().setTerminalPresentationMode("floating"));
+    act(() => useWorkspaceStore.getState().setTerminalPresentationMode("maximized"));
+    act(() => useWorkspaceStore.getState().restoreTerminalPresentation());
+
+    expect(xtermHarness.instances).toHaveLength(1);
+    expect(terminal.disposed).toBe(false);
+    expect(terminal.output).toContain("ping 192.168.20.");
+
+    // The caret survived: a character lands before the final '.'.
+    terminal.output = "";
+    await type(terminal, "9");
+    expect(terminal.output).toContain("ping 192.168.209.");
+  });
+
+  it("36/37. device deletion clears only that session's pending paste", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const router = await openDeviceTerminal("Select R1");
+    await openDeviceTerminal("Select SW1");
+
+    act(() => useWorkspaceStore.getState().setActiveTerminal("router-1"));
+    await paste("R1", "ping\nshow ip route\n");
+    await userEvent.click(await screen.findByRole("button", { name: "Paste Commands" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Continue Paste" })).not.toBeNull());
+
+    await enterEditMode();
+    await userEvent.click(screen.getByRole("button", { name: "Select SW1" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete selected" }));
+
+    expect(useWorkspaceStore.getState().terminalTabs).toEqual(["router-1"]);
+    await waitFor(() => expect(xtermHarness.instances[1]?.disposed).toBe(true));
+    expect(router.disposed).toBe(false);
+    // The surviving session keeps its paused sequence.
+    expect(screen.getByRole("button", { name: "Continue Paste" })).toBeTruthy();
+    expect(useWorkspaceStore.getState().problems).toHaveLength(0);
+  });
+
+  it("38/39. terminal paste never reaches global shortcuts or the diagram canvas", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    const host = screen.getByLabelText("PC1 terminal");
+    const nodes = useWorkspaceStore.getState().draft?.topology.nodes.length ?? 0;
+    const fitBefore = useWorkspaceStore.getState().fitRequest;
+
+    await paste("PC1", "show interface description");
+    fireEvent.keyDown(host, { key: "f" });
+    fireEvent.keyDown(host, { key: "Delete" });
+
+    expect(useWorkspaceStore.getState().fitRequest).toBe(fitBefore);
+    expect(useWorkspaceStore.getState().draft?.topology.nodes.length).toBe(nodes);
+    // No topology text or image annotation was created by a terminal paste.
+    expect(useWorkspaceStore.getState().draft?.diagram?.annotations ?? []).toHaveLength(0);
+    expect(terminal.output).toContain("show interface description");
+  });
+
+  it("renders the bulk paste preview as plain text and offers the local preference", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await openDeviceTerminal("Select SW1");
+
+    await paste("SW1", "<img src=x onerror=alert(1)>\nshow vlan brief\n");
+    const dialog = await screen.findByRole("dialog", { name: "Paste 2 commands into SW1" });
+    const preview = dialog.querySelector("pre");
+    expect(preview?.textContent).toBe("<img src=x onerror=alert(1)>\nshow vlan brief");
+    expect(dialog.querySelector("img")).toBeNull();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    await openMenu("View");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Terminal" }));
+    const toggle = screen.getByRole("menuitemradio", { name: "Confirm Multi-line Paste" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    await userEvent.click(toggle);
+    expect(window.localStorage.getItem("simulatornet.confirmMultilinePaste")).toBe("false");
+
+    // With the confirmation disabled a bulk paste runs immediately.
+    await paste("SW1", "enable\nconfigure terminal\nvlan 55\n");
+    expect(screen.queryByRole("dialog", { name: /Paste/ })).toBeNull();
+    await waitFor(() => expect(xtermHarness.instances[0]?.output).toContain("SW1(config-vlan)#"));
+    // The preference is local only and never enters the document.
+    expect(JSON.stringify(useWorkspaceStore.getState().draft)).not.toContain("confirmMultilinePaste");
   });
 });

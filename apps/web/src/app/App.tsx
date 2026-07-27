@@ -3,7 +3,7 @@ import { canonicalizeLabDocument, stringifyLabDocument } from "@sim/lab-format";
 import type { LabUiNode, SimWorkerEvent } from "@sim/sim-worker";
 import { Group as PanelGroup, Panel as ResizablePanel, Separator } from "react-resizable-panels";
 import {
-  AlertTriangle, Cable, CheckCircle2, Command, Download, Eraser, FilePlus2, FlaskConical, FolderOpen, FolderX,
+  AlertTriangle, Cable, CheckCircle2, ClipboardPaste, Command, Download, Eraser, FilePlus2, FlaskConical, FolderOpen, FolderX,
   Grid3X3, Info, Keyboard, Maximize2, Move, PanelRight, Play, Redo2, RotateCcw, SkipForward,
   Square, SunMoon, Tag, TerminalSquare, Type, Undo2, Wrench, X,
 } from "lucide-react";
@@ -35,6 +35,7 @@ import {
   useDeviceIconProfile,
 } from "../hooks/useDeviceIconProfile";
 import { applyTerminalAppearance, getTerminalAppearance, type TerminalAppearance } from "../features/terminal/terminal-appearance";
+import { persistConfirmMultilinePaste, readConfirmMultilinePaste, TERMINAL_PASTE_LIMITS } from "../features/terminal/terminal-paste";
 import { TerminalPresentation } from "../features/terminal/TerminalPresentation";
 import { isTopologyEditable, useWorkspaceStore, type ExecutionMode, type WorkspaceMode } from "../state/workspace-store";
 import { Button, IconButton, Kbd } from "../ui";
@@ -117,6 +118,9 @@ export function App({ client }: AppProps) {
   const deviceIconProfile = useDeviceIconProfile();
   const [terminalAppearance, setTerminalAppearanceState] = useState<TerminalAppearance>(getTerminalAppearance());
   const chooseTerminalAppearance = (id: TerminalAppearance) => { applyTerminalAppearance(id); setTerminalAppearanceState(id); };
+  // Local-only terminal preference: never part of LabDocument or a submission.
+  const [confirmMultilinePaste, setConfirmMultilinePasteState] = useState(() => readConfirmMultilinePaste());
+  const chooseConfirmMultilinePaste = (confirm: boolean) => { persistConfirmMultilinePaste(confirm); setConfirmMultilinePasteState(confirm); };
   const launchSession = useLaunchSession();
   const [confirmApply, setConfirmApply] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
@@ -133,6 +137,7 @@ export function App({ client }: AppProps) {
   const [canvasNavigationOpen, setCanvasNavigationOpen] = useState(false);
   const [diagramTextOpen, setDiagramTextOpen] = useState(false);
   const [connectingHelpOpen, setConnectingHelpOpen] = useState(false);
+  const [terminalHelpOpen, setTerminalHelpOpen] = useState(false);
   const [validation, setValidation] = useState<string>();
   const [pendingMode, setPendingMode] = useState<WorkspaceMode>();
   const [deviceWindowId, setDeviceWindowId] = useState<string>();
@@ -427,7 +432,7 @@ export function App({ client }: AppProps) {
       else if (event.key === "?") setShortcutsOpen(true);
       else if (event.key === "Escape") {
         setShortcutsOpen(false); setLabInfoOpen(false); setCliCommandsOpen(false); setAboutOpen(false);
-        setSaveAsOpen(false); setDemoLabOpen(false); setStepExplanationOpen(false); setPacketModesOpen(false); setCanvasNavigationOpen(false); setDiagramTextOpen(false); setConnectingHelpOpen(false); setConfirmApply(false); setConfirmStop(false); setValidation(undefined);
+        setSaveAsOpen(false); setDemoLabOpen(false); setStepExplanationOpen(false); setPacketModesOpen(false); setCanvasNavigationOpen(false); setDiagramTextOpen(false); setConnectingHelpOpen(false); setTerminalHelpOpen(false); setConfirmApply(false); setConfirmStop(false); setValidation(undefined);
         workspace.setPaletteOpen(false); workspace.selectNode(undefined); workspace.selectLink(undefined);
       }
     };
@@ -489,6 +494,8 @@ export function App({ client }: AppProps) {
         { id: "terminal-float", label: "Float", shortcut: "Ctrl ⇧ `", checked: workspace.terminalPresentationMode === "floating", disabled: !labOpen, onSelect: () => workspace.setTerminalPresentationMode("floating") },
         { id: "terminal-maximize", label: "Maximize", shortcut: "Ctrl Alt ↵", checked: workspace.terminalPresentationMode === "maximized", disabled: !labOpen, onSelect: () => workspace.setTerminalPresentationMode("maximized") },
         { id: "terminal-hide", label: "Hide Terminal", disabled: !labOpen || !workspace.terminalVisible, onSelect: () => workspace.setTerminalVisible(false) },
+        { separator: true },
+        { id: "terminal-paste-confirm", label: "Confirm Multi-line Paste", checked: confirmMultilinePaste, onSelect: () => chooseConfirmMultilinePaste(!confirmMultilinePaste) },
       ] },
       { separator: true },
       { id: "view-theme", label: "Theme", icon: <SunMoon size={14} />, submenu: [
@@ -544,6 +551,7 @@ export function App({ client }: AppProps) {
       { id: "help-diagram-text", label: "Diagram Text Editing", icon: <Type size={14} />, onSelect: () => setDiagramTextOpen(true) },
       { id: "help-connecting", label: "Connecting Devices", icon: <Cable size={14} />, onSelect: () => setConnectingHelpOpen(true) },
       { id: "help-packet-modes", label: "Packet Execution Modes", icon: <SkipForward size={14} />, onSelect: () => setPacketModesOpen(true) },
+      { id: "help-terminal", label: "Terminal Workspace", icon: <ClipboardPaste size={14} />, onSelect: () => setTerminalHelpOpen(true) },
       { id: "help-cli", label: "CLI Commands", icon: <TerminalSquare size={14} />, onSelect: () => setCliCommandsOpen(true) },
       { id: "help-shortcuts", label: "Keyboard Shortcuts", shortcut: "?", icon: <Keyboard size={14} />, onSelect: () => setShortcutsOpen(true) },
       { id: "help-about", label: "About SimulatorNet", icon: <Info size={14} />, onSelect: () => setAboutOpen(true) },
@@ -737,6 +745,7 @@ export function App({ client }: AppProps) {
       {canvasNavigationOpen && <CanvasNavigationHelpDialog onClose={() => setCanvasNavigationOpen(false)} />}
       {diagramTextOpen && <DiagramTextHelpDialog onClose={() => setDiagramTextOpen(false)} />}
       {connectingHelpOpen && <ConnectingDevicesHelpDialog onClose={() => setConnectingHelpOpen(false)} />}
+      {terminalHelpOpen && <TerminalWorkspaceHelpDialog onClose={() => setTerminalHelpOpen(false)} />}
       {stepExplanationOpen && <WorkspaceDialog title="Step mode" eyebrow="Packet execution" onClose={dismissStepExplanation}>
         <p>Step mode lets you inspect ARP, ICMP, TCP and other network events one at a time.</p>
         <p>Your device configurations are unchanged. Switch back to Auto for normal operation.</p>
@@ -753,6 +762,8 @@ export function App({ client }: AppProps) {
           <Shortcut keys="Delete" label="Delete selection in Edit mode" />
           <Shortcut keys="F" label="Fit topology" />
           <Shortcut keys="Ctrl + L" label="Clear focused terminal" />
+          <Shortcut keys="Ctrl / Cmd + V" label="Paste into the focused terminal" />
+          <Shortcut keys="Shift + Insert" label="Paste into the focused terminal" />
           <Shortcut keys="Ctrl / Cmd + `" label="Show or hide terminal" />
           <Shortcut keys="Ctrl / Cmd + Shift + `" label="Float or dock terminal" />
           <Shortcut keys="Ctrl / Cmd + Alt + Enter" label="Maximize or restore terminal" />
@@ -920,6 +931,36 @@ function ConnectingDevicesHelpDialog({ onClose }: { onClose(): void }) {
     <p>Hover or select a device to reveal its single cable handle, then drag it onto another device. A modal asks for the connection type and the From/To interfaces, and only then is the link created. The same flow is available from a device&apos;s Connect… menu item and the toolbar connection tool.</p>
     <p>Only free interfaces are offered. Cancelling, or dropping outside a device, creates nothing.</p>
     <p className="section-note">Devices deliberately show no port dots. Interfaces still exist and every link stays anchored to an exact interface — Port Labels (View ▸ Port Labels) display those interface names, they are not connection points. Connections are locked while the lab is running; stop the lab to change cabling.</p>
+  </WorkspaceDialog>;
+}
+
+function TerminalWorkspaceHelpDialog({ onClose }: { onClose(): void }) {
+  return <WorkspaceDialog title="Terminal workspace" eyebrow="Typing and pasting commands" onClose={onClose}>
+    <p>xterm is the only CLI input. Paste with <strong>Ctrl/Cmd+V</strong>, <strong>Shift+Insert</strong>, or the terminal right-click menu; the text lands at the cursor in the current input line.</p>
+    <div className="cli-command-reference">
+      <section>
+        <h3>One command</h3>
+        <p>Clipboard text without a line break is inserted into the input line and waits — you still press Enter yourself. Pasting works at the start, middle, or end of the line, and Arrow keys, Home/End, Backspace/Delete and history keep working afterwards.</p>
+      </section>
+      <section>
+        <h3>Several commands</h3>
+        <p>Clipboard text with line breaks is a bulk paste. A compact confirmation lists the commands before anything runs, then each line is executed in order through the normal CLI parser, so modes change exactly as if you had typed them. A final line without a trailing newline is left in the input line, unexecuted.</p>
+        <p>Turn the confirmation off under View ▸ Terminal ▸ Confirm Multi-line Paste.</p>
+      </section>
+      <section>
+        <h3>Interactive prompts</h3>
+        <p>A pasted sequence stops at a prompt that expects an answer — Username, Password, enable secret, an interactive ping target, <code>[confirm]</code>, or <code>--More--</code> — so the next command is never mistaken for a credential. Answer the prompt, then choose Continue Paste or Cancel Remaining.</p>
+      </section>
+      <section>
+        <h3>Passwords</h3>
+        <p>Pasting into a credential prompt is allowed. The characters are not echoed, not added to command history, not written to the transcript or Problems, and not logged. A multi-line paste is refused at a password prompt.</p>
+      </section>
+      <section>
+        <h3>Right-click menu</h3>
+        <p>Copy, Paste, Select All, Clear Terminal, Search and Close Tab. Clear Terminal clears the visible buffer only: the CLI mode, authentication, history and worker session stay open.</p>
+      </section>
+    </div>
+    <p className="section-note">Pasted text is plain text. Escape sequences, OSC clipboard/title/hyperlink commands and other terminal control codes are stripped; binary data is refused. One paste is limited to {TERMINAL_PASTE_LIMITS.maximumCharacters.toLocaleString("en-US")} characters, {TERMINAL_PASTE_LIMITS.maximumLines.toLocaleString("en-US")} lines and {TERMINAL_PASTE_LIMITS.maximumPendingCommands.toLocaleString("en-US")} queued commands.</p>
   </WorkspaceDialog>;
 }
 

@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_TERMINAL_APPEARANCE,
@@ -50,5 +52,32 @@ describe("terminal pager", () => {
     expect(rest.text).toBe("line 5\nline 6\nline 7");
     expect(rest.more).toBe(false);
     expect(pager.done).toBe(true);
+  });
+});
+
+describe("terminal source safety", () => {
+  const directory = fileURLToPath(new URL(".", import.meta.url));
+  const sources = readdirSync(directory)
+    .filter((name) => (name.endsWith(".ts") || name.endsWith(".tsx")) && !name.endsWith(".test.ts") && !name.endsWith(".test.tsx"));
+
+  it("covers every terminal source file", () => {
+    expect(sources).toContain("TerminalPanel.tsx");
+    expect(sources).toContain("terminal-paste.ts");
+  });
+
+  it.each(sources)("renders %s without innerHTML", (name) => {
+    const source = readFileSync(`${directory}${name}`, "utf8");
+    // Pasted clipboard text and CLI output are always text nodes: nothing in the
+    // terminal may build markup from a string.
+    expect(source).not.toContain("dangerouslySetInnerHTML");
+    expect(source).not.toContain("innerHTML");
+    expect(source).not.toContain("outerHTML");
+    expect(source).not.toContain("insertAdjacentHTML");
+  });
+
+  it("contains no NUL or other binary bytes", () => {
+    for (const name of sources) {
+      expect(readFileSync(`${directory}${name}`).includes(0)).toBe(false);
+    }
   });
 });

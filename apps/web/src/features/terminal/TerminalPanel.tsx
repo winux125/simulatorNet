@@ -2,7 +2,7 @@ import type { ConsoleAccessConfiguration } from "@sim/contracts";
 import type { CliExecutionResult, LabUiNode } from "@sim/sim-worker";
 import { ConsoleAuthSession } from "@sim/console-auth";
 import { stripControlSequences } from "@sim/importers";
-import { Clipboard, Eraser, Search, TerminalSquare, X } from "lucide-react";
+import { Clipboard, ClipboardPaste, Eraser, Search, TerminalSquare, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Terminal as XtermTerminal } from "@xterm/xterm";
 import type { FitAddon as XtermFitAddon } from "@xterm/addon-fit";
@@ -10,7 +10,7 @@ import type { SimulatorClient } from "../../app/simulator-client";
 import type { WorkspaceMode } from "../../state/workspace-store";
 import type { ResolvedTheme } from "../../hooks/useTheme";
 import { DeviceIcon } from "../../components/DeviceIcon";
-import { EmptyState, IconButton } from "../../ui";
+import { Button, EmptyState, IconButton } from "../../ui";
 import { TerminalCommandHistory } from "./terminal-history";
 import { LineBuffer, classifyTerminalKey } from "./terminal-line-editor";
 import {
@@ -20,6 +20,17 @@ import {
   type TerminalAppearance,
 } from "./terminal-appearance";
 import { TerminalPager } from "./terminal-pager";
+import {
+  CLIPBOARD_UNAVAILABLE_MESSAGE,
+  isInteractivePrompt,
+  pastePreview,
+  PASTE_PAUSED_FOR_INPUT,
+  PASTE_PAUSED_FOR_OPERATION,
+  prepareSecretPaste,
+  prepareTerminalPaste,
+  readConfirmMultilinePaste,
+  type TerminalPastePreview,
+} from "./terminal-paste";
 
 interface TerminalWorkspaceProps {
   client: SimulatorClient;
@@ -66,7 +77,7 @@ export function TerminalWorkspace(props: TerminalWorkspaceProps) {
   };
 
   if (props.tabs.length === 0) {
-    return <EmptyState icon={<TerminalSquare size={28} />} title="No terminal sessions" description="Open a device context menu or use Open CLI in the inspector. Type commands directly into the terminal — each session keeps its own history inside the worker." />;
+    return <EmptyState icon={<TerminalSquare size={28} />} title="No terminal sessions" description="Open a device context menu or use Open CLI in the inspector. Type or paste commands directly into the terminal — each session keeps its own history inside the worker." />;
   }
   return (
     <div
@@ -164,6 +175,7 @@ export function TerminalWorkspace(props: TerminalWorkspaceProps) {
               layoutSignal={props.layoutSignal}
               sessionNamespace={props.sessionNamespace ?? "terminal"}
               consoleAccess={props.consoleAccessFor?.(deviceId)}
+              onCloseTab={() => props.onClose(deviceId)}
               onError={props.onError}
             />
           );
@@ -184,15 +196,45 @@ interface TerminalSessionProps {
   layoutSignal?: string;
   sessionNamespace: string;
   consoleAccess?: ConsoleAccessConfiguration;
+  onCloseTab(): void;
   onError(message: string): void;
 }
 
-function TerminalSession({ client, deviceId, hostname, active, enabled, theme, appearance, layoutSignal, sessionNamespace, consoleAccess, onError }: TerminalSessionProps) {
+/** Imperative paste actions owned by the mounted xterm session. */
+interface PasteControls {
+  fromClipboard(): void;
+  confirm(): void;
+  dismissConfirm(): void;
+  resume(): void;
+  cancel(): void;
+}
+
+interface PasteConfirmState {
+  count: number;
+  preview: TerminalPastePreview;
+}
+
+interface PasteRunState {
+  remaining: number;
+  paused: boolean;
+}
+
+const NO_PASTE_CONTROLS: PasteControls = {
+  fromClipboard: () => undefined,
+  confirm: () => undefined,
+  dismissConfirm: () => undefined,
+  resume: () => undefined,
+  cancel: () => undefined,
+};
+
+function TerminalSession({ client, deviceId, hostname, active, enabled, theme, appearance, layoutSignal, sessionNamespace, consoleAccess, onCloseTab, onError }: TerminalSessionProps) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<XtermTerminal | undefined>(undefined);
   const fitRef = useRef<XtermFitAddon | undefined>(undefined);
   const focusRef = useRef<() => void>(() => undefined);
   const clearRef = useRef<() => void>(() => undefined);
+  const pasteRef = useRef<PasteControls>(NO_PASTE_CONTROLS);
   const enabledRef = useRef(enabled);
   const activeRef = useRef(active);
   // Captured at mount: reopening the terminal starts a fresh login.
@@ -203,9 +245,23 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
   const [transcript, setTranscript] = useState("");
   const [ready, setReady] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [pasteConfirm, setPasteConfirm] = useState<PasteConfirmState>();
+  const [pasteRun, setPasteRun] = useState<PasteRunState>();
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; selection: string }>();
 
   enabledRef.current = enabled;
   activeRef.current = active;
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(undefined);
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("blur", close);
+    };
+  }, [contextMenu]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -219,6 +275,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
     let awaitingDeferredOutput = false;
     let pager: TerminalPager | undefined;
     let pendingPromptResult: CliExecutionResult | undefined;
+    let pasteListenerCleanup: (() => void) | undefined;
     const buffer = new LineBuffer();
     const history = new TerminalCommandHistory();
 
@@ -302,14 +359,18 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
         if (event.type !== "CLI_OUTPUT" || event.sessionId !== sessionId || event.deviceId !== deviceId) return;
         renderResult(event, true);
       });
-      const execute = (value: string, alreadyEchoed = false) => {
+      const execute = (value: string, alreadyEchoed = false): Promise<CliExecutionResult | undefined> => {
         const submittedPrompt = prompt;
         if (!alreadyEchoed) terminal.write(`${terminalText(value)}\r\n`);
-        void client.request({ type: "EXECUTE_CLI", sessionId, deviceId, input: value }).then((result) => {
-          if (disposed) return;
+        return client.request({ type: "EXECUTE_CLI", sessionId, deviceId, input: value }).then((result) => {
+          if (disposed) return undefined;
           renderResult(result);
           if (value || result.output) setTranscript((current) => `${current}${submittedPrompt} ${value}\n${result.output ? `${result.output}\n` : ""}`);
-        }).catch((error: unknown) => onError(error instanceof Error ? error.message : "CLI request failed"));
+          return result;
+        }).catch((error: unknown) => {
+          onError(error instanceof Error ? error.message : "CLI request failed");
+          return undefined;
+        });
       };
 
       // --- Console login gate: async credential check in front of the worker CLI.
@@ -323,18 +384,201 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
       const writeGate = (text: string) => { if (text) terminal.write(`${terminalText(text)}\r\n`); };
       const syncDevicePrompt = (privileged: boolean) => execute(privileged ? "enable" : "", true);
       const isPrivileged = () => (gate!.state as string) === "privileged-exec";
-      const submitGate = (line: string) => {
-        if (!gate) return;
+      const submitGate = (line: string): Promise<void> => {
+        if (!gate) return Promise.resolve();
         forwardAfterGate = undefined;
         const wasAuthenticated = gate.isAuthenticated();
         const wasPrivileged = isPrivileged();
-        void gate.submit(line).then((outcome) => {
+        return gate.submit(line).then(async (outcome) => {
           if (disposed) return;
           writeGate(outcome.output);
-          if (forwardAfterGate !== undefined) { history.record(forwardAfterGate); execute(forwardAfterGate, true); }
-          else if (!wasAuthenticated && gate.isAuthenticated()) syncDevicePrompt(isPrivileged());
-          else if (wasAuthenticated && !wasPrivileged && isPrivileged()) syncDevicePrompt(true);
+          if (forwardAfterGate !== undefined) { history.record(forwardAfterGate); await execute(forwardAfterGate, true); }
+          else if (!wasAuthenticated && gate.isAuthenticated()) await syncDevicePrompt(isPrivileged());
+          else if (wasAuthenticated && !wasPrivileged && isPrivileged()) await syncDevicePrompt(true);
         }).catch((error: unknown) => onError(error instanceof Error ? error.message : "Console login failed"));
+      };
+
+      // --- Clipboard paste ---------------------------------------------------
+      // A paste is delivered by the browser's own paste event on this container
+      // (Ctrl/Cmd+V, Shift+Insert and platform middle-click all produce one).
+      // There is no document-level clipboard interception and no separate HTML
+      // command input: xterm remains the only CLI surface.
+      let pasteQueue: string[] = [];
+      let pasteRemainder = "";
+      let pasteTail = "";
+      let pasteRunning = false;
+      // Bumped whenever the queue is replaced or cancelled, so an in-flight loop
+      // that is awaiting a worker reply retires instead of draining a new paste.
+      let pasteGeneration = 0;
+      let confirmedPlan: { commands: string[]; remainder: string; tail: string } | undefined;
+      let nativePasteSequence = 0;
+      let shiftInsertTimer: number | undefined;
+
+      /** A credential prompt owns the line: never repaint the hidden buffer. */
+      const secretExpected = () => gate?.expectsSecret() ?? false;
+      const notify = (message: string) => {
+        terminal.write(`\r\n${terminalText(message)}\r\n`);
+        if (!secretExpected()) redraw();
+      };
+      const publishRun = () => setPasteRun(
+        pasteQueue.length === 0 && !pasteRunning
+          ? undefined
+          : { remaining: pasteQueue.length, paused: !pasteRunning },
+      );
+      const finishPaste = () => {
+        pasteRunning = false;
+        pasteQueue = [];
+        // Restore the unexecuted tail of the input line with the caret between
+        // the pasted fragment and whatever already followed it.
+        buffer.clear();
+        if (pasteTail.length > 0) { buffer.insert(pasteTail); buffer.home(); }
+        if (pasteRemainder.length > 0) buffer.insert(pasteRemainder);
+        pasteRemainder = "";
+        pasteTail = "";
+        redraw();
+        publishRun();
+      };
+      const cancelPaste = () => {
+        pasteGeneration += 1;
+        pasteRunning = false;
+        pasteQueue = [];
+        pasteRemainder = "";
+        pasteTail = "";
+        publishRun();
+      };
+      /**
+       * Why the queue must stop before sending its next line: an interactive
+       * prompt would otherwise consume a command as its answer — turning the
+       * following line into a password, a ping target or a [confirm] reply.
+       */
+      const pauseReason = (): "input" | "operation" | undefined => {
+        if (pager) return "input";
+        if (gate && (!gate.isAuthenticated() || secretExpected())) return "input";
+        if (awaitingDeferredOutput) return "operation";
+        if (isInteractivePrompt(prompt)) return "input";
+        return undefined;
+      };
+      const runPasteQueue = async () => {
+        if (pasteRunning) return;
+        const generation = pasteGeneration;
+        pasteRunning = true;
+        publishRun();
+        while (pasteQueue.length > 0) {
+          if (disposed) { pasteRunning = false; return; }
+          // A newer paste (or a cancel) has taken ownership of the queue.
+          if (generation !== pasteGeneration) return;
+          const reason = pauseReason();
+          if (reason) {
+            pasteRunning = false;
+            notify(reason === "input" ? PASTE_PAUSED_FOR_INPUT : PASTE_PAUSED_FOR_OPERATION);
+            publishRun();
+            return;
+          }
+          const line = pasteQueue.shift() ?? "";
+          // Echo the pasted line exactly as if it had been typed and submitted.
+          terminal.write(`${terminalText(line)}\r\n`);
+          if (gate) await submitGate(line);
+          else { history.record(line); await execute(line, true); }
+        }
+        if (!disposed && generation === pasteGeneration) finishPaste();
+      };
+      const startPaste = (commands: readonly string[], remainder: string, tail: string) => {
+        pasteGeneration += 1;
+        pasteRunning = false;
+        // The merged input line now lives in the queue; repaint an empty prompt
+        // so the queue's own echo is the only copy on screen.
+        buffer.clear();
+        terminal.write(`\x1b[2K\r${promptText()}`);
+        pasteQueue = [...commands];
+        pasteRemainder = remainder;
+        pasteTail = tail;
+        void runPasteQueue();
+      };
+      const applySecretPaste = (raw: string) => {
+        const secret = prepareSecretPaste(raw);
+        if (secret.status === "rejected") { notify(secret.message); return; }
+        // No redraw and no history: a credential never reaches the visible
+        // buffer, the transcript, Problems or a log.
+        buffer.insert(secret.text);
+      };
+      const applyPaste = (raw: string) => {
+        if (!enabledRef.current || disposed) return;
+        if (pager || awaitingDeferredOutput) {
+          notify("Paste is unavailable while the terminal is waiting for input.");
+          return;
+        }
+        if (secretExpected()) { applySecretPaste(raw); return; }
+        const plan = prepareTerminalPaste(raw);
+        if (plan.status === "empty") return;
+        if (plan.status === "rejected") { notify(plan.message); return; }
+        if (plan.commands.length === 0) { buffer.insert(plan.remainder); redraw(); return; }
+        // Merge the paste into the current input line at the caret, exactly like
+        // a real terminal: text already typed becomes part of the first command
+        // and anything after the caret trails the last, unexecuted fragment.
+        const merged = {
+          commands: [`${buffer.head}${plan.commands[0] ?? ""}`, ...plan.commands.slice(1)],
+          remainder: plan.remainder,
+          tail: buffer.rest,
+        };
+        if (plan.bulk && readConfirmMultilinePaste()) {
+          confirmedPlan = merged;
+          setPasteConfirm({
+            count: merged.commands.length,
+            preview: pastePreview(merged.commands, `${merged.remainder}${merged.tail}`),
+          });
+          return;
+        }
+        startPaste(merged.commands, merged.remainder, merged.tail);
+      };
+      const pasteFromClipboard = () => {
+        const clipboard = navigator.clipboard;
+        if (!clipboard || typeof clipboard.readText !== "function") { notify(CLIPBOARD_UNAVAILABLE_MESSAGE); return; }
+        void clipboard.readText().then((text) => {
+          if (disposed || !text) return;
+          applyPaste(text);
+        }).catch(() => { if (!disposed) notify(CLIPBOARD_UNAVAILABLE_MESSAGE); });
+      };
+
+      pasteRef.current = {
+        fromClipboard: () => { pasteFromClipboard(); focusRef.current(); },
+        confirm: () => {
+          const plan = confirmedPlan;
+          confirmedPlan = undefined;
+          setPasteConfirm(undefined);
+          if (plan) startPaste(plan.commands, plan.remainder, plan.tail);
+          focusRef.current();
+        },
+        dismissConfirm: () => { confirmedPlan = undefined; setPasteConfirm(undefined); focusRef.current(); },
+        resume: () => { void runPasteQueue(); focusRef.current(); },
+        cancel: () => { cancelPaste(); focusRef.current(); },
+      };
+
+      const onNativePaste = (event: ClipboardEvent) => {
+        // Handled here so the text is sanitized and bounded before xterm sees
+        // it; the canvas and diagram paste handlers stay untouched.
+        event.preventDefault();
+        event.stopPropagation();
+        nativePasteSequence += 1;
+        applyPaste(event.clipboardData?.getData("text/plain") ?? "");
+      };
+      const onHostKeyDown = (event: KeyboardEvent) => {
+        if (event.key !== "Insert" || !event.shiftKey) return;
+        // Most browsers turn Shift+Insert into a native paste event. Only read
+        // the clipboard directly when this one did not.
+        const seen = nativePasteSequence;
+        if (shiftInsertTimer !== undefined) window.clearTimeout(shiftInsertTimer);
+        shiftInsertTimer = window.setTimeout(() => {
+          shiftInsertTimer = undefined;
+          if (disposed || nativePasteSequence !== seen) return;
+          pasteFromClipboard();
+        }, 30);
+      };
+      host.addEventListener("paste", onNativePaste);
+      host.addEventListener("keydown", onHostKeyDown);
+      pasteListenerCleanup = () => {
+        host.removeEventListener("paste", onNativePaste);
+        host.removeEventListener("keydown", onHostKeyDown);
+        if (shiftInsertTimer !== undefined) window.clearTimeout(shiftInsertTimer);
       };
 
       dataDisposable = terminal.onData((data) => {
@@ -374,14 +618,14 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
         if (awaitingDeferredOutput) return;
         // While the gate is waiting for a password, input is never echoed and is
         // kept out of the line editor's visible state and history.
-        const secret = gate?.expectsSecret() ?? false;
+        const secret = secretExpected();
         switch (key.kind) {
           case "enter": {
             const submitted = buffer.value;
             buffer.clear();
             terminal.write("\r\n");
-            if (gate) submitGate(submitted);
-            else { history.record(submitted); execute(submitted, true); }
+            if (gate) void submitGate(submitted);
+            else { history.record(submitted); void execute(submitted, true); }
             break;
           }
           case "insert": buffer.insert(key.text); if (!secret) redraw(); break;
@@ -396,7 +640,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
         }
       });
       if (gate) writeGate(gate.begin().output);
-      else execute("");
+      else void execute("");
       fitTerminal();
     }).catch(() => onError("Terminal component failed to load"));
 
@@ -419,9 +663,11 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
       disposed = true;
       focusRef.current = () => undefined;
       clearRef.current = () => undefined;
+      pasteRef.current = NO_PASTE_CONTROLS;
       resizeObserver?.disconnect();
       window.removeEventListener("resize", fitTerminal);
       if (fitFrame !== undefined) window.cancelAnimationFrame(fitFrame);
+      pasteListenerCleanup?.();
       dataDisposable?.dispose();
       eventUnsubscribe?.();
       terminalRef.current?.dispose();
@@ -478,6 +724,13 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
     clearRef.current();
     focusRef.current();
   };
+  const openContextMenu = (clientX: number, clientY: number) => {
+    setContextMenu({
+      x: Math.max(4, Math.min(clientX, window.innerWidth - 188)),
+      y: Math.max(4, Math.min(clientY, window.innerHeight - 210)),
+      selection: terminalRef.current?.getSelection() ?? "",
+    });
+  };
   const searchMatches = searchQuery
     ? transcript.toLocaleLowerCase().split(searchQuery.toLocaleLowerCase()).length - 1
     : 0;
@@ -489,6 +742,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
         <label className="terminal-search">
           <Search size={11} aria-hidden="true" />
           <input
+            ref={searchRef}
             type="search"
             value={searchQuery}
             aria-label={`${hostname} terminal search`}
@@ -497,16 +751,50 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
           />
           {searchQuery && <small>{searchMatches}</small>}
         </label>
+        <IconButton label={`Paste into ${hostname} terminal`} icon={<ClipboardPaste size={13} />} onClick={() => pasteRef.current.fromClipboard()} />
         <IconButton label="Copy terminal selection" icon={<Clipboard size={13} />} onClick={copy} />
         <IconButton label="Clear terminal (Ctrl+L)" icon={<Eraser size={13} />} onClick={clear} />
       </div>
+      {pasteRun && <div className="terminal-paste-run" role="status">
+        <span>
+          {pasteRun.paused
+            ? `Pasted sequence paused — ${pasteRun.remaining} command${pasteRun.remaining === 1 ? "" : "s"} remaining`
+            : `Pasting ${pasteRun.remaining} remaining command${pasteRun.remaining === 1 ? "" : "s"}…`}
+        </span>
+        {pasteRun.paused && <Button size="sm" variant="primary" onClick={() => pasteRef.current.resume()}>Continue Paste</Button>}
+        <Button size="sm" variant="ghost" onClick={() => pasteRef.current.cancel()}>Cancel Remaining</Button>
+      </div>}
       <div
         ref={hostRef}
         className="xterm-host"
         data-scroll-owner="xterm"
         aria-label={`${hostname} terminal`}
         onMouseDown={() => { if (active) focusRef.current(); }}
+        onContextMenu={(event) => { event.preventDefault(); openContextMenu(event.clientX, event.clientY); }}
       />
+      {contextMenu && <div
+        className="terminal-context-menu"
+        role="menu"
+        aria-label={`${hostname} terminal actions`}
+        style={{ left: contextMenu.x, top: contextMenu.y }}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <button type="button" role="menuitem" disabled={!contextMenu.selection} onClick={() => { copy(); setContextMenu(undefined); }}>Copy</button>
+        <button type="button" role="menuitem" onClick={() => { setContextMenu(undefined); pasteRef.current.fromClipboard(); }}>Paste</button>
+        <button type="button" role="menuitem" onClick={() => { terminalRef.current?.selectAll(); setContextMenu(undefined); }}>Select All</button>
+        <button type="button" role="menuitem" onClick={() => { setContextMenu(undefined); clear(); }}>Clear Terminal</button>
+        <button type="button" role="menuitem" onClick={() => { setContextMenu(undefined); searchRef.current?.focus(); }}>Search</button>
+        <button type="button" role="menuitem" onClick={() => { setContextMenu(undefined); onCloseTab(); }}>Close Tab</button>
+      </div>}
+      {pasteConfirm && <div className="terminal-paste-confirm" role="dialog" aria-label={`Paste ${pasteConfirm.count} commands into ${hostname}`}>
+        <p>Paste {pasteConfirm.count} command{pasteConfirm.count === 1 ? "" : "s"} into {hostname}?</p>
+        <pre>{pasteConfirm.preview.lines.join("\n")}</pre>
+        {pasteConfirm.preview.hidden > 0 && <small>…and {pasteConfirm.preview.hidden} more line{pasteConfirm.preview.hidden === 1 ? "" : "s"}</small>}
+        <div className="terminal-paste-confirm__actions">
+          <Button size="sm" variant="ghost" onClick={() => pasteRef.current.dismissConfirm()}>Cancel</Button>
+          <Button size="sm" variant="primary" onClick={() => pasteRef.current.confirm()}>Paste Commands</Button>
+        </div>
+      </div>}
       <pre className="visually-hidden" data-testid={active ? "terminal-transcript" : `terminal-transcript-${deviceId}`} aria-live="polite">{transcript}</pre>
     </section>
   );

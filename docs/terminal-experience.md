@@ -73,11 +73,123 @@ Terminal input also supports:
 - `ArrowUp` and `ArrowDown` for the active device's history;
 - `Ctrl+L` to clear the visible terminal and redraw one prompt;
 - `Enter` on an empty line to emit one fresh prompt;
-- normal xterm selection and copy/paste behavior;
+- `Ctrl/Cmd+V` and `Shift+Insert` to paste;
+- normal xterm selection and copy behavior;
 - toolbar search without changing the CLI buffer.
 
 Global shortcuts ignore ordinary typing targets. `Ctrl/Cmd+W` outside the
 terminal is not captured, so the browser keeps its normal behavior.
+
+## Pasting commands
+
+xterm is the only CLI input; there is no separate HTML command form. Clipboard
+text arrives through the browser's own paste event on the terminal container —
+`Ctrl/Cmd+V`, `Shift+Insert`, the right-click menu, and whatever middle-click
+paste the platform provides natively. Nothing listens for clipboard events on
+`document`, and no clipboard permission is requested at startup.
+
+### One command
+
+Clipboard text with no line break is inserted into the current input line at
+the caret. It is never executed on its own: the user presses `Enter`. Pasting
+at the start, the middle, or the end of a line all work, and cursor keys,
+`Home`/`End`, `Backspace`/`Delete` and history keep working afterwards.
+
+### Several commands
+
+Clipboard text containing line breaks is a bulk command paste. The paste is
+merged into the current input line at the caret, exactly like a real terminal:
+already-typed text becomes part of the first command, and anything after the
+caret trails the last fragment.
+
+A compact confirmation popover over the terminal lists the commands before
+anything runs:
+
+```text
+Paste 6 commands into R1?
+```
+
+Confirming executes the lines in order through the normal CLI parser and
+session, so modes change naturally, output appears between commands, and each
+line becomes its own history entry. Blank lines behave like a plain `Enter`.
+
+`CRLF`, lone `CR` and `LF` all normalize to the same sequence. A trailing
+newline means the last command runs; without one, the final line is left in the
+input buffer unexecuted.
+
+The confirmation is a local preference under
+`simulatornet.confirmMultilinePaste` (default on), toggled from
+View ▸ Terminal ▸ Confirm Multi-line Paste. It is never part of `LabDocument`,
+a submission, grading, or the database.
+
+### Interactive prompts
+
+A pasted sequence stops before answering a prompt that expects input — a
+Username, a Password, an enable secret, an interactive ping target, a
+`[confirm]`/`[yes/no]` question, or `--More--` pagination. The terminal prints:
+
+```text
+Pasted command sequence paused for interactive input.
+```
+
+A queued network operation in Step mode pauses the sequence too, rather than
+hanging silently. The remaining lines stay in a bounded pending queue; the user
+answers the prompt and then chooses **Continue Paste** or **Cancel Remaining**.
+Cancelling drops the rest of the sequence, including its trailing fragment. A
+command is never silently turned into a credential.
+
+### Credentials
+
+Pasting into a Username, Password or enable-secret prompt is allowed. The
+characters are not echoed, not recorded in command history, not written to the
+transcript or to Problems, and not logged. The temporary buffer is cleared on
+submit. A multi-line paste is refused at a credential prompt, as is text
+containing NUL or control characters.
+
+### Sanitization and limits
+
+Pasted content is plain text. CSI sequences, OSC clipboard/title/hyperlink
+commands, DCS/SOS/PM/APC strings, lone escapes, C1 controls and DEL are
+stripped; NUL and other binary bytes are refused outright. Printable Unicode,
+spaces and line breaks survive; a tab becomes a single space so the line
+editor's caret arithmetic stays correct. No terminal path uses `innerHTML` or
+`dangerouslySetInnerHTML`.
+
+All bounds live in `TERMINAL_PASTE_LIMITS`:
+
+| Limit | Value |
+| --- | --- |
+| Characters per paste | 100,000 |
+| Lines per paste | 1,000 |
+| Queued commands | 500 |
+| Raw clipboard text | 1,048,576 characters |
+| Credential characters | 1,024 |
+
+Exceeding a limit reports `Paste is too large.` with the specific maximum and
+queues nothing.
+
+### Right-click menu
+
+The terminal context menu offers Copy, Paste, Select All, Clear Terminal,
+Search and Close Tab. Copy is disabled without a selection. Menu Paste uses the
+Clipboard API after that explicit user action; a denied, unavailable or empty
+clipboard is reported safely:
+
+```text
+Clipboard access was not granted.
+Use Ctrl+V to paste into the terminal.
+```
+
+**Clear Terminal** clears the visible buffer only. The CLI mode, authentication,
+command history, input line and worker session all stay open. **Close Tab** is
+the action that ends a CLI session.
+
+With a selection, `Ctrl/Cmd+C` copies it. Without one it does not fabricate a
+process interrupt — Ctrl+C interruption is not implemented.
+
+Paste behaves identically in Docked, Floating and Maximized presentations, and
+changing presentation preserves the pasted text, the caret, history, a pending
+paste, the authentication state and the CLI mode.
 
 ## Prompt and command rendering
 

@@ -276,6 +276,16 @@ search, and xterm instances must not restart.
 Device windows only launch or focus the shared terminal. Do not mount a second
 terminal inside a device window. See `docs/terminal-experience.md`.
 
+Clipboard paste reaches the CLI through the browser paste event on the terminal
+container — never a document-level clipboard listener and never a separate HTML
+command input. Pasted text is sanitized and bounded by `TERMINAL_PASTE_LIMITS`
+before it becomes input. Text without a line break is inserted at the caret and
+waits for `Enter`; text with line breaks is merged into the input line and
+executed line by line through the ordinary CLI session, never by calling domain
+APIs directly. A pasted sequence must pause at any interactive or credential
+prompt rather than answer it. Credential input is never echoed, recorded in
+history, written to the transcript or Problems, or logged.
+
 ### Layout and overflow
 
 The application shell owns the viewport. The browser body must not become the

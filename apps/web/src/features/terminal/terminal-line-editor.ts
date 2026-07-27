@@ -26,6 +26,16 @@ export class LineBuffer {
     return this.text.length - this.caret;
   }
 
+  /** Text before the caret — the part a paste is appended to. */
+  get head(): string {
+    return this.text.slice(0, this.caret);
+  }
+
+  /** Text after the caret — the part a paste is inserted in front of. */
+  get rest(): string {
+    return this.text.slice(this.caret);
+  }
+
   insert(chunk: string): void {
     this.text = this.text.slice(0, this.caret) + chunk + this.text.slice(this.caret);
     this.caret += chunk.length;
