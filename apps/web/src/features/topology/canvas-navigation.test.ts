@@ -378,7 +378,7 @@ describe("M10.3.3a canvas ownership guarantees", () => {
     const controller = read("x6/graph-controller.ts");
     const resize = controller.match(/resize\(width, height\) \{([\s\S]*?)\n {4}\},\n {4}reanchorLinks/)?.[1] ?? "";
     expect(resize).toContain("graph.resize(width, height)");
-    expect(resize).toContain("reanchorRenderedLinks()");
+    expect(resize).toContain("scheduleAdaptiveRefresh()");
     expect(resize).not.toMatch(/zoomToFit|zoomTo\(|centerContent|translate|scale\(/);
   });
 

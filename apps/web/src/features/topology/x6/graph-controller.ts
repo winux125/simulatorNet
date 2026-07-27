@@ -1,6 +1,11 @@
 import type { CellAttrs, Node as X6Node } from "@antv/x6";
 import type { DiagramAnnotation, LabDocument } from "@sim/contracts";
 import { normalizeCanvasViewport, type CanvasViewport } from "../canvas-navigation";
+import {
+  calculateAdaptiveLinkAnchors,
+  indexAdaptiveLinkLayout,
+  type AdaptiveLinkAnchors,
+} from "./adaptive-link-anchor";
 import { attachCanvasNavigation } from "./canvas-navigation-controller";
 import { createGraph } from "./create-graph";
 import { addLinkEdge, TOPOLOGY_EDGE_Z_INDEX, updateLinkEdge } from "./edge-registry";
@@ -15,7 +20,13 @@ import {
 import { registerDeviceNode, type DeviceCellData } from "./node-registry";
 import { buildPorts, portsMatch } from "./port-registry";
 import { NODE_HEIGHT, NODE_WIDTH, portBodyAttrs, SIM_DEVICE_SHAPE } from "./styles";
-import type { Point, TopologyGraphCallbacks, TopologyGraphController, TopologyView } from "./types";
+import type {
+  GraphLinkModel,
+  Point,
+  TopologyGraphCallbacks,
+  TopologyGraphController,
+  TopologyView,
+} from "./types";
 import { diagramAssetDataUrl } from "../diagram-image-assets";
 import { textAnnotationHeight } from "../diagram-editor";
 
@@ -103,6 +114,9 @@ export function createTopologyGraphController(options: CreateControllerOptions):
   const state = {
     document: undefined as LabDocument | undefined,
     view: { nodes: {}, links: {} } as TopologyView,
+    linkModels: new Map<string, GraphLinkModel>(),
+    linkLayout: indexAdaptiveLinkLayout([]),
+    anchorHistory: new Map<string, AdaptiveLinkAnchors>(),
     readonly: false,
     draggable: false,
     connectable: false,
@@ -152,6 +166,99 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     (viewport) => options.callbacks.onViewportChanged(viewport),
   );
 
+  let adaptiveRefreshFrame: number | undefined;
+  let refreshAllLinks = false;
+  const nodesAwaitingAnchorRefresh = new Set<string>();
+
+  function refreshLinkProjection(document: LabDocument): void {
+    const links = toGraphLinks(document);
+    state.linkModels = new Map(links.map((link) => [link.id, link]));
+    state.linkLayout = indexAdaptiveLinkLayout(links.map((link) => ({
+      id: link.id,
+      sourceDeviceId: link.source,
+      targetDeviceId: link.target,
+    })));
+    for (const linkId of state.anchorHistory.keys()) {
+      if (!state.linkModels.has(linkId)) state.anchorHistory.delete(linkId);
+    }
+  }
+
+  function moveInvisiblePort(node: X6Node, portId: string, point: Point): void {
+    if (!node.hasPort(portId)) return;
+    const bounds = node.getBBox();
+    const next = {
+      x: Math.round((point.x - bounds.x) * 100) / 100,
+      y: Math.round((point.y - bounds.y) * 100) / 100,
+    };
+    const current = node.portProp<{ x?: number; y?: number }>(portId, "args");
+    if (current?.x === next.x && current.y === next.y) return;
+    node.portProp(portId, "args", next);
+  }
+
+  function anchorsForLink(link: GraphLinkModel): AdaptiveLinkAnchors | undefined {
+    const sourceNode = graph.getCellById(link.source);
+    const targetNode = graph.getCellById(link.target);
+    if (!sourceNode?.isNode() || !targetNode?.isNode()) return undefined;
+    const sourceRectangle = sourceNode.getBBox();
+    const targetRectangle = targetNode.getBBox();
+    const placement = state.linkLayout.parallelPlacement.get(link.id)
+      ?? { parallelCount: 1, parallelIndex: 0 };
+    const anchors = calculateAdaptiveLinkAnchors({
+      sourceRectangle: {
+        x: sourceRectangle.x,
+        y: sourceRectangle.y,
+        width: sourceRectangle.width,
+        height: sourceRectangle.height,
+      },
+      targetRectangle: {
+        x: targetRectangle.x,
+        y: targetRectangle.y,
+        width: targetRectangle.width,
+        height: targetRectangle.height,
+      },
+      sourceCenter: sourceRectangle.getCenter(),
+      targetCenter: targetRectangle.getCenter(),
+      linkId: link.id,
+      ...placement,
+      previous: state.anchorHistory.get(link.id),
+    });
+    moveInvisiblePort(sourceNode, link.sourcePort, anchors.source.point);
+    moveInvisiblePort(targetNode, link.targetPort, anchors.target.point);
+    state.anchorHistory.set(link.id, anchors);
+    return anchors;
+  }
+
+  function refreshRenderedLink(linkId: string): void {
+    const link = state.linkModels.get(linkId);
+    const edge = graph.getCellById(linkId);
+    if (!link || !edge?.isEdge()) return;
+    updateLinkEdge(edge, link, state.view.links[linkId], anchorsForLink(link));
+  }
+
+  function flushAdaptiveRefresh(): void {
+    adaptiveRefreshFrame = undefined;
+    const ids = new Set<string>();
+    if (refreshAllLinks) {
+      for (const linkId of state.linkModels.keys()) ids.add(linkId);
+    } else {
+      for (const nodeId of nodesAwaitingAnchorRefresh) {
+        for (const linkId of state.linkLayout.incidentLinkIds.get(nodeId) ?? []) ids.add(linkId);
+      }
+    }
+    refreshAllLinks = false;
+    nodesAwaitingAnchorRefresh.clear();
+    for (const linkId of ids) refreshRenderedLink(linkId);
+  }
+
+  function scheduleAdaptiveRefresh(nodeId?: string): void {
+    if (nodeId === undefined) refreshAllLinks = true;
+    else if (state.linkLayout.incidentLinkIds.has(nodeId)) nodesAwaitingAnchorRefresh.add(nodeId);
+    else return;
+    if (adaptiveRefreshFrame === undefined) {
+      adaptiveRefreshFrame = window.requestAnimationFrame(flushAdaptiveRefresh);
+    }
+  }
+
   const clearConnectionTargetOnPointerEnd = () => clearConnectionTargetState();
   const clearConnectionTargetOnEscape = (event: KeyboardEvent) => {
     if (event.key === "Escape") clearConnectionTargetState();
@@ -160,6 +267,7 @@ export function createTopologyGraphController(options: CreateControllerOptions):
   window.addEventListener("keydown", clearConnectionTargetOnEscape);
 
   const detach = attachGraphEvents(graph, {
+    onNodePositionChanged: (id) => scheduleAdaptiveRefresh(id),
     onNodeMoved: (id, position) => {
       const handle = annotationHandle(id);
       if (handle) {
@@ -450,7 +558,7 @@ export function createTopologyGraphController(options: CreateControllerOptions):
   function render(): void {
     if (!state.document) return;
     const nodes = toGraphNodes(state.document);
-    const links = toGraphLinks(state.document);
+    const links = [...state.linkModels.values()];
     const annotations = state.document.diagram?.annotations ?? [];
     const handleIds = annotations.flatMap(renderAnnotationHandles);
     const nodeIds = new Set([
@@ -518,26 +626,20 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     ]);
     for (const link of links) {
       const linkView = state.view.links[link.id];
+      const anchors = anchorsForLink(link);
       const existing = graph.getCellById(link.id);
-      if (existing && existing.isEdge()) updateLinkEdge(existing, link, linkView);
-      else addLinkEdge(graph, link, linkView);
+      if (existing && existing.isEdge()) updateLinkEdge(existing, link, linkView, anchors);
+      else addLinkEdge(graph, link, linkView, anchors);
     }
     for (const cell of graph.getEdges()) {
       if (!linkIds.has(cell.id)) graph.removeCell(cell);
     }
   }
 
-  function reanchorRenderedLinks(): void {
-    if (!state.document) return;
-    for (const link of toGraphLinks(state.document)) {
-      const edge = graph.getCellById(link.id);
-      if (edge?.isEdge()) updateLinkEdge(edge, link, state.view.links[link.id]);
-    }
-  }
-
   return {
     loadDocument(document) {
       state.document = document;
+      refreshLinkProjection(document);
       render();
     },
     applyView(view) {
@@ -560,10 +662,10 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     resize(width, height) {
       if (width <= 0 || height <= 0) return;
       graph.resize(width, height);
-      reanchorRenderedLinks();
+      scheduleAdaptiveRefresh();
     },
     reanchorLinks() {
-      reanchorRenderedLinks();
+      scheduleAdaptiveRefresh();
     },
     fitToContent() {
       graph.zoomToFit({ padding: 24, maxScale: 1.4 });
@@ -622,6 +724,12 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       };
     },
     destroy() {
+      if (adaptiveRefreshFrame !== undefined) {
+        window.cancelAnimationFrame(adaptiveRefreshFrame);
+        adaptiveRefreshFrame = undefined;
+      }
+      nodesAwaitingAnchorRefresh.clear();
+      state.anchorHistory.clear();
       detach();
       navigation.destroy();
       window.removeEventListener("pointerup", clearConnectionTargetOnPointerEnd);

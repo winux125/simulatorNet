@@ -4,8 +4,7 @@
 export const SIM_DEVICE_SHAPE = "sim-device-node";
 export const NODE_WIDTH = 112;
 export const NODE_HEIGHT = 92;
-export const PORT_GROUP_LEFT = "interfaces-left";
-export const PORT_GROUP_RIGHT = "interfaces-right";
+export const PORT_GROUP_ADAPTIVE = "interfaces-adaptive";
 
 export function edgeLineAttrs(operational: boolean, selected: boolean) {
   const stroke = selected

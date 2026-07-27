@@ -164,6 +164,7 @@ describe("M10.2.2a topology adapter", () => {
     });
     const subscribed = on.mock.calls.map((call) => call[0]);
     expect(subscribed.length).toBeGreaterThan(0);
+    expect(subscribed).toContain("node:change:position");
     detach();
     expect(off.mock.calls.map((call) => call[0]).sort()).toEqual([...subscribed].sort());
   });

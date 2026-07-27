@@ -5,6 +5,7 @@ import type { Edge } from "@antv/x6";
 import type { LabDocument, NodeSpec } from "@sim/contracts";
 import { canonicalizeLabDocument, parseLabDocument, stringifyLabDocument } from "@sim/lab-format";
 import { describe, expect, it, vi } from "vitest";
+import { calculateAdaptiveLinkAnchors } from "./adaptive-link-anchor";
 import {
   withDiagramLinkLabel,
   withDiagramLinkStyle,
@@ -118,7 +119,7 @@ describe("M10.3.2b responsive topology connections", () => {
     const controller = readFileSync(join(here, "graph-controller.ts"), "utf8");
     const resize = controller.match(/resize\(width, height\) \{([\s\S]*?)\n    \},\n    reanchorLinks/)?.[1] ?? "";
     expect(resize).toContain("graph.resize(width, height)");
-    expect(resize).toContain("reanchorRenderedLinks()");
+    expect(resize).toContain("scheduleAdaptiveRefresh()");
     expect(resize).not.toMatch(/zoomToFit|zoomTo\(|centerContent|translate/);
   });
 
@@ -236,12 +237,33 @@ describe("M10.3.2b responsive topology connections", () => {
       route: "orthogonal",
       vertices: [{ x: 280, y: 160 }],
     };
-    updateLinkEdge(edge as unknown as Edge, link, LINK_VIEW);
+    const anchors = calculateAdaptiveLinkAnchors({
+      sourceRectangle: { x: 80, y: 100, width: 112, height: 92 },
+      targetRectangle: { x: 360, y: 100, width: 112, height: 92 },
+      sourceCenter: { x: 136, y: 146 },
+      targetCenter: { x: 416, y: 146 },
+      linkId: link.id,
+      parallelCount: 1,
+      parallelIndex: 0,
+    });
+    updateLinkEdge(edge as unknown as Edge, link, LINK_VIEW, anchors);
     const rendered = edge.setLabels.mock.calls.at(-1)?.[0] as Array<{
       attrs: { label: { text: string } };
-      position: { distance: number };
+      position: { distance: number; offset: { x: number; y: number } };
     }>;
     expect(rendered.map((label) => label.attrs.label.text)).toEqual(["eth0", "Gi0/1"]);
-    expect(rendered.map((label) => label.position.distance)).toEqual([0.13, 0.87]);
+    expect(rendered.map((label) => label.position.distance)).toEqual([18, -18]);
+    expect(rendered.map((label) => label.position.offset)).toEqual([{ x: 8, y: 0 }, { x: -8, y: 0 }]);
+  });
+
+  it("19. batches movement refreshes through the incident-link index and cleans up the frame", () => {
+    const controller = readFileSync(join(here, "graph-controller.ts"), "utf8");
+    const flush = controller.match(/function flushAdaptiveRefresh\(\): void \{([\s\S]*?)\n  \}/)?.[1] ?? "";
+    const schedule = controller.match(/function scheduleAdaptiveRefresh\(nodeId\?: string\): void \{([\s\S]*?)\n  \}/)?.[1] ?? "";
+    const destroy = controller.match(/destroy\(\) \{([\s\S]*?)\n    \},/)?.[1] ?? "";
+    expect(flush).toContain("state.linkLayout.incidentLinkIds.get(nodeId)");
+    expect(flush).toContain("refreshRenderedLink(linkId)");
+    expect(schedule).toContain("window.requestAnimationFrame(flushAdaptiveRefresh)");
+    expect(destroy).toContain("window.cancelAnimationFrame(adaptiveRefreshFrame)");
   });
 });

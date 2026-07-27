@@ -6,6 +6,8 @@ import type { Point } from "./types";
 // controller can tear the graph down cleanly.
 
 export interface GraphEventHandlers {
+  /** Fires during a drag so presentation geometry can follow in animation frames. */
+  onNodePositionChanged?(id: string): void;
   onNodeMoved(id: string, position: Point): void;
   onNodeClick(id: string, additive: boolean): void;
   onNodeDoubleClick(id: string): void;
@@ -26,6 +28,7 @@ type Listener = (args: any) => void;
 
 export function attachGraphEvents(graph: Graph, handlers: GraphEventHandlers): () => void {
   const bindings: Array<[string, Listener]> = [
+    ["node:change:position", ({ node }) => handlers.onNodePositionChanged?.(node.id)],
     ["node:moved", ({ node }) => {
       const position = node.position();
       handlers.onNodeMoved(node.id, { x: position.x, y: position.y });

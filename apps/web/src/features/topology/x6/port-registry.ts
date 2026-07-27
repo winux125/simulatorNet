@@ -1,28 +1,26 @@
-import { PORT_GROUP_LEFT, PORT_GROUP_RIGHT, portBodyAttrs } from "./styles";
+import {
+  NODE_HEIGHT,
+  NODE_WIDTH,
+  PORT_GROUP_ADAPTIVE,
+  portBodyAttrs,
+} from "./styles";
 import type { GraphNodeModel } from "./types";
 
 // One X6 port per physical interface. Links attach to a specific interface, so
-// ports carry the interface id verbatim and expose free/occupied/up styling.
+// ports carry the interface id verbatim. Their absolute positions are updated
+// by adaptive-link-anchor geometry; the circles remain invisible/non-magnetic.
 
 export interface PortDefinition {
   // X6 port metadata is heterogeneous; keep it loose at this boundary.
   groups: Record<string, any>;
-  items: Array<{ id: string; group: string; attrs: Record<string, any> }>;
+  items: Array<{ id: string; group: string; args: { x: number; y: number }; attrs: Record<string, any> }>;
 }
 
 function portGroups(): Record<string, any> {
   return {
-    [PORT_GROUP_LEFT]: {
-      position: "left",
-      label: { position: { name: "left", args: { x: -6 } } },
+    [PORT_GROUP_ADAPTIVE]: {
+      position: "absolute",
       attrs: { circle: portBodyAttrs(false, false) },
-    },
-    [PORT_GROUP_RIGHT]: {
-      position: "right",
-      label: { position: { name: "right", args: { x: 6 } } },
-      attrs: {
-        circle: portBodyAttrs(false, false),
-      },
     },
   };
 }
@@ -31,9 +29,12 @@ export function buildPorts(node: GraphNodeModel, upInterfaces: ReadonlySet<strin
   const occupied = new Set(node.occupiedInterfaces);
   return {
     groups: portGroups(),
-    items: node.interfaces.map((iface, index) => ({
+    items: node.interfaces.map((iface) => ({
       id: iface,
-      group: index % 2 === 0 ? PORT_GROUP_RIGHT : PORT_GROUP_LEFT,
+      group: PORT_GROUP_ADAPTIVE,
+      // Unused ports share a harmless invisible default. Incident links move
+      // their exact interface port to the selected node boundary.
+      args: { x: NODE_WIDTH, y: NODE_HEIGHT / 2 },
       attrs: {
         circle: {
           ...portBodyAttrs(occupied.has(iface), upInterfaces.has(iface)),
