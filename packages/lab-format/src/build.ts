@@ -14,6 +14,8 @@ import {
   type PhysicalInterfaceConfig,
   type Layer3SwitchDeviceConfig,
   type Topology,
+  getDeviceProfile,
+  type WirelessRadioSettings,
 } from "@sim/contracts";
 import {
   createSimulationEngine,
@@ -30,6 +32,12 @@ import {
   Router,
   Server,
   TrafficGenerator,
+  AccessPoint,
+  Laptop,
+  Smartphone,
+  WirelessRouter,
+  WirelessEndHost,
+  EndHost,
   type SimulationEngine,
   NS_PER_S,
 } from "@sim/sim-core";
@@ -67,6 +75,10 @@ export interface BuiltLab {
   getCloud(id: DeviceId | string): IspCloud | undefined;
   getTrafficGenerator(id: DeviceId | string): TrafficGenerator | undefined;
   getExternalAppliance(id: DeviceId | string): ExternalAppliance | undefined;
+  getAccessPoint(id: DeviceId | string): AccessPoint | undefined;
+  getLaptop(id: DeviceId | string): Laptop | undefined;
+  getSmartphone(id: DeviceId | string): Smartphone | undefined;
+  getWirelessRouter(id: DeviceId | string): WirelessRouter | undefined;
 }
 
 class BuiltLabImpl implements BuiltLab {
@@ -135,6 +147,26 @@ class BuiltLabImpl implements BuiltLab {
     const device = this.getDevice(id);
     return device instanceof ExternalAppliance ? device : undefined;
   }
+
+  getAccessPoint(id: DeviceId | string): AccessPoint | undefined {
+    const device = this.getDevice(id);
+    return device instanceof AccessPoint ? device : undefined;
+  }
+
+  getLaptop(id: DeviceId | string): Laptop | undefined {
+    const device = this.getDevice(id);
+    return device instanceof Laptop ? device : undefined;
+  }
+
+  getSmartphone(id: DeviceId | string): Smartphone | undefined {
+    const device = this.getDevice(id);
+    return device instanceof Smartphone ? device : undefined;
+  }
+
+  getWirelessRouter(id: DeviceId | string): WirelessRouter | undefined {
+    const device = this.getDevice(id);
+    return device instanceof WirelessRouter ? device : undefined;
+  }
 }
 
 function createDevice(node: NodeSpec, config: DeviceConfig, engine: SimulationEngine): Device {
@@ -149,7 +181,39 @@ function createDevice(node: NodeSpec, config: DeviceConfig, engine: SimulationEn
   if (node.kind === "cloud") return engine.add(new IspCloud(node.id, hostname));
   if (node.kind === "traffic-generator") return engine.add(new TrafficGenerator(node.id, hostname));
   if (node.kind === "external-appliance") return engine.add(new ExternalAppliance(node.id, hostname));
+  if (node.kind === "access-point") return engine.add(new AccessPoint(node.id, hostname));
+  if (node.kind === "laptop") return engine.add(new Laptop(node.id, hostname));
+  if (node.kind === "smartphone") return engine.add(new Smartphone(node.id, hostname));
+  if (node.kind === "wireless-router") return engine.add(new WirelessRouter(node.id, hostname));
   return engine.add(new Router(node.id, hostname));
+}
+
+function wirelessInterfaceConfiguration(node: NodeSpec, radio: WirelessRadioSettings) {
+  const template = getDeviceProfile(node.kind).interfaceTemplates.find(
+    (entry) => entry.media === "wireless",
+  );
+  if (!template) {
+    throw new LabSemanticError(
+      "unknown-interface",
+      `topology.nodes.${node.id}`,
+      `Device '${node.id}' has no wireless interface template.`,
+    );
+  }
+  const iface = node.interfaces.find((entry) => entry.id === template.id);
+  if (!iface?.mac) {
+    throw new LabSemanticError(
+      "unknown-interface",
+      `topology.nodes.${node.id}.interfaces.${template.id}`,
+      `Wireless interface '${template.id}' has no canonical MAC address.`,
+    );
+  }
+  return {
+    id: template.id,
+    name: template.id,
+    macAddress: iface.mac,
+    ...radio,
+    supportedChannels: [...radio.supportedChannels],
+  };
 }
 
 function applyPhysical(device: Device, config: PhysicalInterfaceConfig): void {
@@ -180,7 +244,7 @@ function applyIpv6AclConfiguration(
   }
 }
 
-function applyHostIpv6(device: Pc | Server, config: DeviceConfig & { ipv6?: {
+function applyHostIpv6(device: EndHost, config: DeviceConfig & { ipv6?: {
   mode: "static" | "slaac" | "dhcpv6";
   address?: string;
   prefixLength?: number;
@@ -202,8 +266,40 @@ function applyHostIpv6(device: Pc | Server, config: DeviceConfig & { ipv6?: {
   device.setIpv6Mode(config.ipv6.mode);
 }
 
-function applyConfiguration(device: Device, config: DeviceConfig): void {
+function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec): void {
   device.rename(config.hostname ?? device.name);
+  if (device instanceof Laptop && config.kind === "laptop") {
+    device.configureWirelessInterface(
+      wirelessInterfaceConfiguration(node, config.wireless.radio),
+      config.wireless,
+    );
+    applyWirelessHostConfiguration(device, config);
+    return;
+  }
+  if (device instanceof Smartphone && config.kind === "smartphone") {
+    device.configureWirelessInterface(
+      wirelessInterfaceConfiguration(node, config.wireless.radio),
+      config.wireless,
+    );
+    applyWirelessHostConfiguration(device, config);
+    return;
+  }
+  if (device instanceof AccessPoint && config.kind === "access-point") {
+    device.configureWireless(
+      wirelessInterfaceConfiguration(node, config.radio),
+      config.accessPoint,
+    );
+    for (const iface of config.interfaces) applyPhysical(device, iface);
+    return;
+  }
+  if (device instanceof WirelessRouter && config.kind === "wireless-router") {
+    device.configureHomeNetwork(
+      wirelessInterfaceConfiguration(node, config.radio),
+      config,
+    );
+    for (const iface of config.interfaces) applyPhysical(device, iface);
+    return;
+  }
   if (device instanceof Pc && config.kind === "pc") {
     for (const iface of config.interfaces) applyPhysical(device, iface);
     if (config.ipv4) {
@@ -384,6 +480,24 @@ function applyConfiguration(device: Device, config: DeviceConfig): void {
   }
 }
 
+function applyWirelessHostConfiguration(
+  device: WirelessEndHost,
+  config: Extract<DeviceConfig, { kind: "laptop" | "smartphone" }>,
+): void {
+  for (const iface of config.interfaces) applyPhysical(device, iface);
+  if (config.ipv4) {
+    device.configure({
+      ip: config.ipv4.address,
+      mask: config.ipv4.prefixLength,
+      gateway: config.ipv4.defaultGateway,
+      dnsServer: config.dnsServer,
+    });
+  }
+  if (config.dnsServer !== undefined) device.applications.setDnsServer(config.dnsServer);
+  if (config.dhcpEnabled) device.setDhcpEnabled(true);
+  applyHostIpv6(device, config);
+}
+
 function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3SwitchDeviceConfig): void {
   for (const vlan of config.vlans) device.setVlanName(vlan.id, vlan.name);
   applyEtherChannelConfiguration(device, config.etherChannels ?? []);
@@ -461,10 +575,19 @@ export function buildLabFromDocument(document: LabDocument): BuiltLab {
   }
   for (const node of canonical.topology.nodes) {
     const device = devices.get(asDeviceId(node.id))!;
-    for (const iface of node.interfaces) device.addInterface(iface.id, iface.mac as Mac);
+    const profile = getDeviceProfile(node.kind);
+    for (const iface of node.interfaces) {
+      const template = profile.interfaceTemplates.find((entry) => entry.id === iface.id);
+      if (template?.media === "wireless") continue;
+      device.addInterface(iface.id, iface.mac as Mac);
+    }
   }
   for (const node of canonical.topology.nodes) {
-    applyConfiguration(devices.get(asDeviceId(node.id))!, canonical.configurations[node.id]!);
+    applyConfiguration(
+      devices.get(asDeviceId(node.id))!,
+      canonical.configurations[node.id]!,
+      node,
+    );
   }
   for (const link of canonical.topology.links) {
     engine.connect(link.a.node, link.a.iface, link.b.node, link.b.iface, link.propagationDelayNs);
@@ -590,6 +713,42 @@ function serializeStaticIpv6Addresses(
 }
 
 function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
+  if (device instanceof AccessPoint) {
+    const wireless = device.configurationSnapshot();
+    return {
+      kind: "access-point",
+      hostname: device.name,
+      interfaces: node.interfaces.map((iface) => physicalConfiguration(device, iface.id)),
+      radio: wireless.radio,
+      accessPoint: wireless.accessPoint,
+    };
+  }
+  if (device instanceof Laptop || device instanceof Smartphone) {
+    const state = device.configurationSnapshot();
+    const ipv6 = device.ipv6ConfigurationSnapshot();
+    const common = {
+      hostname: device.name,
+      interfaces: node.interfaces.map((iface) => physicalConfiguration(device, iface.id)),
+      ipv4: state.ip === undefined
+        ? undefined
+        : { address: state.ip, prefixLength: prefixLength(state.maskInt), defaultGateway: state.gateway },
+      dhcpEnabled: state.dhcpEnabled,
+      dnsServer: state.dnsServer,
+      ipv6: serializeHostIpv6Configuration(ipv6),
+      wireless: device.wirelessConfigurationSnapshot(),
+    };
+    return device instanceof Laptop
+      ? { kind: "laptop", ...common }
+      : { kind: "smartphone", ...common };
+  }
+  if (device instanceof WirelessRouter) {
+    const configuration = device.configurationSnapshot();
+    return {
+      ...configuration,
+      hostname: device.name,
+      interfaces: node.interfaces.map((iface) => physicalConfiguration(device, iface.id)),
+    };
+  }
   if (device instanceof Server) {
     const state = device.configurationSnapshot();
     const ipv6 = device.ipv6ConfigurationSnapshot();

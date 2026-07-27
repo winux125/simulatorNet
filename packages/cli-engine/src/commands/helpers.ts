@@ -3,6 +3,7 @@ import {
   EndHost,
   EthernetBridge,
   L2Switch,
+  Laptop,
   Layer3Switch,
   Pc,
   Router,
@@ -32,8 +33,8 @@ export function isBridge(d: Device): d is EthernetBridge {
 export function isEndHost(d: Device): d is EndHost {
   return d instanceof EndHost;
 }
-export function isPc(d: Device): d is Pc {
-  return d instanceof Pc;
+export function isPc(d: Device): d is Pc | Laptop {
+  return d instanceof Pc || d instanceof Laptop;
 }
 export function isServer(d: Device): d is Server {
   return d instanceof Server;

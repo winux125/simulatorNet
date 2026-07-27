@@ -7,6 +7,7 @@ import { EventQueue } from "./event-queue";
 import { SeededRandom } from "./seeded-random";
 import { VirtualClock } from "./virtual-clock";
 import { WirelessMedium } from "../wireless/wireless-medium";
+import { isWirelessInterface } from "../net/wireless-interface";
 
 /** A structured record of something the engine did, for golden/determinism tests. */
 export interface TraceEntry {
@@ -74,6 +75,9 @@ export class SimulationEngine {
   connect(aDevice: string, aIface: string, bDevice: string, bIface: string, delayNs?: number): Link {
     const a = this.requireInterface(aDevice, aIface);
     const b = this.requireInterface(bDevice, bIface);
+    if (isWirelessInterface(a) || isWirelessInterface(b)) {
+      throw new Error("Wireless interfaces associate through WirelessMedium and cannot be cabled.");
+    }
     if (a.link || b.link) throw new Error("Interface already connected");
     const link = new Link(a, b, delayNs ?? this.defaultLinkDelayNs);
     a.link = link;

@@ -28,6 +28,13 @@ import type {
   SwitchDeviceConfig,
   SwitchInterfaceConfig,
   TrafficGeneratorDeviceConfig,
+  AccessPointDeviceConfig,
+  LaptopDeviceConfig,
+  SmartphoneDeviceConfig,
+  WirelessRouterDeviceConfig,
+  WirelessRadioSettings,
+  WirelessStationConfiguration,
+  WirelessAccessPointConfiguration,
 } from "@sim/contracts";
 import { ipToInt, macFromIndex, normalizeIpv6, normalizeServiceConfiguration } from "@sim/sim-core";
 import { parseLabDocument } from "./parse";
@@ -532,6 +539,138 @@ function externalApplianceConfiguration(
   };
 }
 
+function canonicalWirelessRadio(
+  radio: WirelessRadioSettings | undefined,
+): WirelessRadioSettings {
+  return {
+    enabled: radio?.enabled ?? true,
+    band: radio?.band ?? "2.4ghz",
+    supportedChannels: [...(radio?.supportedChannels ?? [1, 6, 11])]
+      .sort((a, b) => a - b),
+    radioDomainId: radio?.radioDomainId ?? "local-lab",
+  };
+}
+
+function canonicalAccessPoint(
+  accessPoint: WirelessAccessPointConfiguration | undefined,
+  radio: WirelessRadioSettings,
+): WirelessAccessPointConfiguration {
+  return {
+    ssid: accessPoint?.ssid ?? "SimulatorNet",
+    broadcastSsid: accessPoint?.broadcastSsid ?? true,
+    band: accessPoint?.band ?? radio.band,
+    channel: accessPoint?.channel ?? radio.supportedChannels[0] ?? 1,
+    enabled: accessPoint?.enabled ?? radio.enabled,
+    radioDomainId: accessPoint?.radioDomainId ?? radio.radioDomainId,
+    priority: accessPoint?.priority ?? 100,
+    maximumClients: accessPoint?.maximumClients ?? 32,
+    clientIsolation: accessPoint?.clientIsolation ?? false,
+    security: accessPoint?.security.mode === "wpa2-personal"
+      ? {
+          mode: "wpa2-personal",
+          credentialVerifier: { ...accessPoint.security.credentialVerifier },
+        }
+      : { mode: "open" },
+  };
+}
+
+function canonicalStation(
+  station: WirelessStationConfiguration | undefined,
+): WirelessStationConfiguration {
+  return {
+    radio: canonicalWirelessRadio(station?.radio),
+    savedNetworks: [...(station?.savedNetworks ?? [])]
+      .sort(byId)
+      .map((network) => ({
+        ...network,
+        credentialVerifier: network.credentialVerifier
+          ? { ...network.credentialVerifier }
+          : undefined,
+      })),
+    autoConnect: station?.autoConnect ?? true,
+    preferredSsid: station?.preferredSsid,
+    preferredBssid: station?.preferredBssid?.toLowerCase(),
+  };
+}
+
+function accessPointConfiguration(
+  node: NodeSpec,
+  config: AccessPointDeviceConfig | undefined,
+): AccessPointDeviceConfig {
+  const interfaces = new Map(config?.interfaces.map((iface) => [iface.id, iface]));
+  const radio = canonicalWirelessRadio(config?.radio);
+  return {
+    kind: "access-point",
+    hostname: config?.hostname ?? node.name ?? node.id,
+    interfaces: node.interfaces.map((iface) => commonInterface(iface.id, interfaces.get(iface.id))),
+    radio,
+    accessPoint: canonicalAccessPoint(config?.accessPoint, radio),
+  };
+}
+
+function wirelessHostConfiguration(
+  node: NodeSpec,
+  config: LaptopDeviceConfig | SmartphoneDeviceConfig | undefined,
+): LaptopDeviceConfig | SmartphoneDeviceConfig {
+  const interfaces = new Map(config?.interfaces.map((iface) => [iface.id, iface]));
+  const common = {
+    hostname: config?.hostname ?? node.name ?? node.id,
+    interfaces: node.interfaces.map((iface) => commonInterface(iface.id, interfaces.get(iface.id))),
+    ipv4: config?.ipv4,
+    dhcpEnabled: config?.dhcpEnabled ?? false,
+    dnsServer: config?.dnsServer,
+    ipv6: config?.ipv6 ? {
+      ...config.ipv6,
+      address: config.ipv6.address ? normalizeIpv6(config.ipv6.address) : undefined,
+      defaultRouter: config.ipv6.defaultRouter ? normalizeIpv6(config.ipv6.defaultRouter) : undefined,
+      dnsServer: config.ipv6.dnsServer ? normalizeIpv6(config.ipv6.dnsServer) : undefined,
+    } : undefined,
+    wireless: canonicalStation(config?.wireless),
+  };
+  return node.kind === "laptop"
+    ? { kind: "laptop", ...common }
+    : { kind: "smartphone", ...common };
+}
+
+function wirelessRouterConfiguration(
+  node: NodeSpec,
+  config: WirelessRouterDeviceConfig | undefined,
+): WirelessRouterDeviceConfig {
+  const interfaces = new Map(config?.interfaces.map((iface) => [iface.id, iface]));
+  const radio = canonicalWirelessRadio(config?.radio);
+  return {
+    kind: "wireless-router",
+    hostname: config?.hostname ?? node.name ?? node.id,
+    interfaces: node.interfaces.map((iface) => commonInterface(iface.id, interfaces.get(iface.id))),
+    radio,
+    accessPoint: canonicalAccessPoint(config?.accessPoint, radio),
+    lan: {
+      address: config?.lan.address ?? "192.168.50.1",
+      prefixLength: config?.lan.prefixLength ?? 24,
+      dhcpEnabled: config?.lan.dhcpEnabled ?? true,
+      dhcpRangeStart: config?.lan.dhcpRangeStart ?? "192.168.50.100",
+      dhcpRangeEnd: config?.lan.dhcpRangeEnd ?? "192.168.50.150",
+      ipv6Address: config?.lan.ipv6Address
+        ? normalizeIpv6(config.lan.ipv6Address)
+        : undefined,
+      ipv6PrefixLength: config?.lan.ipv6PrefixLength,
+      routerAdvertisementEnabled: config?.lan.routerAdvertisementEnabled ?? false,
+      dhcpv6Enabled: config?.lan.dhcpv6Enabled ?? false,
+    },
+    wan: {
+      mode: config?.wan.mode ?? "dhcp",
+      address: config?.wan.address,
+      prefixLength: config?.wan.prefixLength,
+      defaultGateway: config?.wan.defaultGateway,
+      dnsServer: config?.wan.dnsServer && config.wan.dnsServer.includes(":")
+        ? normalizeIpv6(config.wan.dnsServer)
+        : config?.wan.dnsServer,
+    },
+    natEnabled: config?.natEnabled ?? true,
+    firewallEnabled: config?.firewallEnabled ?? true,
+  };
+}
+
 function configurationFor(node: NodeSpec, existing: DeviceConfig | undefined): DeviceConfig {
   if (node.kind === "pc") return pcConfiguration(node, existing?.kind === "pc" ? existing : undefined);
   if (node.kind === "server") return serverConfiguration(node, existing?.kind === "server" ? existing : undefined);
@@ -556,6 +695,30 @@ function configurationFor(node: NodeSpec, existing: DeviceConfig | undefined): D
     return trafficGeneratorConfiguration(
       node,
       existing?.kind === "traffic-generator" ? existing : undefined,
+    );
+  }
+  if (node.kind === "access-point") {
+    return accessPointConfiguration(
+      node,
+      existing?.kind === "access-point" ? existing : undefined,
+    );
+  }
+  if (node.kind === "laptop") {
+    return wirelessHostConfiguration(
+      node,
+      existing?.kind === "laptop" ? existing : undefined,
+    );
+  }
+  if (node.kind === "smartphone") {
+    return wirelessHostConfiguration(
+      node,
+      existing?.kind === "smartphone" ? existing : undefined,
+    );
+  }
+  if (node.kind === "wireless-router") {
+    return wirelessRouterConfiguration(
+      node,
+      existing?.kind === "wireless-router" ? existing : undefined,
     );
   }
   return externalApplianceConfiguration(

@@ -359,6 +359,39 @@ export class WirelessMedium {
     station.state = station.interface.enabled ? "disconnected" : "disabled";
   }
 
+  disconnectClient(
+    accessPointDeviceId: string,
+    accessPointInterfaceId: string,
+    stationDeviceId: string,
+    reason = "access-point-disconnect",
+  ): boolean {
+    const accessPoint = this.requireAccessPoint(accessPointDeviceId, accessPointInterfaceId);
+    const station = this.associatedStations(accessPoint)
+      .find((entry) => entry.deviceId === stationDeviceId);
+    if (!station) return false;
+    station.connectionGeneration++;
+    this.traceManagement(accessPoint.deviceId, {
+      kind: "wireless-management",
+      type: "deauthentication",
+      sourceMac: accessPoint.bssid,
+      destinationMac: station.macAddress,
+      radioDomainId: accessPoint.configuration.radioDomainId,
+      band: accessPoint.configuration.band,
+      channel: accessPoint.configuration.channel,
+      bssid: accessPoint.bssid,
+      reason,
+    });
+    this.clearAssociation(station);
+    station.state = station.interface.enabled ? "disconnected" : "disabled";
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "wireless-deauthenticated",
+      device: station.deviceId,
+      detail: { accessPointDeviceId: accessPoint.deviceId, reason },
+    });
+    return true;
+  }
+
   status(deviceId: string, interfaceId: string): WirelessAssociationStatus {
     const station = this.requireStation(deviceId, interfaceId);
     const accessPoint = station.associatedAccessPointKey

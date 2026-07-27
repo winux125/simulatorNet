@@ -17,6 +17,11 @@ import {
   RoutedControlProtocolShape,
   SwitchControlProtocolShape,
 } from "./protocols";
+import {
+  WirelessAccessPointConfigurationSchema,
+  WirelessRadioSettingsSchema,
+  WirelessStationConfigurationSchema,
+} from "./wireless";
 
 /** The only lab JSON schema understood by this release. */
 export const CURRENT_LAB_SCHEMA_VERSION = 1 as const;
@@ -574,6 +579,62 @@ export const ExternalApplianceDeviceConfigSchema = z.object({
 });
 export type ExternalApplianceDeviceConfig = z.infer<typeof ExternalApplianceDeviceConfigSchema>;
 
+export const AccessPointDeviceConfigSchema = z.object({
+  kind: z.literal("access-point"),
+  hostname: z.string().min(1).optional(),
+  interfaces: z.array(PhysicalInterfaceConfigSchema).default([]),
+  radio: WirelessRadioSettingsSchema,
+  accessPoint: WirelessAccessPointConfigurationSchema,
+});
+export type AccessPointDeviceConfig = z.infer<typeof AccessPointDeviceConfigSchema>;
+
+export const LaptopDeviceConfigSchema = PcDeviceConfigSchema.extend({
+  kind: z.literal("laptop"),
+  wireless: WirelessStationConfigurationSchema,
+});
+export type LaptopDeviceConfig = z.infer<typeof LaptopDeviceConfigSchema>;
+
+export const SmartphoneDeviceConfigSchema = PcDeviceConfigSchema.extend({
+  kind: z.literal("smartphone"),
+  wireless: WirelessStationConfigurationSchema,
+});
+export type SmartphoneDeviceConfig = z.infer<typeof SmartphoneDeviceConfigSchema>;
+
+export const WirelessRouterLanConfigSchema = z.object({
+  address: Ipv4Schema,
+  prefixLength: PrefixLengthSchema,
+  dhcpEnabled: z.boolean().default(true),
+  dhcpRangeStart: Ipv4Schema,
+  dhcpRangeEnd: Ipv4Schema,
+  ipv6Address: Ipv6Schema.optional(),
+  ipv6PrefixLength: Ipv6PrefixLengthSchema.optional(),
+  routerAdvertisementEnabled: z.boolean().default(false),
+  dhcpv6Enabled: z.boolean().default(false),
+}).strict();
+export type WirelessRouterLanConfig = z.infer<typeof WirelessRouterLanConfigSchema>;
+
+export const WirelessRouterWanConfigSchema = z.object({
+  mode: z.enum(["static", "dhcp"]).default("dhcp"),
+  address: Ipv4Schema.optional(),
+  prefixLength: PrefixLengthSchema.optional(),
+  defaultGateway: Ipv4Schema.optional(),
+  dnsServer: IpAddressSchema.optional(),
+}).strict();
+export type WirelessRouterWanConfig = z.infer<typeof WirelessRouterWanConfigSchema>;
+
+export const WirelessRouterDeviceConfigSchema = z.object({
+  kind: z.literal("wireless-router"),
+  hostname: z.string().min(1).optional(),
+  interfaces: z.array(PhysicalInterfaceConfigSchema).default([]),
+  radio: WirelessRadioSettingsSchema,
+  accessPoint: WirelessAccessPointConfigurationSchema,
+  lan: WirelessRouterLanConfigSchema,
+  wan: WirelessRouterWanConfigSchema,
+  natEnabled: z.boolean().default(true),
+  firewallEnabled: z.boolean().default(true),
+});
+export type WirelessRouterDeviceConfig = z.infer<typeof WirelessRouterDeviceConfigSchema>;
+
 export const DeviceConfigSchema = z.discriminatedUnion("kind", [
   PcDeviceConfigSchema,
   ServerDeviceConfigSchema,
@@ -586,6 +647,10 @@ export const DeviceConfigSchema = z.discriminatedUnion("kind", [
   CloudDeviceConfigSchema,
   TrafficGeneratorDeviceConfigSchema,
   ExternalApplianceDeviceConfigSchema,
+  AccessPointDeviceConfigSchema,
+  LaptopDeviceConfigSchema,
+  SmartphoneDeviceConfigSchema,
+  WirelessRouterDeviceConfigSchema,
 ]);
 export type DeviceConfig = z.infer<typeof DeviceConfigSchema>;
 

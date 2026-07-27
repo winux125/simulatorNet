@@ -11,19 +11,21 @@ icon set; other icon libraries and ad-hoc action SVGs are not mixed in.
 
 ## Device icons — original SimulatorNet SVGs
 
-Network device symbols are original artwork created for SimulatorNet. The 30
+Network device symbols are original artwork created for SimulatorNet. The 45
 source SVGs live under
 [`apps/web/src/assets/device-icons/`](../apps/web/src/assets/device-icons), with
-ten device types in each profile:
+fifteen device types in each profile:
 
 - **Classic Lab** — compact equipment-style symbols for dense network labs.
 - **Education Flat** — clear flat symbols for teaching diagrams.
 - **Minimal Network** — lightweight monochrome symbols for large topologies.
 
 Each `classic/`, `education/` and `minimal/` directory contains `pc.svg`,
-`server.svg`, `hub.svg`, `bridge.svg`, `l2-switch.svg`, `l3-switch.svg` and
-`router.svg`, plus the original `firewall.svg`, `cloud.svg` and
-`traffic-generator.svg` security/infrastructure symbols.
+`server.svg`, `laptop.svg`, `smartphone.svg`, `hub.svg`, `bridge.svg`,
+`l2-switch.svg`, `l3-switch.svg`, `router.svg`, `access-point.svg` and
+`wireless-router.svg`, plus the original `firewall.svg`, `cloud.svg`,
+`traffic-generator.svg` and `external-appliance.svg`
+security/infrastructure/import symbols.
 
 They are rendered through the shared
 [`DeviceIcon`](../apps/web/src/components/DeviceIcon.tsx) component. The profile

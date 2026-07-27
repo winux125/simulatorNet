@@ -12,12 +12,23 @@ export const DEVICE_TYPES = [
   "cloud",
   "traffic-generator",
   "external-appliance",
+  "access-point",
+  "laptop",
+  "smartphone",
+  "wireless-router",
 ] as const;
 
 export const DeviceTypeSchema = z.enum(DEVICE_TYPES);
 export type DeviceType = z.infer<typeof DeviceTypeSchema>;
 
-export const DEVICE_CATEGORIES = ["network", "end-device", "security", "infrastructure", "external"] as const;
+export const DEVICE_CATEGORIES = [
+  "network",
+  "wireless",
+  "end-device",
+  "security",
+  "infrastructure",
+  "external",
+] as const;
 export const DeviceCategorySchema = z.enum(DEVICE_CATEGORIES);
 export type DeviceCategory = z.infer<typeof DeviceCategorySchema>;
 
@@ -42,6 +53,10 @@ export const DEVICE_CAPABILITIES = [
   "stateful-firewall",
   "network-impairment",
   "traffic-generation",
+  "wireless-station",
+  "wireless-access-point",
+  "wireless-bridge",
+  "home-wireless-router",
 ] as const;
 
 export const DeviceCapabilitySchema = z.enum(DEVICE_CAPABILITIES);
@@ -49,7 +64,7 @@ export type DeviceCapability = z.infer<typeof DeviceCapabilitySchema>;
 
 export interface InterfaceTemplate {
   readonly id: string;
-  readonly media: "ethernet";
+  readonly media: "ethernet" | "wireless";
 }
 
 export type DeviceCliProfile =
@@ -79,6 +94,10 @@ function ethernet(ids: readonly string[]): readonly InterfaceTemplate[] {
 
 function numbered(prefix: string, first: number, last: number): readonly InterfaceTemplate[] {
   return ethernet(Array.from({ length: last - first + 1 }, (_, index) => `${prefix}${first + index}`));
+}
+
+function wireless(ids: readonly string[]): readonly InterfaceTemplate[] {
+  return ids.map((id) => ({ id, media: "wireless" as const }));
 }
 
 /**
@@ -210,6 +229,64 @@ export const DEVICE_PROFILES = {
     iconKey: "external-appliance",
     description:
       "Imported node from another platform that SimulatorNet does not simulate. Kept as a visual placeholder with no data plane.",
+  },
+  "access-point": {
+    type: "access-point",
+    displayName: "Access Point",
+    category: "wireless",
+    capabilities: ["ethernet-bridge", "wireless-access-point", "wireless-bridge"],
+    interfaceTemplates: [...wireless(["wlan0"]), ...ethernet(["eth0"])],
+    iconKey: "access-point",
+    description: "Bridges associated wireless stations onto one Ethernet uplink.",
+  },
+  laptop: {
+    type: "laptop",
+    displayName: "Laptop",
+    category: "end-device",
+    capabilities: [
+      "ethernet-end-host",
+      "ipv4-host",
+      "dhcp-client",
+      "application-services",
+      "wireless-station",
+    ],
+    interfaceTemplates: [...wireless(["wlan0"]), ...ethernet(["eth0"])],
+    iconKey: "laptop",
+    cliProfile: "pc-host",
+    description: "A portable end host with wireless and Ethernet connectivity.",
+  },
+  smartphone: {
+    type: "smartphone",
+    displayName: "Smartphone",
+    category: "end-device",
+    capabilities: ["ipv4-host", "dhcp-client", "application-services", "wireless-station"],
+    interfaceTemplates: wireless(["wlan0"]),
+    iconKey: "smartphone",
+    description: "A compact wireless end host with educational network applications.",
+  },
+  "wireless-router": {
+    type: "wireless-router",
+    displayName: "Wireless Router",
+    category: "wireless",
+    capabilities: [
+      "ethernet-bridge",
+      "layer2-switching",
+      "wireless-access-point",
+      "wireless-bridge",
+      "ipv4-routing",
+      "static-routing",
+      "dhcp-server",
+      "packet-policy",
+      "nat",
+      "stateful-firewall",
+      "home-wireless-router",
+    ],
+    interfaceTemplates: [
+      ...wireless(["wlan0"]),
+      ...ethernet(["LAN1", "LAN2", "LAN3", "LAN4", "WAN"]),
+    ],
+    iconKey: "wireless-router",
+    description: "Composes a WLAN, LAN switch, router, DHCP, PAT and stateful firewall.",
   },
 } as const satisfies Record<DeviceType, DeviceProfile>;
 

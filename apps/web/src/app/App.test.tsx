@@ -423,6 +423,7 @@ describe("M6.1 simulator workspace", () => {
     await userEvent.click(screen.getByRole("button", { name: "Add Device" }));
     const picker = screen.getByRole("dialog", { name: "Add topology item" });
     expect(within(picker).getByRole("tab", { name: "Network Devices" })).toBeTruthy();
+    expect(within(picker).getByRole("tab", { name: "Wireless Devices" })).toBeTruthy();
     expect(within(picker).getByRole("tab", { name: "End Devices" })).toBeTruthy();
     expect(within(picker).getByRole("tab", { name: "Security" })).toBeTruthy();
     expect(within(picker).getByRole("tab", { name: "Infrastructure" })).toBeTruthy();
@@ -438,6 +439,11 @@ describe("M6.1 simulator workspace", () => {
     await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
     expect(screen.getByRole("button", { name: "Add PC" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add Server" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add Laptop" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add Smartphone" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("tab", { name: "Wireless Devices" }));
+    expect(screen.getByRole("button", { name: "Add Access Point" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add Wireless Router" })).toBeTruthy();
     await userEvent.click(screen.getByRole("tab", { name: "Security" }));
     expect(screen.getByRole("button", { name: "Add Firewall" })).toBeTruthy();
     await userEvent.click(screen.getByRole("tab", { name: "Infrastructure" }));
@@ -1083,7 +1089,13 @@ describe("M10.1 expanded device palette", () => {
       expect(screen.getByRole("button", { name: `Add ${label}` })).toBeTruthy();
     }
     await userEvent.click(screen.getByRole("tab", { name: "End Devices" }));
-    for (const label of ["PC", "Server"]) expect(screen.getByRole("button", { name: `Add ${label}` })).toBeTruthy();
+    for (const label of ["PC", "Server", "Laptop", "Smartphone"]) {
+      expect(screen.getByRole("button", { name: `Add ${label}` })).toBeTruthy();
+    }
+    await userEvent.click(screen.getByRole("tab", { name: "Wireless Devices" }));
+    for (const label of ["Access Point", "Wireless Router"]) {
+      expect(screen.getByRole("button", { name: `Add ${label}` })).toBeTruthy();
+    }
     await userEvent.click(screen.getByRole("tab", { name: "Network Devices" }));
     await placeDevice("Hub");
     const hub = useWorkspaceStore.getState().draft?.topology.nodes.find((node) => node.kind === "hub");

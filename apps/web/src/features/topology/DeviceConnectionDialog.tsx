@@ -26,8 +26,16 @@ function endpointOccupied(document: LabDocument, nodeId: string, interfaceId: st
 
 function freeInterfaces(document: LabDocument, nodeId: string, ignoreLinkId?: string): string[] {
   const node = document.topology.nodes.find((candidate) => candidate.id === nodeId);
+  const ethernet = node
+    ? new Set(
+        getDeviceProfile(node.kind).interfaceTemplates
+          .filter((iface) => iface.media === "ethernet")
+          .map((iface) => iface.id),
+      )
+    : new Set<string>();
   return node?.interfaces
     .map((iface) => iface.id)
+    .filter((interfaceId) => ethernet.has(interfaceId))
     .filter((interfaceId) => !endpointOccupied(document, nodeId, interfaceId, ignoreLinkId)) ?? [];
 }
 
@@ -52,6 +60,10 @@ export function DeviceConnectionDialog(props: DeviceConnectionDialogProps) {
   if (!sourceNode || !targetNode) return null;
   const sourceName = hostname(props.document, sourceNode);
   const targetName = hostname(props.document, targetNode);
+  const sourceEthernetCount = getDeviceProfile(sourceNode.kind).interfaceTemplates
+    .filter((iface) => iface.media === "ethernet").length;
+  const targetEthernetCount = getDeviceProfile(targetNode.kind).interfaceTemplates
+    .filter((iface) => iface.media === "ethernet").length;
   const canConnect = Boolean(sourcePort && targetPort);
   const titleId = `connect-device-${sourceNode.id}-${targetNode.id}`;
 
@@ -127,7 +139,7 @@ export function DeviceConnectionDialog(props: DeviceConnectionDialogProps) {
                     <option key={interfaceId} value={interfaceId}>{interfaceId} — Available — Ethernet</option>
                   ))}
             </select>
-            <small>{sourcePorts.length} of {sourceNode.interfaces.length} interfaces available</small>
+            <small>{sourcePorts.length} of {sourceEthernetCount} Ethernet interfaces available</small>
           </label>
 
           <span className="connection-dialog__direction" aria-hidden="true"><ArrowRight size={16} /></span>
@@ -146,7 +158,7 @@ export function DeviceConnectionDialog(props: DeviceConnectionDialogProps) {
                     <option key={interfaceId} value={interfaceId}>{interfaceId} — Available — Ethernet</option>
                   ))}
             </select>
-            <small>{targetPorts.length} of {targetNode.interfaces.length} interfaces available</small>
+            <small>{targetPorts.length} of {targetEthernetCount} Ethernet interfaces available</small>
           </label>
         </div>
 

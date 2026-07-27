@@ -23,6 +23,10 @@ const MINIMAL: Record<DeviceType, ReactNode> = {
   cloud: <><path d="M7 18h10.5a4 4 0 0 0 .5-8 6.3 6.3 0 0 0-11.8-1.4A4.8 4.8 0 0 0 7 18z" /><path d="M9 21h6M12 18v3" /></>,
   "traffic-generator": <><rect x="2.5" y="4" width="19" height="16" rx="1.5" /><path d="M5 13h3l2-5 3.5 9 2-4H19M17 7l2 2-2 2" /></>,
   "external-appliance": <><rect x="3.5" y="4.5" width="17" height="15" rx="1.6" /><path d="M9.5 9.7a2.6 2.6 0 0 1 5 .8c0 1.7-2.5 1.8-2.5 3.3" />{dot(12, 16.6, 1.1)}</>,
+  "access-point": <><rect x="4" y="14" width="16" height="6" rx="1.5" /><path d="M12 14v-2M8.5 9a5 5 0 0 1 7 0M6 6.5a8.5 8.5 0 0 1 12 0" />{dot(12, 10.5, 1)}</>,
+  laptop: <><rect x="4" y="4" width="16" height="11" rx="1.4" /><path d="m2.5 19 2.5-4h14l2.5 4zM9 18h6" /></>,
+  smartphone: <><rect x="6.5" y="2" width="11" height="20" rx="2" /><path d="M10 5h4M11 19h2" /></>,
+  "wireless-router": <><rect x="3" y="12" width="18" height="8" rx="1.5" /><path d="M6 12V5M18 12V5M9 8a4.3 4.3 0 0 1 6 0M11 10a1.5 1.5 0 0 1 2 0" />{dot(7, 16)}{dot(11, 16)}{dot(15, 16)}{dot(19, 16)}</>,
 };
 
 const EDUCATION: Record<DeviceType, ReactNode> = {
@@ -37,6 +41,10 @@ const EDUCATION: Record<DeviceType, ReactNode> = {
   cloud: <><path className="device-icon__surface" d="M6.5 18.5h11a4 4 0 0 0 .4-8 6.4 6.4 0 0 0-11.8-1.3 4.8 4.8 0 0 0 .4 9.3z" /><path d="M8.5 14h7M10 11.5 8 14l2 2.5M14 11.5l2 2.5-2 2.5" /></>,
   "traffic-generator": <><rect className="device-icon__surface" x="2.5" y="4" width="19" height="16" rx="2" /><path d="M5 13h3l2-5 3.5 9 2-4H19" /><path className="device-icon__detail" d="M16.5 7 19 9.5 16.5 12" /></>,
   "external-appliance": <><rect className="device-icon__surface" x="3.5" y="4" width="17" height="16" rx="2" /><path d="M9.5 9.6a2.6 2.6 0 0 1 5 .8c0 1.7-2.5 1.8-2.5 3.3" />{dot(12, 16.4, 1.1)}</>,
+  "access-point": <><rect className="device-icon__surface" x="3" y="13.5" width="18" height="7" rx="2" /><path d="M12 13.5v-2M8.5 9a5 5 0 0 1 7 0M6 6.5a8.5 8.5 0 0 1 12 0" />{dot(12, 10.5, 1.2)}</>,
+  laptop: <><rect className="device-icon__surface" x="3.5" y="3.5" width="17" height="12" rx="2" /><path d="m2 19.5 2.7-4h14.6l2.7 4z" /><path className="device-icon__detail" d="M9 18h6" /></>,
+  smartphone: <><rect className="device-icon__surface" x="6" y="1.5" width="12" height="21" rx="2.5" /><path d="M10 4.5h4M10.5 19.5h3" /></>,
+  "wireless-router": <><rect className="device-icon__surface" x="2.5" y="11.5" width="19" height="9" rx="2" /><path d="M6 11.5V4.5M18 11.5V4.5M8.5 8a5 5 0 0 1 7 0M10.5 10a2.2 2.2 0 0 1 3 0" />{dot(7, 16)}{dot(11, 16)}{dot(15, 16)}{dot(19, 16)}</>,
 };
 
 const CLASSIC: Record<DeviceType, ReactNode> = {
@@ -51,6 +59,10 @@ const CLASSIC: Record<DeviceType, ReactNode> = {
   cloud: <><path className="device-icon__chassis" d="M6 18.5h11.5a4 4 0 0 0 .3-8A6.4 6.4 0 0 0 6 9.2a4.8 4.8 0 0 0 0 9.3z" /><path className="device-icon__highlight" d="M7.5 16h9.5a2.2 2.2 0 0 0 0-4.4h-1A4.4 4.4 0 0 0 8 11a2.6 2.6 0 0 0-.5 5z" /></>,
   "traffic-generator": <><path className="device-icon__chassis" d="m3 5 2-2h14l2 2v15H3z" /><path className="device-icon__highlight" d="M5 6h14v11H5z" /><path d="M6 13h3l2-5 3 8 2-4h2M16 7l2 2-2 2" /></>,
   "external-appliance": <><path className="device-icon__chassis" d="M3.5 4.5h17v15h-17z" /><path className="device-icon__highlight" d="M5 6h14v9H5z" /><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8.9c0 1.6-2.4 1.8-2.4 3.2" />{dot(12, 16.3)}</>,
+  "access-point": <><path className="device-icon__chassis" d="m3 15 2-2h14l2 2v6H3z" /><path className="device-icon__highlight" d="M5 15h14v3.5H5z" /><path d="M12 13v-2M8.5 8.5a5 5 0 0 1 7 0M6 6a8.5 8.5 0 0 1 12 0" />{dot(12, 10.5)}</>,
+  laptop: <><path className="device-icon__chassis" d="M4 3.5h16v12H4zM4 15.5 2 20h20l-2-4.5z" /><path className="device-icon__highlight" d="M5.5 5h13v8.5h-13z" /><path d="M9 18.5h6" /></>,
+  smartphone: <><path className="device-icon__chassis" d="M6 2h12v20H6z" /><path className="device-icon__highlight" d="M7.5 5h9v13h-9z" /><path d="M10 3.7h4M10.5 20h3" /></>,
+  "wireless-router": <><path className="device-icon__chassis" d="m2.5 13.5 2-2h15l2 2v7h-19z" /><path className="device-icon__highlight" d="M4.5 14h15v4H4.5z" /><path d="M6 11.5V4M18 11.5V4M8.5 8a5 5 0 0 1 7 0M10.5 10a2 2 0 0 1 3 0" />{dot(7, 16)}{dot(11, 16)}{dot(15, 16)}{dot(19, 16)}</>,
 };
 
 const SHAPES: Record<DeviceIconProfile, Record<DeviceType, ReactNode>> = {

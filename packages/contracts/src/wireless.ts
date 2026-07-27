@@ -65,6 +65,23 @@ export const WirelessSavedNetworkProfileSchema = z.object({
 }).strict();
 export type WirelessSavedNetworkProfile = z.infer<typeof WirelessSavedNetworkProfileSchema>;
 
+/** Persisted radio intent; interface identity/MAC stays canonical in topology. */
+export const WirelessRadioSettingsSchema = WirelessInterfaceConfigurationSchema.omit({
+  id: true,
+  name: true,
+  macAddress: true,
+}).strict();
+export type WirelessRadioSettings = z.infer<typeof WirelessRadioSettingsSchema>;
+
+export const WirelessStationConfigurationSchema = z.object({
+  radio: WirelessRadioSettingsSchema,
+  savedNetworks: z.array(WirelessSavedNetworkProfileSchema).max(32).default([]),
+  autoConnect: z.boolean().default(true),
+  preferredSsid: z.string().min(1).max(32).optional(),
+  preferredBssid: z.string().min(11).max(32).optional(),
+}).strict();
+export type WirelessStationConfiguration = z.infer<typeof WirelessStationConfigurationSchema>;
+
 export const WirelessNetworkSummarySchema = z.object({
   ssid: z.string().min(1).max(32),
   bssid: z.string().min(11).max(32),

@@ -28,6 +28,10 @@ const assetNames: Record<DeviceType, string> = {
   cloud: "cloud.svg",
   "traffic-generator": "traffic-generator.svg",
   "external-appliance": "external-appliance.svg",
+  "access-point": "access-point.svg",
+  laptop: "laptop.svg",
+  smartphone: "smartphone.svg",
+  "wireless-router": "wireless-router.svg",
 };
 
 afterEach(() => {
@@ -59,7 +63,7 @@ describe("topology device icon profiles", () => {
         expect(svg.dataset.fallback).toBeUndefined();
       }
     }
-    expect(allAssetPaths()).toHaveLength(33);
+    expect(allAssetPaths()).toHaveLength(45);
   });
 
   it("uses a uniform viewBox and theme-aware currentColor", () => {

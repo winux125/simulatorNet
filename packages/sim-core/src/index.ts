@@ -30,6 +30,11 @@ export * from "./devices/firewall";
 export * from "./devices/isp-cloud";
 export * from "./devices/traffic-generator";
 export * from "./devices/external-appliance";
+export * from "./devices/wireless-end-host";
+export * from "./devices/access-point";
+export * from "./devices/laptop";
+export * from "./devices/smartphone";
+export * from "./devices/wireless-router";
 
 // Packets / frames
 export * from "./packets/ethernet";

@@ -4,7 +4,13 @@ import { fileURLToPath } from "node:url";
 import type { LabDocument, NodeSpec } from "@sim/contracts";
 import { canonicalizeLabDocument, parseLabDocument, stringifyLabDocument } from "@sim/lab-format";
 import { describe, expect, it } from "vitest";
-import { createLink, toGraphLinks, toGraphNodes, validateDeviceConnection } from "./lab-document-adapter";
+import {
+  createLink,
+  toGraphLinks,
+  toGraphNodes,
+  validateConnection,
+  validateDeviceConnection,
+} from "./lab-document-adapter";
 import { buildPorts, portsMatch } from "./port-registry";
 import { PORT_ANCHOR_RADIUS, portBodyAttrs } from "./styles";
 
@@ -208,5 +214,53 @@ describe("M10.3.3c domain identity behind the invisible ports", () => {
     // …but never surfaced as a visual port-to-port drag.
     expect(code("x6/create-graph.ts")).not.toMatch(/sourceMagnet\?\.getAttribute\("port"\)[^\n]*validateMagnet/);
     expect(read("x6/graph-controller.ts")).toContain("createDraftLink");
+  });
+});
+
+describe("M10.6 wireless interfaces stay out of the cable workflow", () => {
+  const wirelessDocument: LabDocument = {
+    schemaVersion: 1,
+    id: "wireless-cables",
+    title: "Wireless cable filtering",
+    simulation: { seed: 106 },
+    topology: {
+      schemaVersion: 1,
+      nodes: [
+        {
+          id: "laptop",
+          kind: "laptop",
+          interfaces: [{ id: "wlan0" }, { id: "eth0" }],
+        },
+        {
+          id: "phone",
+          kind: "smartphone",
+          interfaces: [{ id: "wlan0" }],
+        },
+        { id: "pc", kind: "pc", interfaces: [{ id: "eth0" }] },
+      ],
+      links: [],
+    },
+    configurations: {},
+  };
+
+  it("keeps wlan0 as domain identity but exposes only Ethernet anchors", () => {
+    expect(toGraphNodes(wirelessDocument).find((node) => node.id === "laptop")?.interfaces)
+      .toEqual(["eth0"]);
+    expect(toGraphNodes(wirelessDocument).find((node) => node.id === "phone")?.interfaces)
+      .toEqual([]);
+    expect(validateDeviceConnection(wirelessDocument, "phone", "pc")).toMatchObject({
+      ok: false,
+      code: "SOURCE_OCCUPIED",
+    });
+    expect(validateConnection(
+      wirelessDocument,
+      "laptop",
+      "wlan0",
+      "pc",
+      "eth0",
+    )).toMatchObject({
+      ok: false,
+      code: "SOURCE_WIRELESS_INTERFACE",
+    });
   });
 });

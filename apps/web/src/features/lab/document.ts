@@ -69,6 +69,10 @@ function defaultNode(kind: NodeSpec["kind"], id: string, index: number, position
     cloud: "ISP",
     "traffic-generator": "TG",
     "external-appliance": "EXT",
+    "access-point": "AP",
+    laptop: "LAP",
+    smartphone: "PHONE",
+    "wireless-router": "WRT",
   };
   return {
     id,
@@ -111,6 +115,81 @@ function defaultConfiguration(node: NodeSpec): DeviceConfig {
       kind: "external-appliance", hostname, interfaces: [], sourcePlatform: "unknown",
       importWarnings: [], authHint: "unknown",
     };
+    case "access-point": return {
+      kind: "access-point",
+      hostname,
+      interfaces: [],
+      radio: {
+        enabled: true,
+        band: "2.4ghz",
+        supportedChannels: [1, 6, 11],
+        radioDomainId: "local-lab",
+      },
+      accessPoint: {
+        ssid: "SimulatorNet",
+        broadcastSsid: true,
+        band: "2.4ghz",
+        channel: 6,
+        enabled: true,
+        radioDomainId: "local-lab",
+        priority: 100,
+        maximumClients: 32,
+        clientIsolation: false,
+        security: { mode: "open" },
+      },
+    };
+    case "laptop":
+    case "smartphone": return {
+      kind: node.kind,
+      hostname,
+      interfaces: [],
+      dhcpEnabled: true,
+      wireless: {
+        radio: {
+          enabled: true,
+          band: "2.4ghz",
+          supportedChannels: [1, 6, 11],
+          radioDomainId: "local-lab",
+        },
+        savedNetworks: [],
+        autoConnect: true,
+      },
+    };
+    case "wireless-router": return {
+      kind: "wireless-router",
+      hostname,
+      interfaces: [],
+      radio: {
+        enabled: true,
+        band: "2.4ghz",
+        supportedChannels: [1, 6, 11],
+        radioDomainId: "local-lab",
+      },
+      accessPoint: {
+        ssid: "SimulatorNet",
+        broadcastSsid: true,
+        band: "2.4ghz",
+        channel: 6,
+        enabled: true,
+        radioDomainId: "local-lab",
+        priority: 100,
+        maximumClients: 32,
+        clientIsolation: false,
+        security: { mode: "open" },
+      },
+      lan: {
+        address: "192.168.50.1",
+        prefixLength: 24,
+        dhcpEnabled: true,
+        dhcpRangeStart: "192.168.50.100",
+        dhcpRangeEnd: "192.168.50.150",
+        routerAdvertisementEnabled: false,
+        dhcpv6Enabled: false,
+      },
+      wan: { mode: "dhcp" },
+      natEnabled: true,
+      firewallEnabled: true,
+    };
   }
 }
 
@@ -127,6 +206,10 @@ function idPrefix(kind: DeviceType): string {
     cloud: "cloud",
     "traffic-generator": "traffic-generator",
     "external-appliance": "appliance",
+    "access-point": "access-point",
+    laptop: "laptop",
+    smartphone: "smartphone",
+    "wireless-router": "wireless-router",
   }[kind];
 }
 
@@ -581,6 +664,10 @@ export function autoArrangeDocument(document: LabDocument): LabDocument {
     cloud: 880,
     "traffic-generator": 160,
     "external-appliance": 1000,
+    "access-point": 560,
+    laptop: 80,
+    smartphone: 80,
+    "wireless-router": 720,
   };
   return {
     ...document,

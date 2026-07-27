@@ -21,15 +21,16 @@ import {
   type BuiltLab,
 } from "@sim/lab-format";
 import {
+  AccessPoint,
   EndHost,
   EthernetBridge,
   Hub,
   L2Switch,
   Layer3Switch,
-  Pc,
   Router,
   Server,
   TrafficGenerator,
+  WirelessRouter,
   Firewall,
   IspCloud,
   type Device,
@@ -580,10 +581,10 @@ export class SimulationWorkerRuntime {
         ipv6: hostIpv6Inspection(device),
       };
     }
-    if (device instanceof Pc) {
+    if (device instanceof EndHost) {
       return {
         ...base,
-        type: "pc",
+        type: device.deviceType,
         interfaces: [...device.interfaces.values()].map((iface) => ({
           id: iface.name,
           adminUp: iface.adminUp,
@@ -611,6 +612,30 @@ export class SimulationWorkerRuntime {
         },
         applications: applicationInspection(device),
         ipv6: hostIpv6Inspection(device),
+      };
+    }
+    if (device instanceof AccessPoint) {
+      return {
+        ...base,
+        type: "access-point",
+        interfaces: [...device.interfaces.values()].map((iface) => ({
+          id: iface.name,
+          adminUp: iface.adminUp,
+          operationalUp: iface.operationalUp,
+          description: iface.description,
+        })),
+      };
+    }
+    if (device instanceof WirelessRouter) {
+      return {
+        ...base,
+        type: "wireless-router",
+        interfaces: [...device.interfaces.values()].map((iface) => ({
+          id: iface.name,
+          adminUp: iface.adminUp,
+          operationalUp: iface.operationalUp,
+          description: iface.description,
+        })),
       };
     }
     if (device instanceof L2Switch) {

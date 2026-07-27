@@ -15,7 +15,11 @@ import {
   MAX_DIAGRAM_ASSET_TOTAL_BYTES,
   MAX_DIAGRAM_ASSETS,
 } from "@sim/contracts";
-import { DEFAULT_NEIGHBOR_DISCOVERY_CONFIG, DEFAULT_SPANNING_TREE_CONFIG } from "@sim/contracts";
+import {
+  DEFAULT_NEIGHBOR_DISCOVERY_CONFIG,
+  DEFAULT_SPANNING_TREE_CONFIG,
+  getDeviceProfile,
+} from "@sim/contracts";
 import { ipToInt, maskToInt, normalizeDnsName, normalizeHttpPath, normalizeTftpFilename } from "@sim/sim-core";
 import { LabSemanticError } from "./errors";
 
@@ -679,6 +683,53 @@ function validateConfiguration(config: DeviceConfig, node: NodeSpec, path: strin
       fail("pc-address-mode-conflict", path, "A PC cannot have static IPv4 and DHCP enabled at the same time");
     }
   }
+  if (config.kind === "laptop" || config.kind === "smartphone") {
+    validatePhysicalInterfaces(config.interfaces, node, path);
+    if (config.dhcpEnabled && config.ipv4) {
+      fail("host-address-mode-conflict", path, "A wireless host cannot use static IPv4 and DHCP at the same time");
+    }
+    const wireless = getDeviceProfile(node.kind).interfaceTemplates.find((iface) => iface.media === "wireless");
+    if (!wireless || !node.interfaces.some((iface) => iface.id === wireless.id)) {
+      fail("wireless-interface-missing", `${path}.wireless`, "A wireless host requires its wlan0 topology interface");
+    }
+  }
+  if (config.kind === "access-point") {
+    validatePhysicalInterfaces(config.interfaces, node, path);
+    if (
+      config.radio.band !== config.accessPoint.band
+      || config.radio.radioDomainId !== config.accessPoint.radioDomainId
+      || !config.radio.supportedChannels.includes(config.accessPoint.channel)
+    ) {
+      fail("wireless-radio-mismatch", `${path}.accessPoint`, "Access point settings do not match its radio");
+    }
+  }
+  if (config.kind === "wireless-router") {
+    validatePhysicalInterfaces(config.interfaces, node, path);
+    if (
+      config.radio.band !== config.accessPoint.band
+      || config.radio.radioDomainId !== config.accessPoint.radioDomainId
+      || !config.radio.supportedChannels.includes(config.accessPoint.channel)
+    ) {
+      fail("wireless-radio-mismatch", `${path}.accessPoint`, "Wireless router access point settings do not match its radio");
+    }
+    for (const [field, address] of [
+      ["dhcpRangeStart", config.lan.dhcpRangeStart],
+      ["dhcpRangeEnd", config.lan.dhcpRangeEnd],
+    ] as const) {
+      if (!inSubnet(address, config.lan.address, config.lan.prefixLength)) {
+        fail("wireless-router-dhcp-subnet", `${path}.lan.${field}`, "DHCP range must be inside the LAN subnet");
+      }
+    }
+    if (ipToInt(config.lan.dhcpRangeStart) > ipToInt(config.lan.dhcpRangeEnd)) {
+      fail("wireless-router-dhcp-range", `${path}.lan`, "DHCP range start exceeds its end");
+    }
+    if (
+      config.wan.mode === "static"
+      && (config.wan.address === undefined || config.wan.prefixLength === undefined)
+    ) {
+      fail("wireless-router-wan-static", `${path}.wan`, "Static WAN mode requires an address and prefix length");
+    }
+  }
   if (config.kind === "traffic-generator") {
     requireUnique(config.interfaces.map((iface) => iface.id), `${path}.interfaces`, "interface id");
     validatePhysicalInterfaces(config.interfaces, node, path);
@@ -717,6 +768,16 @@ export function validateLabSemantics(document: LabDocument): void {
       if (!node) fail("unknown-node", `${endpointPath}.node`, `Unknown node '${endpoint.node}'`);
       if (!node.interfaces.some((iface) => iface.id === endpoint.iface)) {
         fail("unknown-interface", `${endpointPath}.iface`, `Unknown interface '${endpoint.node}/${endpoint.iface}'`);
+      }
+      const template = getDeviceProfile(node.kind).interfaceTemplates.find(
+        (iface) => iface.id === endpoint.iface,
+      );
+      if (template?.media === "wireless") {
+        fail(
+          "wireless-interface-cabled",
+          `${endpointPath}.iface`,
+          `Wireless interface '${endpoint.node}/${endpoint.iface}' connects through its radio configuration, not a cable`,
+        );
       }
       const key = `${endpoint.node}\u0000${endpoint.iface}`;
       if (connected.has(key)) fail("interface-already-connected", endpointPath, `Interface '${endpoint.node}/${endpoint.iface}' is connected more than once`);

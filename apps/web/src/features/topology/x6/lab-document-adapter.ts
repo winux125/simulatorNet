@@ -1,4 +1,4 @@
-import type { LabDocument, Topology } from "@sim/contracts";
+import { getDeviceProfile, type LabDocument, type NodeSpec, type Topology } from "@sim/contracts";
 import { allocateId } from "../../lab/document";
 import type { ConnectionValidation, GraphLinkModel, GraphNodeModel, TopologyDraftLink } from "./types";
 
@@ -22,14 +22,16 @@ function occupancy(topology: Topology, ignoreLinkId?: string): Set<string> {
 /** Project every LabDocument node into a structural graph node (stable IDs). */
 export function toGraphNodes(document: LabDocument): GraphNodeModel[] {
   const used = occupancy(document.topology);
-  return document.topology.nodes.map((node) => ({
-    id: node.id,
-    position: node.position ?? { x: 0, y: 0 },
-    interfaces: node.interfaces.map((iface) => iface.id),
-    occupiedInterfaces: node.interfaces
-      .map((iface) => iface.id)
+  return document.topology.nodes.map((node) => {
+    const interfaces = ethernetInterfaceIds(node);
+    return {
+      id: node.id,
+      position: node.position ?? { x: 0, y: 0 },
+      interfaces,
+      occupiedInterfaces: interfaces
       .filter((iface) => used.has(endpointKey(node.id, iface))),
-  }));
+    };
+  });
 }
 
 /** Project every LabDocument link, preserving domain node + interface IDs. */
@@ -50,6 +52,20 @@ export function toGraphLinks(document: LabDocument): GraphLinkModel[] {
 
 function findInterface(topology: Topology, nodeId: string, ifaceId: string): boolean {
   return Boolean(topology.nodes.find((node) => node.id === nodeId)?.interfaces.some((iface) => iface.id === ifaceId));
+}
+
+function ethernetInterfaceIds(node: NodeSpec): string[] {
+  const media = new Map(
+    getDeviceProfile(node.kind).interfaceTemplates.map((iface) => [iface.id, iface.media]),
+  );
+  return node.interfaces
+    .map((iface) => iface.id)
+    .filter((id) => media.get(id) !== "wireless");
+}
+
+function isEthernetInterface(topology: Topology, nodeId: string, ifaceId: string): boolean {
+  const node = topology.nodes.find((entry) => entry.id === nodeId);
+  return node ? ethernetInterfaceIds(node).includes(ifaceId) : false;
 }
 
 /** Validate a device-to-device drag before asking the user to choose interfaces. */
@@ -75,10 +91,10 @@ export function validateDeviceConnection(
     return { ok: false, code: "SELF_LINK", message: "A device cannot be connected to itself." };
   }
   const used = occupancy(topology, options.ignoreLinkId);
-  if (!sourceNode.interfaces.some((iface) => !used.has(endpointKey(source, iface.id)))) {
+  if (!ethernetInterfaceIds(sourceNode).some((iface) => !used.has(endpointKey(source, iface)))) {
     return { ok: false, code: "SOURCE_OCCUPIED", message: `All interfaces on '${source}' are already connected.` };
   }
-  if (!targetNode.interfaces.some((iface) => !used.has(endpointKey(target, iface.id)))) {
+  if (!ethernetInterfaceIds(targetNode).some((iface) => !used.has(endpointKey(target, iface)))) {
     return { ok: false, code: "TARGET_OCCUPIED", message: `All interfaces on '${target}' are already connected.` };
   }
   return { ok: true };
@@ -112,6 +128,20 @@ export function validateConnection(
   }
   if (!findInterface(topology, target, targetPort)) {
     return { ok: false, code: "TARGET_PORT_MISSING", message: `Unknown interface '${targetPort}' on '${target}'.` };
+  }
+  if (!isEthernetInterface(topology, source, sourcePort)) {
+    return {
+      ok: false,
+      code: "SOURCE_WIRELESS_INTERFACE",
+      message: `${sourcePort} connects through the Wireless panel and cannot use a cable.`,
+    };
+  }
+  if (!isEthernetInterface(topology, target, targetPort)) {
+    return {
+      ok: false,
+      code: "TARGET_WIRELESS_INTERFACE",
+      message: `${targetPort} connects through the Wireless panel and cannot use a cable.`,
+    };
   }
   if (source === target && sourcePort === targetPort) {
     return { ok: false, code: "SELF_LINK", message: "An interface cannot be connected to itself." };

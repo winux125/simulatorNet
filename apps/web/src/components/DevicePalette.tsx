@@ -9,6 +9,7 @@ import {
   Shield,
   Sparkles,
   Trash2,
+  Wifi,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -25,10 +26,11 @@ interface DevicePaletteProps {
   onTool(tool: WorkspaceTool): void;
 }
 
-type PaletteCategory = "network" | "end-device" | "security" | "infrastructure" | "connections";
+type PaletteCategory = "network" | "wireless" | "end-device" | "security" | "infrastructure" | "connections";
 
 const categories: Array<{ id: PaletteCategory; label: string }> = [
   { id: "network", label: "Network Devices" },
+  { id: "wireless", label: "Wireless Devices" },
   { id: "end-device", label: "End Devices" },
   { id: "security", label: "Security" },
   { id: "infrastructure", label: "Infrastructure" },
@@ -89,6 +91,8 @@ export function DevicePalette(props: DevicePaletteProps) {
               >
                 {entry.id === "network"
                   ? <Network size={15} />
+                  : entry.id === "wireless"
+                    ? <Wifi size={15} />
                   : entry.id === "end-device"
                     ? <Monitor size={15} />
                     : entry.id === "security"

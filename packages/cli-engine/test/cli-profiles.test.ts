@@ -4,6 +4,7 @@ import {
   EthernetBridge,
   Hub,
   L2Switch,
+  Laptop,
   Layer3Switch,
   Pc,
   Router,
@@ -49,6 +50,18 @@ describe("M10.2.1 device command profiles", () => {
 
   it("uses a host-style PC command prompt", () => {
     expect(hostCli().cli.prompt()).toBe("C:\\>");
+  });
+
+  it("reuses the PC host CLI profile for Laptop", () => {
+    const engine = createSimulationEngine({ seed: 103 });
+    const laptop = engine.add(new Laptop("laptop", "Laptop1"));
+    laptop.addInterface("eth0", macFromIndex(22));
+    laptop.configure({ ip: "192.0.2.20", mask: 24, gateway: "192.0.2.1" });
+    const cli = createCliSession(laptop, engine);
+
+    expect(cli.prompt()).toBe("C:\\>");
+    expect(cli.execute("ipconfig")).toContain("192.0.2.20");
+    expect(cli.execute("?")).not.toContain("configure");
   });
 
   it("uses a named host prompt for Server", () => {

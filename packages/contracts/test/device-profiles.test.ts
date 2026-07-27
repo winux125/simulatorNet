@@ -44,6 +44,20 @@ describe("device profile registry", () => {
     ]);
     expect(DEVICE_PROFILES.cloud.interfaceTemplates).toHaveLength(4);
     expect(DEVICE_PROFILES["traffic-generator"].interfaceTemplates.map(({ id }) => id)).toEqual(["eth0"]);
+    expect(DEVICE_PROFILES["access-point"].interfaceTemplates).toEqual([
+      { id: "wlan0", media: "wireless" },
+      { id: "eth0", media: "ethernet" },
+    ]);
+    expect(DEVICE_PROFILES.laptop.interfaceTemplates).toEqual([
+      { id: "wlan0", media: "wireless" },
+      { id: "eth0", media: "ethernet" },
+    ]);
+    expect(DEVICE_PROFILES.smartphone.interfaceTemplates).toEqual([
+      { id: "wlan0", media: "wireless" },
+    ]);
+    expect(DEVICE_PROFILES["wireless-router"].interfaceTemplates.map(({ id }) => id)).toEqual([
+      "wlan0", "LAN1", "LAN2", "LAN3", "LAN4", "WAN",
+    ]);
   });
 
   it("declares capabilities deliberately for each supported type", () => {
@@ -60,6 +74,10 @@ describe("device profile registry", () => {
     expect(deviceTypeHasCapability("firewall", "stateful-firewall")).toBe(true);
     expect(deviceTypeHasCapability("cloud", "network-impairment")).toBe(true);
     expect(deviceTypeHasCapability("traffic-generator", "traffic-generation")).toBe(true);
+    expect(deviceTypeHasCapability("access-point", "wireless-bridge")).toBe(true);
+    expect(deviceTypeHasCapability("laptop", "wireless-station")).toBe(true);
+    expect(deviceTypeHasCapability("smartphone", "wireless-station")).toBe(true);
+    expect(deviceTypeHasCapability("wireless-router", "home-wireless-router")).toBe(true);
   });
 
   it("keeps M1-M9 schema-v1 documents valid and defaults stable", () => {
@@ -109,6 +127,45 @@ describe("device profile registry", () => {
         firewall: { kind: "firewall" },
         cloud: { kind: "cloud" },
         "traffic-generator": { kind: "traffic-generator" },
+        "access-point": {
+          kind: "access-point",
+          radio: { band: "2.4ghz", supportedChannels: [1, 6, 11], radioDomainId: "lab", enabled: true },
+          accessPoint: {
+            ssid: "Lab",
+            band: "2.4ghz",
+            channel: 6,
+            radioDomainId: "lab",
+          },
+        },
+        laptop: {
+          kind: "laptop",
+          wireless: {
+            radio: { band: "2.4ghz", supportedChannels: [1, 6, 11], radioDomainId: "lab", enabled: true },
+          },
+        },
+        smartphone: {
+          kind: "smartphone",
+          wireless: {
+            radio: { band: "2.4ghz", supportedChannels: [1, 6, 11], radioDomainId: "lab", enabled: true },
+          },
+        },
+        "wireless-router": {
+          kind: "wireless-router",
+          radio: { band: "2.4ghz", supportedChannels: [1, 6, 11], radioDomainId: "lab", enabled: true },
+          accessPoint: {
+            ssid: "Home",
+            band: "2.4ghz",
+            channel: 6,
+            radioDomainId: "lab",
+          },
+          lan: {
+            address: "192.168.50.1",
+            prefixLength: 24,
+            dhcpRangeStart: "192.168.50.100",
+            dhcpRangeEnd: "192.168.50.150",
+          },
+          wan: { mode: "dhcp" },
+        },
       },
     });
     expect(document.configurations.bridge).toMatchObject({ agingTimeNs: 300_000_000_000 });
@@ -119,6 +176,19 @@ describe("device profile registry", () => {
     expect(document.configurations["traffic-generator"]).toMatchObject({
       kind: "traffic-generator",
       dhcpEnabled: false,
+    });
+    expect(document.configurations["access-point"]).toMatchObject({
+      kind: "access-point",
+      accessPoint: { security: { mode: "open" }, maximumClients: 32 },
+    });
+    expect(document.configurations.laptop).toMatchObject({
+      kind: "laptop",
+      wireless: { savedNetworks: [], autoConnect: true },
+    });
+    expect(document.configurations["wireless-router"]).toMatchObject({
+      kind: "wireless-router",
+      natEnabled: true,
+      firewallEnabled: true,
     });
   });
 
