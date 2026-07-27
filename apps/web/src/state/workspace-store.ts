@@ -13,6 +13,15 @@ import {
   type CanvasViewport,
 } from "../features/topology/canvas-navigation";
 import {
+  clampBottomPanelHeight,
+  persistBottomPanelHeight,
+  persistBottomPanelState,
+  readBottomPanelHeight,
+  readBottomPanelState,
+  toggledBottomPanelState,
+  type BottomPanelState,
+} from "../features/dock/bottom-panel-state";
+import {
   DEFAULT_TERMINAL_FLOATING_BOUNDS,
   persistTerminalPresentationMode,
   readTerminalPresentationMode,
@@ -99,6 +108,13 @@ interface WorkspaceState {
   filters: TraceFilters;
   inspectorTab: InspectorTab;
   dockTab: DockTab;
+  /**
+   * Presentation of the bottom panel. Independent of the terminal presentation
+   * mode: hiding the panel never closes a CLI session or a terminal tab.
+   */
+  bottomPanelState: BottomPanelState;
+  /** Height restored whenever the panel returns to `expanded`. */
+  bottomPanelExpandedHeight: number;
   paletteOpen: boolean;
   inspectorOpen: boolean;
   portLabelMode: PortLabelMode;
@@ -151,6 +167,10 @@ interface WorkspaceState {
   setFilter(filter: Partial<TraceFilters>): void;
   setInspectorTab(tab: InspectorTab): void;
   setDockTab(tab: DockTab): void;
+  setBottomPanelState(state: BottomPanelState): void;
+  toggleBottomPanel(): void;
+  openDockTab(tab: DockTab): void;
+  setBottomPanelExpandedHeight(height: number, viewportHeight: number): void;
   setPaletteOpen(open: boolean): void;
   setInspectorOpen(open: boolean): void;
   setPortLabelMode(mode: PortLabelMode): void;
@@ -191,6 +211,8 @@ const initialState = {
   filters: { device: "", type: "", search: "" },
   inspectorTab: "overview" as const,
   dockTab: "terminal" as const,
+  bottomPanelState: readBottomPanelState(),
+  bottomPanelExpandedHeight: readBottomPanelHeight(),
   paletteOpen: false,
   inspectorOpen: false,
   portLabelMode: "always" as const,
@@ -309,13 +331,20 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   clearTraces: () => set({ traces: [] }),
   selectNode: (id) => set({ selectedNodeId: id, selectedLinkId: undefined }),
   selectLink: (id) => set({ selectedLinkId: id, selectedNodeId: undefined }),
-  openTerminal: (deviceId) => set((state) => ({
-    terminalTabs: state.terminalTabs.includes(deviceId) ? state.terminalTabs : [...state.terminalTabs, deviceId],
-    activeTerminalDeviceId: deviceId,
-    dockTab: "terminal",
-    terminalVisible: true,
-    terminalMinimized: false,
-  })),
+  openTerminal: (deviceId) => set((state) => {
+    // A docked terminal needs the panel open to be seen at all; a floating or
+    // maximized one does not, so the panel keeps whatever state the user chose.
+    const expand = state.terminalPresentationMode === "docked" && state.bottomPanelState !== "expanded";
+    if (expand) persistBottomPanelState("expanded");
+    return {
+      terminalTabs: state.terminalTabs.includes(deviceId) ? state.terminalTabs : [...state.terminalTabs, deviceId],
+      activeTerminalDeviceId: deviceId,
+      dockTab: "terminal",
+      terminalVisible: true,
+      terminalMinimized: false,
+      bottomPanelState: expand ? "expanded" as const : state.bottomPanelState,
+    };
+  }),
   closeTerminal: (deviceId) => set((state) => {
     const terminalTabs = state.terminalTabs.filter((id) => id !== deviceId);
     const activeTerminalDeviceId = state.activeTerminalDeviceId === deviceId
@@ -349,6 +378,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   }),
   setTerminalPresentationMode: (terminalPresentationMode) => {
     persistTerminalPresentationMode(terminalPresentationMode);
+    // Docking asks for a visible terminal, so the panel opens on the Terminal
+    // tab. Floating and maximized leave the panel exactly as the user left it.
+    if (terminalPresentationMode === "docked") persistBottomPanelState("expanded");
     set((state) => ({
       terminalPresentationMode,
       terminalRestoreMode: terminalPresentationMode === "maximized"
@@ -357,15 +389,19 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       terminalVisible: true,
       terminalMinimized: false,
       dockTab: terminalPresentationMode === "docked" ? "terminal" : state.dockTab,
+      bottomPanelState: terminalPresentationMode === "docked" ? "expanded" as const : state.bottomPanelState,
     }));
   },
   restoreTerminalPresentation: () => set((state) => {
     persistTerminalPresentationMode(state.terminalRestoreMode);
+    const docked = state.terminalRestoreMode === "docked";
+    if (docked) persistBottomPanelState("expanded");
     return {
       terminalPresentationMode: state.terminalRestoreMode,
       terminalVisible: true,
       terminalMinimized: false,
-      dockTab: state.terminalRestoreMode === "docked" ? "terminal" : state.dockTab,
+      dockTab: docked ? "terminal" : state.dockTab,
+      bottomPanelState: docked ? "expanded" as const : state.bottomPanelState,
     };
   }),
   setTerminalVisible: (terminalVisible) => set((state) => ({
@@ -403,6 +439,28 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   setFilter: (filter) => set((state) => ({ filters: { ...state.filters, ...filter } })),
   setInspectorTab: (inspectorTab) => set({ inspectorTab, inspectorOpen: true }),
   setDockTab: (dockTab) => set({ dockTab }),
+  setBottomPanelState: (bottomPanelState) => {
+    persistBottomPanelState(bottomPanelState);
+    // Only the panel's presentation changes: terminal tabs, CLI sessions,
+    // event data and filters are untouched.
+    set({ bottomPanelState });
+  },
+  toggleBottomPanel: () => set((state) => {
+    const bottomPanelState = toggledBottomPanelState(state.bottomPanelState);
+    persistBottomPanelState(bottomPanelState);
+    return { bottomPanelState };
+  }),
+  openDockTab: (dockTab) => set((state) => {
+    if (state.bottomPanelState === "expanded") return { dockTab };
+    persistBottomPanelState("expanded");
+    return { dockTab, bottomPanelState: "expanded" as const };
+  }),
+  setBottomPanelExpandedHeight: (height, viewportHeight) => set((state) => {
+    const bottomPanelExpandedHeight = clampBottomPanelHeight(height, viewportHeight);
+    if (bottomPanelExpandedHeight === state.bottomPanelExpandedHeight) return {};
+    persistBottomPanelHeight(bottomPanelExpandedHeight);
+    return { bottomPanelExpandedHeight };
+  }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
   setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
   setPortLabelMode: (portLabelMode) => set({ portLabelMode }),
@@ -420,6 +478,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       terminalRestoreMode: state.terminalRestoreMode,
       terminalFloatingBounds: state.terminalFloatingBounds,
       terminalDockHeight: state.terminalDockHeight,
+      // Workspace layout preferences survive closing and reopening a lab.
+      bottomPanelState: state.bottomPanelState,
+      bottomPanelExpandedHeight: state.bottomPanelExpandedHeight,
     }));
   },
 }));

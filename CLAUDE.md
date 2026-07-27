@@ -286,6 +286,19 @@ APIs directly. A pasted sequence must pause at any interactive or credential
 prompt rather than answer it. Credential input is never echoed, recorded in
 history, written to the transcript or Problems, or logged.
 
+### Bottom panel
+
+The bottom panel is `expanded`, `minimized`, or `hidden`. Minimized renders only
+a compact tab strip; hidden renders no row at all — never an invisible resizer,
+a stale border, or reserved height. Both states are display changes: terminal
+tabs, CLI sessions, input buffers, history, scrollback, pending pastes, event
+data and filters must survive them, and only closing a tab ends a session.
+Panel state is independent of the terminal presentation mode, is local-only
+(`simulatornet.bottomPanelState`, `simulatornet.bottomPanelExpandedHeight`), and
+never enters `LabDocument`, a submission, grading, or the database. Do not fit
+xterm while the panel gives it no measurable size, and do not force the panel
+open without a user action. See `docs/workspace-layout.md`.
+
 ### Layout and overflow
 
 The application shell owns the viewport. The browser body must not become the

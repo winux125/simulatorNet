@@ -42,6 +42,8 @@ interface TerminalWorkspaceProps {
   appearance?: TerminalAppearance;
   sessionNamespace?: string;
   layoutSignal?: string;
+  /** False while the presentation is off-screen: never fit a 0x0 container. */
+  measurable?: boolean;
   /** Simulated console-access config for a device, if it requires a login. */
   consoleAccessFor?(deviceId: string): ConsoleAccessConfiguration | undefined;
   onActivate(deviceId: string): void;
@@ -173,6 +175,7 @@ export function TerminalWorkspace(props: TerminalWorkspaceProps) {
               theme={props.theme}
               appearance={props.appearance}
               layoutSignal={props.layoutSignal}
+              measurable={props.measurable ?? true}
               sessionNamespace={props.sessionNamespace ?? "terminal"}
               consoleAccess={props.consoleAccessFor?.(deviceId)}
               onCloseTab={() => props.onClose(deviceId)}
@@ -194,6 +197,7 @@ interface TerminalSessionProps {
   theme: ResolvedTheme;
   appearance?: TerminalAppearance;
   layoutSignal?: string;
+  measurable: boolean;
   sessionNamespace: string;
   consoleAccess?: ConsoleAccessConfiguration;
   onCloseTab(): void;
@@ -227,7 +231,7 @@ const NO_PASTE_CONTROLS: PasteControls = {
   cancel: () => undefined,
 };
 
-function TerminalSession({ client, deviceId, hostname, active, enabled, theme, appearance, layoutSignal, sessionNamespace, consoleAccess, onCloseTab, onError }: TerminalSessionProps) {
+function TerminalSession({ client, deviceId, hostname, active, enabled, theme, appearance, layoutSignal, measurable, sessionNamespace, consoleAccess, onCloseTab, onError }: TerminalSessionProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<XtermTerminal | undefined>(undefined);
@@ -237,6 +241,9 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
   const pasteRef = useRef<PasteControls>(NO_PASTE_CONTROLS);
   const enabledRef = useRef(enabled);
   const activeRef = useRef(active);
+  // Fitting is skipped while the presentation is off-screen: xterm must never
+  // measure a 0x0 container (a hidden bottom panel, a closed terminal window).
+  const measurableRef = useRef(measurable);
   // Captured at mount: reopening the terminal starts a fresh login.
   const consoleAccessRef = useRef(consoleAccess);
   consoleAccessRef.current = consoleAccess;
@@ -251,6 +258,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
 
   enabledRef.current = enabled;
   activeRef.current = active;
+  measurableRef.current = measurable;
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -645,11 +653,11 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
     }).catch(() => onError("Terminal component failed to load"));
 
     function fitTerminal() {
-      if (!activeRef.current || disposed) return;
+      if (!activeRef.current || !measurableRef.current || disposed) return;
       if (fitFrame !== undefined) window.cancelAnimationFrame(fitFrame);
       fitFrame = window.requestAnimationFrame(() => {
         fitFrame = undefined;
-        if (!activeRef.current || disposed) return;
+        if (!activeRef.current || !measurableRef.current || disposed) return;
         try {
           fitRef.current?.fit();
           terminalRef.current?.scrollToBottom();
@@ -687,7 +695,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
       term.options.fontSize = profile.fontSize;
       term.options.lineHeight = profile.lineHeight;
       term.options.cursorBlink = profile.cursorBlink;
-      try { fitRef.current?.fit(); } catch { /* transitioning */ }
+      if (measurableRef.current) { try { fitRef.current?.fit(); } catch { /* transitioning */ } }
     };
     apply();
     window.addEventListener(TERMINAL_APPEARANCE_EVENT, apply);
@@ -695,18 +703,19 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
   }, [appearance, theme]);
 
   useEffect(() => {
-    // Restore keyboard focus (and layout) when this session's tab becomes active.
-    if (active) window.requestAnimationFrame(() => {
+    // Restore keyboard focus (and layout) when this session's tab becomes active
+    // and the presentation actually has a measurable size again.
+    if (active && measurable) window.requestAnimationFrame(() => {
       try {
         fitRef.current?.fit();
         terminalRef.current?.scrollToBottom();
       } catch { /* dock transition */ }
       focusRef.current();
     });
-  }, [active]);
+  }, [active, measurable]);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active || !measurable) return;
     const frame = window.requestAnimationFrame(() => {
       try {
         fitRef.current?.fit();
@@ -714,7 +723,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
       } catch { /* presentation transition */ }
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [active, layoutSignal]);
+  }, [active, measurable, layoutSignal]);
 
   const copy = () => {
     const text = terminalRef.current?.getSelection() || transcript;

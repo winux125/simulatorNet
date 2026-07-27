@@ -136,10 +136,57 @@ The bottom dock is always the bottom region of the application workspace. Its
 horizontal separator changes dock height while preserving a usable topology
 minimum. Events, Packet Trace, and Problems render inside that bounded region.
 
+### Bottom panel states
+
+The panel has three presentations:
+
+| State | Occupies | Contents |
+| --- | --- | --- |
+| Expanded | the resizable panel height | tabs and full tab content |
+| Minimized | a 34 px strip | tabs, badges, Expand and Hide only |
+| Hidden | 0 px | nothing; counts move to the status footer |
+
+Minimized and Hidden render no panel row at all — no invisible resizer, no
+stale border, no reserved height — so the canvas receives the freed space. The
+panel returns from View ▸ Bottom Panel ▸ Show, from the minimized strip, from
+the status footer entries, or with `Ctrl/Cmd+J`.
+
+**Hiding or minimizing the panel is a display change only.** Terminal tabs, CLI
+sessions, authentication, input buffers, command history, scrollback, a pending
+paste, event data and filters all stay exactly as they were. Closing a terminal
+tab is the separate action that ends a CLI session.
+
+Events, Packet Trace and Problems keep accumulating (bounded) while collapsed.
+The minimized strip shows live counts; a hidden panel moves them to a compact
+status entry in the footer, where a new Problems error is marked. Nothing
+force-expands the panel without a user action, and no event raises a toast.
+
+`Ctrl/Cmd+J` toggles: anything collapsed opens, an open panel hides. Minimizing
+stays a deliberate choice from the menu or the panel controls.
+`Ctrl/Cmd+Shift+J` is left to the browser. Because xterm cancels the key events
+it consumes, these panel shortcuts are also captured before the terminal sees
+them.
+
+The expanded height is restored across every collapse round trip and clamped
+after a viewport resize: at least 180 px, never more than 48% of the workspace.
+Both the state and the height are local preferences stored under
+`simulatornet.bottomPanelState` and `simulatornet.bottomPanelExpandedHeight`. A
+first run on a viewport shorter than 620 px starts minimized.
+
+### Terminal presentations
+
 The terminal has Docked, Floating, and Maximized presentations. Docked terminal
 height follows the bottom workspace; Floating/Maximized render in the terminal
 presentation layer without changing the topology model. All three present the
 same mounted tabs and CLI sessions.
+
+Panel state and terminal presentation are independent concepts:
+
+- a hidden panel leaves a floating or maximized terminal fully visible;
+- a docked terminal behind a collapsed panel keeps its session and simply has
+  no slot to draw into, so xterm is not fitted while it has no measurable size;
+- Dock at Bottom expands the panel and activates the Terminal tab;
+- showing the panel again returns the docked terminal with the same buffer.
 
 Packet Trace owns the **Auto/Step** execution control:
 
@@ -202,6 +249,8 @@ Keep local-only:
 - port-label display preference;
 - open panels, selection, active tools, and smart guides;
 - terminal presentation and bounds;
+- bottom panel state and expanded height;
+- multi-line paste confirmation;
 - browser Auto/Step mode.
 
 Never persist X6 graph JSON, DOM geometry, worker instances, terminal state,

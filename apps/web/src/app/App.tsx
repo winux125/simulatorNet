@@ -4,7 +4,7 @@ import type { LabUiNode, SimWorkerEvent } from "@sim/sim-worker";
 import { Group as PanelGroup, Panel as ResizablePanel, Separator } from "react-resizable-panels";
 import {
   AlertTriangle, Cable, CheckCircle2, ClipboardPaste, Command, Download, Eraser, FilePlus2, FlaskConical, FolderOpen, FolderX,
-  Grid3X3, Info, Keyboard, Maximize2, Move, PanelRight, Play, Redo2, RotateCcw, SkipForward,
+  Grid3X3, Info, Keyboard, Maximize2, Move, PanelBottom, PanelRight, Play, Redo2, RotateCcw, SkipForward,
   Square, SunMoon, Tag, TerminalSquare, Type, Undo2, Wrench, X,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
@@ -34,15 +34,21 @@ import {
   setDeviceIconProfile,
   useDeviceIconProfile,
 } from "../hooks/useDeviceIconProfile";
+import {
+  bottomPanelAnnouncement,
+  MIN_BOTTOM_PANEL_HEIGHT,
+  type BottomPanelState,
+} from "../features/dock/bottom-panel-state";
 import { applyTerminalAppearance, getTerminalAppearance, type TerminalAppearance } from "../features/terminal/terminal-appearance";
 import { persistConfirmMultilinePaste, readConfirmMultilinePaste, TERMINAL_PASTE_LIMITS } from "../features/terminal/terminal-paste";
 import { TerminalPresentation } from "../features/terminal/TerminalPresentation";
-import { isTopologyEditable, useWorkspaceStore, type ExecutionMode, type WorkspaceMode } from "../state/workspace-store";
+import { isTopologyEditable, useWorkspaceStore, type DockTab, type ExecutionMode, type WorkspaceMode } from "../state/workspace-store";
 import { Button, IconButton, Kbd } from "../ui";
 import type { SimulatorClient } from "./simulator-client";
 
 const TopologyCanvas = lazy(() => import("../features/topology/TopologyCanvas"));
 const BottomDock = lazy(() => import("../features/dock/BottomDock"));
+const BottomPanelStrip = lazy(() => import("../features/dock/BottomDock").then((module) => ({ default: module.BottomPanelStrip })));
 const STEP_EXPLANATION_KEY = "simulatornet.stepModeExplained";
 
 interface AppProps { client: SimulatorClient }
@@ -163,6 +169,18 @@ export function App({ client }: AppProps) {
   }, []);
   const reportCliError = useCallback((message: string) => reportError(message, "cli"), [reportError]);
   const reportInspectionError = useCallback((message: string) => reportError(message, "worker"), [reportError]);
+
+  // Bottom panel presentation. Changing it never touches a terminal session,
+  // a CLI mode, the event buffer or the topology model.
+  const setBottomPanel = useCallback((state: BottomPanelState) => {
+    useWorkspaceStore.getState().setBottomPanelState(state);
+  }, []);
+  const recordBottomPanelHeight = useCallback((height: number) => {
+    useWorkspaceStore.getState().setBottomPanelExpandedHeight(height, window.innerHeight);
+  }, []);
+  const openDockTab = useCallback((tab: DockTab) => {
+    useWorkspaceStore.getState().openDockTab(tab);
+  }, []);
 
   const initialize = async (document: LabDocument, initialMode: WorkspaceMode = "simulate") => {
     workspace.reset();
@@ -365,7 +383,9 @@ export function App({ client }: AppProps) {
     if (state.terminalTabs.length === 0) openTerminalFromMenu();
     else {
       state.setTerminalVisible(true);
-      if (state.terminalPresentationMode === "docked") state.setDockTab("terminal");
+      // A floating or maximized terminal is already on screen; only a docked one
+      // needs the bottom panel expanded on its Terminal tab.
+      if (state.terminalPresentationMode === "docked") state.openDockTab("terminal");
     }
   };
   const validateDocument = () => {
@@ -380,25 +400,60 @@ export function App({ client }: AppProps) {
     }
   };
 
+  /**
+   * Shortcuts that manage the workspace panels themselves. They are handled in
+   * both the bubble and capture phases: xterm cancels the key events it
+   * consumes (`preventDefault` **and** `stopPropagation`), so a focused
+   * terminal would otherwise swallow them. Returns true when handled.
+   */
+  const handlePanelShortcut = useCallback((event: KeyboardEvent): boolean => {
+    const commandKey = event.ctrlKey || event.metaKey;
+    if (!commandKey) return false;
+    const state = useWorkspaceStore.getState();
+    if (!state.snapshot) return false;
+    if (event.code === "Backquote" && !event.altKey) {
+      event.preventDefault();
+      if (event.shiftKey) {
+        state.setTerminalPresentationMode(state.terminalPresentationMode === "floating" ? "docked" : "floating");
+        return true;
+      }
+      // A docked terminal behind a collapsed panel needs the panel back before
+      // "hide" would mean anything, so opening always wins first.
+      const dockedAndCollapsed = state.terminalPresentationMode === "docked"
+        && (state.bottomPanelState !== "expanded" || state.dockTab !== "terminal");
+      if (state.terminalVisible && !dockedAndCollapsed) state.setTerminalVisible(false);
+      else showTerminal();
+      return true;
+    }
+    // Ctrl/Cmd+Shift+J stays the browser's own shortcut.
+    if (event.key.toLowerCase() === "j" && !event.shiftKey && !event.altKey) {
+      event.preventDefault();
+      state.toggleBottomPanel();
+      return true;
+    }
+    return false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const handleCapture = (event: KeyboardEvent) => {
+      // Only inside the panels: everywhere else the bubble handler is enough,
+      // and handling twice would toggle the panel back again.
+      const insidePanels = event.target instanceof HTMLElement
+        && Boolean(event.target.closest(".terminal-presentation, .bottom-dock, .bottom-panel-strip"));
+      if (insidePanels) handlePanelShortcut(event);
+    };
+    window.addEventListener("keydown", handleCapture, true);
+    return () => window.removeEventListener("keydown", handleCapture, true);
+  }, [handlePanelShortcut]);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const commandKey = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
       const terminalFocused = event.target instanceof HTMLElement
         && Boolean(event.target.closest(".terminal-presentation"));
-      if (commandKey && event.code === "Backquote") {
-        if (!useWorkspaceStore.getState().snapshot) return;
-        event.preventDefault();
-        const state = useWorkspaceStore.getState();
-        if (event.shiftKey) {
-          state.setTerminalPresentationMode(state.terminalPresentationMode === "floating" ? "docked" : "floating");
-        } else if (state.terminalVisible) {
-          state.setTerminalVisible(false);
-        } else {
-          showTerminal();
-        }
-        return;
-      }
+      if (handlePanelShortcut(event)) return;
       if (commandKey && event.altKey && event.key === "Enter") {
         const state = useWorkspaceStore.getState();
         if (!state.snapshot || state.terminalTabs.length === 0) return;
@@ -442,6 +497,7 @@ export function App({ client }: AppProps) {
   }, [deleteSelection, run, save]);
 
   const labOpen = workspace.snapshot !== undefined;
+  const bottomPanelExpanded = workspace.bottomPanelState === "expanded";
   const ready = workspace.workerStatus === "ready" && labOpen;
   const simulationEnabled = ready && workspace.mode === "simulate";
   const editMode = workspace.mode === "edit";
@@ -487,6 +543,11 @@ export function App({ client }: AppProps) {
         { id: "ports-always", label: "Always", checked: workspace.portLabelMode === "always", onSelect: () => workspace.setPortLabelMode("always") },
         { id: "ports-selected", label: "Selected", checked: workspace.portLabelMode === "selected", onSelect: () => workspace.setPortLabelMode("selected") },
         { id: "ports-hidden", label: "Hidden", checked: workspace.portLabelMode === "hidden", onSelect: () => workspace.setPortLabelMode("hidden") },
+      ] },
+      { id: "view-bottom-panel", label: "Bottom Panel", icon: <PanelBottom size={14} />, submenu: [
+        { id: "bottom-panel-show", label: "Show", shortcut: "Ctrl J", checked: bottomPanelExpanded, disabled: !labOpen, onSelect: () => setBottomPanel("expanded") },
+        { id: "bottom-panel-minimize", label: "Minimize", checked: workspace.bottomPanelState === "minimized", disabled: !labOpen, onSelect: () => setBottomPanel("minimized") },
+        { id: "bottom-panel-hide", label: "Hide", checked: workspace.bottomPanelState === "hidden", disabled: !labOpen, onSelect: () => setBottomPanel("hidden") },
       ] },
       { id: "view-terminal", label: "Terminal", icon: <TerminalSquare size={14} />, submenu: [
         { id: "terminal-show", label: "Show Terminal", shortcut: "Ctrl `", disabled: !labOpen, onSelect: showTerminal },
@@ -628,7 +689,7 @@ export function App({ client }: AppProps) {
         onZoomIn={workspace.requestZoomIn}
         onZoomOut={workspace.requestZoomOut}
         onFit={workspace.requestFit}
-        onOpenPacketTrace={() => workspace.setDockTab("packet-trace")}
+        onOpenPacketTrace={() => openDockTab("packet-trace")}
         onStartLab={startLab}
         onStopLab={stopLab}
         onLogout={() => void launchSession.logout().catch((error) => reportError(error, "validation"))}
@@ -638,7 +699,7 @@ export function App({ client }: AppProps) {
       {launchSession.state.status === "exchanging" && <div className="launch-status" role="status">Exchanging secure launch code…</div>}
       {launchSession.state.status === "error" && <div className="workspace-error" role="alert"><AlertTriangle size={14} /><span>{launchSession.state.message}</span></div>}
       {validation && <div className="workspace-notice" role="status"><CheckCircle2 size={14} /><span>{validation}</span><IconButton label="Dismiss notice" icon={<X size={13} />} onClick={() => setValidation(undefined)} /></div>}
-      {workspace.error && <div className="workspace-error" role="alert"><AlertTriangle size={14} /><span>{workspace.error}</span><button type="button" onClick={() => workspace.setDockTab("problems")}>View problems</button><IconButton label="Dismiss error" icon={<X size={13} />} onClick={() => workspace.setError(undefined)} /></div>}
+      {workspace.error && <div className="workspace-error" role="alert"><AlertTriangle size={14} /><span>{workspace.error}</span><button type="button" onClick={() => openDockTab("problems")}>View problems</button><IconButton label="Dismiss error" icon={<X size={13} />} onClick={() => workspace.setError(undefined)} /></div>}
       {workspace.pendingTopologyChanges && workspace.mode === "edit" && (
         <div className="pending-banner">
           <span>Pending topology changes</span>
@@ -660,13 +721,15 @@ export function App({ client }: AppProps) {
               {inspector}
             </div>
           </ResizablePanel>
-          {labOpen && <>
+          {/* Minimized and hidden render no panel row at all: no invisible
+              resizer, no stale border and no reserved height. */}
+          {labOpen && bottomPanelExpanded && <>
             <Separator className="resize-handle resize-handle--horizontal" />
             <ResizablePanel
               id="bottom-dock"
-              minSize="220px"
+              minSize={`${MIN_BOTTOM_PANEL_HEIGHT}px`}
               maxSize="48%"
-              defaultSize={`${workspace.terminalDockHeight}px`}
+              defaultSize={`${workspace.bottomPanelExpandedHeight}px`}
             >
               <Suspense fallback={<DockLoading />}>
                 <BottomDock
@@ -684,11 +747,27 @@ export function App({ client }: AppProps) {
                   onStep={step}
                   onRunAll={run}
                   onClearTraces={workspace.clearTraces}
+                  onMinimize={() => setBottomPanel("minimized")}
+                  onHide={() => setBottomPanel("hidden")}
+                  onHeight={recordBottomPanelHeight}
                 />
               </Suspense>
             </ResizablePanel>
           </>}
         </PanelGroup>
+        {labOpen && workspace.bottomPanelState === "minimized" && (
+          <Suspense fallback={null}>
+            <BottomPanelStrip
+              tab={workspace.dockTab}
+              traces={workspace.traces}
+              problems={workspace.problems}
+              terminalTabs={workspace.terminalTabs}
+              onTab={workspace.setDockTab}
+              onExpand={() => setBottomPanel("expanded")}
+              onHide={() => setBottomPanel("hidden")}
+            />
+          </Suspense>
+        )}
         {labOpen && <TerminalPresentation
           client={client}
           tabs={workspace.terminalTabs}
@@ -699,6 +778,7 @@ export function App({ client }: AppProps) {
           appearance={terminalAppearance}
           presentationMode={workspace.terminalPresentationMode}
           visible={workspace.terminalVisible}
+          dockAvailable={bottomPanelExpanded && workspace.dockTab === "terminal"}
           minimized={workspace.terminalMinimized}
           floatingBounds={workspace.terminalFloatingBounds}
           consoleAccessFor={(deviceId) => workspace.draft ? consoleAccessOf(workspace.draft, deviceId) : undefined}
@@ -716,7 +796,20 @@ export function App({ client }: AppProps) {
           onError={reportCliError}
         />}
       </div>
-      <footer className="workspace-footer"><span>Workspace: <strong>{workspace.mode === "edit" ? "Edit" : "Operate"}</strong></span><span>Virtual time <code>{((workspace.snapshot?.virtualTime ?? 0) / 1_000_000).toFixed(3)} ms</code></span><span>{workspace.snapshot?.nodes.length ?? 0} devices</span><span className="workspace-footer__right">Schema v{workspace.draft?.schemaVersion ?? 1} · deterministic runtime</span></footer>
+      <footer className="workspace-footer">
+        <span>Workspace: <strong>{workspace.mode === "edit" ? "Edit" : "Operate"}</strong></span>
+        <span>Virtual time <code>{((workspace.snapshot?.virtualTime ?? 0) / 1_000_000).toFixed(3)} ms</code></span>
+        <span>{workspace.snapshot?.nodes.length ?? 0} devices</span>
+        {labOpen && !bottomPanelExpanded && <BottomPanelStatus
+          state={workspace.bottomPanelState}
+          traces={workspace.traces.length}
+          queuedEvents={workspace.snapshot?.queuedEvents ?? 0}
+          problems={workspace.problems.length}
+          onOpen={openDockTab}
+        />}
+        <span className="workspace-footer__right">Schema v{workspace.draft?.schemaVersion ?? 1} · deterministic runtime</span>
+      </footer>
+      <span className="visually-hidden" role="status" aria-live="polite">{labOpen ? bottomPanelAnnouncement(workspace.bottomPanelState) : ""}</span>
 
       {confirmApply && <WorkspaceDialog title="Apply topology changes?" eyebrow="Runtime rebuild" onClose={() => { setConfirmApply(false); setPendingMode(undefined); }}>
         <p>Applying the draft serializes the current device configuration, merges topology positions and rebuilds the worker runtime. Volatile ARP, MAC and event state will reset.</p>
@@ -764,6 +857,7 @@ export function App({ client }: AppProps) {
           <Shortcut keys="Ctrl + L" label="Clear focused terminal" />
           <Shortcut keys="Ctrl / Cmd + V" label="Paste into the focused terminal" />
           <Shortcut keys="Shift + Insert" label="Paste into the focused terminal" />
+          <Shortcut keys="Ctrl / Cmd + J" label="Show or hide the bottom panel" />
           <Shortcut keys="Ctrl / Cmd + `" label="Show or hide terminal" />
           <Shortcut keys="Ctrl / Cmd + Shift + `" label="Float or dock terminal" />
           <Shortcut keys="Ctrl / Cmd + Alt + Enter" label="Maximize or restore terminal" />
@@ -827,6 +921,33 @@ export function App({ client }: AppProps) {
       onImportLab: importLab,
     };
   }
+}
+
+/**
+ * Compact status entry shown while the bottom panel is collapsed. Data keeps
+ * accumulating out of sight, so the counts stay reachable — and a new Problems
+ * error gets a visible indicator instead of an intrusive toast per event.
+ */
+function BottomPanelStatus({ state, traces, queuedEvents, problems, onOpen }: {
+  state: BottomPanelState;
+  traces: number;
+  queuedEvents: number;
+  problems: number;
+  onOpen(tab: DockTab): void;
+}) {
+  return <span className="bottom-panel-status" data-panel-state={state}>
+    <button type="button" aria-label="Show bottom panel: Events" aria-expanded={false} onClick={() => onOpen("events")}>Events <small>{traces}</small></button>
+    <button type="button" aria-label="Show bottom panel: Packet trace" aria-expanded={false} onClick={() => onOpen("packet-trace")}>Queued <small>{queuedEvents}</small></button>
+    <button
+      type="button"
+      className={problems > 0 ? "has-problems" : ""}
+      aria-label={`Show bottom panel: Problems${problems > 0 ? `, ${problems} reported` : ""}`}
+      aria-expanded={false}
+      onClick={() => onOpen("problems")}
+    >
+      {problems > 0 && <AlertTriangle size={11} aria-hidden="true" />}Problems <small>{problems}</small>
+    </button>
+  </span>;
 }
 
 function DemoLabDialog({ onClose, onLoad }: { onClose(): void; onLoad(id: DemoLabId): void }) {
@@ -958,6 +1079,11 @@ function TerminalWorkspaceHelpDialog({ onClose }: { onClose(): void }) {
       <section>
         <h3>Right-click menu</h3>
         <p>Copy, Paste, Select All, Clear Terminal, Search and Close Tab. Clear Terminal clears the visible buffer only: the CLI mode, authentication, history and worker session stay open.</p>
+      </section>
+      <section>
+        <h3>Bottom panel</h3>
+        <p>The bottom panel is Expanded, Minimized (a compact tab strip) or Hidden (no height at all, so the topology takes the space). Use View ▸ Bottom Panel, the panel controls, or <strong>Ctrl/Cmd+J</strong>.</p>
+        <p>Hiding or minimizing the panel only changes what is displayed. Terminal tabs, CLI sessions, authentication, the current input line, history, scrollback and a pending paste all survive — only <strong>Close Tab</strong> ends a session. Events, Packet Trace and Problems keep collecting, with their counts on the strip or in the status bar.</p>
       </section>
     </div>
     <p className="section-note">Pasted text is plain text. Escape sequences, OSC clipboard/title/hyperlink commands and other terminal control codes are stripped; binary data is refused. One paste is limited to {TERMINAL_PASTE_LIMITS.maximumCharacters.toLocaleString("en-US")} characters, {TERMINAL_PASTE_LIMITS.maximumLines.toLocaleString("en-US")} lines and {TERMINAL_PASTE_LIMITS.maximumPendingCommands.toLocaleString("en-US")} queued commands.</p>

@@ -40,7 +40,9 @@ label.ui-icon-button { display: inline-grid; }
 .ui-kbd { display: inline-flex; min-height: 20px; align-items: center; padding: 1px 6px; border: var(--border); border-bottom-color: var(--color-border-strong); border-radius: var(--radius-sm); background: var(--color-panel-raised); color: var(--color-text-soft); font-size: var(--font-size-10); }
 
 /* Desktop chrome */
-.desktop-chrome { position: relative; z-index: 40; display: grid; height: calc(var(--menu-bar-height) + var(--action-toolbar-height)); flex: none; grid-template-rows: var(--menu-bar-height) var(--action-toolbar-height); overflow: visible; border-bottom: var(--border); background: var(--color-toolbar); box-shadow: var(--shadow-soft); }
+/* The header owns a stacking context, so it must sit above the floating
+   terminal layer: an open menu is otherwise unreachable behind a terminal. */
+.desktop-chrome { position: relative; z-index: var(--z-menu); display: grid; height: calc(var(--menu-bar-height) + var(--action-toolbar-height)); flex: none; grid-template-rows: var(--menu-bar-height) var(--action-toolbar-height); overflow: visible; border-bottom: var(--border); background: var(--color-toolbar); box-shadow: var(--shadow-soft); }
 .app-menu-row { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 14px; padding: 0 9px; border-bottom: var(--border); background: var(--color-toolbar); }
 .app-menu-row__lead, .app-menu-row__context { display: flex; min-width: 0; align-items: center; }
 .app-menu-row__lead { flex: 1; gap: 2px; }
@@ -290,6 +292,22 @@ label.ui-icon-button { display: inline-grid; }
 /* Bottom dock */
 .bottom-dock { display: grid; width: 100%; height: 100%; min-height: 0; overflow: hidden; grid-template-rows: 35px 1fr; background: var(--color-dock); }
 .bottom-dock__header { display: flex; align-items: center; border-bottom: var(--border); background: var(--color-dock-header); }.bottom-dock__header .ui-tabs { flex: 1; border: 0; }.bottom-dock__header > .ui-icon-button { margin-right: 6px; }
+/* Minimized bottom panel: the tab strip only. No content row is rendered, so
+   the panel occupies exactly this height and the canvas keeps the rest. */
+.bottom-panel-strip { display: flex; width: 100%; height: 34px; flex: none; align-items: stretch; border-top: var(--border); background: var(--color-dock-header); }
+.bottom-panel-strip__tabs { display: flex; min-width: 0; flex: 1; overflow-x: auto; align-items: stretch; }
+.bottom-panel-strip button[role="tab"] { display: flex; flex: none; align-items: center; gap: 6px; padding: 0 12px; border: 0; border-right: var(--border); background: transparent; color: var(--color-text-muted); cursor: pointer; font-size: var(--font-size-10); font-weight: 650; white-space: nowrap; }
+.bottom-panel-strip button[role="tab"]:hover { background: var(--color-panel-hover); color: var(--color-text); }
+.bottom-panel-strip button[role="tab"].is-active { color: var(--color-accent); box-shadow: inset 0 2px var(--color-accent); }
+.bottom-panel-strip button[role="tab"] > span { display: flex; }
+.bottom-panel-strip small { display: grid; min-width: 17px; height: 15px; place-items: center; padding: 0 4px; border-radius: 8px; background: var(--color-panel-raised); color: var(--color-text-faint); font: 8px var(--font-mono); }
+.bottom-panel-strip > .ui-icon-button { width: 28px; height: 100%; flex: none; }
+/* Hidden bottom panel: counts stay reachable from the status footer. */
+.bottom-panel-status { display: flex; align-items: center; gap: 4px; }
+.bottom-panel-status button { display: flex; align-items: center; gap: 4px; padding: 2px 6px; border: var(--border); border-radius: var(--radius-sm); background: transparent; color: var(--color-text-muted); cursor: pointer; font-size: 9px; }
+.bottom-panel-status button:hover { background: var(--color-panel-hover); color: var(--color-text); }
+.bottom-panel-status button.has-problems { border-color: var(--color-error); color: var(--color-error); }
+.bottom-panel-status small { color: var(--color-text-soft); font: 9px var(--font-mono); }
 .bottom-dock__content { min-height: 0; overflow: hidden; }.bottom-dock__content > .ui-empty-state { height: 100%; }
 .dock-terminal-layer { width: 100%; height: 100%; min-height: 0; }
 .dock-terminal-layer > .ui-empty-state { height: 100%; }

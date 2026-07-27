@@ -2521,3 +2521,259 @@ describe("M10.4.1a native terminal paste", () => {
     expect(JSON.stringify(useWorkspaceStore.getState().draft)).not.toContain("confirmMultilinePaste");
   });
 });
+
+describe("M10.4.1b collapsible bottom panel", () => {
+  // The panel and the strip are lazily loaded, so presence is awaited and
+  // absence is checked synchronously right after the state change.
+  const findPanel = () => screen.findByLabelText("Workspace bottom panel");
+  const findStrip = () => screen.findByLabelText("Workspace bottom panel, minimized");
+  const queryPanel = () => screen.queryByLabelText("Workspace bottom panel");
+  const queryStrip = () => screen.queryByLabelText("Workspace bottom panel, minimized");
+
+  async function chooseBottomPanel(label: "Show" | "Minimize" | "Hide") {
+    await openMenu("View");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Bottom Panel" }));
+    await userEvent.click(screen.getByRole("menuitemradio", { name: new RegExp(`^${label}`) }));
+  }
+
+  it("1/2. defaults to an expanded panel with visible tab content", async () => {
+    await loadDemo(new RuntimeClient());
+    expect(useWorkspaceStore.getState().bottomPanelState).toBe("expanded");
+    const dock = await findPanel();
+    expect(queryStrip()).toBeNull();
+    expect(within(dock).getByRole("tab", { name: /Terminal/ })).toBeTruthy();
+  });
+
+  it("3/4/5/6. Minimize leaves only the strip and Hide removes the panel entirely", async () => {
+    await loadDemo(new RuntimeClient());
+    await findPanel();
+
+    await chooseBottomPanel("Minimize");
+    expect(useWorkspaceStore.getState().bottomPanelState).toBe("minimized");
+    expect(queryPanel()).toBeNull();
+    // Only the compact strip remains: the tabs are there, the content is not.
+    const bar = await findStrip();
+    for (const label of ["Terminal", "Events", "Packet trace", "Problems"]) {
+      expect(within(bar).getByRole("tab", { name: new RegExp(label) })).toBeTruthy();
+    }
+    expect(document.querySelector(".dock-terminal-layer")).toBeNull();
+    expect(document.querySelector("#bottom-dock")).toBeNull();
+
+    await chooseBottomPanel("Hide");
+    expect(useWorkspaceStore.getState().bottomPanelState).toBe("hidden");
+    expect(queryPanel()).toBeNull();
+    expect(queryStrip()).toBeNull();
+    // 9/10. Nothing is left behind: no resizer, no stale row.
+    expect(document.querySelector(".resize-handle--horizontal")).toBeNull();
+    // 5/6. The canvas keeps the whole workspace body.
+    expect(document.querySelector(".workspace-resizable")?.childElementCount).toBe(1);
+  });
+
+  it("11/12/13/14/15/16/17. Hide and Minimize never close a terminal session", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await type(terminal, "arp -a");
+    await act(async () => { terminal.emit("\r"); });
+    await type(terminal, "ping 192.168.");
+    const scrollback = terminal.output;
+
+    await chooseBottomPanel("Minimize");
+    expect(terminal.disposed).toBe(false);
+    await chooseBottomPanel("Hide");
+    expect(terminal.disposed).toBe(false);
+    expect(client.requestTypes).not.toContain("CLOSE_CLI_SESSION");
+    expect(useWorkspaceStore.getState().terminalTabs).toEqual(["pc-1"]);
+
+    await chooseBottomPanel("Show");
+    expect(xtermHarness.instances).toHaveLength(1);
+    // Scrollback, the partial input line and history all survived.
+    expect(terminal.output.startsWith(scrollback)).toBe(true);
+    expect(terminal.output).toContain("ping 192.168.");
+    terminal.output = "";
+    await act(async () => { terminal.emit("\x1b[A"); });
+    expect(terminal.output).toContain("arp -a");
+  });
+
+  it("16. a pending paste survives Hide and Show", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select R1");
+    await act(async () => {
+      fireEvent.paste(screen.getByLabelText("R1 terminal"), {
+        clipboardData: { getData: () => "ping\nshow ip route\n" },
+      });
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "Paste Commands" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Continue Paste" })).not.toBeNull());
+
+    await chooseBottomPanel("Hide");
+    await chooseBottomPanel("Show");
+    expect(terminal.disposed).toBe(false);
+    expect(screen.getByRole("button", { name: "Continue Paste" })).toBeTruthy();
+  });
+
+  it("18/19. fits xterm only once the panel has a measurable size again", async () => {
+    await loadDemo(new RuntimeClient());
+    const terminal = await openDeviceTerminal("Select PC1");
+    await chooseBottomPanel("Hide");
+    const fitsWhileHidden = fitHarness.calls;
+
+    // Nothing measures a 0x0 container while the panel is gone.
+    window.dispatchEvent(new Event("resize"));
+    expect(fitHarness.calls).toBe(fitsWhileHidden);
+
+    await chooseBottomPanel("Show");
+    expect(fitHarness.calls).toBeGreaterThan(fitsWhileHidden);
+    // One prompt, not a duplicate, after the round trip.
+    expect(terminal.output.match(/C:\\>/g)?.length).toBe(1);
+  });
+
+  it("20/21/22/23. events keep accumulating while collapsed and update the badges", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    const terminal = await openDeviceTerminal("Select PC1");
+    await chooseBottomPanel("Minimize");
+
+    await type(terminal, "ping 192.168.20.10");
+    await act(async () => { terminal.emit("\r"); });
+    await waitFor(() => expect(useWorkspaceStore.getState().traces.length).toBeGreaterThan(0));
+
+    const traces = useWorkspaceStore.getState().traces.length;
+    const eventsTab = within(await findStrip()).getByRole("tab", { name: /Events/ });
+    expect(eventsTab.textContent).toContain(String(traces));
+  });
+
+  it("24/25. a hidden panel still surfaces problems and opens the right tab", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await chooseBottomPanel("Hide");
+    act(() => useWorkspaceStore.getState().setError("Runtime failure detected", "worker"));
+
+    const status = screen.getByRole("button", { name: /Show bottom panel: Problems, 1 reported/ });
+    expect(status.className).toContain("has-problems");
+    // The panel was not force-expanded by the error itself.
+    expect(useWorkspaceStore.getState().bottomPanelState).toBe("hidden");
+
+    await userEvent.click(status);
+    expect(useWorkspaceStore.getState()).toMatchObject({ bottomPanelState: "expanded", dockTab: "problems" });
+    expect(within(await findPanel()).getByText("Runtime failure detected")).toBeTruthy();
+  });
+
+  it("26. Ctrl/Cmd+J toggles the panel open and closed", async () => {
+    await loadDemo(new RuntimeClient());
+    fireEvent.keyDown(window, { key: "j", ctrlKey: true });
+    expect(useWorkspaceStore.getState().bottomPanelState).toBe("hidden");
+    fireEvent.keyDown(window, { key: "j", metaKey: true });
+    expect(useWorkspaceStore.getState().bottomPanelState).toBe("expanded");
+
+    // A minimized panel opens rather than cycling through minimize again.
+    await chooseBottomPanel("Minimize");
+    fireEvent.keyDown(window, { key: "j", ctrlKey: true });
+    expect(useWorkspaceStore.getState().bottomPanelState).toBe("expanded");
+  });
+
+  it("27. Ctrl/Cmd+` restores a docked terminal behind a hidden panel", async () => {
+    await loadDemo(new RuntimeClient());
+    await openDeviceTerminal("Select PC1");
+    await chooseBottomPanel("Hide");
+
+    fireEvent.keyDown(window, { key: "`", code: "Backquote", ctrlKey: true });
+    expect(useWorkspaceStore.getState()).toMatchObject({
+      bottomPanelState: "expanded",
+      dockTab: "terminal",
+      terminalVisible: true,
+    });
+  });
+
+  it("28/29. a floating or maximized terminal is unaffected by the panel state", async () => {
+    await loadDemo(new RuntimeClient());
+    const terminal = await openDeviceTerminal("Select PC1");
+    act(() => useWorkspaceStore.getState().setTerminalPresentationMode("floating"));
+
+    await chooseBottomPanel("Hide");
+    const shell = document.querySelector(".terminal-presentation");
+    expect(shell?.getAttribute("data-terminal-on-screen")).toBe("true");
+    expect(shell?.className).toContain("is-visible");
+    expect(terminal.disposed).toBe(false);
+
+    act(() => useWorkspaceStore.getState().setTerminalPresentationMode("maximized"));
+    expect(useWorkspaceStore.getState().bottomPanelState).toBe("hidden");
+    expect(document.querySelector(".terminal-presentation")?.getAttribute("data-terminal-on-screen")).toBe("true");
+  });
+
+  it("30. Dock at Bottom expands the panel onto the Terminal tab", async () => {
+    await loadDemo(new RuntimeClient());
+    await openDeviceTerminal("Select PC1");
+    act(() => useWorkspaceStore.getState().setTerminalPresentationMode("floating"));
+    await chooseBottomPanel("Hide");
+
+    await openMenu("View");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Terminal" }));
+    await userEvent.click(screen.getByRole("menuitemradio", { name: /^Dock at Bottom/ }));
+
+    expect(useWorkspaceStore.getState()).toMatchObject({
+      bottomPanelState: "expanded",
+      dockTab: "terminal",
+      terminalPresentationMode: "docked",
+    });
+    expect(xtermHarness.instances).toHaveLength(1);
+  });
+
+  it("7/31/32. the height and state persist locally and never enter the document", async () => {
+    await loadDemo(new RuntimeClient());
+    act(() => useWorkspaceStore.getState().setBottomPanelExpandedHeight(310, 1_000));
+    await chooseBottomPanel("Minimize");
+    await chooseBottomPanel("Show");
+
+    expect(useWorkspaceStore.getState().bottomPanelExpandedHeight).toBe(310);
+    expect(window.localStorage.getItem("simulatornet.bottomPanelExpandedHeight")).toBe("310");
+    expect(window.localStorage.getItem("simulatornet.bottomPanelState")).toBe("expanded");
+
+    const exported = stringifyLabDocument(canonicalizeLabDocument(useWorkspaceStore.getState().draft!));
+    expect(exported).not.toContain("bottomPanel");
+    expect(exported).not.toContain("ExpandedHeight");
+    expect(exported).not.toContain("simulatornet.");
+  });
+
+  it("8. clamps a restored height that no longer fits the viewport", async () => {
+    await loadDemo(new RuntimeClient());
+    act(() => useWorkspaceStore.getState().setBottomPanelExpandedHeight(900, 720));
+    // 48% of a 720px workspace keeps the canvas in the majority.
+    expect(useWorkspaceStore.getState().bottomPanelExpandedHeight).toBe(345);
+  });
+
+  it("33/34/35/36/37. toggling the panel leaves dialogs, links and runtime untouched", async () => {
+    const client = new RuntimeClient();
+    await loadDemo(client);
+    await userEvent.click(screen.getByRole("button", { name: /Packet execution mode: Auto/ }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Packet Execution" }), "step");
+    await userEvent.click(await screen.findByRole("button", { name: "Got it" }));
+    fireEvent.doubleClick(screen.getByRole("button", { name: "Select PC1" }));
+    await screen.findByRole("dialog", { name: "PC1 device window" });
+
+    const links = useWorkspaceStore.getState().draft?.topology.links.length;
+    const requests = client.requestTypes.length;
+
+    await chooseBottomPanel("Hide");
+    await chooseBottomPanel("Show");
+
+    // The device window stayed open, the topology was not rebuilt and the
+    // Auto/Step selection survived.
+    expect(screen.getByRole("dialog", { name: "PC1 device window" })).toBeTruthy();
+    expect(useWorkspaceStore.getState().draft?.topology.links.length).toBe(links);
+    expect(useWorkspaceStore.getState().executionMode).toBe("step");
+    expect(client.requestTypes.slice(requests)).not.toContain("REBUILD_LAB");
+    expect(useWorkspaceStore.getState().pendingTopologyChanges).toBe(false);
+  });
+
+  it("38/39/40. stays usable at 1280x720, 1440x900 and 1920x1080", async () => {
+    for (const height of [720, 900, 1080]) {
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
+      act(() => useWorkspaceStore.getState().setBottomPanelExpandedHeight(600, height));
+      const stored = useWorkspaceStore.getState().bottomPanelExpandedHeight;
+      expect(stored).toBeGreaterThanOrEqual(180);
+      expect(stored).toBeLessThan(height / 2);
+    }
+  });
+});

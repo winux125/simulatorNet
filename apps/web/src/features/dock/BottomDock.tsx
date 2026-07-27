@@ -1,8 +1,8 @@
 import type { LabUiSnapshot, SimulationTraceEvent } from "@sim/sim-worker";
-import { AlertTriangle, Braces, List, Network, TerminalSquare } from "lucide-react";
+import { AlertTriangle, Braces, ChevronUp, EyeOff, List, Minus, Network, TerminalSquare } from "lucide-react";
 import type { DockTab, ExecutionMode, WorkspaceProblem } from "../../state/workspace-store";
-import { useState } from "react";
-import { Button, EmptyState, Tabs } from "../../ui";
+import { useEffect, useRef, useState } from "react";
+import { Button, EmptyState, IconButton, Tabs } from "../../ui";
 import {
   TERMINAL_DOCK_SLOT_ID,
   type TerminalPresentationMode,
@@ -23,6 +23,10 @@ interface BottomDockProps {
   onStep(): void;
   onRunAll(): void;
   onClearTraces(): void;
+  onMinimize(): void;
+  onHide(): void;
+  /** Reports the rendered panel height so the expanded height can be restored. */
+  onHeight(height: number): void;
 }
 
 function timeLabel(nanoseconds: number): string {
@@ -63,18 +67,54 @@ export const TRACE_PROTOCOL_FILTERS = [
   "STP", "RSTP", "LACP", "PAGP", "CDP", "LLDP", "OSPF",
 ] as const;
 
+/** Tab descriptors shared by the expanded panel and the minimized strip. */
+export function bottomDockTabs(
+  traces: SimulationTraceEvent[],
+  problems: WorkspaceProblem[],
+  terminalTabs: string[],
+) {
+  const packetEvents = traces.filter((event) => packetTypes.has(event.type));
+  return {
+    packetEvents,
+    options: [
+      { value: "terminal" as const, label: "Terminal", icon: <TerminalSquare size={13} />, count: terminalTabs.length },
+      { value: "events" as const, label: "Events", icon: <List size={13} />, count: traces.length },
+      { value: "packet-trace" as const, label: "Packet trace", icon: <Network size={13} />, count: packetEvents.length },
+      { value: "problems" as const, label: "Problems", icon: <AlertTriangle size={13} />, count: problems.length },
+    ],
+  };
+}
+
 export function BottomDock(props: BottomDockProps) {
-  const packetEvents = props.traces.filter((event) => packetTypes.has(event.type));
-  const options = [
-    { value: "terminal" as const, label: "Terminal", icon: <TerminalSquare size={13} />, count: props.terminalTabs.length },
-    { value: "events" as const, label: "Events", icon: <List size={13} />, count: props.traces.length },
-    { value: "packet-trace" as const, label: "Packet trace", icon: <Network size={13} />, count: packetEvents.length },
-    { value: "problems" as const, label: "Problems", icon: <AlertTriangle size={13} />, count: props.problems.length },
-  ];
+  const { packetEvents, options } = bottomDockTabs(props.traces, props.problems, props.terminalTabs);
+  const panelRef = useRef<HTMLElement>(null);
+  const onHeight = props.onHeight;
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel || typeof ResizeObserver === "undefined") return;
+    // Report the resized height so expanded → minimized/hidden → expanded comes
+    // back at the same size. Debounced and bounded; never written back here.
+    let timer: number | undefined;
+    const observer = new ResizeObserver(() => {
+      const height = Math.round(panel.getBoundingClientRect().height);
+      if (height <= 0) return;
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(() => onHeight(height), 120);
+    });
+    observer.observe(panel);
+    return () => {
+      observer.disconnect();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [onHeight]);
+
   return (
-    <section className="bottom-dock" aria-label="Workspace bottom panel" data-overflow-boundary="hidden">
+    <section ref={panelRef} className="bottom-dock" aria-label="Workspace bottom panel" data-overflow-boundary="hidden">
       <div className="bottom-dock__header">
         <Tabs label="Bottom panel sections" value={props.tab} options={options} onChange={props.onTab} />
+        <IconButton label="Minimize Bottom Panel" icon={<Minus size={13} />} onClick={props.onMinimize} />
+        <IconButton label="Hide Bottom Panel" icon={<EyeOff size={13} />} onClick={props.onHide} />
       </div>
       <div className="bottom-dock__content" role="tabpanel">
         <div id={TERMINAL_DOCK_SLOT_ID} className="dock-terminal-layer" hidden={props.tab !== "terminal"}>
@@ -105,6 +145,47 @@ export function BottomDock(props: BottomDockProps) {
         </div>}
         {props.tab === "problems" && <Problems problems={props.problems} onClear={props.onClearProblems} />}
       </div>
+    </section>
+  );
+}
+
+interface BottomPanelStripProps {
+  tab: DockTab;
+  traces: SimulationTraceEvent[];
+  problems: WorkspaceProblem[];
+  terminalTabs: string[];
+  onTab(tab: DockTab): void;
+  onExpand(): void;
+  onHide(): void;
+}
+
+/**
+ * The minimized presentation: a compact strip of the same tabs and their live
+ * counts. No tab content is rendered, so it occupies only the strip height —
+ * and no terminal session, event buffer or filter is discarded.
+ */
+export function BottomPanelStrip(props: BottomPanelStripProps) {
+  const { options } = bottomDockTabs(props.traces, props.problems, props.terminalTabs);
+  return (
+    <section className="bottom-panel-strip" aria-label="Workspace bottom panel, minimized">
+      <div className="bottom-panel-strip__tabs" role="tablist" aria-label="Bottom panel sections">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            role="tab"
+            aria-selected={props.tab === option.value}
+            className={props.tab === option.value ? "is-active" : ""}
+            onClick={() => { props.onTab(option.value); props.onExpand(); }}
+          >
+            <span aria-hidden="true">{option.icon}</span>
+            {option.label}
+            <small>{option.count}</small>
+          </button>
+        ))}
+      </div>
+      <IconButton label="Expand Bottom Panel" icon={<ChevronUp size={13} />} onClick={props.onExpand} />
+      <IconButton label="Hide Bottom Panel" icon={<EyeOff size={13} />} onClick={props.onHide} />
     </section>
   );
 }

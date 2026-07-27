@@ -43,6 +43,12 @@ interface TerminalPresentationProps {
   appearance: TerminalAppearance;
   presentationMode: TerminalPresentationMode;
   visible: boolean;
+  /**
+   * False while the bottom panel is collapsed or showing another tab: a docked
+   * terminal then has no measurable slot. The session stays mounted; only its
+   * presentation and xterm fitting are suspended.
+   */
+  dockAvailable: boolean;
   minimized: boolean;
   floatingBounds: TerminalFloatingBounds;
   consoleAccessFor(deviceId: string): ConsoleAccessConfiguration | undefined;
@@ -81,13 +87,17 @@ export function TerminalPresentation(props: TerminalPresentationProps) {
     };
   };
 
+  // A docked terminal is only on screen when the bottom panel gives it a slot.
+  const onScreen = props.visible
+    && (props.presentationMode !== "docked" || props.dockAvailable);
+
   useEffect(() => () => dragCleanupRef.current(), []);
 
   useEffect(() => {
-    if (!props.visible && shellRef.current?.contains(document.activeElement)) {
+    if (!onScreen && shellRef.current?.contains(document.activeElement)) {
       (document.activeElement as HTMLElement | null)?.blur();
     }
-  }, [props.visible]);
+  }, [onScreen]);
 
   useLayoutEffect(() => {
     const layer = layerRef.current;
@@ -136,7 +146,8 @@ export function TerminalPresentation(props: TerminalPresentationProps) {
       if (dockHeightTimer !== undefined) window.clearTimeout(dockHeightTimer);
       window.removeEventListener("resize", update);
     };
-  }, [props.onDockHeight]);
+    // Re-measure when the dock slot appears or disappears with the panel state.
+  }, [props.dockAvailable, props.onDockHeight]);
 
   useEffect(() => {
     const layer = layerRef.current;
@@ -231,16 +242,16 @@ export function TerminalPresentation(props: TerminalPresentationProps) {
   const title = props.presentationMode === "docked"
     ? "Docked"
     : props.presentationMode === "floating" ? "Floating" : "Maximized";
-  const layoutSignal = `${props.presentationMode}:${props.visible}:${props.minimized}:${style.width ?? "auto"}:${style.height ?? "auto"}`;
+  const layoutSignal = `${props.presentationMode}:${onScreen}:${props.minimized}:${style.width ?? "auto"}:${style.height ?? "auto"}`;
 
   return (
-    <div ref={layerRef} className="terminal-presentation-layer" aria-hidden={!props.visible}>
+    <div ref={layerRef} className="terminal-presentation-layer" aria-hidden={!onScreen}>
       <section
         ref={shellRef}
         className={[
           "terminal-presentation",
           `terminal-presentation--${props.presentationMode}`,
-          props.visible ? "is-visible" : "is-hidden",
+          onScreen ? "is-visible" : "is-hidden",
           props.minimized ? "is-minimized" : "",
         ].filter(Boolean).join(" ")}
         style={style}
@@ -248,6 +259,7 @@ export function TerminalPresentation(props: TerminalPresentationProps) {
         aria-label="Terminal workspace"
         data-presentation-mode={props.presentationMode}
         data-terminal-visible={String(props.visible)}
+        data-terminal-on-screen={String(onScreen)}
       >
         <header
           className="terminal-presentation__titlebar"
@@ -291,6 +303,7 @@ export function TerminalPresentation(props: TerminalPresentationProps) {
             theme={props.theme}
             appearance={props.appearance}
             layoutSignal={layoutSignal}
+            measurable={onScreen && !props.minimized}
             consoleAccessFor={props.consoleAccessFor}
             onActivate={props.onActivate}
             onClose={props.onCloseTab}

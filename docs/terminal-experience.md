@@ -28,6 +28,12 @@ Closing or hiding the terminal presentation also does not close its device tabs.
 The selected presentation is a local preference stored under
 `simulatornet.terminalPresentation`; it is not part of `LabDocument`.
 
+Hiding or minimizing the bottom panel is likewise a display change only. A
+docked terminal simply has no slot to draw into; its session, buffer, history,
+authentication and pending paste are untouched, and xterm is not fitted while
+it has no measurable size. Only **Close Tab** ends a CLI session. See
+`docs/workspace-layout.md`.
+
 ## Device windows
 
 The CLI tab in a device window is a launcher for the shared terminal workspace.
@@ -60,6 +66,7 @@ Application-level controls:
 
 | Shortcut | Action |
 | --- | --- |
+| `Ctrl/Cmd+J` | Toggle the bottom panel |
 | `Ctrl/Cmd+\`` | Show or hide the terminal |
 | `Ctrl/Cmd+Shift+\`` | Toggle Docked and Floating |
 | `Ctrl/Cmd+Alt+Enter` | Maximize or restore |
