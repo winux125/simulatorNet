@@ -32,6 +32,8 @@ export const DEFAULT_CONTROL_PROTOCOL_LIMITS = Object.freeze({
   maximumPendingIpv6PacketsPerResolution: 32,
   maximumDadAttemptsPerAddress: 3,
   maximumIpv6ControlEventsPerOperation: 20_000,
+  maximumDhcpv6PoolsPerDevice: 32,
+  maximumDhcpv6LeasesPerDevice: 256,
 
   // --- OSPFv2 ----------------------------------------------------------
   maximumOspfRoutersPerLab: 128,

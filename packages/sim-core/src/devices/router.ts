@@ -10,16 +10,27 @@ import {
 import {
   DEFAULT_DHCP_LEASE_SECONDS,
   DEFAULT_IP_TTL,
+  DEFAULT_IPV6_HOP_LIMIT,
   DEFAULT_PING_TIMEOUT_NS,
   DHCP_CLIENT_PORT,
+  DHCPV6_CLIENT_PORT,
+  DHCPV6_SERVER_PORT,
   DHCP_SERVER_PORT,
 } from "../engine/constants";
 import { EthernetInterface } from "../net/interface";
+import { Ipv6InterfaceState, type Ipv6AddressAssignment } from "../net/ipv6-interface";
 import type { ArpPacket } from "../packets/arp";
 import type { DhcpMessage } from "../packets/dhcp";
+import type { Dhcpv6Message } from "../packets/dhcpv6";
 import type { CdpPacket, DiscoveryCapability, LldpPacket } from "../packets/discovery";
 import { type EthernetFrame, isControlPayload } from "../packets/ethernet";
 import type { IcmpMessage } from "../packets/icmp";
+import {
+  Icmpv6Type,
+  type Icmpv6Message,
+  type RouterAdvertisementPrefix,
+} from "../packets/icmpv6";
+import { Ipv6NextHeader, type Ipv6Packet } from "../packets/ipv6";
 import {
   OSPF_ALL_DESIGNATED_ROUTERS_MAC,
   OSPF_ALL_ROUTERS_MAC,
@@ -28,6 +39,11 @@ import {
 } from "../packets/ospf";
 import { discoveryCapabilitiesFor, discoveryPlatformFor, supportsCdp } from "../protocols/discovery-support";
 import { NeighborDiscovery } from "../protocols/neighbor-discovery";
+import { Dhcpv6Server, type Dhcpv6PoolConfig } from "../protocols/dhcpv6";
+import {
+  Ipv6NeighborDiscovery,
+  type Ipv6NeighborEntry,
+} from "../protocols/ipv6-neighbor-discovery";
 import {
   OSPF_ADMINISTRATIVE_DISTANCE,
   OspfProcess,
@@ -61,6 +77,16 @@ import {
   maskToInt,
 } from "../util/ipv4";
 import {
+  deterministicLinkLocalAddress,
+  IPV6_ALL_NODES,
+  ipv6InPrefix,
+  ipv6Network,
+  ipv6ToBigInt,
+  isIpv6Multicast,
+  normalizeIpv6,
+  type Ipv6,
+} from "../util/ipv6";
+import {
   BROADCAST_MAC,
   CISCO_SHARED_MAC,
   isBroadcastMac,
@@ -89,6 +115,22 @@ export interface L3Interface {
   native: boolean;
   ip: Ipv4 | undefined;
   maskInt: number;
+  readonly ipv6: Ipv6InterfaceState;
+}
+
+export interface RouterAdvertisementConfig {
+  readonly prefixes: readonly RouterAdvertisementPrefix[];
+  readonly managed?: boolean;
+  readonly otherConfiguration?: boolean;
+  readonly routerLifetimeNs?: number;
+  readonly dnsServers?: readonly Ipv6[];
+}
+
+export interface Ipv6RouterInterfaceRow {
+  readonly name: string;
+  readonly addresses: readonly Ipv6AddressAssignment[];
+  readonly adminUp: boolean;
+  readonly operUp: boolean;
 }
 
 /** A row of `show ip interface brief` / `show ip route`, for the CLI. */
@@ -133,6 +175,29 @@ interface StaticRoute {
 interface ResolvedRoute {
   egress: L3Interface;
   nextHopIp: Ipv4;
+}
+
+export type Ipv6RouteSource = "connected" | "static" | "ospfv3";
+
+export interface Ipv6RouteRow {
+  readonly kind: Ipv6RouteSource;
+  readonly network: Ipv6;
+  readonly prefixLength: number;
+  readonly viaIp: Ipv6 | undefined;
+  readonly egressName: string;
+  readonly administrativeDistance: number;
+  readonly metric: number;
+}
+
+interface Ipv6StaticRoute {
+  readonly network: Ipv6;
+  readonly prefixLength: number;
+  readonly nextHop: Ipv6;
+}
+
+interface ResolvedIpv6Route {
+  readonly egress: L3Interface;
+  readonly nextHopIp: Ipv6;
 }
 
 /** A logical interface with no cable; it is up whenever it is not shut down. */
@@ -191,10 +256,18 @@ export class Router extends Device {
   private readonly loopbacks = new Map<number, LoopbackInterface>();
   private readonly natRoles = new Map<string, NatInterfaceRole>();
   private readonly staticRoutes: StaticRoute[] = [];
+  private readonly ipv6StaticRoutes: Ipv6StaticRoute[] = [];
   private readonly dhcpPools: DhcpPool[] = [];
+  readonly dhcpv6 = new Dhcpv6Server(`duid-router-${this.id}`);
+  private readonly ipv6DiscoveryByInterface = new Map<string, Ipv6NeighborDiscovery>();
+  private readonly routerAdvertisements = new Map<string, RouterAdvertisementConfig>();
   private forwardingEnabled = true;
+  private ipv6ForwardingEnabled = false;
   readonly pingResults: Array<{ sequence: number; success: boolean; rttNs?: number }> = [];
   private readonly pendingPings = new Map<number, number>();
+  readonly ipv6PingResults: Array<{ sequence: number; success: boolean; rttNs?: number }> = [];
+  readonly ipv6Problems: string[] = [];
+  private readonly pendingIpv6Pings = new Map<number, number>();
 
   readonly arpTable = new Map<Ipv4, Mac>();
   /** IPv4 packets awaiting ARP resolution, keyed by next-hop IP. */
@@ -328,6 +401,7 @@ export class Router extends Device {
       native: false,
       ip: undefined,
       maskInt: maskToInt(24),
+      ipv6: new Ipv6InterfaceState(),
     };
     this.l3.set(iface.name, iface);
     return iface;
@@ -336,6 +410,8 @@ export class Router extends Device {
   removeInterface(name: string): void {
     this.l3.delete(name);
     this.natRoles.delete(name);
+    this.ipv6DiscoveryByInterface.delete(name);
+    this.routerAdvertisements.delete(name);
   }
 
   setForwardingEnabled(enabled: boolean): void {
@@ -361,6 +437,7 @@ export class Router extends Device {
       native,
       ip: undefined,
       maskInt: maskToInt(24),
+      ipv6: new Ipv6InterfaceState(),
     };
     this.l3.set(name, iface);
     return iface;
@@ -373,6 +450,67 @@ export class Router extends Device {
     iface.ip = ip;
     iface.maskInt = maskToInt(mask);
     this.ospf.arm();
+  }
+
+  setIpv6ForwardingEnabled(enabled: boolean): void {
+    this.ipv6ForwardingEnabled = enabled;
+  }
+
+  get ipv6UnicastRoutingEnabled(): boolean {
+    return this.ipv6ForwardingEnabled;
+  }
+
+  /** `ipv6 enable`: create the deterministic link-local address and run DAD. */
+  enableInterfaceIpv6(name: string): Ipv6 {
+    const iface = this.l3.get(name);
+    if (!iface) throw new Error(`Router ${this.id} has no L3 interface ${name}`);
+    const address = deterministicLinkLocalAddress(iface.physical.mac);
+    if (!iface.ipv6.get(address)) {
+      iface.ipv6.add({ address, prefixLength: 64, source: "link-local", state: "tentative" });
+      this.ipv6Discovery(iface).beginDad(address);
+    }
+    return address;
+  }
+
+  /** `ipv6 address <address>/<prefix>` on a physical, SVI, subinterface or loopback. */
+  setInterfaceIpv6(name: string, addressInput: Ipv6, prefixLength: number): void {
+    const iface = this.l3.get(name);
+    if (!iface) throw new Error(`Router ${this.id} has no L3 interface ${name}`);
+    this.enableInterfaceIpv6(name);
+    const address = normalizeIpv6(addressInput);
+    for (const assignment of iface.ipv6.summaries()) {
+      if (assignment.source === "static" && assignment.address !== address) {
+        iface.ipv6.remove(assignment.address);
+      }
+    }
+    iface.ipv6.add({ address, prefixLength, source: "static", state: "tentative" });
+    this.ipv6Discovery(iface).beginDad(address);
+  }
+
+  addIpv6StaticRoute(network: Ipv6, prefixLength: number, nextHop: Ipv6): void {
+    this.ipv6StaticRoutes.push({
+      network: ipv6Network(normalizeIpv6(network), prefixLength),
+      prefixLength,
+      nextHop: normalizeIpv6(nextHop),
+    });
+  }
+
+  configureRouterAdvertisement(interfaceName: string, config: RouterAdvertisementConfig): void {
+    const iface = this.l3.get(interfaceName);
+    if (!iface) throw new Error(`Router ${this.id} has no L3 interface ${interfaceName}`);
+    this.enableInterfaceIpv6(interfaceName);
+    this.routerAdvertisements.set(interfaceName, {
+      ...config,
+      prefixes: config.prefixes.map((prefix) => ({
+        ...prefix,
+        prefix: ipv6Network(normalizeIpv6(prefix.prefix), prefix.prefixLength),
+      })),
+      dnsServers: config.dnsServers?.map(normalizeIpv6),
+    });
+  }
+
+  addDhcpv6Pool(config: Dhcpv6PoolConfig): void {
+    this.dhcpv6.addPool(config);
   }
 
   // --- loopback interfaces -----------------------------------------------
@@ -399,6 +537,7 @@ export class Router extends Device {
       native: false,
       ip: undefined,
       maskInt: maskToInt(32),
+      ipv6: new Ipv6InterfaceState(),
     };
     this.l3.set(name, iface);
     this.ospf.arm();
@@ -409,6 +548,8 @@ export class Router extends Device {
     const name = loopbackName(index);
     this.l3.delete(name);
     this.loopbacks.delete(index);
+    this.ipv6DiscoveryByInterface.delete(name);
+    this.routerAdvertisements.delete(name);
     this.ospf.arm();
   }
 
@@ -480,6 +621,26 @@ export class Router extends Device {
     }));
   }
 
+  ipv6StaticRouteConfigurations(): Ipv6StaticRoute[] {
+    return this.ipv6StaticRoutes.map((route) => ({ ...route }));
+  }
+
+  routerAdvertisementConfigurations(): Array<{
+    interfaceName: string;
+    configuration: RouterAdvertisementConfig;
+  }> {
+    return [...this.routerAdvertisements.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([interfaceName, configuration]) => ({
+        interfaceName,
+        configuration: {
+          ...configuration,
+          prefixes: configuration.prefixes.map((prefix) => ({ ...prefix })),
+          dnsServers: configuration.dnsServers ? [...configuration.dnsServers] : undefined,
+        },
+      }));
+  }
+
   /** DHCP pool definitions without leases or assigned-address runtime state. */
   dhcpPoolConfigurations(): Array<{
     id: string;
@@ -515,6 +676,60 @@ export class Router extends Device {
       operUp: iface.physical.operationalUp,
       description: iface.physical.description,
     }));
+  }
+
+  ipv6InterfaceSummaries(): Ipv6RouterInterfaceRow[] {
+    return [...this.l3.values()]
+      .map((iface) => ({
+        name: iface.name,
+        addresses: iface.ipv6.summaries(),
+        adminUp: iface.physical.adminUp,
+        operUp: iface.physical.operationalUp,
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  ipv6NeighborEntries(): Array<Ipv6NeighborEntry & { interfaceName: string }> {
+    return [...this.ipv6DiscoveryByInterface.entries()]
+      .flatMap(([interfaceName, discovery]) =>
+        discovery.neighborEntries().map((entry) => ({ ...entry, interfaceName })))
+      .sort((left, right) =>
+        left.interfaceName.localeCompare(right.interfaceName) || left.address.localeCompare(right.address));
+  }
+
+  ipv6RoutingTable(): Ipv6RouteRow[] {
+    const rows: Ipv6RouteRow[] = [];
+    for (const iface of this.l3.values()) {
+      for (const assignment of iface.ipv6.summaries()) {
+        if (assignment.state === "duplicate" || assignment.state === "tentative") continue;
+        if (assignment.source === "link-local") continue;
+        rows.push({
+          kind: "connected",
+          network: ipv6Network(assignment.address, assignment.prefixLength),
+          prefixLength: assignment.prefixLength,
+          viaIp: undefined,
+          egressName: iface.name,
+          administrativeDistance: 0,
+          metric: 0,
+        });
+      }
+    }
+    for (const route of this.ipv6StaticRoutes) {
+      const egress = this.connectedIpv6InterfaceFor(route.nextHop);
+      rows.push({
+        kind: "static",
+        network: route.network,
+        prefixLength: route.prefixLength,
+        viaIp: route.nextHop,
+        egressName: egress?.name ?? "",
+        administrativeDistance: 1,
+        metric: 0,
+      });
+    }
+    return rows.sort((left, right) =>
+      right.prefixLength - left.prefixLength
+      || left.network.localeCompare(right.network)
+      || left.egressName.localeCompare(right.egressName));
   }
 
   /** `show ip route`: connected, then static, then OSPF-learned routes. */
@@ -606,6 +821,32 @@ export class Router extends Device {
     });
   }
 
+  ping6(targetInput: Ipv6, sequence = 0): void {
+    const target = normalizeIpv6(targetInput);
+    const route = this.resolveIpv6(target);
+    const source = route ? this.sourceIpv6Address(route.egress, target) : undefined;
+    if (!route || !source) throw new Error(`Router ${this.id} has no IPv6 route to ${target}`);
+    this.pendingIpv6Pings.set(sequence, this.engine.now());
+    this.engine.scheduleIn(DEFAULT_PING_TIMEOUT_NS, () => {
+      if (!this.pendingIpv6Pings.delete(sequence)) return;
+      this.ipv6PingResults.push({ sequence, success: false });
+    });
+    this.originateIpv6({
+      kind: "ipv6",
+      src: source,
+      dst: target,
+      nextHeader: Ipv6NextHeader.ICMPv6,
+      hopLimit: DEFAULT_IPV6_HOP_LIMIT,
+      payload: {
+        kind: "icmpv6",
+        type: Icmpv6Type.EchoRequest,
+        code: 0,
+        identifier: 0x5256,
+        sequence,
+      },
+    });
+  }
+
   // --- receive path ------------------------------------------------------
 
   override onReceive(frame: EthernetFrame, ingress: EthernetInterface): void {
@@ -620,13 +861,15 @@ export class Router extends Device {
     const dstMac = normalizeMac(frame.dst);
     const myMac = normalizeMac(iface.physical.mac);
     const ospfGroup = dstMac === OSPF_ALL_ROUTERS_MAC || dstMac === OSPF_ALL_DESIGNATED_ROUTERS_MAC;
-    if (dstMac !== myMac && !isBroadcastMac(dstMac) && !ospfGroup) return; // not addressed to us
-
     const payload = frame.payload;
+    const ipv6Group = payload.kind === "ipv6" && isIpv6Multicast(payload.dst);
+    if (dstMac !== myMac && !isBroadcastMac(dstMac) && !ospfGroup && !ipv6Group) return;
     if (payload.kind === "arp") {
       this.handleArp(payload, iface);
     } else if (payload.kind === "ipv4") {
       this.handleIpv4(payload, frame, iface);
+    } else if (payload.kind === "ipv6") {
+      this.handleIpv6(payload, frame, iface);
     }
   }
 
@@ -640,6 +883,11 @@ export class Router extends Device {
   override onInterfaceStateChanged(iface: EthernetInterface): void {
     this.discovery.onPortStateChanged(iface.name);
     this.ospf.onInterfaceStateChanged(iface.name);
+    for (const [name, l3] of this.l3) {
+      if (l3.physical === iface && !iface.operationalUp) {
+        this.ipv6DiscoveryByInterface.get(name)?.reset();
+      }
+    }
   }
 
   // --- OSPF host ----------------------------------------------------------
@@ -821,6 +1069,202 @@ export class Router extends Device {
     if (!mac || !queued) return;
     this.arpPending.delete(ip);
     for (const { packet, egress } of queued) this.transmit(egress, mac, EtherType.IPv4, packet);
+  }
+
+  // --- IPv6 / ICMPv6 / NDP / DHCPv6 ------------------------------------
+
+  private ipv6Discovery(iface: L3Interface): Ipv6NeighborDiscovery {
+    const existing = this.ipv6DiscoveryByInterface.get(iface.name);
+    if (existing) return existing;
+    const discovery = new Ipv6NeighborDiscovery({
+      deviceId: this.id,
+      interfaceId: iface.name,
+      engine: () => this.engine,
+      mac: () => iface.physical.mac,
+      addresses: iface.ipv6,
+      isRouter: true,
+      transmit: (destinationMac, packet) => {
+        this.transmit(iface, destinationMac, EtherType.IPv6, packet);
+      },
+      onDadConflict: (_address, message) => {
+        const scoped = `${iface.name}: ${message}`;
+        if (!this.ipv6Problems.includes(scoped)) this.ipv6Problems.push(scoped);
+      },
+    });
+    this.ipv6DiscoveryByInterface.set(iface.name, discovery);
+    return discovery;
+  }
+
+  private handleIpv6(packet: Ipv6Packet, frame: EthernetFrame, ingress: L3Interface): void {
+    const discovery = this.ipv6Discovery(ingress);
+    if (discovery.receive(packet, frame.src)) return;
+    if (packet.src !== "::") discovery.learnNeighbor(packet.src, frame.src);
+
+    if (
+      packet.nextHeader === Ipv6NextHeader.ICMPv6
+      && packet.payload.kind === "icmpv6"
+      && packet.payload.type === Icmpv6Type.RouterSolicitation
+    ) {
+      this.sendRouterAdvertisement(ingress, packet.src);
+      return;
+    }
+    if (
+      packet.nextHeader === Ipv6NextHeader.UDP
+      && packet.payload.kind === "udp"
+      && packet.payload.dstPort === DHCPV6_SERVER_PORT
+      && packet.payload.payload.kind === "dhcpv6"
+    ) {
+      this.handleDhcpv6(packet.payload.payload, ingress, packet.src);
+      return;
+    }
+    if (this.isOwnIpv6(packet.dst)) {
+      this.deliverLocalIpv6(packet);
+      return;
+    }
+    if (isIpv6Multicast(packet.dst)) return;
+    this.forwardIpv6(packet, ingress);
+  }
+
+  private deliverLocalIpv6(packet: Ipv6Packet): void {
+    if (packet.nextHeader !== Ipv6NextHeader.ICMPv6 || packet.payload.kind !== "icmpv6") return;
+    const message = packet.payload;
+    if (message.type === Icmpv6Type.EchoReply) {
+      const sentAt = this.pendingIpv6Pings.get(message.sequence);
+      if (sentAt === undefined) return;
+      this.pendingIpv6Pings.delete(message.sequence);
+      const rttNs = this.engine.now() - sentAt;
+      this.ipv6PingResults.push({ sequence: message.sequence, success: true, rttNs });
+      this.engine.trace({
+        time: this.engine.now(),
+        type: "ipv6-ping-success",
+        device: this.id,
+        detail: { sequence: message.sequence, rttNs },
+      });
+      return;
+    }
+    if (message.type !== Icmpv6Type.EchoRequest) return;
+    this.originateIpv6({
+      kind: "ipv6",
+      src: packet.dst,
+      dst: packet.src,
+      nextHeader: Ipv6NextHeader.ICMPv6,
+      hopLimit: DEFAULT_IPV6_HOP_LIMIT,
+      payload: {
+        kind: "icmpv6",
+        type: Icmpv6Type.EchoReply,
+        code: 0,
+        identifier: message.identifier,
+        sequence: message.sequence,
+      },
+    });
+  }
+
+  private forwardIpv6(packet: Ipv6Packet, ingress: L3Interface): void {
+    if (!this.ipv6ForwardingEnabled) return;
+    if (packet.hopLimit <= 1) {
+      this.sendIcmpv6Error(Icmpv6Type.TimeExceeded, packet, ingress);
+      return;
+    }
+    const route = this.resolveIpv6(packet.dst);
+    if (!route) {
+      this.sendIcmpv6Error(Icmpv6Type.DestinationUnreachable, packet, ingress);
+      return;
+    }
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "ipv6-route",
+      device: this.id,
+      detail: { destination: packet.dst, egress: route.egress.name, nextHop: route.nextHopIp },
+    });
+    this.ipv6Discovery(route.egress).send({ ...packet, hopLimit: packet.hopLimit - 1 }, route.nextHopIp);
+  }
+
+  private originateIpv6(packet: Ipv6Packet): void {
+    if (isIpv6Multicast(packet.dst)) {
+      const iface = [...this.l3.values()].find((entry) => entry.ipv6.owns(packet.src));
+      if (iface) this.ipv6Discovery(iface).send(packet, packet.dst);
+      return;
+    }
+    const route = this.resolveIpv6(packet.dst);
+    if (!route) return;
+    this.ipv6Discovery(route.egress).send(packet, route.nextHopIp);
+  }
+
+  private sendIcmpv6Error(
+    type: typeof Icmpv6Type.DestinationUnreachable | typeof Icmpv6Type.TimeExceeded,
+    offending: Ipv6Packet,
+    ingress: L3Interface,
+  ): void {
+    const source = this.sourceIpv6Address(ingress, offending.src);
+    if (!source) return;
+    const payload: Icmpv6Message = type === Icmpv6Type.TimeExceeded
+      ? { kind: "icmpv6", type, code: 0, reason: "hop-limit-exceeded" }
+      : { kind: "icmpv6", type, code: 0, reason: "no-route" };
+    this.originateIpv6({
+      kind: "ipv6",
+      src: source,
+      dst: offending.src,
+      nextHeader: Ipv6NextHeader.ICMPv6,
+      hopLimit: DEFAULT_IPV6_HOP_LIMIT,
+      payload,
+    });
+  }
+
+  private sendRouterAdvertisement(iface: L3Interface, requester: Ipv6): void {
+    const config = this.routerAdvertisements.get(iface.name);
+    if (!config) return;
+    const source = iface.ipv6.summaries().find((entry) =>
+      entry.source === "link-local" && entry.state === "preferred")?.address;
+    if (!source) return;
+    const destination = requester === "::" ? IPV6_ALL_NODES : requester;
+    this.ipv6Discovery(iface).send({
+      kind: "ipv6",
+      src: source,
+      dst: destination,
+      nextHeader: Ipv6NextHeader.ICMPv6,
+      hopLimit: 255,
+      payload: {
+        kind: "icmpv6",
+        type: Icmpv6Type.RouterAdvertisement,
+        code: 0,
+        currentHopLimit: DEFAULT_IPV6_HOP_LIMIT,
+        managed: config.managed ?? false,
+        otherConfiguration: config.otherConfiguration ?? false,
+        routerLifetimeNs: config.routerLifetimeNs ?? 1_800_000_000_000,
+        sourceLinkLayerAddress: iface.physical.mac,
+        prefixes: config.prefixes,
+        dnsServers: config.dnsServers,
+      },
+    }, destination);
+  }
+
+  private handleDhcpv6(message: Dhcpv6Message, iface: L3Interface, source: Ipv6): void {
+    const linkAddress = iface.ipv6.summaries().find((entry) =>
+      entry.source !== "link-local" && entry.state === "preferred")?.address;
+    const reply = this.dhcpv6.handle(message, linkAddress);
+    if (!reply) return;
+    const local = iface.ipv6.summaries().find((entry) =>
+      entry.source === "link-local" && entry.state === "preferred")?.address;
+    if (!local) return;
+    this.ipv6Discovery(iface).send({
+      kind: "ipv6",
+      src: local,
+      dst: source,
+      nextHeader: Ipv6NextHeader.UDP,
+      hopLimit: 1,
+      payload: {
+        kind: "udp",
+        srcPort: DHCPV6_SERVER_PORT,
+        dstPort: DHCPV6_CLIENT_PORT,
+        payload: reply,
+      },
+    }, source);
+    this.engine.trace({
+      time: this.engine.now(),
+      type: `dhcpv6-${reply.messageType}`,
+      device: this.id,
+      detail: { interface: iface.name, clientId: reply.clientId, address: reply.address },
+    });
   }
 
   // --- IPv4 / ICMP -------------------------------------------------------
@@ -1093,6 +1537,80 @@ export class Router extends Device {
     return best ? { egress: best.egress, nextHopIp: best.nextHopIp } : undefined;
   }
 
+  private resolveIpv6(destinationInput: Ipv6): ResolvedIpv6Route | undefined {
+    const destination = normalizeIpv6(destinationInput);
+    interface Candidate extends ResolvedIpv6Route {
+      readonly prefixLength: number;
+      readonly distance: number;
+      readonly metric: number;
+    }
+    let best: Candidate | undefined;
+    const consider = (candidate: Candidate): void => {
+      if (!best
+        || candidate.prefixLength > best.prefixLength
+        || (candidate.prefixLength === best.prefixLength && (
+          candidate.distance < best.distance
+          || (candidate.distance === best.distance && (
+            candidate.metric < best.metric
+            || (candidate.metric === best.metric && (
+              ipv6ToBigInt(candidate.nextHopIp) < ipv6ToBigInt(best.nextHopIp)
+              || (candidate.nextHopIp === best.nextHopIp
+                && candidate.egress.name.localeCompare(best.egress.name) < 0)))))))) {
+        best = candidate;
+      }
+    };
+
+    for (const iface of this.l3.values()) {
+      if (!iface.physical.operationalUp) continue;
+      for (const assignment of iface.ipv6.summaries()) {
+        if (assignment.state === "tentative" || assignment.state === "duplicate") continue;
+        if (!ipv6InPrefix(destination, assignment.address, assignment.prefixLength)) continue;
+        consider({
+          prefixLength: assignment.prefixLength,
+          distance: 0,
+          metric: 0,
+          egress: iface,
+          nextHopIp: destination,
+        });
+      }
+    }
+    for (const route of this.ipv6StaticRoutes) {
+      if (!ipv6InPrefix(destination, route.network, route.prefixLength)) continue;
+      const egress = this.connectedIpv6InterfaceFor(route.nextHop);
+      if (!egress) continue;
+      consider({
+        prefixLength: route.prefixLength,
+        distance: 1,
+        metric: 0,
+        egress,
+        nextHopIp: route.nextHop,
+      });
+    }
+    return best ? { egress: best.egress, nextHopIp: best.nextHopIp } : undefined;
+  }
+
+  private connectedIpv6InterfaceFor(address: Ipv6): L3Interface | undefined {
+    for (const iface of this.l3.values()) {
+      if (!iface.physical.operationalUp) continue;
+      for (const assignment of iface.ipv6.summaries()) {
+        if (assignment.state === "tentative" || assignment.state === "duplicate") continue;
+        if (ipv6InPrefix(address, assignment.address, assignment.prefixLength)) return iface;
+      }
+    }
+    return undefined;
+  }
+
+  private sourceIpv6Address(iface: L3Interface, destination: Ipv6): Ipv6 | undefined {
+    return iface.ipv6.sourceFor(destination);
+  }
+
+  private isOwnIpv6(address: Ipv6): boolean {
+    for (const iface of this.l3.values()) {
+      if (iface.ipv6.owns(address)) return true;
+    }
+    return false;
+  }
+
   private connectedInterfaceFor(ip: Ipv4): L3Interface | undefined {
     const ipInt = ipToInt(ip);
     for (const iface of this.l3.values()) {
@@ -1308,7 +1826,12 @@ export class Router extends Device {
 
   // --- transmit helper ---------------------------------------------------
 
-  private transmit(iface: L3Interface, dstMac: Mac, etherType: EtherType, payload: ArpPacket | Ipv4Packet): void {
+  private transmit(
+    iface: L3Interface,
+    dstMac: Mac,
+    etherType: EtherType,
+    payload: ArpPacket | Ipv4Packet | Ipv6Packet,
+  ): void {
     const frame: EthernetFrame = {
       src: iface.physical.mac,
       dst: dstMac,

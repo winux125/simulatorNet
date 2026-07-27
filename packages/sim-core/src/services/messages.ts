@@ -1,4 +1,4 @@
-import type { Ipv4 } from "../util/ipv4";
+import type { IpAddress } from "../util/ip-address";
 
 export interface DnsMessage {
   readonly kind: "dns";
@@ -6,7 +6,7 @@ export interface DnsMessage {
   readonly transactionId: number;
   readonly name: string;
   readonly responseCode?: "NOERROR" | "NXDOMAIN" | "FORMERR";
-  readonly address?: Ipv4;
+  readonly address?: IpAddress;
 }
 
 export interface HttpMessage {

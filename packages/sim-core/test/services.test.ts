@@ -114,12 +114,12 @@ describe("server service lifecycle", () => {
     expect(server.transport.udp.inspect()).toHaveLength(1);
   });
 
-  it("reports an error when an enabled service has no IPv4 address", () => {
+  it("reports an error when an enabled service has no IP address", () => {
     const { engine, server } = buildServiceLan([], "192.168.40.10");
     server.setDhcpEnabled(true);
     server.configureServices([dns()]);
     engine.runUntilIdle();
-    expect(server.listServices()[0]).toMatchObject({ state: "error", error: "Service requires a configured IPv4 address" });
+    expect(server.listServices()[0]).toMatchObject({ state: "error", error: "Service requires a configured IP address" });
   });
 });
 

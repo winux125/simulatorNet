@@ -9,19 +9,27 @@ import {
 } from "@sim/contracts";
 import {
   DEFAULT_DHCP_TIMEOUT_NS,
+  DEFAULT_DHCPV6_TIMEOUT_NS,
   DEFAULT_IP_TTL,
   DEFAULT_IPV6_HOP_LIMIT,
   DEFAULT_PING_TIMEOUT_NS,
   DHCP_CLIENT_PORT,
   DHCP_SERVER_PORT,
+  DHCPV6_CLIENT_PORT,
+  DHCPV6_SERVER_PORT,
 } from "../engine/constants";
 import type { EthernetInterface } from "../net/interface";
 import type { ArpPacket } from "../packets/arp";
 import type { DhcpMessage } from "../packets/dhcp";
+import { Dhcpv6MessageType, type Dhcpv6Message } from "../packets/dhcpv6";
 import type { EthernetFrame } from "../packets/ethernet";
 import type { IcmpMessage } from "../packets/icmp";
 import type { Ipv4Packet } from "../packets/ipv4";
-import { Icmpv6Type, type Icmpv6Message } from "../packets/icmpv6";
+import {
+  Icmpv6Type,
+  type Icmpv6Message,
+  type RouterAdvertisement,
+} from "../packets/icmpv6";
 import { Ipv6NextHeader, type Ipv6Packet } from "../packets/ipv6";
 import type { UdpDatagram } from "../packets/udp";
 import type { TcpSegment } from "../packets/tcp";
@@ -30,14 +38,20 @@ import { HostApplications } from "../services/host-applications";
 import type { TcpAcceptListener, TcpConnection, TcpConnectionHandlers } from "../transport/tcp";
 import type { UdpListener, UdpSendOptions } from "../transport/udp";
 import { BROADCAST_IP, type Ipv4, ipsShareNetwork, maskToInt, UNSPECIFIED_IP } from "../util/ipv4";
+import { ipFamilyOf, type IpAddress, type IpFamily } from "../util/ip-address";
 import { BROADCAST_MAC, type Mac, normalizeMac, ZERO_MAC } from "../util/mac";
 import { Device } from "./device";
 import { Ipv6InterfaceState, type Ipv6AddressAssignment } from "../net/ipv6-interface";
 import { Ipv6NeighborDiscovery, type Ipv6NeighborEntry } from "../protocols/ipv6-neighbor-discovery";
 import {
   deterministicLinkLocalAddress,
+  deterministicInterfaceIdentifier,
+  combineIpv6Prefix,
+  IPV6_ALL_ROUTERS,
+  IPV6_ALL_DHCP_SERVERS,
   ipv6SameSubnet,
   isIpv6Multicast,
+  isIpv6Unspecified,
   normalizeIpv6,
   type Ipv6,
 } from "../util/ipv6";
@@ -51,6 +65,17 @@ export interface DhcpLease {
 }
 
 type DhcpState = "idle" | "discovering" | "requesting" | "bound" | "failed";
+export type Ipv6HostMode = "static" | "slaac" | "dhcpv6";
+export type Dhcpv6State = "idle" | "soliciting" | "requesting" | "bound" | "released" | "failed";
+
+export interface Dhcpv6Lease {
+  readonly address: Ipv6;
+  readonly prefixLength: number;
+  readonly serverId: string;
+  readonly preferredLifetimeNs: number;
+  readonly validLifetimeNs: number;
+  readonly dnsServers: readonly Ipv6[];
+}
 
 export interface PcConfig {
   ip?: Ipv4;
@@ -67,6 +92,15 @@ export interface PcConfigurationSnapshot {
   gateway: Ipv4 | undefined;
   dhcpEnabled: boolean;
   dnsServer: Ipv4 | undefined;
+}
+
+/** Persistent IPv6 intent. Learned addresses, leases and NDP state are excluded. */
+export interface HostIpv6ConfigurationSnapshot {
+  readonly mode: Ipv6HostMode;
+  readonly staticAddress?: Ipv6;
+  readonly prefixLength?: number;
+  readonly defaultRouter?: Ipv6;
+  readonly dnsServer?: Ipv6;
 }
 
 export interface PingResult {
@@ -98,9 +132,17 @@ export abstract class EndHost extends Device {
   readonly ipv6Addresses = new Ipv6InterfaceState();
   readonly ipv6PingResults: PingResult[] = [];
   readonly ipv6Problems: string[] = [];
+  ipv6Mode: Ipv6HostMode = "static";
+  ipv6DefaultRouter: Ipv6 | undefined;
+  private ipv6DefaultRouterUntilNs: number | undefined;
+  ipv6DnsServer: Ipv6 | undefined;
+  dhcpv6State: Dhcpv6State = "idle";
+  dhcpv6Lease: Dhcpv6Lease | undefined;
   private ipv6NeighborRuntime: Ipv6NeighborDiscovery | undefined;
   private readonly pendingIpv6Pings = new Map<number, PendingPing>();
   private readonly icmpv6Identifier = 0x6262;
+  private dhcpv6TransactionId = 0;
+  private routerSolicitationSent = false;
 
   /** DHCP client state (see `requestDhcp`). */
   dhcpState: DhcpState = "idle";
@@ -123,7 +165,7 @@ export abstract class EndHost extends Device {
     this.transport = new HostTransportStack({
       deviceId: this.id,
       engine: () => this.engine,
-      localAddress: () => this.ip,
+      localAddress: (family, destination) => this.localTransportAddress(family, destination),
       sendUdpPacket: (destinationAddress, datagram, sourceAddress) => {
         this.sendTransportPacket(destinationAddress, IpProtocol.UDP, datagram, sourceAddress);
       },
@@ -138,7 +180,7 @@ export abstract class EndHost extends Device {
       deviceId: this.id,
       hostname: () => this.name,
       engine: () => this.engine,
-      localAddress: () => this.ip,
+      localAddress: (family, destination) => this.localTransportAddress(family, destination),
       transport: this.transport,
     });
   }
@@ -164,7 +206,7 @@ export abstract class EndHost extends Device {
   }
 
   connectTcp(
-    destinationAddress: Ipv4,
+    destinationAddress: IpAddress,
     destinationPort: number,
     handlers?: TcpConnectionHandlers,
     service?: string,
@@ -230,6 +272,17 @@ export abstract class EndHost extends Device {
     };
   }
 
+  ipv6ConfigurationSnapshot(): HostIpv6ConfigurationSnapshot {
+    const configured = this.ipv6Addresses.summaries().find((entry) => entry.source === "static");
+    return {
+      mode: this.ipv6Mode,
+      staticAddress: this.ipv6Mode === "static" ? configured?.address : undefined,
+      prefixLength: this.ipv6Mode === "static" ? configured?.prefixLength : undefined,
+      defaultRouter: this.ipv6Mode === "static" ? this.ipv6DefaultRouter : undefined,
+      dnsServer: this.ipv6Mode === "static" ? this.ipv6DnsServer : undefined,
+    };
+  }
+
   /** The PC's single Ethernet interface. */
   get primary(): EthernetInterface {
     if (this.primaryInterfaceName) {
@@ -262,14 +315,26 @@ export abstract class EndHost extends Device {
   }
 
   /** Replace the persistent static global address; runtime NDP state is discarded. */
-  configureIpv6Static(addressInput: Ipv6, prefixLength: number): void {
+  configureIpv6Static(
+    addressInput: Ipv6,
+    prefixLength: number,
+    defaultRouter?: Ipv6,
+    dnsServer?: Ipv6,
+  ): void {
     const address = normalizeIpv6(addressInput);
     if (!Number.isInteger(prefixLength) || prefixLength < 0 || prefixLength > 128) {
       throw new Error(`Invalid IPv6 prefix length: ${prefixLength}`);
     }
-    this.ipv6Discovery().reset();
+    this.resetIpv6NetworkRuntime();
+    this.ipv6Mode = "static";
+    this.routerSolicitationSent = false;
+    this.dhcpv6State = "idle";
+    this.dhcpv6Lease = undefined;
+    this.ipv6DefaultRouter = defaultRouter ? normalizeIpv6(defaultRouter) : undefined;
+    this.ipv6DefaultRouterUntilNs = undefined;
+    this.ipv6DnsServer = dnsServer ? normalizeIpv6(dnsServer) : undefined;
     for (const assignment of this.ipv6Addresses.summaries()) {
-      if (assignment.source === "static") this.ipv6Addresses.remove(assignment.address);
+      if (assignment.source !== "link-local") this.ipv6Addresses.remove(assignment.address);
     }
     this.enableIpv6();
     this.ipv6Addresses.add({
@@ -281,7 +346,51 @@ export abstract class EndHost extends Device {
     this.ipv6Discovery().beginDad(address);
   }
 
+  setIpv6Mode(mode: Ipv6HostMode): void {
+    this.resetIpv6NetworkRuntime();
+    this.ipv6Mode = mode;
+    this.routerSolicitationSent = false;
+    this.dhcpv6State = "idle";
+    this.dhcpv6Lease = undefined;
+    this.ipv6DefaultRouter = undefined;
+    this.ipv6DefaultRouterUntilNs = undefined;
+    this.ipv6DnsServer = undefined;
+    for (const assignment of this.ipv6Addresses.summaries()) {
+      if (
+        (mode === "static" && (assignment.source === "slaac" || assignment.source === "dhcpv6"))
+        || (mode !== "static" && assignment.source !== "link-local")
+      ) {
+        this.ipv6Addresses.remove(assignment.address);
+      }
+    }
+    const linkLocal = this.enableIpv6();
+    if (this.ipv6Addresses.get(linkLocal)?.state === "preferred") this.startIpv6Autoconfiguration();
+  }
+
+  renewDhcpv6(): void {
+    if (this.ipv6Mode !== "dhcpv6") throw new Error("DHCPv6 mode is not enabled");
+    if (this.dhcpv6Lease) {
+      this.beginDhcpv6(Dhcpv6MessageType.Renew, this.dhcpv6Lease.serverId, this.dhcpv6Lease.address);
+    } else {
+      this.beginDhcpv6(Dhcpv6MessageType.Solicit);
+    }
+  }
+
+  releaseDhcpv6(): void {
+    const lease = this.dhcpv6Lease;
+    if (lease) {
+      this.sendDhcpv6(Dhcpv6MessageType.Release, lease.serverId, lease.address);
+      this.ipv6Addresses.remove(lease.address);
+    }
+    this.transport.reset();
+    this.applications.resetRuntime();
+    this.dhcpv6Lease = undefined;
+    this.dhcpv6State = "released";
+    this.onNetworkConfigurationChanged();
+  }
+
   ipv6AddressSummaries(): Ipv6AddressAssignment[] {
+    this.refreshIpv6Runtime();
     return this.ipv6Addresses.summaries();
   }
 
@@ -296,6 +405,7 @@ export abstract class EndHost extends Device {
 
   /** Initiate one ICMPv6 echo request after selecting a valid source address. */
   ping6(targetInput: Ipv6, sequence = 0): void {
+    this.refreshIpv6Runtime();
     const target = normalizeIpv6(targetInput);
     const source = this.ipv6Addresses.sourceFor(target);
     if (!source) throw new Error(`PC ${this.id} has no usable IPv6 address`);
@@ -390,11 +500,17 @@ export abstract class EndHost extends Device {
       onDadConflict: (_address, message) => {
         if (!this.ipv6Problems.includes(message)) this.ipv6Problems.push(message);
       },
+      onDadComplete: (address) => {
+        this.onNetworkConfigurationChanged();
+        const assignment = this.ipv6Addresses.get(address);
+        if (assignment?.source === "link-local") this.startIpv6Autoconfiguration();
+      },
     });
     return this.ipv6NeighborRuntime;
   }
 
-  private sendIpv6(packet: Ipv6Packet): void {
+  protected sendIpv6(packet: Ipv6Packet): void {
+    this.refreshIpv6Runtime();
     if (isIpv6Multicast(packet.dst)) {
       this.ipv6Discovery().send(packet, packet.dst);
       return;
@@ -403,7 +519,7 @@ export abstract class EndHost extends Device {
     if (!source) return;
     const nextHop = ipv6SameSubnet(packet.dst, packet.src, source.prefixLength)
       ? packet.dst
-      : undefined;
+      : this.ipv6DefaultRouter;
     if (!nextHop) return;
     this.ipv6Discovery().send(packet, nextHop);
   }
@@ -412,13 +528,203 @@ export abstract class EndHost extends Device {
     if (packet.hopLimit <= 0) return;
     if (this.ipv6Discovery().receive(packet, frame.src)) return;
     if (!this.ipv6Addresses.owns(packet.dst) && !isIpv6Multicast(packet.dst)) return;
+    if (packet.nextHeader === Ipv6NextHeader.UDP && packet.payload.kind === "udp") {
+      if (packet.payload.dstPort === DHCPV6_CLIENT_PORT && packet.payload.payload.kind === "dhcpv6") {
+        this.handleDhcpv6(packet.payload.payload);
+        return;
+      }
+      if (this.handleIpv6ControlDatagram(packet.src, packet.payload)) return;
+      this.transport.receiveUdp(packet.src, packet.dst, packet.payload, isIpv6Multicast(packet.dst));
+      return;
+    }
+    if (packet.nextHeader === Ipv6NextHeader.TCP && packet.payload.kind === "tcp") {
+      this.transport.receiveTcp(packet.src, packet.dst, packet.payload);
+      return;
+    }
     if (packet.nextHeader !== Ipv6NextHeader.ICMPv6 || packet.payload.kind !== "icmpv6") return;
     const icmp = packet.payload;
-    if (icmp.type === Icmpv6Type.EchoRequest && this.ipv6Addresses.owns(packet.dst)) {
+    if (icmp.type === Icmpv6Type.RouterAdvertisement) {
+      this.handleRouterAdvertisement(packet.src, icmp);
+    } else if (icmp.type === Icmpv6Type.EchoRequest && this.ipv6Addresses.owns(packet.dst)) {
       this.sendIpv6EchoReply(packet.src, packet.dst, icmp);
     } else if (icmp.type === Icmpv6Type.EchoReply) {
       this.completeIpv6Ping(icmp.sequence);
     }
+  }
+
+  /** Extension point for server-side DHCPv6 and future structured control services. */
+  protected handleIpv6ControlDatagram(_source: Ipv6, _datagram: UdpDatagram): boolean {
+    return false;
+  }
+
+  private startIpv6Autoconfiguration(): void {
+    if (this.routerSolicitationSent || this.ipv6Mode === "static") return;
+    const source = this.ipv6Addresses.sourceFor("fe80::1");
+    if (!source) return;
+    this.routerSolicitationSent = true;
+    this.sendIpv6({
+      kind: "ipv6",
+      src: source,
+      dst: IPV6_ALL_ROUTERS,
+      nextHeader: Ipv6NextHeader.ICMPv6,
+      hopLimit: 255,
+      payload: {
+        kind: "icmpv6",
+        type: Icmpv6Type.RouterSolicitation,
+        code: 0,
+        sourceLinkLayerAddress: this.primary.mac,
+      },
+    });
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "ipv6-router-solicitation",
+      device: this.id,
+      detail: { source },
+    });
+    if (this.ipv6Mode === "dhcpv6") this.beginDhcpv6(Dhcpv6MessageType.Solicit);
+  }
+
+  private handleRouterAdvertisement(source: Ipv6, advertisement: RouterAdvertisement): void {
+    this.ipv6Discovery().learnNeighbor(source, advertisement.sourceLinkLayerAddress);
+    if (advertisement.routerLifetimeNs > 0) {
+      this.ipv6DefaultRouter = normalizeIpv6(source);
+      this.ipv6DefaultRouterUntilNs = this.engine.now() + advertisement.routerLifetimeNs;
+    }
+    if (advertisement.dnsServers?.[0]) this.ipv6DnsServer = normalizeIpv6(advertisement.dnsServers[0]);
+    if (this.ipv6Mode === "slaac") {
+      for (const prefix of advertisement.prefixes) {
+        if (!prefix.autonomous || prefix.prefixLength !== 64) continue;
+        const address = combineIpv6Prefix(
+          prefix.prefix,
+          prefix.prefixLength,
+          deterministicInterfaceIdentifier(this.primary.mac),
+        );
+        const prior = this.ipv6Addresses.get(address);
+        if (!prior) {
+          this.ipv6Addresses.add({
+            address,
+            prefixLength: prefix.prefixLength,
+            source: "slaac",
+            state: "tentative",
+            preferredUntilNs: this.engine.now() + prefix.preferredLifetimeNs,
+            validUntilNs: this.engine.now() + prefix.validLifetimeNs,
+          });
+          this.ipv6Discovery().beginDad(address);
+        }
+      }
+      if (advertisement.otherConfiguration) {
+        this.beginDhcpv6(Dhcpv6MessageType.InformationRequest);
+      }
+    } else if (this.ipv6Mode === "dhcpv6" && advertisement.managed && this.dhcpv6State === "idle") {
+      this.beginDhcpv6(Dhcpv6MessageType.Solicit);
+    }
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "ipv6-router-advertisement",
+      device: this.id,
+      detail: {
+        source,
+        managed: advertisement.managed,
+        otherConfiguration: advertisement.otherConfiguration,
+        prefixes: advertisement.prefixes.length,
+      },
+    });
+  }
+
+  private beginDhcpv6(
+    messageType: typeof Dhcpv6MessageType.Solicit
+      | typeof Dhcpv6MessageType.Renew
+      | typeof Dhcpv6MessageType.InformationRequest,
+    serverId?: string,
+    requestedAddress?: Ipv6,
+  ): void {
+    this.dhcpv6TransactionId = this.engine.rng.nextU32() & 0xffffff;
+    this.dhcpv6State = messageType === Dhcpv6MessageType.Solicit ? "soliciting" : "requesting";
+    this.sendDhcpv6(messageType, serverId, requestedAddress);
+    const transaction = this.dhcpv6TransactionId;
+    this.engine.scheduleIn(DEFAULT_DHCPV6_TIMEOUT_NS, () => {
+      if (transaction !== this.dhcpv6TransactionId || this.dhcpv6State === "bound") return;
+      this.dhcpv6State = "failed";
+      this.ipv6Problems.push("No DHCPv6 Advertise or Reply received.");
+    });
+  }
+
+  private sendDhcpv6(messageType: Dhcpv6MessageType, serverId?: string, requestedAddress?: Ipv6): void {
+    const source = this.ipv6Addresses.sourceFor("fe80::1");
+    if (!source) return;
+    const message: Dhcpv6Message = {
+      kind: "dhcpv6",
+      messageType,
+      transactionId: this.dhcpv6TransactionId,
+      clientId: `duid-ll-${normalizeMac(this.primary.mac)}`,
+      serverId,
+      requestedAddress,
+    };
+    const destination = serverId && this.ipv6DefaultRouter ? this.ipv6DefaultRouter : IPV6_ALL_DHCP_SERVERS;
+    this.sendIpv6({
+      kind: "ipv6",
+      src: source,
+      dst: destination,
+      nextHeader: Ipv6NextHeader.UDP,
+      hopLimit: 1,
+      payload: {
+        kind: "udp",
+        srcPort: DHCPV6_CLIENT_PORT,
+        dstPort: DHCPV6_SERVER_PORT,
+        payload: message,
+      },
+    });
+    this.engine.trace({
+      time: this.engine.now(),
+      type: `dhcpv6-${messageType}`,
+      device: this.id,
+      detail: { transactionId: message.transactionId, requestedAddress },
+    });
+  }
+
+  private handleDhcpv6(message: Dhcpv6Message): void {
+    if (message.transactionId !== this.dhcpv6TransactionId) return;
+    if (message.messageType === Dhcpv6MessageType.Advertise && this.dhcpv6State === "soliciting") {
+      this.dhcpv6State = "requesting";
+      this.sendDhcpv6(Dhcpv6MessageType.Request, message.serverId, message.address);
+      return;
+    }
+    if (message.messageType !== Dhcpv6MessageType.Reply) return;
+    if (message.dnsServers?.[0]) this.ipv6DnsServer = normalizeIpv6(message.dnsServers[0]);
+    if (message.address && message.serverId) {
+      const address = normalizeIpv6(message.address);
+      this.transport.reset();
+      this.applications.resetRuntime();
+      for (const assignment of this.ipv6Addresses.summaries()) {
+        if (assignment.source === "dhcpv6") this.ipv6Addresses.remove(assignment.address);
+      }
+      const preferredLifetimeNs = message.preferredLifetimeNs ?? 3_600_000_000_000;
+      const validLifetimeNs = message.validLifetimeNs ?? 7_200_000_000_000;
+      this.ipv6Addresses.add({
+        address,
+        prefixLength: message.prefixLength ?? 128,
+        source: "dhcpv6",
+        state: "tentative",
+        preferredUntilNs: this.engine.now() + preferredLifetimeNs,
+        validUntilNs: this.engine.now() + validLifetimeNs,
+      });
+      this.dhcpv6Lease = {
+        address,
+        prefixLength: message.prefixLength ?? 128,
+        serverId: message.serverId,
+        preferredLifetimeNs,
+        validLifetimeNs,
+        dnsServers: message.dnsServers?.map(normalizeIpv6) ?? [],
+      };
+      this.ipv6Discovery().beginDad(address);
+    }
+    this.dhcpv6State = "bound";
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "dhcpv6-bound",
+      device: this.id,
+      detail: { address: message.address, dnsServers: message.dnsServers ?? [] },
+    });
   }
 
   private sendIpv6EchoReply(destination: Ipv6, source: Ipv6, request: Icmpv6Message): void {
@@ -715,11 +1021,27 @@ export abstract class EndHost extends Device {
   }
 
   private sendTransportPacket(
-    destinationAddress: Ipv4,
+    destinationAddress: IpAddress,
     protocol: typeof IpProtocol.UDP | typeof IpProtocol.TCP,
     payload: UdpDatagram | TcpSegment,
-    sourceAddress?: Ipv4,
+    sourceAddress?: IpAddress,
   ): void {
+    if (ipFamilyOf(destinationAddress) === "ipv6") {
+      const destination = normalizeIpv6(destinationAddress);
+      const source = sourceAddress === undefined
+        ? this.ipv6Addresses.sourceFor(destination)
+        : normalizeIpv6(sourceAddress);
+      if (!source) throw new Error(`PC ${this.id} has no usable IPv6 address`);
+      this.sendIpv6({
+        kind: "ipv6",
+        src: source,
+        dst: destination,
+        nextHeader: protocol === IpProtocol.UDP ? Ipv6NextHeader.UDP : Ipv6NextHeader.TCP,
+        hopLimit: DEFAULT_IPV6_HOP_LIMIT,
+        payload,
+      });
+      return;
+    }
     const packet: Ipv4Packet = {
       kind: "ipv4",
       src: sourceAddress ?? this.ip ?? UNSPECIFIED_IP,
@@ -740,7 +1062,33 @@ export abstract class EndHost extends Device {
     this.sendIpv4(packet);
   }
 
-  private sendPortUnreachable(destinationAddress: Ipv4, destinationPort: number): void {
+  private sendPortUnreachable(destinationAddress: IpAddress, destinationPort: number): void {
+    if (ipFamilyOf(destinationAddress) === "ipv6") {
+      const destination = normalizeIpv6(destinationAddress);
+      if (isIpv6Unspecified(destination)) return;
+      const source = this.ipv6Addresses.sourceFor(destination);
+      if (!source) return;
+      this.engine.trace({
+        time: this.engine.now(),
+        type: "icmpv6-port-unreachable",
+        device: this.id,
+        detail: { destinationAddress: destination, destinationPort },
+      });
+      this.sendIpv6({
+        kind: "ipv6",
+        src: source,
+        dst: destination,
+        nextHeader: Ipv6NextHeader.ICMPv6,
+        hopLimit: DEFAULT_IPV6_HOP_LIMIT,
+        payload: {
+          kind: "icmpv6",
+          type: Icmpv6Type.DestinationUnreachable,
+          code: 4,
+          reason: "port-unreachable",
+        },
+      });
+      return;
+    }
     if (this.ip === undefined || destinationAddress === UNSPECIFIED_IP) return;
     this.engine.trace({
       time: this.engine.now(),
@@ -762,6 +1110,46 @@ export abstract class EndHost extends Device {
         sequence: 0,
       },
     });
+  }
+
+  protected localTransportAddress(family: IpFamily, destination?: IpAddress): IpAddress | undefined {
+    if (family === "ipv4") return this.ip;
+    this.refreshIpv6Runtime();
+    return this.ipv6Addresses.sourceFor(destination ? normalizeIpv6(destination) : "2001:db8::");
+  }
+
+  private refreshIpv6Runtime(): void {
+    const now = this.engine.now();
+    if (this.ipv6DefaultRouterUntilNs !== undefined && now >= this.ipv6DefaultRouterUntilNs) {
+      this.ipv6DefaultRouter = undefined;
+      this.ipv6DefaultRouterUntilNs = undefined;
+    }
+    for (const assignment of this.ipv6Addresses.summaries()) {
+      if (assignment.source !== "slaac" && assignment.source !== "dhcpv6") continue;
+      if (assignment.validUntilNs !== undefined && now >= assignment.validUntilNs) {
+        this.ipv6Addresses.remove(assignment.address);
+        if (this.dhcpv6Lease?.address === assignment.address) {
+          this.dhcpv6Lease = undefined;
+          this.dhcpv6State = "idle";
+        }
+        continue;
+      }
+      if (
+        assignment.state === "preferred" &&
+        assignment.preferredUntilNs !== undefined &&
+        now >= assignment.preferredUntilNs
+      ) {
+        this.ipv6Addresses.setState(assignment.address, "deprecated");
+      }
+    }
+  }
+
+  private resetIpv6NetworkRuntime(): void {
+    this.ipv6NeighborRuntime?.reset();
+    this.pendingIpv6Pings.clear();
+    this.dhcpv6TransactionId = (this.dhcpv6TransactionId + 1) & 0xffffff;
+    this.transport.reset();
+    this.applications.resetRuntime();
   }
 
   private sendEchoReply(dst: Ipv4, request: IcmpMessage): void {

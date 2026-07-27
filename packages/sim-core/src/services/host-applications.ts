@@ -4,6 +4,8 @@ import type { UdpPayload } from "../packets/udp";
 import type { HostTransportStack } from "../transport/host-transport";
 import type { Ipv4 } from "../util/ipv4";
 import { ipToInt } from "../util/ipv4";
+import { ipFamilyOf, type IpAddress, type IpFamily } from "../util/ip-address";
+import { normalizeIpv6 } from "../util/ipv6";
 import {
   DEFAULT_SERVICE_LIMITS,
   SERVICE_REQUEST_TIMEOUT_NS,
@@ -22,9 +24,9 @@ import { normalizeDnsName, normalizeTftpFilename, stringByteLength } from "./nor
 export interface DnsResolutionResult {
   readonly requestId: number;
   readonly hostname: string;
-  readonly serverAddress: Ipv4;
+  readonly serverAddress: IpAddress;
   readonly status: "success" | "nxdomain" | "malformed" | "timeout";
-  readonly address?: Ipv4;
+  readonly address?: IpAddress;
 }
 
 export interface HttpClientResult {
@@ -38,7 +40,7 @@ export interface HttpClientResult {
 
 export interface TftpClientResult {
   readonly requestId: number;
-  readonly serverAddress: Ipv4;
+  readonly serverAddress: IpAddress;
   readonly filename: string;
   readonly status: "completed" | "not-found" | "error" | "timeout";
   readonly content?: string;
@@ -47,7 +49,7 @@ export interface TftpClientResult {
 
 export interface NtpClientResult {
   readonly requestId: number;
-  readonly serverAddress: Ipv4;
+  readonly serverAddress: IpAddress;
   readonly status: "completed" | "timeout";
   readonly serverTimeNs?: number;
   readonly offsetNs?: number;
@@ -57,13 +59,13 @@ interface HostApplicationAdapter {
   readonly deviceId: string;
   readonly hostname: () => string;
   readonly engine: () => SimulationEngine;
-  readonly localAddress: () => Ipv4 | undefined;
+  readonly localAddress: (family: IpFamily, destination?: IpAddress) => IpAddress | undefined;
   readonly transport: HostTransportStack;
 }
 
 interface TftpDownloadState {
   readonly requestId: number;
-  readonly serverAddress: Ipv4;
+  readonly serverAddress: IpAddress;
   readonly filename: string;
   readonly port: number;
   readonly blocks: string[];
@@ -75,7 +77,7 @@ interface TftpDownloadState {
 
 /** Deterministic application clients shared by PC and Server. */
 export class HostApplications {
-  dnsServer: Ipv4 | undefined;
+  dnsServer: IpAddress | undefined;
   clockOffsetNs = 0;
   readonly dnsResults: DnsResolutionResult[] = [];
   readonly httpResults: HttpClientResult[] = [];
@@ -92,8 +94,8 @@ export class HostApplications {
     private readonly limits: ServiceLimits = DEFAULT_SERVICE_LIMITS,
   ) {}
 
-  setDnsServer(address: Ipv4 | undefined): void {
-    if (address !== undefined) ipToInt(address);
+  setDnsServer(address: IpAddress | undefined): void {
+    if (address !== undefined) validateIpAddress(address);
     this.dnsServer = address;
   }
 
@@ -112,7 +114,7 @@ export class HostApplications {
   resolveDns(hostname: string, serverAddress = this.dnsServer): number {
     const name = normalizeDnsName(hostname);
     if (!serverAddress) throw new Error(`No DNS server configured on ${this.host.deviceId}`);
-    ipToInt(serverAddress);
+    validateIpAddress(serverAddress);
     this.beginRequest();
     const requestId = this.allocateRequestId();
     const generation = this.runtimeGeneration;
@@ -210,8 +212,8 @@ export class HostApplications {
     return requestId;
   }
 
-  tftpGet(serverAddress: Ipv4, filename: string): number {
-    ipToInt(serverAddress);
+  tftpGet(serverAddress: IpAddress, filename: string): number {
+    validateIpAddress(serverAddress);
     const normalized = normalizeTftpFilename(filename);
     this.beginRequest();
     const requestId = this.allocateRequestId();
@@ -247,8 +249,8 @@ export class HostApplications {
     return requestId;
   }
 
-  queryNtp(serverAddress: Ipv4): number {
-    ipToInt(serverAddress);
+  queryNtp(serverAddress: IpAddress): number {
+    validateIpAddress(serverAddress);
     this.beginRequest();
     const requestId = this.allocateRequestId();
     const generation = this.runtimeGeneration;
@@ -286,8 +288,8 @@ export class HostApplications {
     return requestId;
   }
 
-  sendSyslog(serverAddress: Ipv4, severity: SyslogSeverity, message: string, facility = "user"): void {
-    ipToInt(serverAddress);
+  sendSyslog(serverAddress: IpAddress, severity: SyslogSeverity, message: string, facility = "user"): void {
+    validateIpAddress(serverAddress);
     if (!message.trim()) throw new Error("Syslog message must not be empty");
     const payload: SyslogMessage = {
       kind: "syslog",
@@ -386,15 +388,21 @@ export class HostApplications {
   }
 }
 
-function parseHttpUrl(url: string): { address: Ipv4; port: number; host: string; path: string } {
-  const match = /^http:\/\/([^/:]+)(?::(\d+))?(\/.*)?$/.exec(url.trim());
+function parseHttpUrl(url: string): { address: IpAddress; port: number; host: string; path: string } {
+  const match = /^http:\/\/(\[[^\]]+\]|[^/:]+)(?::(\d+))?(\/.*)?$/.exec(url.trim());
   if (!match?.[1]) throw new Error(`Invalid HTTP URL '${url}'`);
-  const address = match[1] as Ipv4;
-  ipToInt(address);
+  const host = match[1];
+  const address = host.startsWith("[") ? normalizeIpv6(host.slice(1, -1)) : host as Ipv4;
+  validateIpAddress(address);
   const port = match[2] ? Number(match[2]) : 80;
   if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error(`Invalid HTTP port '${match[2]}'`);
   const path = match[3] ?? "/";
-  return { address, port, host: match[1], path };
+  return { address, port, host, path };
+}
+
+function validateIpAddress(address: IpAddress): void {
+  if (ipFamilyOf(address) === "ipv6") normalizeIpv6(address);
+  else ipToInt(address);
 }
 
 export function isHttpPayload(payload: TcpPayload): payload is HttpMessage {

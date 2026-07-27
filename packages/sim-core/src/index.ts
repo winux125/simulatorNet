@@ -39,6 +39,7 @@ export * from "./packets/ipv6";
 export * from "./packets/udp";
 export * from "./packets/tcp";
 export * from "./packets/dhcp";
+export * from "./packets/dhcpv6";
 
 // Reusable L3 packet policy (Router, L3 switch, and future Firewall)
 export * from "./policy/packet-policy-engine";
@@ -52,6 +53,7 @@ export * from "./protocols/etherchannel";
 export * from "./protocols/discovery-support";
 export * from "./protocols/neighbor-discovery";
 export * from "./protocols/ipv6-neighbor-discovery";
+export * from "./protocols/dhcpv6";
 export * from "./protocols/ospf";
 
 // Host transport

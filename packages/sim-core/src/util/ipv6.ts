@@ -10,6 +10,7 @@ export const IPV6_UNSPECIFIED: Ipv6 = "::";
 export const IPV6_LOOPBACK: Ipv6 = "::1";
 export const IPV6_ALL_NODES: Ipv6 = "ff02::1";
 export const IPV6_ALL_ROUTERS: Ipv6 = "ff02::2";
+export const IPV6_ALL_DHCP_SERVERS: Ipv6 = "ff02::1:2";
 
 export function ipv6ToBigInt(input: string): bigint {
   const value = input.trim().toLowerCase();

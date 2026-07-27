@@ -6,6 +6,10 @@ import { ipv6ToBigInt } from "./ipv6";
 export type IpFamily = "ipv4" | "ipv6";
 export type IpAddress = Ipv4 | Ipv6;
 
+export function ipFamilyOf(address: IpAddress): IpFamily {
+  return address.includes(":") ? "ipv6" : "ipv4";
+}
+
 export interface TransportEndpoint {
   readonly family: IpFamily;
   readonly address: IpAddress;

@@ -7,7 +7,8 @@ import {
 } from "../engine/constants";
 import type { SimulationEngine } from "../engine/simulation-engine";
 import type { TcpPayload, TcpSegment } from "../packets/tcp";
-import type { Ipv4 } from "../util/ipv4";
+import type { IpAddress, IpFamily } from "../util/ip-address";
+import { ipFamilyOf } from "../util/ip-address";
 import { TransportError, payloadByteLength, validateTransportPort } from "./errors";
 
 export const TcpState = {
@@ -33,9 +34,9 @@ export interface TcpConnectionHandlers {
 export type TcpAcceptListener = (connection: TcpConnection) => void;
 
 export interface TcpConnectionInspection {
-  readonly localAddress: Ipv4;
+  readonly localAddress: IpAddress;
   readonly localPort: number;
-  readonly remoteAddress: Ipv4;
+  readonly remoteAddress: IpAddress;
   readonly remotePort: number;
   readonly state: TcpState;
   readonly service: string;
@@ -55,8 +56,8 @@ interface TcpListenerEntry {
 export interface TcpHostAdapter {
   readonly deviceId: string;
   readonly engine: () => SimulationEngine;
-  readonly localAddress: () => Ipv4 | undefined;
-  readonly send: (destinationAddress: Ipv4, segment: TcpSegment, sourceAddress?: Ipv4) => void;
+  readonly localAddress: (family: IpFamily, destination?: IpAddress) => IpAddress | undefined;
+  readonly send: (destinationAddress: IpAddress, segment: TcpSegment, sourceAddress?: IpAddress) => void;
 }
 
 /** One deterministic, message-oriented TCP connection. */
@@ -72,9 +73,9 @@ export class TcpConnection {
 
   constructor(
     private readonly stack: TcpSocketRegistry,
-    readonly localAddress: Ipv4,
+    readonly localAddress: IpAddress,
     readonly localPort: number,
-    readonly remoteAddress: Ipv4,
+    readonly remoteAddress: IpAddress,
     readonly remotePort: number,
     readonly service: string,
     initialSequence: number,
@@ -327,14 +328,14 @@ export class TcpSocketRegistry {
   }
 
   connect(
-    remoteAddress: Ipv4,
+    remoteAddress: IpAddress,
     remotePort: number,
     handlers: TcpConnectionHandlers = {},
     service = "application",
   ): TcpConnection {
     validateTransportPort(remotePort);
-    const localAddress = this.requireLocalAddress();
-    const localPort = this.allocateEphemeralPort();
+    const localAddress = this.requireLocalAddress(remoteAddress);
+    const localPort = this.allocateEphemeralPort(localAddress);
     this.requireConnectionCapacity();
     const connection = new TcpConnection(
       this,
@@ -351,7 +352,7 @@ export class TcpSocketRegistry {
     return connection;
   }
 
-  receive(sourceAddress: Ipv4, destinationAddress: Ipv4, segment: TcpSegment): void {
+  receive(sourceAddress: IpAddress, destinationAddress: IpAddress, segment: TcpSegment): void {
     const key = this.key(destinationAddress, segment.dstPort, sourceAddress, segment.srcPort);
     const existing = this.connections.get(key);
     if (existing) {
@@ -380,7 +381,7 @@ export class TcpSocketRegistry {
 
   inspect(): TcpConnectionInspection[] {
     const listeners: TcpConnectionInspection[] = [...this.listeners.entries()].map(([localPort, entry]) => ({
-      localAddress: this.host.localAddress() ?? "0.0.0.0",
+      localAddress: this.host.localAddress("ipv4") ?? this.host.localAddress("ipv6") ?? "0.0.0.0",
       localPort,
       remoteAddress: "0.0.0.0",
       remotePort: 0,
@@ -461,7 +462,7 @@ export class TcpSocketRegistry {
     });
   }
 
-  private sendReset(remoteAddress: Ipv4, localAddress: Ipv4, received: TcpSegment): void {
+  private sendReset(remoteAddress: IpAddress, localAddress: IpAddress, received: TcpSegment): void {
     const reset: TcpSegment = {
       kind: "tcp",
       srcPort: received.dstPort,
@@ -480,8 +481,7 @@ export class TcpSocketRegistry {
     this.host.send(remoteAddress, reset, localAddress);
   }
 
-  private allocateEphemeralPort(): number {
-    const localAddress = this.requireLocalAddress();
+  private allocateEphemeralPort(localAddress: IpAddress): number {
     const range = EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1;
     for (let offset = 0; offset < range; offset++) {
       const candidate = EPHEMERAL_PORT_START + ((this.nextEphemeralPort - EPHEMERAL_PORT_START + offset) % range);
@@ -502,13 +502,14 @@ export class TcpSocketRegistry {
     }
   }
 
-  private requireLocalAddress(): Ipv4 {
-    const address = this.host.localAddress();
-    if (!address) throw new TransportError("not-connected", `Host ${this.host.deviceId} has no IPv4 address`);
+  private requireLocalAddress(destination?: IpAddress): IpAddress {
+    const family = destination ? ipFamilyOf(destination) : "ipv4";
+    const address = this.host.localAddress(family, destination);
+    if (!address) throw new TransportError("not-connected", `Host ${this.host.deviceId} has no ${family.toUpperCase()} address`);
     return address;
   }
 
-  private key(localAddress: Ipv4, localPort: number, remoteAddress: Ipv4, remotePort: number): string {
+  private key(localAddress: IpAddress, localPort: number, remoteAddress: IpAddress, remotePort: number): string {
     return `${localAddress}:${localPort}|${remoteAddress}:${remotePort}`;
   }
 }

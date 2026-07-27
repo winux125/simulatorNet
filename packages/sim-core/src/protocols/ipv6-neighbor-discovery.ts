@@ -62,6 +62,10 @@ export class Ipv6NeighborDiscovery {
       .map((entry) => ({ ...entry }));
   }
 
+  learnNeighbor(address: Ipv6, mac: Mac): void {
+    this.learn(address, mac);
+  }
+
   beginDad(addressInput: Ipv6, attempts = DEFAULT_DAD_ATTEMPTS): void {
     const address = normalizeIpv6(addressInput);
     if (!Number.isInteger(attempts) || attempts < 1

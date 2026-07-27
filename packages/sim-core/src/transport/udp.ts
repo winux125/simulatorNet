@@ -6,12 +6,12 @@ import {
 } from "../engine/constants";
 import type { SimulationEngine } from "../engine/simulation-engine";
 import type { UdpDatagram, UdpPayload } from "../packets/udp";
-import type { Ipv4 } from "../util/ipv4";
+import type { IpAddress, IpFamily } from "../util/ip-address";
 import { TransportError, payloadByteLength, validateTransportPort } from "./errors";
 
 export interface UdpReceivedDatagram {
-  readonly sourceAddress: Ipv4;
-  readonly destinationAddress: Ipv4;
+  readonly sourceAddress: IpAddress;
+  readonly destinationAddress: IpAddress;
   readonly sourcePort: number;
   readonly destinationPort: number;
   readonly payload: UdpPayload;
@@ -20,18 +20,18 @@ export interface UdpReceivedDatagram {
 export type UdpListener = (datagram: UdpReceivedDatagram) => void;
 
 export interface UdpSocketInspection {
-  readonly localAddress: Ipv4 | undefined;
+  readonly localAddress: IpAddress | undefined;
   readonly localPort: number;
   readonly service: string;
   readonly state: "listening";
 }
 
 export interface UdpSendOptions {
-  readonly destinationAddress: Ipv4;
+  readonly destinationAddress: IpAddress;
   readonly destinationPort: number;
   readonly payload: UdpPayload;
   readonly sourcePort?: number;
-  readonly sourceAddress?: Ipv4;
+  readonly sourceAddress?: IpAddress;
 }
 
 interface UdpBinding {
@@ -42,9 +42,9 @@ interface UdpBinding {
 export interface UdpHostAdapter {
   readonly deviceId: string;
   readonly engine: () => SimulationEngine;
-  readonly localAddress: () => Ipv4 | undefined;
-  readonly send: (destinationAddress: Ipv4, datagram: UdpDatagram, sourceAddress?: Ipv4) => void;
-  readonly portUnreachable: (destinationAddress: Ipv4, destinationPort: number) => void;
+  readonly localAddress: (family: IpFamily, destination?: IpAddress) => IpAddress | undefined;
+  readonly send: (destinationAddress: IpAddress, datagram: UdpDatagram, sourceAddress?: IpAddress) => void;
+  readonly portUnreachable: (destinationAddress: IpAddress, destinationPort: number) => void;
 }
 
 /** Per-host exclusive UDP socket registry and deterministic ephemeral allocator. */
@@ -103,7 +103,7 @@ export class UdpSocketRegistry {
     return sourcePort;
   }
 
-  receive(sourceAddress: Ipv4, destinationAddress: Ipv4, datagram: UdpDatagram, broadcast: boolean): void {
+  receive(sourceAddress: IpAddress, destinationAddress: IpAddress, datagram: UdpDatagram, broadcast: boolean): void {
     const binding = this.bindings.get(datagram.dstPort);
     if (!binding) {
       if (!broadcast) {
@@ -142,7 +142,7 @@ export class UdpSocketRegistry {
     return [...this.bindings.entries()]
       .sort(([a], [b]) => a - b)
       .map(([localPort, binding]) => ({
-        localAddress: this.host.localAddress(),
+        localAddress: this.host.localAddress("ipv4") ?? this.host.localAddress("ipv6"),
         localPort,
         service: binding.service,
         state: "listening" as const,

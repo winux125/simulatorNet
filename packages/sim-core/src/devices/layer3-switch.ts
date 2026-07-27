@@ -1,6 +1,9 @@
 import { type EthernetFrame, isControlPayload } from "../packets/ethernet";
 import { EthernetInterface } from "../net/interface";
 import { ipToInt, type Ipv4 } from "../util/ipv4";
+import type { Ipv6 } from "../util/ipv6";
+import { isIpv6Multicast } from "../util/ipv6";
+import type { Dhcpv6PoolConfig } from "../protocols/dhcpv6";
 import type { Mac } from "../util/mac";
 import { normalizeMac } from "../util/mac";
 import type {
@@ -9,7 +12,14 @@ import type {
   AclDirection,
   Ipv4Acl,
 } from "../policy/packet-policy-engine";
-import { Router, type RouterInterfaceRow, type RouteRow } from "./router";
+import {
+  Router,
+  type Ipv6RouteRow,
+  type Ipv6RouterInterfaceRow,
+  type RouterAdvertisementConfig,
+  type RouterInterfaceRow,
+  type RouteRow,
+} from "./router";
 import { L2Switch } from "./switch";
 
 export interface SviRow {
@@ -132,6 +142,15 @@ export class Layer3Switch extends L2Switch {
     this.routingPlane.setForwardingEnabled(enabled);
   }
 
+  setIpv6Routing(enabled: boolean): void {
+    this.syncRoutingPlane();
+    this.routingPlane.setIpv6ForwardingEnabled(enabled);
+  }
+
+  get ipv6UnicastRoutingEnabled(): boolean {
+    return this.routingPlane.ipv6UnicastRoutingEnabled;
+  }
+
   get ipRoutingEnabled(): boolean {
     return this.routingPlane.ipRoutingEnabled;
   }
@@ -139,6 +158,36 @@ export class Layer3Switch extends L2Switch {
   addStaticRoute(network: Ipv4, mask: Ipv4 | number, nextHop: Ipv4): void {
     this.syncRoutingPlane();
     this.routingPlane.addStaticRoute(network, mask, nextHop);
+  }
+
+  addIpv6StaticRoute(network: Ipv6, prefixLength: number, nextHop: Ipv6): void {
+    this.syncRoutingPlane();
+    this.routingPlane.addIpv6StaticRoute(network, prefixLength, nextHop);
+  }
+
+  setInterfaceIpv6(name: string, address: Ipv6, prefixLength: number): void {
+    this.syncRoutingPlane();
+    this.routingPlane.setInterfaceIpv6(name, address, prefixLength);
+  }
+
+  enableInterfaceIpv6(name: string): Ipv6 {
+    this.syncRoutingPlane();
+    return this.routingPlane.enableInterfaceIpv6(name);
+  }
+
+  setSviIpv6(vlanId: number, address: Ipv6, prefixLength: number): void {
+    this.defineSvi(vlanId);
+    this.routingPlane.setInterfaceIpv6(`Vlan${vlanId}`, address, prefixLength);
+  }
+
+  configureRouterAdvertisement(interfaceName: string, config: RouterAdvertisementConfig): void {
+    this.syncRoutingPlane();
+    this.routingPlane.configureRouterAdvertisement(interfaceName, config);
+  }
+
+  addDhcpv6Pool(config: Dhcpv6PoolConfig): void {
+    this.syncRoutingPlane();
+    this.routingPlane.addDhcpv6Pool(config);
   }
 
   /** The composed routing plane owns OSPF, exactly as it owns ACLs and routes. */
@@ -212,8 +261,24 @@ export class Layer3Switch extends L2Switch {
     return this.routingPlane.staticRouteConfigurations();
   }
 
+  ipv6StaticRouteConfigurations(): ReturnType<Router["ipv6StaticRouteConfigurations"]> {
+    return this.routingPlane.ipv6StaticRouteConfigurations();
+  }
+
   routingTable(): RouteRow[] {
     return this.routingPlane.routingTable();
+  }
+
+  ipv6RoutingTable(): Ipv6RouteRow[] {
+    return this.routingPlane.ipv6RoutingTable();
+  }
+
+  ipv6InterfaceSummaries(): Ipv6RouterInterfaceRow[] {
+    return this.routingPlane.ipv6InterfaceSummaries();
+  }
+
+  ipv6NeighborEntries(): ReturnType<Router["ipv6NeighborEntries"]> {
+    return this.routingPlane.ipv6NeighborEntries();
   }
 
   routedInterfaceSummaries(): RouterInterfaceRow[] {
@@ -252,6 +317,15 @@ export class Layer3Switch extends L2Switch {
     this.routingPlane.ping(target, sequence);
   }
 
+  get ipv6PingResults(): Router["ipv6PingResults"] {
+    return this.routingPlane.ipv6PingResults;
+  }
+
+  ping6(target: Ipv6, sequence = 0): void {
+    this.syncRoutingPlane();
+    this.routingPlane.ping6(target, sequence);
+  }
+
   override onReceive(frame: EthernetFrame, ingress: EthernetInterface): void {
     this.syncRoutingPlane();
     // Link-local control frames belong to this switch's own control plane, on
@@ -283,7 +357,8 @@ export class Layer3Switch extends L2Switch {
     const destination = normalizeMac(frame.dst);
     const local = destination === normalizeMac(svi.mac);
     const broadcast = destination === "ff:ff:ff:ff:ff:ff";
-    if (local || broadcast) this.routingPlane.onReceive({ ...frame, vlan: undefined }, svi);
+    const ipv6Group = frame.payload.kind === "ipv6" && isIpv6Multicast(frame.payload.dst);
+    if (local || broadcast || ipv6Group) this.routingPlane.onReceive({ ...frame, vlan: undefined }, svi);
     return local;
   }
 

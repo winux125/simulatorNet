@@ -10,7 +10,7 @@ import {
 import type { SimulationEngine } from "../engine/simulation-engine";
 import type { TcpConnection } from "../transport/tcp";
 import type { HostTransportStack } from "../transport/host-transport";
-import type { Ipv4 } from "../util/ipv4";
+import type { IpAddress, IpFamily } from "../util/ip-address";
 import {
   DEFAULT_SERVICE_LIMITS,
   SERVICE_REQUEST_TIMEOUT_NS,
@@ -35,7 +35,7 @@ export interface ServerServiceSummary {
 export interface SyslogEntry {
   readonly sequence: number;
   readonly receivedAtNs: number;
-  readonly sourceAddress: Ipv4;
+  readonly sourceAddress: IpAddress;
   readonly source: string;
   readonly facility: string;
   readonly severity: SyslogMessage["severity"];
@@ -61,7 +61,7 @@ interface ServiceState {
 interface TftpTransfer {
   readonly key: string;
   readonly service: TftpServiceConfig;
-  readonly destinationAddress: Ipv4;
+  readonly destinationAddress: IpAddress;
   readonly destinationPort: number;
   readonly transferId: number;
   readonly blocks: string[];
@@ -74,7 +74,7 @@ interface ServerServiceAdapter {
   readonly deviceId: string;
   readonly hostname: () => string;
   readonly engine: () => SimulationEngine;
-  readonly localAddress: () => Ipv4 | undefined;
+  readonly localAddress: (family: IpFamily, destination?: IpAddress) => IpAddress | undefined;
   readonly transport: HostTransportStack;
 }
 
@@ -209,7 +209,9 @@ export class ServerServiceRegistry {
       const current = this.configs.get(config.id);
       if (!state || !current || state.generation !== generation || !current.enabled) return;
       try {
-        if (!this.host.localAddress()) throw new Error("Service requires a configured IPv4 address");
+        if (!this.host.localAddress("ipv4") && !this.host.localAddress("ipv6")) {
+          throw new Error("Service requires a configured IP address");
+        }
         this.start(current);
         state.state = "listening";
         state.error = undefined;
@@ -254,12 +256,12 @@ export class ServerServiceRegistry {
     }
   }
 
-  private handleDns(config: DnsServiceConfig, sourceAddress: Ipv4, sourcePort: number, payload: unknown): void {
+  private handleDns(config: DnsServiceConfig, sourceAddress: IpAddress, sourcePort: number, payload: unknown): void {
     if (!isDnsQuery(payload)) return;
     this.dnsQueries++;
     let name = payload.name;
     let responseCode: DnsMessage["responseCode"] = "NOERROR";
-    let address: Ipv4 | undefined;
+    let address: IpAddress | undefined;
     try {
       name = normalizeDnsName(name);
       address = config.records.find((record) => record.name === name)?.address;
@@ -311,7 +313,7 @@ export class ServerServiceRegistry {
     return httpResponse(200, resource.contentType, resource.body, payload.method === "HEAD");
   }
 
-  private handleTftp(config: TftpServiceConfig, sourceAddress: Ipv4, sourcePort: number, payload: unknown): void {
+  private handleTftp(config: TftpServiceConfig, sourceAddress: IpAddress, sourcePort: number, payload: unknown): void {
     if (!isTftpMessage(payload)) return;
     const key = `${sourceAddress}:${sourcePort}:${payload.transferId}`;
     if (payload.opcode === "RRQ") {
@@ -399,7 +401,7 @@ export class ServerServiceRegistry {
 
   private sendTftpError(
     config: TftpServiceConfig,
-    destinationAddress: Ipv4,
+    destinationAddress: IpAddress,
     destinationPort: number,
     transferId: number,
     errorCode: NonNullable<TftpMessage["errorCode"]>,
@@ -409,7 +411,7 @@ export class ServerServiceRegistry {
     this.host.transport.udp.send({ destinationAddress, destinationPort, sourcePort: config.port, payload });
   }
 
-  private handleNtp(config: NtpServiceConfig, sourceAddress: Ipv4, sourcePort: number, payload: unknown): void {
+  private handleNtp(config: NtpServiceConfig, sourceAddress: IpAddress, sourcePort: number, payload: unknown): void {
     if (!isNtpQuery(payload)) return;
     this.ntpQueries++;
     const response: NtpMessage = {
@@ -423,7 +425,7 @@ export class ServerServiceRegistry {
     this.trace("ntp-service-query", { serviceId: config.id, requestId: payload.requestId, serverTimeNs: response.serverTimeNs });
   }
 
-  private handleSyslog(config: SyslogServiceConfig, sourceAddress: Ipv4, payload: unknown): void {
+  private handleSyslog(config: SyslogServiceConfig, sourceAddress: IpAddress, payload: unknown): void {
     if (!isSyslogMessage(payload)) return;
     const retention = Math.min(config.retention, this.limits.maximumSyslogEntries);
     this.syslogEntries.push({
