@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createPasswordVerifier, verifyPassword } from "@sim/console-auth";
+import {
+  createPasswordVerifier,
+  createWirelessCredentialVerifier,
+  verifyPassword,
+} from "@sim/console-auth";
 
 describe("password verifier", () => {
   it("creates a salted PBKDF2 verifier that never contains the plaintext", async () => {
@@ -29,5 +33,24 @@ describe("password verifier", () => {
 
   it("rejects an empty new password", async () => {
     await expect(createPasswordVerifier("")).rejects.toThrow();
+  });
+
+  it("derives compatible SSID-scoped wireless verifiers without plaintext", async () => {
+    const accessPoint = await createWirelessCredentialVerifier("Lab WLAN", "correct-horse", 2_000);
+    const station = await createWirelessCredentialVerifier("Lab WLAN", "correct-horse", 2_000);
+    const otherSsid = await createWirelessCredentialVerifier("Other WLAN", "correct-horse", 2_000);
+
+    expect(station).toEqual(accessPoint);
+    expect(otherSsid.hashBase64).not.toBe(accessPoint.hashBase64);
+    expect(JSON.stringify(accessPoint)).not.toContain("correct-horse");
+  });
+
+  it.each([
+    ["", "correct-horse", "SSID"],
+    ["Lab WLAN", "short", "passphrase"],
+    ["Lab WLAN", "x".repeat(64), "passphrase"],
+  ])("rejects invalid wireless credentials", async (ssid, passphrase, message) => {
+    await expect(createWirelessCredentialVerifier(ssid, passphrase, 2_000))
+      .rejects.toThrow(message);
   });
 });

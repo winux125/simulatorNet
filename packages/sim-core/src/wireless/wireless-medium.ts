@@ -54,11 +54,23 @@ export interface WirelessStationRegistration {
   readonly receive: (frame: EthernetFrame) => void;
   readonly preferredSsid?: string;
   readonly preferredBssid?: Mac;
+  readonly autoConnect?: boolean;
+  readonly credentials?: readonly WirelessStationCredential[];
+}
+
+export interface WirelessStationCredential {
+  readonly ssid: string;
+  readonly securityMode: WirelessSecurityMode;
+  /** Opaque material derived before entering sim-core. */
+  readonly credentialFingerprint?: string;
 }
 
 export interface WirelessConnectRequest {
   readonly ssid?: string;
   readonly preferredBssid?: Mac;
+  readonly securityMode?: WirelessSecurityMode;
+  /** Opaque material derived before entering sim-core. */
+  readonly credentialFingerprint?: string;
 }
 
 export interface WirelessAssociatedClient {
@@ -74,15 +86,27 @@ interface AccessPointRuntime extends WirelessAccessPointRegistration {
   configuration: WirelessAccessPointRadioConfiguration;
 }
 
-interface StationRuntime extends WirelessStationRegistration {
+interface StationRuntime extends Omit<
+  WirelessStationRegistration,
+  "preferredSsid" | "preferredBssid" | "autoConnect" | "credentials"
+> {
   readonly key: string;
   readonly macAddress: Mac;
+  preferredSsid?: string;
+  preferredBssid?: Mac;
+  enabled: boolean;
   state: WirelessStationState;
   scanResults: WirelessNetworkSummary[];
   associatedAccessPointKey?: string;
   associatedAtNs?: number;
   failureReason?: WirelessAssociationFailureReason;
   connectionGeneration: number;
+  autoConnect: boolean;
+  credentials: WirelessStationCredential[];
+  lastConnectionRequest?: WirelessConnectRequest;
+  roamingFromBssid?: Mac;
+  lastRoamedFromBssid?: Mac;
+  lastRoamedAtNs?: number;
 }
 
 const BROADCAST_MANAGEMENT_MAC = "ff:ff:ff:ff:ff:ff" as Mac;
@@ -131,6 +155,9 @@ export class WirelessMedium {
       macAddress: bssid,
       configuration: cloneAccessPointConfiguration(registration.configuration),
     });
+    if (registration.configuration.enabled) {
+      this.reconnectEligibleStations(registration.configuration.ssid);
+    }
   }
 
   registerStation(registration: WirelessStationRegistration): void {
@@ -141,17 +168,25 @@ export class WirelessMedium {
     if ([...this.stations.values()].some((entry) => entry.macAddress === macAddress)) {
       throw new Error(`Wireless station MAC '${macAddress}' is already registered.`);
     }
-    this.stations.set(key, {
+    const station: StationRuntime = {
       ...registration,
       key,
       macAddress,
       preferredBssid: registration.preferredBssid
         ? normalizeMac(registration.preferredBssid)
         : undefined,
+      autoConnect: registration.autoConnect ?? false,
+      credentials: cloneStationCredentials(registration.credentials ?? []),
+      enabled: registration.interface.enabled,
       state: registration.interface.enabled ? "disconnected" : "disabled",
       scanResults: [],
       connectionGeneration: 0,
-    });
+    };
+    this.stations.set(key, station);
+    if (station.autoConnect && station.preferredSsid) {
+      station.connectionGeneration++;
+      this.scheduleAutoReconnect(station);
+    }
   }
 
   updateAccessPoint(
@@ -161,6 +196,7 @@ export class WirelessMedium {
   ): void {
     validateAccessPointConfiguration(configuration);
     const accessPoint = this.requireAccessPoint(deviceId, interfaceId);
+    const previouslyEnabled = accessPoint.configuration.enabled;
     const associationChanged = associationSignature(accessPoint.configuration)
       !== associationSignature(configuration);
     const domainCount = [...this.accessPoints.values()].filter(
@@ -183,6 +219,9 @@ export class WirelessMedium {
         configuration.enabled ? "access-point-configuration-changed" : "access-point-disabled",
       );
     }
+    if (configuration.enabled && !previouslyEnabled) {
+      this.reconnectEligibleStations(configuration.ssid);
+    }
   }
 
   removeAccessPoint(deviceId: string, interfaceId: string, reason = "access-point-removed"): void {
@@ -201,13 +240,62 @@ export class WirelessMedium {
     this.stations.delete(key);
   }
 
+  updateStationPreferences(
+    deviceId: string,
+    interfaceId: string,
+    preferences: {
+      readonly preferredSsid?: string;
+      readonly preferredBssid?: Mac;
+      readonly autoConnect: boolean;
+      readonly credentials?: readonly WirelessStationCredential[];
+    },
+  ): void {
+    const station = this.requireStation(deviceId, interfaceId);
+    const previousBssid = station.preferredBssid;
+    station.preferredSsid = preferences.preferredSsid;
+    station.preferredBssid = preferences.preferredBssid
+      ? normalizeMac(preferences.preferredBssid)
+      : undefined;
+    station.autoConnect = preferences.autoConnect;
+    station.credentials = cloneStationCredentials(preferences.credentials ?? []);
+    if (
+      station.state === "associated"
+      && station.preferredBssid
+      && station.preferredBssid !== previousBssid
+    ) {
+      this.beginConnection(station, {
+        ssid: station.preferredSsid,
+        preferredBssid: station.preferredBssid,
+      });
+    } else if (
+      station.autoConnect
+      && (station.state === "disconnected" || station.state === "failed")
+    ) {
+      this.beginConnection(station, { ssid: station.preferredSsid });
+    }
+  }
+
+  setStationEnabled(deviceId: string, interfaceId: string, enabled: boolean): void {
+    const station = this.requireStation(deviceId, interfaceId);
+    if (station.enabled === enabled) return;
+    station.enabled = enabled;
+    if (!enabled) {
+      this.disconnect(deviceId, interfaceId, "wireless-interface-disabled");
+      return;
+    }
+    station.connectionGeneration++;
+    station.state = "disconnected";
+    station.failureReason = undefined;
+    this.scheduleAutoReconnect(station);
+  }
+
   scan(deviceId: string, interfaceId: string, explicitSsid?: string): void {
     const station = this.requireStation(deviceId, interfaceId);
     station.connectionGeneration++;
     const generation = station.connectionGeneration;
     station.scanResults = [];
     station.failureReason = undefined;
-    if (!station.interface.enabled) {
+    if (!station.enabled) {
       station.state = "disabled";
       return;
     }
@@ -270,17 +358,56 @@ export class WirelessMedium {
 
   connect(deviceId: string, interfaceId: string, request: WirelessConnectRequest = {}): void {
     const station = this.requireStation(deviceId, interfaceId);
+    this.beginConnection(station, request);
+  }
+
+  private beginConnection(
+    station: StationRuntime,
+    request: WirelessConnectRequest,
+    roamingFromBssid?: Mac,
+    excludedBssid?: Mac,
+  ): void {
+    const effectiveRequest = resolveConnectionRequest(station, request);
+    const currentAccessPoint = station.associatedAccessPointKey
+      ? this.accessPoints.get(station.associatedAccessPointKey)
+      : undefined;
+    const requestedBssid = effectiveRequest.preferredBssid
+      ? normalizeMac(effectiveRequest.preferredBssid)
+      : undefined;
+    if (
+      currentAccessPoint
+      && currentAccessPoint.configuration.ssid === effectiveRequest.ssid
+      && (requestedBssid === undefined || currentAccessPoint.bssid === requestedBssid)
+      && securityMatches(currentAccessPoint.configuration.security, effectiveRequest)
+    ) return;
+    if (currentAccessPoint) {
+      this.traceManagement(station.deviceId, {
+        kind: "wireless-management",
+        type: "disassociation",
+        sourceMac: station.macAddress,
+        destinationMac: currentAccessPoint.bssid,
+        radioDomainId: currentAccessPoint.configuration.radioDomainId,
+        band: currentAccessPoint.configuration.band,
+        channel: currentAccessPoint.configuration.channel,
+        bssid: currentAccessPoint.bssid,
+        reason: "reassociation",
+      });
+      roamingFromBssid = currentAccessPoint.bssid;
+      this.clearAssociation(station);
+    }
     station.connectionGeneration++;
     const generation = station.connectionGeneration;
     station.scanResults = [];
     station.failureReason = undefined;
-    if (!station.interface.enabled) {
+    station.lastConnectionRequest = cloneConnectRequest(effectiveRequest);
+    station.roamingFromBssid = roamingFromBssid;
+    if (!station.enabled) {
       this.fail(station, "wireless-interface-disabled");
       return;
     }
     this.engine.controlProtocolBudget.consume("wirelessAssociationAttempts", station.key);
     station.state = "scanning";
-    const requestedSsid = request.ssid ?? station.preferredSsid;
+    const requestedSsid = effectiveRequest.ssid;
     this.traceManagement(station.deviceId, {
       kind: "wireless-management",
       type: "probe-request",
@@ -294,12 +421,29 @@ export class WirelessMedium {
     this.scheduleManagement(this.limits.managementFrameDelayNs, station.key, generation, () => {
       const compatible = this.compatibleAccessPoints(station);
       const candidates = compatible.filter(
-        (entry) => requestedSsid === undefined || entry.configuration.ssid === requestedSsid,
+        (entry) =>
+          (requestedSsid === undefined || entry.configuration.ssid === requestedSsid)
+          && entry.bssid !== excludedBssid
+          && (
+            effectiveRequest.securityMode === undefined
+            || entry.configuration.security.mode === effectiveRequest.securityMode
+          ),
       );
-      const preferredBssid = request.preferredBssid
-        ? normalizeMac(request.preferredBssid)
+      const preferredBssid = effectiveRequest.preferredBssid
+        ? normalizeMac(effectiveRequest.preferredBssid)
         : station.preferredBssid;
-      const accessPoint = selectAccessPoint(candidates, preferredBssid);
+      const withCapacity = candidates.filter((entry) => this.hasClientCapacity(entry));
+      const credentialCompatible = withCapacity.filter(
+        (entry) => securityMatches(entry.configuration.security, effectiveRequest),
+      );
+      const accessPoint = selectAccessPoint(
+        credentialCompatible.length > 0
+          ? credentialCompatible
+          : withCapacity.length > 0
+            ? withCapacity
+            : candidates,
+        preferredBssid,
+      );
       if (!accessPoint) {
         const anyInDomain = [...this.accessPoints.values()].some(
           (entry) =>
@@ -326,7 +470,7 @@ export class WirelessMedium {
         ssid: accessPoint.configuration.ssid,
         bssid: accessPoint.bssid,
       });
-      this.startAuthentication(station, accessPoint, generation);
+      this.startAuthentication(station, accessPoint, generation, effectiveRequest);
     });
   }
 
@@ -356,7 +500,7 @@ export class WirelessMedium {
       });
     }
     this.clearAssociation(station);
-    station.state = station.interface.enabled ? "disconnected" : "disabled";
+    station.state = station.enabled ? "disconnected" : "disabled";
   }
 
   disconnectClient(
@@ -382,7 +526,7 @@ export class WirelessMedium {
       reason,
     });
     this.clearAssociation(station);
-    station.state = station.interface.enabled ? "disconnected" : "disabled";
+    station.state = station.enabled ? "disconnected" : "disabled";
     this.engine.trace({
       time: this.engine.now(),
       type: "wireless-deauthenticated",
@@ -405,6 +549,8 @@ export class WirelessMedium {
       bssid: accessPoint?.bssid,
       accessPointDeviceId: accessPoint?.deviceId,
       associatedAtNs: station.associatedAtNs,
+      lastRoamedFromBssid: station.lastRoamedFromBssid,
+      lastRoamedAtNs: station.lastRoamedAtNs,
       failureReason: station.failureReason,
     };
   }
@@ -449,6 +595,7 @@ export class WirelessMedium {
     station: StationRuntime,
     accessPoint: AccessPointRuntime,
     generation: number,
+    request: WirelessConnectRequest,
   ): void {
     station.state = "authenticating";
     this.engine.trace({
@@ -468,10 +615,7 @@ export class WirelessMedium {
       bssid: accessPoint.bssid,
     });
     this.scheduleManagement(this.limits.managementFrameDelayNs, station.key, generation, () => {
-      // M10.6a implements open-system authentication. WPA2 credential
-      // verification is added as a separate milestone slice before it enters
-      // this deterministic decision point.
-      const accepted = accessPoint.configuration.security.mode === "open";
+      const accepted = securityMatches(accessPoint.configuration.security, request);
       this.traceManagement(accessPoint.deviceId, {
         kind: "wireless-management",
         type: "authentication-response",
@@ -536,13 +680,21 @@ export class WirelessMedium {
         reason: accepted ? undefined : "client-limit",
       });
       if (!accepted) {
+        const roamingFromBssid = station.roamingFromBssid;
         this.fail(station, "access-point-client-limit");
+        if (station.autoConnect) {
+          station.connectionGeneration++;
+          station.state = "disconnected";
+          this.scheduleAutoReconnect(station, roamingFromBssid, accessPoint.bssid);
+        }
         return;
       }
       station.state = "associated";
       station.associatedAccessPointKey = accessPoint.key;
       station.associatedAtNs = this.engine.now();
       station.failureReason = undefined;
+      const roamingFromBssid = station.roamingFromBssid;
+      station.roamingFromBssid = undefined;
       this.engine.trace({
         time: this.engine.now(),
         type: "wireless-associated",
@@ -553,6 +705,21 @@ export class WirelessMedium {
           bssid: accessPoint.bssid,
         },
       });
+      if (roamingFromBssid && roamingFromBssid !== accessPoint.bssid) {
+        station.lastRoamedFromBssid = roamingFromBssid;
+        station.lastRoamedAtNs = this.engine.now();
+        this.engine.trace({
+          time: this.engine.now(),
+          type: "wireless-roamed",
+          device: station.deviceId,
+          detail: {
+            fromBssid: roamingFromBssid,
+            toBssid: accessPoint.bssid,
+            accessPointDeviceId: accessPoint.deviceId,
+            ssid: accessPoint.configuration.ssid,
+          },
+        });
+      }
     });
   }
 
@@ -698,6 +865,7 @@ export class WirelessMedium {
 
   private fail(station: StationRuntime, reason: WirelessAssociationFailureReason): void {
     this.clearAssociation(station);
+    station.roamingFromBssid = undefined;
     station.state = "failed";
     station.failureReason = reason;
   }
@@ -722,14 +890,55 @@ export class WirelessMedium {
         reason,
       });
       this.clearAssociation(station);
-      station.state = station.interface.enabled ? "disconnected" : "disabled";
+      station.state = station.enabled ? "disconnected" : "disabled";
       this.engine.trace({
         time: this.engine.now(),
         type: "wireless-deauthenticated",
         device: station.deviceId,
         detail: { accessPointDeviceId: accessPoint.deviceId, reason },
       });
+      this.scheduleAutoReconnect(station, accessPoint.bssid);
     }
+  }
+
+  private scheduleAutoReconnect(
+    station: StationRuntime,
+    fromBssid?: Mac,
+    excludedBssid?: Mac,
+  ): void {
+    if (!station.autoConnect || !station.enabled) return;
+    const request = station.lastConnectionRequest
+      ?? resolveConnectionRequest(station, { ssid: station.preferredSsid });
+    const generation = station.connectionGeneration;
+    this.scheduleManagement(
+      this.limits.managementFrameDelayNs,
+      station.key,
+      generation,
+      () => this.beginConnection(station, request, fromBssid, excludedBssid),
+    );
+  }
+
+  private reconnectEligibleStations(ssid: string): void {
+    for (const station of [...this.stations.values()].sort(compareStations)) {
+      if (
+        !station.autoConnect
+        || !station.enabled
+        || (station.state !== "disconnected" && station.state !== "failed")
+      ) continue;
+      const requestedSsid = station.lastConnectionRequest?.ssid ?? station.preferredSsid;
+      if (requestedSsid !== ssid) continue;
+      station.connectionGeneration++;
+      station.state = "disconnected";
+      this.scheduleAutoReconnect(station);
+    }
+  }
+
+  private hasClientCapacity(accessPoint: AccessPointRuntime): boolean {
+    const maximum = Math.min(
+      accessPoint.configuration.maximumClients,
+      this.limits.maximumStationsPerAccessPoint,
+    );
+    return this.associatedStations(accessPoint).length < maximum;
   }
 
   private compatibleAccessPoints(station: StationRuntime): AccessPointRuntime[] {
@@ -772,6 +981,53 @@ export class WirelessMedium {
     if (!station) throw new Error(`Unknown wireless station '${deviceId}/${interfaceId}'.`);
     return station;
   }
+}
+
+function resolveConnectionRequest(
+  station: StationRuntime,
+  request: WirelessConnectRequest,
+): WirelessConnectRequest {
+  const ssid = request.ssid ?? station.preferredSsid;
+  const saved = ssid === undefined
+    ? undefined
+    : station.credentials.find((entry) =>
+        entry.ssid === ssid
+        && (request.securityMode === undefined || entry.securityMode === request.securityMode),
+      );
+  return {
+    ssid,
+    preferredBssid: request.preferredBssid ?? station.preferredBssid,
+    securityMode: request.securityMode ?? saved?.securityMode,
+    credentialFingerprint: request.credentialFingerprint ?? saved?.credentialFingerprint,
+  };
+}
+
+function cloneConnectRequest(request: WirelessConnectRequest): WirelessConnectRequest {
+  return { ...request };
+}
+
+function cloneStationCredentials(
+  credentials: readonly WirelessStationCredential[],
+): WirelessStationCredential[] {
+  return credentials.map((entry) => ({ ...entry }));
+}
+
+function securityMatches(
+  security: WirelessRuntimeSecurity,
+  request: WirelessConnectRequest,
+): boolean {
+  if (security.mode === "open") {
+    return request.securityMode === undefined || request.securityMode === "open";
+  }
+  return (
+    (request.securityMode === undefined || request.securityMode === "wpa2-personal")
+    && security.credentialFingerprint !== undefined
+    && request.credentialFingerprint === security.credentialFingerprint
+  );
+}
+
+function compareStations(a: StationRuntime, b: StationRuntime): number {
+  return a.macAddress.localeCompare(b.macAddress) || a.key.localeCompare(b.key);
 }
 
 function radioKey(deviceId: string, interfaceId: string): string {
@@ -833,6 +1089,12 @@ function validateAccessPointConfiguration(configuration: WirelessAccessPointRadi
       `Wireless maximum clients must be between 1 and ${DEFAULT_WIRELESS_LIMITS.maximumStationsPerAccessPoint}.`,
     );
   }
+  if (
+    configuration.security.mode === "wpa2-personal"
+    && !configuration.security.credentialFingerprint
+  ) {
+    throw new Error("WPA2 access point requires an opaque credential fingerprint.");
+  }
 }
 
 function validateChannel(band: WirelessBand, channel: number): void {
@@ -862,6 +1124,8 @@ function associationSignature(configuration: WirelessAccessPointRadioConfigurati
     configuration.radioDomainId,
     configuration.band,
     configuration.channel,
+    configuration.priority,
+    configuration.maximumClients,
     securitySignature(configuration.security),
   ].join(":");
 }

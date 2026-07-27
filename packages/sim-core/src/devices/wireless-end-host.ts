@@ -2,6 +2,7 @@ import type {
   WirelessAssociationStatus,
   WirelessInterfaceConfiguration,
   WirelessNetworkSummary,
+  WirelessSavedNetworkProfile,
   WirelessStationConfiguration,
 } from "@sim/contracts";
 import type { WirelessInterface } from "../net/wireless-interface";
@@ -37,6 +38,8 @@ export abstract class WirelessEndHost extends EndHost {
       },
       preferredSsid: stationConfiguration.preferredSsid,
       preferredBssid: stationConfiguration.preferredBssid as Mac | undefined,
+      autoConnect: stationConfiguration.autoConnect,
+      credentials: runtimeCredentials(stationConfiguration.savedNetworks),
     });
     this.wirelessInterfaceId = iface.name;
     this.stationConfiguration = cloneStationConfiguration(stationConfiguration);
@@ -66,10 +69,38 @@ export abstract class WirelessEndHost extends EndHost {
     this.engine.wireless.disconnect(this.id, this.wirelessInterface.name, reason);
   }
 
+  saveWirelessNetwork(profile: WirelessSavedNetworkProfile): void {
+    const configuration = this.wirelessConfigurationSnapshot();
+    const savedNetworks = configuration.savedNetworks
+      .filter((entry) => entry.id !== profile.id && entry.ssid !== profile.ssid);
+    savedNetworks.push(cloneSavedNetwork(profile));
+    this.updateStationConfiguration({ ...configuration, savedNetworks });
+  }
+
+  forgetWirelessNetwork(profileId: string): void {
+    const configuration = this.wirelessConfigurationSnapshot();
+    this.updateStationConfiguration({
+      ...configuration,
+      savedNetworks: configuration.savedNetworks.filter((entry) => entry.id !== profileId),
+    });
+  }
+
+  setWirelessPreferences(
+    preferences: Pick<
+      WirelessStationConfiguration,
+      "autoConnect" | "preferredSsid" | "preferredBssid"
+    >,
+  ): void {
+    this.updateStationConfiguration({
+      ...this.wirelessConfigurationSnapshot(),
+      ...preferences,
+    });
+  }
+
   setWirelessEnabled(enabled: boolean): void {
     const iface = this.wirelessInterface;
     iface.setWirelessEnabled(enabled);
-    if (!enabled) this.engine.wireless.disconnect(this.id, iface.name, "wireless-interface-disabled");
+    this.engine.wireless.setStationEnabled(this.id, iface.name, enabled);
   }
 
   wirelessStatus(): WirelessAssociationStatus {
@@ -91,6 +122,16 @@ export abstract class WirelessEndHost extends EndHost {
       },
     });
   }
+
+  private updateStationConfiguration(configuration: WirelessStationConfiguration): void {
+    this.stationConfiguration = cloneStationConfiguration(configuration);
+    this.engine.wireless.updateStationPreferences(this.id, this.wirelessInterface.name, {
+      preferredSsid: configuration.preferredSsid,
+      preferredBssid: configuration.preferredBssid as Mac | undefined,
+      autoConnect: configuration.autoConnect,
+      credentials: runtimeCredentials(configuration.savedNetworks),
+    });
+  }
 }
 
 function cloneStationConfiguration(
@@ -103,10 +144,24 @@ function cloneStationConfiguration(
       supportedChannels: [...configuration.radio.supportedChannels],
     },
     savedNetworks: configuration.savedNetworks.map((network) => ({
-      ...network,
-      credentialVerifier: network.credentialVerifier
-        ? { ...network.credentialVerifier }
-        : undefined,
+      ...cloneSavedNetwork(network),
     })),
   };
+}
+
+function cloneSavedNetwork(profile: WirelessSavedNetworkProfile): WirelessSavedNetworkProfile {
+  return {
+    ...profile,
+    credentialVerifier: profile.credentialVerifier
+      ? { ...profile.credentialVerifier }
+      : undefined,
+  };
+}
+
+function runtimeCredentials(profiles: readonly WirelessSavedNetworkProfile[]) {
+  return profiles.map((profile) => ({
+    ssid: profile.ssid,
+    securityMode: profile.securityMode,
+    credentialFingerprint: profile.credentialVerifier?.hashBase64,
+  }));
 }

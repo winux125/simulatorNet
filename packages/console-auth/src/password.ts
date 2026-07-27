@@ -10,6 +10,7 @@ import type { PasswordVerifier } from "@sim/contracts";
 export const DEFAULT_PBKDF2_ITERATIONS = 120_000;
 const SALT_BYTES = 16;
 const HASH_BYTES = 32;
+const WIRELESS_SALT_SCOPE = "SimulatorNet wireless credential\u0000";
 
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -70,6 +71,36 @@ export async function createPasswordVerifier(password: string, iterations = DEFA
   const salt = webcrypto().getRandomValues(new Uint8Array(SALT_BYTES));
   const hash = await deriveBits(password, salt, iterations, HASH_BYTES);
   return { algorithm: "pbkdf2-sha256", iterations, saltBase64: toBase64(salt), hashBase64: toBase64(hash) };
+}
+
+/**
+ * Derive compatible AP/client material for the educational WPA2-PSK model.
+ * The SSID-scoped salt is deterministic so independently configured peers
+ * produce the same opaque verifier without keeping the passphrase. This is
+ * authentication material only; it does not claim to implement 802.11
+ * encryption or the real WPA2 four-way handshake.
+ */
+export async function createWirelessCredentialVerifier(
+  ssid: string,
+  passphrase: string,
+  iterations = DEFAULT_PBKDF2_ITERATIONS,
+): Promise<PasswordVerifier> {
+  if (ssid.length < 1 || ssid.length > 32) {
+    throw new Error("Wireless SSID must contain between 1 and 32 characters");
+  }
+  if (passphrase.length < 8 || passphrase.length > 63) {
+    throw new Error("WPA2 passphrase must contain between 8 and 63 characters");
+  }
+  const scope = new TextEncoder().encode(`${WIRELESS_SALT_SCOPE}${ssid}`);
+  const digest = await webcrypto().subtle.digest("SHA-256", toArrayBuffer(scope));
+  const salt = new Uint8Array(digest).slice(0, SALT_BYTES);
+  const hash = await deriveBits(passphrase, salt, iterations, HASH_BYTES);
+  return {
+    algorithm: "pbkdf2-sha256",
+    iterations,
+    saltBase64: toBase64(salt),
+    hashBase64: toBase64(hash),
+  };
 }
 
 function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {

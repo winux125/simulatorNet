@@ -18,6 +18,13 @@ import {
   type SimulationEngine,
 } from "@sim/sim-core";
 
+const TEST_WPA2_VERIFIER = {
+  algorithm: "pbkdf2-sha256" as const,
+  iterations: 2_000,
+  saltBase64: "c2ltdWxhdG9ybmV0LXNhbHQ=",
+  hashBase64: "b3BhcXVlLXdpcmVsZXNzLWZpbmdlcnByaW50",
+};
+
 function radio(
   macIndex: number,
   overrides: Partial<WirelessInterfaceConfiguration> = {},
@@ -84,6 +91,59 @@ function configuredLaptop(engine: SimulationEngine, id = "laptop", macIndex = 1)
 }
 
 describe("wireless devices", () => {
+  it("auto-connects a Laptop with a saved WPA2 verifier and never stores plaintext", () => {
+    const engine = createSimulationEngine({ seed: 106 });
+    const accessPoint = engine.add(new AccessPoint("ap1", "AP1"));
+    accessPoint.addInterface("eth0", macFromIndex(100));
+    accessPoint.configureWireless(
+      radio(101),
+      accessPointConfig({
+        security: {
+          mode: "wpa2-personal",
+          credentialVerifier: TEST_WPA2_VERIFIER,
+        },
+      }),
+    );
+    const laptop = engine.add(new Laptop("laptop", "Laptop"));
+    laptop.addInterface("eth0", macFromIndex(21));
+    laptop.configureWirelessInterface(
+      radio(1),
+      stationConfig({
+        savedNetworks: [{
+          id: "secure-lab",
+          ssid: "SimulatorNet",
+          securityMode: "wpa2-personal",
+          credentialVerifier: TEST_WPA2_VERIFIER,
+          autoConnect: true,
+        }],
+      }),
+    );
+
+    engine.runUntilIdle();
+
+    expect(laptop.wirelessStatus().state).toBe("associated");
+    expect(JSON.stringify(laptop.wirelessConfigurationSnapshot())).not.toContain("passphrase");
+  });
+
+  it("updates saved networks without exposing them to the wireless event trace", () => {
+    const engine = createSimulationEngine({ seed: 106 });
+    engine.enableTrace();
+    const laptop = configuredLaptop(engine);
+    laptop.saveWirelessNetwork({
+      id: "secure-lab",
+      ssid: "Secure Lab",
+      securityMode: "wpa2-personal",
+      credentialVerifier: TEST_WPA2_VERIFIER,
+      autoConnect: false,
+    });
+
+    expect(laptop.wirelessConfigurationSnapshot().savedNetworks).toHaveLength(1);
+    expect(JSON.stringify(engine.traceLog)).not.toContain(TEST_WPA2_VERIFIER.hashBase64);
+
+    laptop.forgetWirelessNetwork("secure-lab");
+    expect(laptop.wirelessConfigurationSnapshot().savedNetworks).toEqual([]);
+  });
+
   it("reuses EndHost DHCP and ping through an AP Ethernet bridge", () => {
     const engine = createSimulationEngine({ seed: 106 });
     const router = engine.add(new Router("r1", "R1"));

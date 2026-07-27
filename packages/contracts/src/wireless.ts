@@ -101,6 +101,8 @@ export const WirelessAssociationStatusSchema = z.object({
   bssid: z.string().optional(),
   accessPointDeviceId: z.string().optional(),
   associatedAtNs: z.number().int().nonnegative().optional(),
+  lastRoamedFromBssid: z.string().min(11).max(32).optional(),
+  lastRoamedAtNs: z.number().int().nonnegative().optional(),
   failureReason: z.string().optional(),
 }).strict();
 export type WirelessAssociationStatus = z.infer<typeof WirelessAssociationStatusSchema>;
