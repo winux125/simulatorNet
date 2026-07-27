@@ -193,7 +193,6 @@ label.ui-icon-button { display: inline-grid; }
 /* The canvas owns wheel/pinch input; the page must never scroll or zoom over it
    and the topology never grows its own scrollbar (there is no X6 Scroller). */
 .topology-panel .topology-graph { position: absolute; inset: 80px 0 0; overflow: hidden; overscroll-behavior: contain; touch-action: none; background-image: radial-gradient(var(--color-canvas-grid) .8px, transparent .9px); background-size: 16px 16px; background-position: -1px -1px; }
-.topology-panel:has(.annotation-toolbar) .topology-graph { top: 154px; }
 .topology-panel[data-active-tool="pan"] .topology-graph { cursor: grab; }
 .topology-panel[data-active-tool="pan"] .topology-graph:active { cursor: grabbing; }
 .topology-graph.is-canvas-pannable { cursor: grab; }
