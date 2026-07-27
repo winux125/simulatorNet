@@ -3,6 +3,7 @@ import type {
   LoopbackInterfaceConfig,
   NeighborDiscoveryConfig,
   OspfProcessConfig,
+  Ospfv3ProcessConfig,
   SpanningTreeConfig,
 } from "@sim/contracts";
 import {
@@ -95,6 +96,9 @@ export function applyLoopbackConfiguration(
     if (loopback.ipv4) {
       device.setInterfaceIp(loopbackName(loopback.id), loopback.ipv4.address, loopback.ipv4.prefixLength);
     }
+    for (const address of loopback.ipv6 ?? []) {
+      device.setInterfaceIpv6(loopbackName(loopback.id), address.address, address.prefixLength);
+    }
   }
 }
 
@@ -116,6 +120,23 @@ export function applyOspfConfiguration(device: Router | Layer3Switch, config: Os
     });
   }
   for (const passive of config.passiveInterfaces) device.ospf.setPassiveInterface(passive, true);
+}
+
+export function applyOspfv3Configuration(device: Router | Layer3Switch, config: Ospfv3ProcessConfig): void {
+  device.ospfv3.createProcess(config.processId);
+  if (config.routerId !== undefined) device.ospfv3.setRouterId(config.routerId);
+  for (const iface of config.interfaces) {
+    device.ospfv3.configureInterface(iface.interfaceId, {
+      area: iface.area,
+      cost: iface.cost,
+      priority: iface.priority,
+      networkType: iface.networkType,
+      helloIntervalNs: iface.helloIntervalSeconds === undefined ? undefined : seconds(iface.helloIntervalSeconds),
+      deadIntervalNs: iface.deadIntervalSeconds === undefined ? undefined : seconds(iface.deadIntervalSeconds),
+      enabled: iface.enabled,
+    });
+  }
+  for (const passive of config.passiveInterfaces) device.ospfv3.setPassiveInterface(passive, true);
 }
 
 // --- serialize -------------------------------------------------------------
@@ -185,13 +206,18 @@ export function serializeDiscoveryConfiguration(
 
 export function serializeLoopbackConfiguration(device: Router | Layer3Switch): LoopbackInterfaceConfig[] {
   const summaries = new Map(device.loopbackSummaries().map((row) => [row.name, row]));
+  const ipv6 = new Map(device.ipv6InterfaceSummaries().map((row) => [row.name, row.addresses]));
   return device.loopbackNumbers().map((id): LoopbackInterfaceConfig => {
     const row = summaries.get(loopbackName(id));
+    const configuredIpv6 = ipv6.get(loopbackName(id))
+      ?.filter((address) => address.source === "static")
+      .map((address) => ({ address: address.address, prefixLength: address.prefixLength }));
     return {
       id,
       description: row?.description,
       shutdown: row ? !row.adminUp : false,
       ipv4: row?.ip === undefined ? undefined : { address: row.ip, prefixLength: prefixLength(row.maskInt) },
+      ipv6: configuredIpv6 && configuredIpv6.length > 0 ? configuredIpv6 : undefined,
     };
   });
 }
@@ -207,6 +233,30 @@ export function serializeOspfConfiguration(device: Router | Layer3Switch): OspfP
       wildcard: statement.wildcard,
       area: 0 as const,
     })),
+    passiveInterfaces: [...configuration.passiveInterfaces],
+    interfaces: configuration.interfaces.map((iface) => ({
+      interfaceId: iface.id,
+      area: iface.configuration.area === undefined ? undefined : (0 as const),
+      cost: iface.configuration.cost,
+      priority: iface.configuration.priority,
+      networkType: iface.configuration.networkType,
+      helloIntervalSeconds: iface.configuration.helloIntervalNs === undefined
+        ? undefined
+        : toSeconds(iface.configuration.helloIntervalNs),
+      deadIntervalSeconds: iface.configuration.deadIntervalNs === undefined
+        ? undefined
+        : toSeconds(iface.configuration.deadIntervalNs),
+      enabled: iface.configuration.enabled,
+    })),
+  };
+}
+
+export function serializeOspfv3Configuration(device: Router | Layer3Switch): Ospfv3ProcessConfig | undefined {
+  if (!device.ospfv3.enabled) return undefined;
+  const configuration = device.ospfv3.configuration();
+  return {
+    processId: configuration.processId,
+    routerId: configuration.routerId,
     passiveInterfaces: [...configuration.passiveInterfaces],
     interfaces: configuration.interfaces.map((iface) => ({
       interfaceId: iface.id,

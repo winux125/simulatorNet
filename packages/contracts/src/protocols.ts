@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { Ipv4InterfaceConfigSchema, Ipv4Schema, VlanIdSchema } from "./primitives";
+import {
+  Ipv4InterfaceConfigSchema,
+  Ipv4Schema,
+  Ipv6InterfaceAddressSchema,
+  VlanIdSchema,
+} from "./primitives";
 
 /**
  * Serializable configuration for the layer-2/layer-3 control protocols added in
@@ -113,6 +118,7 @@ export const LoopbackInterfaceConfigSchema = z.object({
   description: z.string().min(1).optional(),
   shutdown: z.boolean().default(false),
   ipv4: Ipv4InterfaceConfigSchema.optional(),
+  ipv6: z.array(Ipv6InterfaceAddressSchema).max(16).optional(),
 }).strict();
 export type LoopbackInterfaceConfig = z.infer<typeof LoopbackInterfaceConfigSchema>;
 
@@ -152,6 +158,28 @@ export const OspfProcessConfigSchema = z.object({
 }).strict();
 export type OspfProcessConfig = z.infer<typeof OspfProcessConfigSchema>;
 
+// --- OSPFv3 ---------------------------------------------------------------
+
+export const Ospfv3InterfaceConfigSchema = z.object({
+  interfaceId: z.string().min(1),
+  area: OspfAreaSchema.optional(),
+  cost: z.number().int().min(1).max(65_535).optional(),
+  priority: z.number().int().min(0).max(255).optional(),
+  networkType: OspfNetworkTypeSchema.optional(),
+  helloIntervalSeconds: z.number().int().min(1).max(65_535).optional(),
+  deadIntervalSeconds: z.number().int().min(1).max(65_535).optional(),
+  enabled: z.boolean().optional(),
+}).strict();
+export type Ospfv3InterfaceConfig = z.infer<typeof Ospfv3InterfaceConfigSchema>;
+
+export const Ospfv3ProcessConfigSchema = z.object({
+  processId: z.number().int().min(1).max(65_535).default(1),
+  routerId: Ipv4Schema.optional(),
+  passiveInterfaces: z.array(z.string().min(1)).max(64).default([]),
+  interfaces: z.array(Ospfv3InterfaceConfigSchema).max(64).default([]),
+}).strict();
+export type Ospfv3ProcessConfig = z.infer<typeof Ospfv3ProcessConfigSchema>;
+
 /**
  * Layer-2 control protocols shared by the L2 and L3 switch.
  *
@@ -170,6 +198,7 @@ export const SwitchControlProtocolShape = {
 export const RoutedControlProtocolShape = {
   loopbacks: z.array(LoopbackInterfaceConfigSchema).max(32).optional(),
   ospf: OspfProcessConfigSchema.optional(),
+  ospfv3: Ospfv3ProcessConfigSchema.optional(),
 };
 
 /** Canonical defaults applied when a document omits a protocol block. */

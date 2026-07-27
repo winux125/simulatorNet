@@ -1,6 +1,16 @@
+import { loopbackName } from "@sim/sim-core";
 import { InvalidModeError, ValidationError } from "../errors/errors";
 import type { CommandSpec, SessionApi } from "../types";
-import { isLayer3Switch, isRouter, isSwitch, parseIpv4, parseVlanId, parseVlanList } from "./helpers";
+import {
+  isLayer3Switch,
+  isRouter,
+  isRoutingDevice,
+  isSwitch,
+  parseIpv4,
+  parseIpv6Prefix,
+  parseVlanId,
+  parseVlanList,
+} from "./helpers";
 
 function requireCtx(s: SessionApi) {
   if (!s.ifaceCtx) throw new InvalidModeError("No interface selected");
@@ -153,7 +163,43 @@ export const interfaceCommands: CommandSpec[] = [
       }
     },
   },
+  {
+    pattern: "ipv6 enable",
+    modes: ["config-if"],
+    device: "router",
+    run: (s) => {
+      if (isRoutingDevice(s.device)) s.device.enableInterfaceIpv6(routedInterfaceName(s));
+    },
+  },
+  {
+    pattern: "ipv6 address {prefix}",
+    usage: "ipv6 address <address>/<prefix-length>",
+    modes: ["config-if"],
+    device: "router",
+    run: (s, p) => {
+      const address = parseIpv6Prefix(p.prefix!);
+      if (isRoutingDevice(s.device)) {
+        s.device.setInterfaceIpv6(routedInterfaceName(s), address.network, address.prefixLength);
+      }
+    },
+  },
 ];
+
+function routedInterfaceName(s: SessionApi): string {
+  const ctx = requireCtx(s);
+  if (ctx.loopback !== undefined) return loopbackName(ctx.loopback);
+  if (ctx.sviVlan !== undefined) return `Vlan${ctx.sviVlan}`;
+  if (ctx.isSubinterface) {
+    if (!ctx.subCreated || ctx.subVlan === undefined) {
+      throw new ValidationError("Configure 'encapsulation dot1Q' before IPv6 addressing");
+    }
+    return `${ctx.physical}.${ctx.subVlan}`;
+  }
+  if (isLayer3Switch(s.device) && !s.device.isRoutedPort(ctx.physical)) {
+    throw new InvalidModeError("Use 'no switchport' before assigning an IPv6 address");
+  }
+  return ctx.physical;
+}
 
 function requireSwitchport(s: SessionApi): string {
   const ctx = requireCtx(s);

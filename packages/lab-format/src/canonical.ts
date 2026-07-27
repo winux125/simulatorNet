@@ -29,7 +29,7 @@ import type {
   SwitchInterfaceConfig,
   TrafficGeneratorDeviceConfig,
 } from "@sim/contracts";
-import { ipToInt, macFromIndex, normalizeServiceConfiguration } from "@sim/sim-core";
+import { ipToInt, macFromIndex, normalizeIpv6, normalizeServiceConfiguration } from "@sim/sim-core";
 import { parseLabDocument } from "./parse";
 import { validateLabSemantics } from "./semantic";
 
@@ -97,6 +97,12 @@ function pcConfiguration(node: NodeSpec, config: PcDeviceConfig | undefined): Pc
     ipv4: config?.ipv4,
     dhcpEnabled: config?.dhcpEnabled ?? false,
     dnsServer: config?.dnsServer,
+    ipv6: config?.ipv6 ? {
+      ...config.ipv6,
+      address: config.ipv6.address ? normalizeIpv6(config.ipv6.address) : undefined,
+      defaultRouter: config.ipv6.defaultRouter ? normalizeIpv6(config.ipv6.defaultRouter) : undefined,
+      dnsServer: config.ipv6.dnsServer ? normalizeIpv6(config.ipv6.dnsServer) : undefined,
+    } : undefined,
   };
 }
 
@@ -108,10 +114,18 @@ function serverConfiguration(node: NodeSpec, config: ServerDeviceConfig | undefi
     interfaces: node.interfaces.map((iface) => ({
       ...commonInterface(iface.id, interfaces.get(iface.id)),
       ipv4: interfaces.get(iface.id)?.ipv4,
+      ipv6: interfaces.get(iface.id)?.ipv6?.map((address) => ({ ...address, address: normalizeIpv6(address.address) })),
     })),
     defaultGateway: config?.defaultGateway,
     dhcpClientEnabled: config?.dhcpClientEnabled ?? false,
     dnsServer: config?.dnsServer,
+    ipv6: config?.ipv6 ? {
+      ...config.ipv6,
+      address: config.ipv6.address ? normalizeIpv6(config.ipv6.address) : undefined,
+      defaultRouter: config.ipv6.defaultRouter ? normalizeIpv6(config.ipv6.defaultRouter) : undefined,
+      dnsServer: config.ipv6.dnsServer ? normalizeIpv6(config.ipv6.dnsServer) : undefined,
+    } : undefined,
+    dhcpv6Pools: [...(config?.dhcpv6Pools ?? [])].sort(byId).map((pool) => ({ ...pool })),
     enabledServices: [...(config?.enabledServices ?? [])]
       .sort(byId)
       .map((service) => normalizeServiceConfiguration(service)),
@@ -223,12 +237,15 @@ function canonicalDiscovery(discovery: NeighborDiscoveryConfig | undefined): Nei
 
 /** Loopbacks by numeric id, OSPF networks by network then wildcard. */
 function canonicalRoutedProtocols(
-  config: Partial<Pick<RouterDeviceConfig, "loopbacks" | "ospf">> | undefined,
+  config: Partial<Pick<RouterDeviceConfig, "loopbacks" | "ospf" | "ospfv3">> | undefined,
 ) {
   return {
     loopbacks: [...(config?.loopbacks ?? [])]
       .sort((a, b) => a.id - b.id)
-      .map((loopback) => ({ ...loopback })),
+      .map((loopback) => ({
+        ...loopback,
+        ipv6: loopback.ipv6?.map((address) => ({ ...address, address: normalizeIpv6(address.address) })),
+      })),
     ospf: config?.ospf === undefined
       ? undefined
       : {
@@ -242,10 +259,22 @@ function canonicalRoutedProtocols(
             .sort((a, b) => a.interfaceId.localeCompare(b.interfaceId))
             .map((iface) => ({ ...iface })),
         },
+    ospfv3: config?.ospfv3 === undefined
+      ? undefined
+      : {
+          processId: config.ospfv3.processId,
+          routerId: config.ospfv3.routerId,
+          passiveInterfaces: [...config.ospfv3.passiveInterfaces].sort((a, b) => a.localeCompare(b)),
+          interfaces: [...config.ospfv3.interfaces]
+            .sort((a, b) => a.interfaceId.localeCompare(b.interfaceId))
+            .map((iface) => ({ ...iface })),
+        },
   };
 }
 
-function canonicalAcls(config: Pick<RouterDeviceConfig, "acls" | "aclBindings"> | undefined) {
+function canonicalAcls(
+  config: Pick<RouterDeviceConfig, "acls" | "aclBindings" | "ipv6Acls" | "ipv6AclBindings"> | undefined,
+) {
   return {
     acls: [...(config?.acls ?? [])]
       .sort(byId)
@@ -274,6 +303,67 @@ function canonicalAcls(config: Pick<RouterDeviceConfig, "acls" | "aclBindings"> 
         || a.direction.localeCompare(b.direction)
         || a.aclId.localeCompare(b.aclId))
       .map((binding) => ({ ...binding })),
+    ipv6Acls: [...(config?.ipv6Acls ?? [])]
+      .sort(byId)
+      .map((acl) => ({
+        ...acl,
+        rules: [...acl.rules]
+          .sort((a, b) => a.sequence - b.sequence)
+          .map((rule) => ({
+            ...rule,
+            source: { ...rule.source },
+            destination: { ...rule.destination },
+            sourcePort: rule.sourcePort ? { ...rule.sourcePort } : undefined,
+            destinationPort: rule.destinationPort ? { ...rule.destinationPort } : undefined,
+          })),
+      })),
+    ipv6AclBindings: [...(config?.ipv6AclBindings ?? [])]
+      .sort((a, b) =>
+        a.interfaceName.localeCompare(b.interfaceName)
+        || a.direction.localeCompare(b.direction)
+        || a.aclId.localeCompare(b.aclId))
+      .map((binding) => ({ ...binding })),
+  };
+}
+
+function canonicalRoutedIpv6(
+  config: Partial<Pick<
+    RouterDeviceConfig,
+    "ipv6UnicastRoutingEnabled" | "ipv6StaticRoutes" | "routerAdvertisements" | "dhcpv6Pools"
+  >> | undefined,
+) {
+  return {
+    ipv6UnicastRoutingEnabled: config?.ipv6UnicastRoutingEnabled ?? false,
+    ipv6StaticRoutes: [...(config?.ipv6StaticRoutes ?? [])]
+      .sort((a, b) =>
+        normalizeIpv6(a.network).localeCompare(normalizeIpv6(b.network))
+        || a.prefixLength - b.prefixLength
+        || normalizeIpv6(a.nextHop).localeCompare(normalizeIpv6(b.nextHop)))
+      .map((route) => ({
+        ...route,
+        network: normalizeIpv6(route.network),
+        nextHop: normalizeIpv6(route.nextHop),
+      })),
+    routerAdvertisements: [...(config?.routerAdvertisements ?? [])]
+      .sort((a, b) => a.interfaceName.localeCompare(b.interfaceName))
+      .map((advertisement) => ({
+        ...advertisement,
+        dnsServers: [...advertisement.dnsServers].map(normalizeIpv6).sort((a, b) => a.localeCompare(b)),
+        prefixes: [...advertisement.prefixes]
+          .sort((a, b) =>
+            normalizeIpv6(a.prefix).localeCompare(normalizeIpv6(b.prefix))
+            || a.prefixLength - b.prefixLength)
+          .map((prefix) => ({ ...prefix, prefix: normalizeIpv6(prefix.prefix) })),
+      })),
+    dhcpv6Pools: [...(config?.dhcpv6Pools ?? [])]
+      .sort(byId)
+      .map((pool) => ({
+        ...pool,
+        prefix: normalizeIpv6(pool.prefix),
+        rangeStart: normalizeIpv6(pool.rangeStart),
+        rangeEnd: normalizeIpv6(pool.rangeEnd),
+        dnsServers: [...pool.dnsServers].map(normalizeIpv6).sort((a, b) => a.localeCompare(b)),
+      })),
   };
 }
 
@@ -300,13 +390,18 @@ function routerConfiguration(node: NodeSpec, config: RouterDeviceConfig | undefi
         ...commonInterface(iface.id, current),
         routed: current?.routed ?? false,
         ipv4: current?.ipv4,
+        ipv6: current?.ipv6?.map((address) => ({ ...address, address: normalizeIpv6(address.address) })),
       };
     }),
-    subinterfaces: [...(config?.subinterfaces ?? [])].sort(byId).map((iface) => ({ ...iface })),
+    subinterfaces: [...(config?.subinterfaces ?? [])].sort(byId).map((iface) => ({
+      ...iface,
+      ipv6: iface.ipv6?.map((address) => ({ ...address, address: normalizeIpv6(address.address) })),
+    })),
     staticRoutes: [...(config?.staticRoutes ?? [])]
       .sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || a.prefixLength - b.prefixLength || a.nextHop.localeCompare(b.nextHop))
       .map((route) => ({ ...route })),
     dhcpPools: [...(config?.dhcpPools ?? [])].sort(byId).map((pool) => ({ ...pool })),
+    ...canonicalRoutedIpv6(config),
     ...canonicalAcls(config),
     ...canonicalNat(config),
     ...canonicalRoutedProtocols(config),
@@ -386,7 +481,12 @@ function layer3SwitchConfiguration(
     interfaces: node.interfaces.map((iface): Layer3SwitchInterfaceConfig => {
       const current = interfaces.get(iface.id);
       if (current?.mode === "routed") {
-        return { ...commonInterface(iface.id, current), mode: "routed", ipv4: current.ipv4 };
+        return {
+          ...commonInterface(iface.id, current),
+          mode: "routed",
+          ipv4: current.ipv4,
+          ipv6: current.ipv6?.map((address) => ({ ...address, address: normalizeIpv6(address.address) })),
+        };
       }
       return {
         ...commonInterface(iface.id, current),
@@ -396,11 +496,15 @@ function layer3SwitchConfiguration(
         allowedVlans: current?.allowedVlans ? [...current.allowedVlans].sort((a, b) => a - b) : undefined,
       };
     }),
-    svis: [...(config?.svis ?? [])].sort((a, b) => a.vlanId - b.vlanId).map((svi) => ({ ...svi })),
+    svis: [...(config?.svis ?? [])].sort((a, b) => a.vlanId - b.vlanId).map((svi) => ({
+      ...svi,
+      ipv6: svi.ipv6?.map((address) => ({ ...address, address: normalizeIpv6(address.address) })),
+    })),
     staticRoutes: [...(config?.staticRoutes ?? [])]
       .sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || a.prefixLength - b.prefixLength || a.nextHop.localeCompare(b.nextHop))
       .map((route) => ({ ...route })),
     ipRoutingEnabled: config?.ipRoutingEnabled ?? false,
+    ...canonicalRoutedIpv6(config),
     ...canonicalAcls(config),
     ...canonicalSwitchProtocols(config),
     ...canonicalRoutedProtocols(config),

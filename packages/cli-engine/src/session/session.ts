@@ -173,6 +173,9 @@ export class CliSession implements SessionApi {
           .filter((part) => part.toLowerCase().startsWith(token))
           .map((part) => part.toLowerCase()),
       );
+      // A fully typed keyword wins over longer keywords that merely share its
+      // prefix (`ip` must not become ambiguous after adding `ipv6`).
+      if (literalExpansions.has(token)) continue;
       if (literalExpansions.size > 1) return new AmbiguousCommandError(line.trim()).render();
     }
 

@@ -7,6 +7,9 @@ import {
   type LabDocument,
   type LabMetadata,
   type Ipv4AclConfig,
+  type Ipv6AclConfig,
+  type Ipv6InterfaceAddress,
+  type HostIpv6Config,
   type NodeSpec,
   type PhysicalInterfaceConfig,
   type Layer3SwitchDeviceConfig,
@@ -28,6 +31,7 @@ import {
   Server,
   TrafficGenerator,
   type SimulationEngine,
+  NS_PER_S,
 } from "@sim/sim-core";
 import { canonicalizeLabDocument } from "./canonical";
 import { LabSemanticError } from "./errors";
@@ -36,11 +40,13 @@ import {
   applyEtherChannelConfiguration,
   applyLoopbackConfiguration,
   applyOspfConfiguration,
+  applyOspfv3Configuration,
   applySpanningTreeConfiguration,
   serializeDiscoveryConfiguration,
   serializeEtherChannelConfiguration,
   serializeLoopbackConfiguration,
   serializeOspfConfiguration,
+  serializeOspfv3Configuration,
   serializeSpanningTreeConfiguration,
 } from "./protocol-config";
 
@@ -164,6 +170,38 @@ function applyAclConfiguration(
   }
 }
 
+function applyIpv6AclConfiguration(
+  device: Pick<Router, "defineIpv6Acl" | "applyIpv6Acl"> | Pick<Layer3Switch, "defineIpv6Acl" | "applyIpv6Acl">,
+  config: Pick<Layer3SwitchDeviceConfig, "ipv6Acls" | "ipv6AclBindings">,
+): void {
+  for (const acl of config.ipv6Acls ?? []) device.defineIpv6Acl(acl);
+  for (const binding of config.ipv6AclBindings ?? []) {
+    device.applyIpv6Acl(binding.interfaceName, binding.direction, binding.aclId);
+  }
+}
+
+function applyHostIpv6(device: Pc | Server, config: DeviceConfig & { ipv6?: {
+  mode: "static" | "slaac" | "dhcpv6";
+  address?: string;
+  prefixLength?: number;
+  defaultRouter?: string;
+  dnsServer?: string;
+} }): void {
+  if (!config.ipv6) return;
+  if (config.ipv6.mode === "static") {
+    if (config.ipv6.address !== undefined && config.ipv6.prefixLength !== undefined) {
+      device.configureIpv6Static(
+        config.ipv6.address,
+        config.ipv6.prefixLength,
+        config.ipv6.defaultRouter,
+        config.ipv6.dnsServer,
+      );
+    }
+    return;
+  }
+  device.setIpv6Mode(config.ipv6.mode);
+}
+
 function applyConfiguration(device: Device, config: DeviceConfig): void {
   device.rename(config.hostname ?? device.name);
   if (device instanceof Pc && config.kind === "pc") {
@@ -178,6 +216,7 @@ function applyConfiguration(device: Device, config: DeviceConfig): void {
     }
     if (config.dnsServer !== undefined) device.applications.setDnsServer(config.dnsServer);
     if (config.dhcpEnabled) device.setDhcpEnabled(true);
+    applyHostIpv6(device, config);
     return;
   }
   if (device instanceof Server && config.kind === "server") {
@@ -194,6 +233,14 @@ function applyConfiguration(device: Device, config: DeviceConfig): void {
     }
     if (config.dnsServer !== undefined) device.applications.setDnsServer(config.dnsServer);
     if (config.dhcpClientEnabled) device.setDhcpEnabled(true);
+    applyHostIpv6(device, config);
+    for (const pool of config.dhcpv6Pools ?? []) {
+      device.addDhcpv6Pool({
+        ...pool,
+        preferredLifetimeNs: pool.preferredLifetimeSeconds * NS_PER_S,
+        validLifetimeNs: pool.validLifetimeSeconds * NS_PER_S,
+      });
+    }
     device.configureServices(config.enabledServices);
     // A server is a vendor-neutral station: LLDP only, never CDP.
     applyDiscoveryConfiguration(device, config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG);
@@ -263,13 +310,47 @@ function applyConfiguration(device: Device, config: DeviceConfig): void {
         device.getOrCreateInterface(iface.id);
         if (iface.ipv4) device.setInterfaceIp(iface.id, iface.ipv4.address, iface.ipv4.prefixLength);
       }
+      if (iface.ipv6 && iface.ipv6.length > 0) {
+        device.getOrCreateInterface(iface.id);
+        for (const address of iface.ipv6) device.setInterfaceIpv6(iface.id, address.address, address.prefixLength);
+      }
     }
     for (const iface of config.subinterfaces) {
       device.getOrCreateSubinterface(iface.parentInterface, iface.vlan, iface.native);
       if (iface.ipv4) device.setInterfaceIp(iface.id, iface.ipv4.address, iface.ipv4.prefixLength);
+      for (const address of iface.ipv6 ?? []) {
+        device.setInterfaceIpv6(iface.id, address.address, address.prefixLength);
+      }
     }
     for (const route of config.staticRoutes) {
       device.addStaticRoute(route.network, route.prefixLength, route.nextHop);
+    }
+    device.setIpv6ForwardingEnabled(config.ipv6UnicastRoutingEnabled ?? false);
+    for (const route of config.ipv6StaticRoutes ?? []) {
+      device.addIpv6StaticRoute(route.network, route.prefixLength, route.nextHop);
+    }
+    for (const advertisement of config.routerAdvertisements ?? []) {
+      device.configureRouterAdvertisement(advertisement.interfaceName, {
+        managed: advertisement.managed,
+        otherConfiguration: advertisement.otherConfiguration,
+        routerLifetimeNs: advertisement.routerLifetimeSeconds * NS_PER_S,
+        dnsServers: advertisement.dnsServers,
+        prefixes: advertisement.prefixes.map((prefix) => ({
+          prefix: prefix.prefix,
+          prefixLength: prefix.prefixLength,
+          autonomous: prefix.autonomous,
+          onLink: prefix.onLink,
+          validLifetimeNs: prefix.validLifetimeSeconds * NS_PER_S,
+          preferredLifetimeNs: prefix.preferredLifetimeSeconds * NS_PER_S,
+        })),
+      });
+    }
+    for (const pool of config.dhcpv6Pools ?? []) {
+      device.addDhcpv6Pool({
+        ...pool,
+        preferredLifetimeNs: pool.preferredLifetimeSeconds * NS_PER_S,
+        validLifetimeNs: pool.validLifetimeSeconds * NS_PER_S,
+      });
     }
     for (const pool of config.dhcpPools) {
       device.addDhcpPool({
@@ -283,6 +364,7 @@ function applyConfiguration(device: Device, config: DeviceConfig): void {
       });
     }
     applyAclConfiguration(device, config);
+    applyIpv6AclConfiguration(device, config);
     for (const pool of config.natPools) device.defineNatPool(pool);
     for (const role of config.natInterfaceRoles) device.setNatRole(role.interfaceName, role.role);
     for (const rule of config.natRules) device.defineNatRule(rule);
@@ -298,6 +380,7 @@ function applyConfiguration(device: Device, config: DeviceConfig): void {
     applyLoopbackConfiguration(device, config.loopbacks ?? []);
     applyDiscoveryConfiguration(device, config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG);
     if (config.ospf) applyOspfConfiguration(device, config.ospf);
+    if (config.ospfv3) applyOspfv3Configuration(device, config.ospfv3);
   }
 }
 
@@ -310,6 +393,9 @@ function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3Swit
     if (iface.mode === "routed") {
       device.setPortRouted(iface.id, true);
       if (iface.ipv4) device.configureRoutedInterface(iface.id, iface.ipv4.address, iface.ipv4.prefixLength);
+      for (const address of iface.ipv6 ?? []) {
+        device.setInterfaceIpv6(iface.id, address.address, address.prefixLength);
+      }
     } else if (iface.mode === "access") {
       device.setAccess(iface.id, iface.accessVlan);
     } else {
@@ -321,16 +407,46 @@ function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3Swit
     if (svi.ipAddress !== undefined && svi.prefixLength !== undefined) {
       device.setSviIp(svi.vlanId, svi.ipAddress, svi.prefixLength);
     }
+    for (const address of svi.ipv6 ?? []) device.setSviIpv6(svi.vlanId, address.address, address.prefixLength);
     device.setSviAdminState(svi.vlanId, svi.adminUp);
     if (svi.description) device.setSviDescription(svi.vlanId, svi.description);
   }
   for (const route of config.staticRoutes) device.addStaticRoute(route.network, route.prefixLength, route.nextHop);
   device.setIpRouting(config.ipRoutingEnabled);
+  device.setIpv6Routing(config.ipv6UnicastRoutingEnabled ?? false);
+  for (const route of config.ipv6StaticRoutes ?? []) {
+    device.addIpv6StaticRoute(route.network, route.prefixLength, route.nextHop);
+  }
+  for (const advertisement of config.routerAdvertisements ?? []) {
+    device.configureRouterAdvertisement(advertisement.interfaceName, {
+      managed: advertisement.managed,
+      otherConfiguration: advertisement.otherConfiguration,
+      routerLifetimeNs: advertisement.routerLifetimeSeconds * NS_PER_S,
+      dnsServers: advertisement.dnsServers,
+      prefixes: advertisement.prefixes.map((prefix) => ({
+        prefix: prefix.prefix,
+        prefixLength: prefix.prefixLength,
+        autonomous: prefix.autonomous,
+        onLink: prefix.onLink,
+        validLifetimeNs: prefix.validLifetimeSeconds * NS_PER_S,
+        preferredLifetimeNs: prefix.preferredLifetimeSeconds * NS_PER_S,
+      })),
+    });
+  }
+  for (const pool of config.dhcpv6Pools ?? []) {
+    device.addDhcpv6Pool({
+      ...pool,
+      preferredLifetimeNs: pool.preferredLifetimeSeconds * NS_PER_S,
+      validLifetimeNs: pool.validLifetimeSeconds * NS_PER_S,
+    });
+  }
   applyAclConfiguration(device, config);
+  applyIpv6AclConfiguration(device, config);
   applySpanningTreeConfiguration(device, config.spanningTree ?? DEFAULT_SPANNING_TREE_CONFIG);
   applyDiscoveryConfiguration(device, config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG);
   applyLoopbackConfiguration(device, config.loopbacks ?? []);
   if (config.ospf) applyOspfConfiguration(device, config.ospf);
+  if (config.ospfv3) applyOspfv3Configuration(device, config.ospfv3);
 }
 
 export function buildLabFromDocument(document: LabDocument): BuiltLab {
@@ -396,9 +512,87 @@ function serializeAcls(
       });
 }
 
+function serializeIpv6Acls(
+  device: Pick<Router, "ipv6AclConfigurations"> | Pick<Layer3Switch, "ipv6AclConfigurations">,
+): Ipv6AclConfig[] {
+  return device.ipv6AclConfigurations().map((acl) => ({
+    ...acl,
+    rules: acl.rules.map((rule) => ({
+      ...rule,
+      source: { ...rule.source },
+      destination: { ...rule.destination },
+      sourcePort: rule.sourcePort ? { ...rule.sourcePort } : undefined,
+      destinationPort: rule.destinationPort ? { ...rule.destinationPort } : undefined,
+    })),
+  }));
+}
+
+function serializeDhcpv6Pools(
+  pools: ReturnType<Router["dhcpv6"]["configurations"]>,
+) {
+  return pools.map((pool) => ({
+    id: pool.id,
+    prefix: pool.prefix,
+    prefixLength: pool.prefixLength,
+    rangeStart: pool.rangeStart,
+    rangeEnd: pool.rangeEnd,
+    dnsServers: [...(pool.dnsServers ?? [])],
+    preferredLifetimeSeconds: Math.round((pool.preferredLifetimeNs ?? 0) / NS_PER_S),
+    validLifetimeSeconds: Math.round((pool.validLifetimeNs ?? 0) / NS_PER_S),
+  }));
+}
+
+function serializeRouterAdvertisements(
+  configurations: ReturnType<Router["routerAdvertisementConfigurations"]>,
+) {
+  return configurations.map(({ interfaceName, configuration }) => ({
+    interfaceName,
+    managed: configuration.managed ?? false,
+    otherConfiguration: configuration.otherConfiguration ?? false,
+    routerLifetimeSeconds: Math.round((configuration.routerLifetimeNs ?? 0) / NS_PER_S),
+    dnsServers: [...(configuration.dnsServers ?? [])],
+    prefixes: configuration.prefixes.map((prefix) => ({
+      prefix: prefix.prefix,
+      prefixLength: prefix.prefixLength,
+      autonomous: prefix.autonomous,
+      onLink: prefix.onLink,
+      validLifetimeSeconds: Math.round(prefix.validLifetimeNs / NS_PER_S),
+      preferredLifetimeSeconds: Math.round(prefix.preferredLifetimeNs / NS_PER_S),
+    })),
+  }));
+}
+
+function serializeHostIpv6Configuration(
+  ipv6: ReturnType<Pc["ipv6ConfigurationSnapshot"]>,
+): HostIpv6Config | undefined {
+  if (
+    ipv6.mode === "static"
+    && ipv6.staticAddress === undefined
+    && ipv6.defaultRouter === undefined
+    && ipv6.dnsServer === undefined
+  ) return undefined;
+  return {
+    mode: ipv6.mode,
+    address: ipv6.staticAddress,
+    prefixLength: ipv6.prefixLength,
+    defaultRouter: ipv6.defaultRouter,
+    dnsServer: ipv6.dnsServer,
+  };
+}
+
+function serializeStaticIpv6Addresses(
+  addresses: readonly { address: string; prefixLength: number; source: string }[] | undefined,
+): Ipv6InterfaceAddress[] | undefined {
+  const configured = addresses
+    ?.filter((address) => address.source === "static")
+    .map((address) => ({ address: address.address, prefixLength: address.prefixLength }));
+  return configured && configured.length > 0 ? configured : undefined;
+}
+
 function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
   if (device instanceof Server) {
     const state = device.configurationSnapshot();
+    const ipv6 = device.ipv6ConfigurationSnapshot();
     return {
       kind: "server",
       hostname: device.name,
@@ -411,12 +605,15 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       defaultGateway: state.gateway,
       dhcpClientEnabled: state.dhcpEnabled,
       dnsServer: state.dnsServer,
+      ipv6: serializeHostIpv6Configuration(ipv6),
+      dhcpv6Pools: serializeDhcpv6Pools(device.dhcpv6PoolConfigurations()),
       enabledServices: device.services.configurations(),
       discovery: serializeDiscoveryConfiguration(device),
     };
   }
   if (device instanceof Pc) {
     const state = device.configurationSnapshot();
+    const ipv6 = device.ipv6ConfigurationSnapshot();
     return {
       kind: "pc",
       hostname: device.name,
@@ -426,10 +623,12 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
         : { address: state.ip, prefixLength: prefixLength(state.maskInt), defaultGateway: state.gateway },
       dhcpEnabled: state.dhcpEnabled,
       dnsServer: state.dnsServer,
+      ipv6: serializeHostIpv6Configuration(ipv6),
     };
   }
   if (device instanceof TrafficGenerator) {
     const state = device.configurationSnapshot();
+    const ipv6 = device.ipv6ConfigurationSnapshot();
     return {
       kind: "traffic-generator",
       hostname: device.name,
@@ -439,6 +638,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
         : { address: state.ip, prefixLength: prefixLength(state.maskInt), defaultGateway: state.gateway },
       dhcpEnabled: state.dhcpEnabled,
       dnsServer: state.dnsServer,
+      ipv6: serializeHostIpv6Configuration(ipv6),
       flows: device.flowConfigurations(),
     };
   }
@@ -460,6 +660,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
   if (device instanceof Layer3Switch) {
     const ports = new Map(device.portSummaries().map((row) => [row.name, row]));
     const routed = new Map(device.routedInterfaceSummaries().map((row) => [row.name, row]));
+    const ipv6 = new Map(device.ipv6InterfaceSummaries().map((row) => [row.name, row.addresses]));
     return {
       kind: "l3-switch",
       hostname: device.name,
@@ -472,6 +673,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
             ...common,
             mode: "routed" as const,
             ipv4: l3?.ip === undefined ? undefined : { address: l3.ip, prefixLength: prefixLength(l3.maskInt) },
+            ipv6: serializeStaticIpv6Addresses(ipv6.get(iface.id)),
           };
         }
         const port = ports.get(iface.id)!;
@@ -489,6 +691,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
         prefixLength: svi.ip === undefined ? undefined : prefixLength(svi.maskInt),
         adminUp: svi.adminUp,
         description: svi.description,
+        ipv6: serializeStaticIpv6Addresses(ipv6.get(svi.name)),
       })),
       staticRoutes: device.staticRouteConfigurations().map((route) => ({
         network: route.network,
@@ -496,13 +699,20 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
         nextHop: route.nextHop,
       })),
       ipRoutingEnabled: device.ipRoutingEnabled,
+      ipv6UnicastRoutingEnabled: device.ipv6UnicastRoutingEnabled,
+      ipv6StaticRoutes: device.ipv6StaticRouteConfigurations(),
+      routerAdvertisements: serializeRouterAdvertisements(device.routerAdvertisementConfigurations()),
+      dhcpv6Pools: serializeDhcpv6Pools(device.dhcpv6PoolConfigurations()),
       acls: serializeAcls(device),
       aclBindings: device.aclBindings(),
+      ipv6Acls: serializeIpv6Acls(device),
+      ipv6AclBindings: device.ipv6AclBindings(),
       spanningTree: serializeSpanningTreeConfiguration(device),
       etherChannels: serializeEtherChannelConfiguration(device),
       discovery: serializeDiscoveryConfiguration(device),
       loopbacks: serializeLoopbackConfiguration(device),
       ospf: serializeOspfConfiguration(device),
+      ospfv3: serializeOspfv3Configuration(device),
     };
   }
   if (device instanceof L2Switch) {
@@ -547,6 +757,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
     throw new LabSemanticError("configuration-type-mismatch", `configurations.${node.id}`, "Unsupported device type");
   }
   const summaries = device.interfaceSummaries();
+  const ipv6Summaries = new Map(device.ipv6InterfaceSummaries().map((row) => [row.name, row.addresses]));
   const physical = new Map(summaries.filter((iface) => iface.vlan === undefined).map((iface) => [iface.name, iface]));
   const routed = {
     hostname: device.name,
@@ -556,6 +767,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
         ...physicalConfiguration(device, iface.id),
         routed: l3 !== undefined,
         ipv4: l3?.ip === undefined ? undefined : { address: l3.ip, prefixLength: prefixLength(l3.maskInt) },
+        ipv6: serializeStaticIpv6Addresses(ipv6Summaries.get(iface.id)),
       };
     }),
     subinterfaces: summaries
@@ -566,6 +778,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
         vlan: iface.vlan!,
         native: iface.native,
         ipv4: iface.ip === undefined ? undefined : { address: iface.ip, prefixLength: prefixLength(iface.maskInt) },
+        ipv6: serializeStaticIpv6Addresses(ipv6Summaries.get(iface.name)),
       })),
     staticRoutes: device.staticRouteConfigurations().map((route) => ({
       network: route.network,
@@ -581,8 +794,14 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       rangeEnd: pool.rangeEnd,
       leaseSeconds: pool.leaseSeconds,
     })),
+    ipv6UnicastRoutingEnabled: device.ipv6UnicastRoutingEnabled,
+    ipv6StaticRoutes: device.ipv6StaticRouteConfigurations(),
+    routerAdvertisements: serializeRouterAdvertisements(device.routerAdvertisementConfigurations()),
+    dhcpv6Pools: serializeDhcpv6Pools(device.dhcpv6.configurations()),
     acls: serializeAcls(device),
     aclBindings: device.aclBindings(),
+    ipv6Acls: serializeIpv6Acls(device),
+    ipv6AclBindings: device.ipv6AclBindings(),
     natPools: device.natPoolConfigurations(),
     natRules: device.natRuleConfigurations(),
     natInterfaceRoles: device.interfaceSummaries()
@@ -593,6 +812,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
     discovery: serializeDiscoveryConfiguration(device),
     loopbacks: serializeLoopbackConfiguration(device),
     ospf: serializeOspfConfiguration(device),
+    ospfv3: serializeOspfv3Configuration(device),
   };
   if (device instanceof Firewall) {
     return {

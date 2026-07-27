@@ -1,7 +1,7 @@
 import { getDeviceProfile, type LabDocument } from "@sim/contracts";
-import type { LabUiNode } from "@sim/sim-worker";
+import type { DeviceInspection, LabUiNode, Ospfv3View } from "@sim/sim-worker";
 import {
-  Clock3, FileDown, Globe2, Network, ScrollText,
+  AlertTriangle, Clock3, FileDown, Globe2, Network, ScrollText,
   Settings2, TerminalSquare, X, type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -21,7 +21,8 @@ import {
 type DeviceWindowTab =
   | "overview" | "desktop" | "config" | "console" | "services" | "terminal" | "interfaces" | "attributes"
   | "routing" | "routes" | "vlans" | "svis" | "acl" | "nat" | "runtime"
-  | "zones" | "policies" | "connections" | "impairments" | "flows" | "run" | "results";
+  | "zones" | "policies" | "connections" | "impairments" | "flows" | "run" | "results"
+  | "ipv6";
 type DesktopTool = "ip" | "command" | "web" | "tftp" | "ntp" | "syslog" | "transport";
 
 interface DeviceWindowProps {
@@ -57,6 +58,7 @@ export function DeviceWindow(props: DeviceWindowProps) {
     ];
     if (props.node.type === "router") return [
       { id: "interfaces", label: "Interfaces" },
+      { id: "ipv6", label: "IPv6" },
       { id: "routing", label: "Routing" },
       { id: "acl", label: "ACL" },
       { id: "nat", label: "NAT" },
@@ -65,6 +67,7 @@ export function DeviceWindow(props: DeviceWindowProps) {
     ];
     if (props.node.type === "l3-switch") return [
       { id: "interfaces", label: "Interfaces" },
+      { id: "ipv6", label: "IPv6" },
       { id: "vlans", label: "VLANs" },
       { id: "svis", label: "SVI" },
       { id: "routing", label: "Routing" },
@@ -153,6 +156,9 @@ export function DeviceWindow(props: DeviceWindowProps) {
               />
             : <DraftRuntimeNotice />)}
           {tab === "interfaces" && <Interfaces node={props.node} />}
+          {tab === "ipv6" && (props.runtimeAvailable
+            ? <Ipv6RuntimePanel client={props.client} document={props.document} deviceId={props.node.id} onError={props.onError} />
+            : <DraftRuntimeNotice />)}
           {isSecuritySection(tab) && (props.runtimeAvailable
             ? <SecurityConfigurationPanel
                 client={props.client}
@@ -186,6 +192,66 @@ function StructuredConfiguration({ document, node }: { document: LabDocument; no
 
 function Interfaces({ node }: { node: LabUiNode }) {
   return <div className="device-window-table"><table className="data-table"><thead><tr><th>Interface</th><th>Admin</th><th>Operational</th><th>Address</th><th>Mode</th></tr></thead><tbody>{node.interfaces.map((iface) => <tr key={iface.id}><td><code>{iface.id}</code></td><td>{iface.adminUp ? "up" : "shutdown"}</td><td>{iface.operationalUp ? "up" : "down"}</td><td><code>{iface.ipAddress ?? "—"}</code></td><td>{iface.mode ?? "—"}</td></tr>)}</tbody></table></div>;
+}
+
+function Ipv6RuntimePanel({
+  client,
+  document,
+  deviceId,
+  onError,
+}: {
+  client: SimulatorClient;
+  document: LabDocument;
+  deviceId: string;
+  onError(message: string): void;
+}) {
+  const [inspection, setInspection] = useState<DeviceInspection>();
+  const [ospfv3, setOspfv3] = useState<Ospfv3View>();
+
+  useEffect(() => {
+    let active = true;
+    void Promise.all([
+      client.request({ type: "GET_DEVICE_INSPECTION", deviceId }),
+      client.request({ type: "GET_OSPFV3_STATE", deviceId }),
+    ]).then(([nextInspection, nextOspfv3]) => {
+      if (!active) return;
+      setInspection(nextInspection);
+      setOspfv3(nextOspfv3);
+    }).catch((error) => {
+      if (active) onError(error instanceof Error ? error.message : "Unable to inspect IPv6 runtime");
+    });
+    return () => { active = false; };
+  }, [client, deviceId, onError]);
+
+  const configuration = document.configurations[deviceId];
+  const acls = configuration && "ipv6Acls" in configuration ? configuration.ipv6Acls ?? [] : [];
+  if (!inspection?.ipv6) return <div className="device-window-section">Loading IPv6 runtime…</div>;
+  const ipv6 = inspection.ipv6;
+  return <div className="device-window-section">
+    <p className="section-eyebrow">IPv6 runtime</p>
+    <h3>IPv6 Interfaces</h3>
+    <table className="data-table"><thead><tr><th>Interface</th><th>Address</th><th>Source</th><th>State</th></tr></thead><tbody>
+      {ipv6.addresses.map((address) => <tr key={`${address.interfaceId}:${address.address}`}><td>{address.interfaceId}</td><td><code>{address.address}/{address.prefixLength}</code></td><td>{address.source}</td><td>{address.state}</td></tr>)}
+    </tbody></table>
+    <h3>IPv6 Routes</h3>
+    <table className="data-table"><thead><tr><th>Source</th><th>Prefix</th><th>Next hop</th><th>Interface</th></tr></thead><tbody>
+      {ipv6.routes.map((route) => <tr key={`${route.kind}:${route.network}/${route.prefixLength}`}><td>{route.kind}</td><td><code>{route.network}/{route.prefixLength}</code></td><td><code>{route.nextHop ?? "—"}</code></td><td>{route.interfaceId}</td></tr>)}
+    </tbody></table>
+    <h3>NDP</h3>
+    <table className="data-table"><thead><tr><th>Address</th><th>MAC</th><th>Interface</th><th>State</th></tr></thead><tbody>
+      {ipv6.neighbors.map((neighbor) => <tr key={`${neighbor.interfaceId}:${neighbor.address}`}><td><code>{neighbor.address}</code></td><td><code>{neighbor.macAddress}</code></td><td>{neighbor.interfaceId}</td><td>{neighbor.state}</td></tr>)}
+    </tbody></table>
+    <h3>OSPFv3</h3>
+    <p>{ospfv3?.overview.enabled ? `Process ${ospfv3.overview.processId}, Router ID ${ospfv3.overview.routerId ?? "not configured"}, ${ospfv3.overview.fullNeighbors} Full neighbor(s)` : "OSPFv3 is not enabled."}</p>
+    {ospfv3 && ospfv3.neighbors.length > 0 && <table className="data-table"><thead><tr><th>Neighbor</th><th>State</th><th>Address</th><th>Interface</th></tr></thead><tbody>
+      {ospfv3.neighbors.map((neighbor) => <tr key={`${neighbor.interfaceId}:${neighbor.neighborRouterId}`}><td>{neighbor.neighborRouterId}</td><td>{neighbor.state}</td><td><code>{neighbor.address}</code></td><td>{neighbor.interfaceId}</td></tr>)}
+    </tbody></table>}
+    <h3>IPv6 ACL</h3>
+    {acls.length === 0
+      ? <p>No IPv6 access lists configured.</p>
+      : acls.map((acl) => <div key={acl.id}><strong>{acl.id}</strong><pre className="configuration-view">{JSON.stringify(acl.rules, null, 2)}</pre></div>)}
+    {ipv6.problems.map((problem) => <p className="host-ip-config__warning" key={problem}><AlertTriangle size={14} /> {problem}</p>)}
+  </div>;
 }
 
 function Attributes({ node, description, capabilities }: { node: LabUiNode; description: string; capabilities: readonly string[] }) {

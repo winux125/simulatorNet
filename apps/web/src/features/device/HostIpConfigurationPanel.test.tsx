@@ -104,4 +104,27 @@ describe("HostIpConfigurationPanel", () => {
     expect(changed.mock.calls[0]?.[1]).toBe(false);
     expect(client.types).toEqual([]);
   });
+
+  it("applies IPv6 static configuration through the IPv6 tab", async () => {
+    const client = new RuntimeClient();
+    const changed = vi.fn();
+    render(<HostIpConfigurationPanel
+      client={client}
+      document={document}
+      node={node}
+      powerState="running"
+      runtimeAvailable
+      onConfigurationChanged={changed}
+      onError={vi.fn()}
+    />);
+    await userEvent.click(screen.getByRole("tab", { name: "IPv6" }));
+    fireEvent.change(await screen.findByLabelText("IPv6 Address"), { target: { value: "2001:db8:10::10" } });
+    fireEvent.change(screen.getByLabelText("Prefix Length"), { target: { value: "64" } });
+    await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(changed).toHaveBeenCalled());
+    expect(client.types).toContain("SET_HOST_IPV6_STATIC_CONFIGURATION");
+    expect(changed.mock.calls[0]?.[0].configurations["pc-1"]).toMatchObject({
+      ipv6: { mode: "static", address: "2001:db8:10::10", prefixLength: 64 },
+    });
+  });
 });

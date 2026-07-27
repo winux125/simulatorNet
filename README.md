@@ -887,8 +887,8 @@ and seeded Cloud packet loss with a Traffic Generator. Each includes an
 objective, addressing guidance, instructions, expected outcome and
 troubleshooting hints.
 
-Known M10.3 limits are no hairpin NAT, IPv6, stateful inspection beyond the
-implemented TCP/UDP/ICMP model, dynamic routing, real Internet access,
+Known M10.3 limits are no hairpin NAT, stateful inspection beyond the
+implemented TCP/UDP/ICMP model, dynamic routing in that slice, real Internet access,
 bandwidth shaping, arbitrary grading code or vendor-image emulation. Traffic
 and security tables are intentionally bounded and reset with transient runtime
 state.
@@ -957,3 +957,35 @@ PoE, and for OSPF no multiple areas, ABR/ASBR, external LSAs, redistribution,
 stub or NSSA areas, summaries, virtual links, authentication, ECMP, graceful
 restart or OSPFv3. See `docs/layer2-control-protocols.md`,
 `docs/neighbor-discovery.md` and `docs/ospf-simulation.md`.
+
+## Milestone 10.5 — IPv6, SLAAC, DHCPv6, OSPFv3 and IPv6 ACL
+
+M10.5 extends the shared deterministic data plane to IPv6 without duplicating
+the TCP/UDP application stack. Canonical IPv6 addresses, link-local addressing,
+ICMPv6, bounded Neighbor Discovery and Duplicate Address Detection feed the
+same family-aware transport endpoints and route lookup abstractions as IPv4.
+PC and Server support Static, SLAAC and stateful DHCPv6 addressing; Router and
+L3 Switch support connected/static IPv6 routes, forwarding, Router
+Advertisements, DHCPv6 service and DNS AAAA-backed IPv6 applications.
+
+OSPFv3 reuses the OSPFv2 neighbor-state, reliable-flooding, LSDB, SPF and
+bounded-activity infrastructure while keeping its neighbors, link-local
+transport, prefixes and learned routes independent. Area 0, broadcast and
+point-to-point links, DR/BDR, cost, passive interfaces and reconvergence are
+implemented. Named IPv6 ACLs extend the shared packet policy engine with
+prefix matching, TCP/UDP ports, ICMPv6, inbound/outbound binding, first match,
+implicit deny and runtime counters. Blocking required ICMPv6 is intentionally
+effective and produces a diagnostic rather than a hidden bypass.
+
+Schema-v1 labs persist only structured IPv6 configuration; NDP, DAD, learned
+SLAAC lifetime state, DHCPv6 leases, OSPFv3 runtime and ACL counters are rebuilt.
+The browser exposes IPv4/IPv6 host configuration and routed-device IPv6
+inspection through typed worker requests. Packet Trace adds IPv6, ICMPv6, NDP,
+SLAAC, DHCPv6, OSPFv3 and IPv6 ACL filters. Four explicit demos cover a static
+LAN, SLAAC/RA, DHCPv6 with DNS AAAA and HTTP, and OSPFv3 with an IPv6 ACL.
+
+The server verifier adds eleven IPv6 checks and continues to rebuild and run
+the submitted lab itself; hidden expected values remain redacted. IOS import
+recognises the supported IPv6 address, route, forwarding, OSPFv3 and ACL
+subset, and keeps unsupported lines in its report. See
+[`docs/ipv6.md`](docs/ipv6.md) for the architecture and explicit limitations.

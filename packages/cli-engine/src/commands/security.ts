@@ -1,5 +1,6 @@
 import { IpProtocol } from "@sim/contracts";
 import {
+  Ipv6NextHeader,
   Layer3Switch,
   Router,
   maskToInt,
@@ -8,6 +9,10 @@ import {
   type ExtendedAclRule,
   type Ipv4Acl,
   type Ipv4AddressMatcher,
+  type Ipv6Acl,
+  type Ipv6AclRule,
+  type Ipv6AddressMatcher,
+  type Ipv6PolicyProtocol,
   type NatRule,
   type PolicyProtocol,
   type StaticNatRule,
@@ -18,7 +23,7 @@ import {
 } from "@sim/sim-core";
 import { InvalidModeError, ValidationError } from "../errors/errors";
 import type { CommandSpec, SessionApi } from "../types";
-import { isLayer3Switch, isRoutingDevice, parseIpv4 } from "./helpers";
+import { isLayer3Switch, isRoutingDevice, parseIpv4, parseIpv6, parseIpv6Prefix } from "./helpers";
 
 const SHOW_MODES = ["exec", "privileged"] as const;
 
@@ -73,6 +78,42 @@ function nextSequence(acl: Ipv4Acl | undefined): number {
   return Math.max(0, ...(acl?.rules.map((rule) => rule.sequence) ?? [])) + 10;
 }
 
+function nextIpv6Sequence(acl: Ipv6Acl | undefined): number {
+  return Math.max(0, ...(acl?.rules.map((rule) => rule.sequence) ?? [])) + 10;
+}
+
+function ipv6Protocol(token: string): Ipv6PolicyProtocol {
+  if (token === "ipv6") return "ipv6";
+  if (token === "icmp" || token === "icmpv6") return Ipv6NextHeader.ICMPv6;
+  if (token === "tcp") return Ipv6NextHeader.TCP;
+  if (token === "udp") return Ipv6NextHeader.UDP;
+  throw new ValidationError(`Unsupported IPv6 ACL protocol '${token}'.`);
+}
+
+function ipv6Address(kind: "any"): Ipv6AddressMatcher;
+function ipv6Address(kind: "host", value: string): Ipv6AddressMatcher;
+function ipv6Address(kind: "prefix", value: string): Ipv6AddressMatcher;
+function ipv6Address(kind: "any" | "host" | "prefix", value?: string): Ipv6AddressMatcher {
+  if (kind === "any") return { kind };
+  if (kind === "host") return { kind, address: parseIpv6(value!) };
+  const parsed = parseIpv6Prefix(value!);
+  return { kind, address: parsed.network, prefixLength: parsed.prefixLength };
+}
+
+function replaceIpv6Acl(
+  session: SessionApi,
+  id: string,
+  rule: Omit<Ipv6AclRule, "sequence">,
+): void {
+  const device = routingDevice(session);
+  const existing = device.ipv6AclConfigurations().find((acl) => acl.id === id);
+  device.defineIpv6Acl({
+    id,
+    type: "ipv6",
+    rules: [...(existing?.rules ?? []), { ...rule, sequence: nextIpv6Sequence(existing) }],
+  });
+}
+
 function replaceAcl(
   session: SessionApi,
   id: string,
@@ -121,6 +162,13 @@ function namedContext(session: SessionApi, expected: "standard" | "extended") {
   return session.aclCtx;
 }
 
+function ipv6NamedContext(session: SessionApi) {
+  if (!session.aclCtx || session.aclCtx.type !== "ipv6") {
+    throw new InvalidModeError("A named IPv6 ACL context is required.");
+  }
+  return session.aclCtx;
+}
+
 function interfaceName(session: SessionApi): string {
   const context = session.ifaceCtx;
   if (!context) throw new InvalidModeError("No interface selected.");
@@ -159,6 +207,39 @@ function showAccessLists(session: SessionApi): string {
     lines.push(`    implicit deny (${implicit} matches)`);
   }
   return lines.length > 0 ? lines.join("\n") : "No IPv4 access lists configured.";
+}
+
+function showIpv6AccessLists(session: SessionApi): string {
+  const device = routingDevice(session);
+  const counters = device.aclCounters();
+  const lines: string[] = [];
+  for (const acl of device.ipv6AclConfigurations()) {
+    lines.push(`IPv6 access list ${acl.id}`);
+    for (const rule of acl.rules) {
+      const count = counters.find((entry) => entry.aclId === acl.id && entry.sequence === rule.sequence)?.matches ?? 0;
+      lines.push(
+        `    ${rule.sequence} ${rule.action} ${formatIpv6Protocol(rule.protocol)} `
+        + `${formatIpv6Address(rule.source)} ${formatIpv6Address(rule.destination)}`
+        + `${rule.destinationPort ? ` ${formatPort(rule.destinationPort)}` : ""} (${count} matches)`,
+      );
+    }
+    const implicit = counters.find((entry) => entry.aclId === acl.id && entry.sequence === undefined)?.matches ?? 0;
+    lines.push(`    implicit deny (${implicit} matches)`);
+  }
+  return lines.length > 0 ? lines.join("\n") : "No IPv6 access lists configured.";
+}
+
+function formatIpv6Protocol(value: Ipv6PolicyProtocol): string {
+  if (value === "ipv6") return value;
+  if (value === Ipv6NextHeader.ICMPv6) return "icmpv6";
+  if (value === Ipv6NextHeader.TCP) return "tcp";
+  return "udp";
+}
+
+function formatIpv6Address(matcher: Ipv6AddressMatcher): string {
+  if (matcher.kind === "any") return "any";
+  if (matcher.kind === "host") return `host ${matcher.address}`;
+  return `${matcher.address}/${matcher.prefixLength}`;
 }
 
 function showIpInterface(session: SessionApi): string {
@@ -239,6 +320,53 @@ function showNatStatistics(session: SessionApi): string {
 }
 
 export const securityCommands: CommandSpec[] = [
+  {
+    pattern: "ipv6 access-list {name}",
+    usage: "ipv6 access-list <name>",
+    modes: ["config"],
+    device: "router",
+    capabilities: ["packet-policy"],
+    run: (session, params) => {
+      const name = params.name!;
+      const device = routingDevice(session);
+      if (!device.ipv6AclConfigurations().some((acl) => acl.id === name)) {
+        device.defineIpv6Acl({ id: name, type: "ipv6", rules: [] });
+      }
+      session.aclCtx = { id: name, type: "ipv6" };
+      session.enter("config-acl");
+    },
+  },
+  {
+    pattern: "permit {protocol} {source} host {destination} eq {port}",
+    usage: "permit <tcp|udp> <source-prefix> host <destination-ipv6> eq <port>",
+    modes: ["config-acl"],
+    device: "router",
+    run: (session, params) => {
+      const context = ipv6NamedContext(session);
+      replaceIpv6Acl(session, context.id, {
+        action: "permit",
+        protocol: ipv6Protocol(params.protocol!),
+        source: ipv6Address("prefix", params.source!),
+        destination: ipv6Address("host", params.destination!),
+        destinationPort: port(params.port!),
+      });
+    },
+  },
+  {
+    pattern: "permit {protocol} {source} {destination}",
+    usage: "permit <ipv6|icmpv6|tcp|udp> <source-prefix|any> <destination-prefix|any>",
+    modes: ["config-acl"],
+    device: "router",
+    run: (session, params) => {
+      const context = ipv6NamedContext(session);
+      replaceIpv6Acl(session, context.id, {
+        action: "permit",
+        protocol: ipv6Protocol(params.protocol!),
+        source: params.source === "any" ? ipv6Address("any") : ipv6Address("prefix", params.source!),
+        destination: params.destination === "any" ? ipv6Address("any") : ipv6Address("prefix", params.destination!),
+      });
+    },
+  },
   {
     pattern: "ip access-list standard {name}",
     modes: ["config"],
@@ -386,6 +514,16 @@ export const securityCommands: CommandSpec[] = [
     modes: ["config-acl"],
     device: "router",
     run: (session, params) => {
+      if (session.aclCtx?.type === "ipv6") {
+        replaceIpv6Acl(session, session.aclCtx.id, {
+          action: "permit",
+          protocol: ipv6Protocol(params.protocol!),
+          source: ipv6Address("any"),
+          destination: ipv6Address("host", params.destination!),
+          destinationPort: port(params.port!),
+        });
+        return;
+      }
       const context = namedContext(session, "extended");
       replaceAcl(session, context.id, "extended", {
         action: "permit",
@@ -401,6 +539,15 @@ export const securityCommands: CommandSpec[] = [
     modes: ["config-acl"],
     device: "router",
     run: (session, params) => {
+      if (session.aclCtx?.type === "ipv6") {
+        replaceIpv6Acl(session, session.aclCtx.id, {
+          action: "deny",
+          protocol: ipv6Protocol(params.protocol!),
+          source: ipv6Address("any"),
+          destination: ipv6Address("any"),
+        });
+        return;
+      }
       const context = namedContext(session, "extended");
       replaceAcl(session, context.id, "extended", {
         action: "deny",
@@ -422,6 +569,18 @@ export const securityCommands: CommandSpec[] = [
     },
   },
   {
+    pattern: "ipv6 traffic-filter {acl} {direction}",
+    usage: "ipv6 traffic-filter <acl-name> <in|out>",
+    modes: ["config-if"],
+    device: "router",
+    capabilities: ["packet-policy"],
+    run: (session, params) => {
+      const direction = params.direction;
+      if (direction !== "in" && direction !== "out") throw new ValidationError("Direction must be in or out.");
+      routingDevice(session).applyIpv6Acl(interfaceName(session), direction, params.acl!);
+    },
+  },
+  {
     pattern: "no ip access-group {acl} {direction}",
     modes: ["config-if"],
     device: "router",
@@ -438,6 +597,13 @@ export const securityCommands: CommandSpec[] = [
     device: "router",
     capabilities: ["packet-policy"],
     run: showAccessLists,
+  },
+  {
+    pattern: "show ipv6 access-list",
+    modes: [...SHOW_MODES],
+    device: "router",
+    capabilities: ["packet-policy"],
+    run: showIpv6AccessLists,
   },
   {
     pattern: "show ip interface",

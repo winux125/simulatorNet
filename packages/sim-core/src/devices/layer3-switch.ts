@@ -186,9 +186,17 @@ export class Layer3Switch extends L2Switch {
     this.routingPlane.configureRouterAdvertisement(interfaceName, config);
   }
 
+  routerAdvertisementConfigurations(): ReturnType<Router["routerAdvertisementConfigurations"]> {
+    return this.routingPlane.routerAdvertisementConfigurations();
+  }
+
   addDhcpv6Pool(config: Dhcpv6PoolConfig): void {
     this.syncRoutingPlane();
     this.routingPlane.addDhcpv6Pool(config);
+  }
+
+  dhcpv6PoolConfigurations(): Dhcpv6PoolConfig[] {
+    return this.routingPlane.dhcpv6.configurations();
   }
 
   /** The composed routing plane owns OSPF, exactly as it owns ACLs and routes. */
@@ -200,6 +208,10 @@ export class Layer3Switch extends L2Switch {
   get ospfv3(): Router["ospfv3"] {
     this.syncRoutingPlane();
     return this.routingPlane.ospfv3;
+  }
+
+  get ipv6Problems(): readonly string[] {
+    return this.routingPlane.ipv6Problems;
   }
 
   getOrCreateLoopback(index: number): ReturnType<Router["getOrCreateLoopback"]> {

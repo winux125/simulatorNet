@@ -2,6 +2,7 @@ import type { LabDocument } from "@sim/contracts";
 import {
   createSimulationWorkerRuntime,
   type CliExecutionResult,
+  type HostIpv6NetworkStatus,
   type HostNetworkStatus,
   type SimWorkerRequest,
 } from "@sim/sim-worker";
@@ -185,5 +186,37 @@ describe("typed host IP worker workflow", () => {
       configuration: { address: "192.168.10.30", prefixLength: 24 },
     }) as HostNetworkStatus;
     expect(status).toMatchObject({ configuration: { mode: "static", address: "192.168.10.30" }, runtime: { dhcpBound: false, dhcpState: "idle" } });
+  });
+
+  it("configures and serializes IPv6 hosts through typed worker requests", () => {
+    const runtime = createSimulationWorkerRuntime();
+    succeeded(runtime, { type: "INITIALIZE_LAB", document: hostLab() });
+    for (const [deviceId, address] of [["pc-1", "2001:db8:10::10"], ["pc-2", "2001:db8:10::20"]] as const) {
+      succeeded(runtime, {
+        type: "SET_HOST_IPV6_STATIC_CONFIGURATION",
+        deviceId,
+        configuration: { mode: "static", address, prefixLength: 64 },
+      });
+    }
+    const status = succeeded(runtime, {
+      type: "GET_HOST_IPV6_NETWORK_STATUS",
+      deviceId: "pc-1",
+    }) as HostIpv6NetworkStatus;
+    expect(status.runtime.addresses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ address: "2001:db8:10::10", source: "static" }),
+      expect.objectContaining({ source: "link-local" }),
+    ]));
+    const result = succeeded(runtime, {
+      type: "EXECUTE_CLI",
+      sessionId: "pc-1",
+      deviceId: "pc-1",
+      input: "ping -6 2001:db8:10::20",
+    }) as CliExecutionResult;
+    expect(result.output).toContain("Success rate is 100 percent");
+    const serialized = succeeded(runtime, { type: "SERIALIZE_LAB" }) as LabDocument;
+    expect(serialized.configurations["pc-1"]).toMatchObject({
+      ipv6: { mode: "static", address: "2001:db8:10::10", prefixLength: 64 },
+    });
+    expect(JSON.stringify(serialized)).not.toMatch(/neighbor|dadState|dhcpv6Lease/i);
   });
 });

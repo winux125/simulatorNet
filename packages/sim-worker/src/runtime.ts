@@ -1,10 +1,12 @@
 import { createCliSession, type CliSession } from "@sim/cli-engine";
 import {
   HostStaticConfigurationSchema,
+  HostIpv6ConfigSchema,
   DeviceConfigSchema,
   ServerServiceConfigSchema,
   type DeviceConfig,
   type HostIpConfiguration,
+  type HostIpv6Config,
   type LabDocument,
   type LabMetadata,
   type NodeSpec,
@@ -38,6 +40,7 @@ import type {
   EngineUiState,
   DeviceInspection,
   HostNetworkStatus,
+  HostIpv6NetworkStatus,
   LabUiInterface,
   LabUiNode,
   LabUiSnapshot,
@@ -52,6 +55,7 @@ import type {
   ServerServicesView,
   SecurityConfigurationView,
   SecurityDeviceConfiguration,
+  Ospfv3View,
 } from "./protocol";
 
 interface CliSessionEntry {
@@ -146,6 +150,18 @@ export class SimulationWorkerRuntime {
         return this.releaseHostDhcp(requireString(request, "deviceId"));
       case "GET_HOST_NETWORK_STATUS":
         return this.hostNetworkStatus(requireString(request, "deviceId"));
+      case "GET_HOST_IPV6_CONFIGURATION":
+        return this.hostIpv6Configuration(requireString(request, "deviceId"));
+      case "SET_HOST_IPV6_STATIC_CONFIGURATION":
+        return this.setHostIpv6StaticConfiguration(requireString(request, "deviceId"), request.configuration);
+      case "SET_HOST_IPV6_MODE":
+        return this.setHostIpv6Mode(requireString(request, "deviceId"), request.mode, request.startImmediately);
+      case "RENEW_HOST_DHCPV6":
+        return this.renewHostDhcpv6(requireString(request, "deviceId"));
+      case "RELEASE_HOST_DHCPV6":
+        return this.releaseHostDhcpv6(requireString(request, "deviceId"));
+      case "GET_HOST_IPV6_NETWORK_STATUS":
+        return this.hostIpv6NetworkStatus(requireString(request, "deviceId"));
       case "GET_SERVER_SERVICES":
         return this.serverServices(requireString(request, "deviceId"));
       case "CONFIGURE_SERVER_SERVICE":
@@ -223,6 +239,14 @@ export class SimulationWorkerRuntime {
         device.ospf.restart();
         this.runProtocolConvergence();
         return { deviceId, overview: device.ospf.overview() };
+      }
+      case "GET_OSPFV3_STATE":
+        return this.ospfv3State(requireString(request, "deviceId"));
+      case "RESTART_OSPFV3_PROCESS": {
+        const deviceId = requireString(request, "deviceId");
+        this.requireOspf(deviceId).ospfv3.restart();
+        this.runProtocolConvergence();
+        return this.ospfv3State(deviceId);
       }
       case "SERIALIZE_LAB":
         return this.serialize();
@@ -526,6 +550,7 @@ export class SimulationWorkerRuntime {
           tcpConnections: device.transport.tcp.inspect(),
         },
         applications: applicationInspection(device),
+        ipv6: hostIpv6Inspection(device),
       };
     }
     if (device instanceof TrafficGenerator) {
@@ -552,6 +577,7 @@ export class SimulationWorkerRuntime {
           tcpConnections: device.transport.tcp.inspect(),
         },
         applications: applicationInspection(device),
+        ipv6: hostIpv6Inspection(device),
       };
     }
     if (device instanceof Pc) {
@@ -584,6 +610,7 @@ export class SimulationWorkerRuntime {
           tcpConnections: device.transport.tcp.inspect(),
         },
         applications: applicationInspection(device),
+        ipv6: hostIpv6Inspection(device),
       };
     }
     if (device instanceof L2Switch) {
@@ -624,6 +651,7 @@ export class SimulationWorkerRuntime {
           })),
           arpEntries: [...device.arpTable].map(([ipAddress, macAddress]) => ({ ipAddress, macAddress })),
           ipRoutingEnabled: device.ipRoutingEnabled,
+          ipv6: routedIpv6Inspection(device),
         };
       }
       return {
@@ -706,6 +734,7 @@ export class SimulationWorkerRuntime {
             leaseSeconds: pool.leaseSeconds,
           })),
         },
+        ipv6: routedIpv6Inspection(device),
       };
     }
     throw new SimulationWorkerError("unsupported-device", `Unsupported device '${deviceId}'`);
@@ -756,6 +785,110 @@ export class SimulationWorkerRuntime {
         ? "No DHCP offer received.\n\nAn L2 switch forwards Ethernet frames but does not assign IP addresses.\n\nConfigure a static address or add a Router/Server with an enabled DHCP service."
         : undefined,
     };
+  }
+
+  private hostIpv6Configuration(deviceId: string): HostIpv6Config {
+    const configuration = this.requireHost(deviceId).ipv6ConfigurationSnapshot();
+    return {
+      mode: configuration.mode,
+      address: configuration.staticAddress,
+      prefixLength: configuration.prefixLength,
+      defaultRouter: configuration.defaultRouter,
+      dnsServer: configuration.dnsServer,
+    };
+  }
+
+  private hostIpv6NetworkStatus(deviceId: string): HostIpv6NetworkStatus {
+    const host = this.requireHost(deviceId);
+    const addresses = host.ipv6AddressSummaries();
+    return {
+      deviceId,
+      configuration: this.hostIpv6Configuration(deviceId),
+      runtime: {
+        mode: host.ipv6Mode,
+        linkLocal: addresses.find((entry) => entry.source === "link-local")?.address,
+        addresses,
+        defaultRouter: host.ipv6DefaultRouter,
+        dnsServer: host.ipv6DnsServer,
+        dhcpv6State: host.dhcpv6State,
+        lease: host.dhcpv6Lease ? {
+          address: host.dhcpv6Lease.address,
+          prefixLength: host.dhcpv6Lease.prefixLength,
+          dnsServers: host.dhcpv6Lease.dnsServers,
+        } : undefined,
+        neighbors: host.ipv6NeighborEntries().map((entry) => ({
+          address: entry.address,
+          macAddress: entry.mac,
+          state: entry.state,
+        })),
+        problems: [...host.ipv6Problems],
+      },
+    };
+  }
+
+  private setHostIpv6StaticConfiguration(deviceId: string, input: unknown): HostIpv6NetworkStatus {
+    const parsed = HostIpv6ConfigSchema.safeParse(input);
+    if (!parsed.success || parsed.data.mode !== "static" || !parsed.data.address || parsed.data.prefixLength === undefined) {
+      throw new SimulationWorkerError(
+        "invalid-host-ipv6-configuration",
+        parsed.success
+          ? "Static IPv6 address and prefix length are required"
+          : parsed.error.issues[0]?.message ?? "Invalid host IPv6 configuration",
+      );
+    }
+    const host = this.requireHost(deviceId);
+    host.configureIpv6Static(
+      parsed.data.address,
+      parsed.data.prefixLength,
+      parsed.data.defaultRouter,
+      parsed.data.dnsServer,
+    );
+    this.requireBuiltLab().engine.runUntilIdle();
+    this.serialize();
+    this.emitStateChanged();
+    this.flushTrace();
+    return this.hostIpv6NetworkStatus(deviceId);
+  }
+
+  private setHostIpv6Mode(
+    deviceId: string,
+    modeInput: unknown,
+    startImmediately: unknown,
+  ): HostIpv6NetworkStatus {
+    if ((modeInput !== "slaac" && modeInput !== "dhcpv6") || typeof startImmediately !== "boolean") {
+      throw new SimulationWorkerError(
+        "invalid-request",
+        "mode must be 'slaac' or 'dhcpv6' and startImmediately must be boolean",
+      );
+    }
+    const host = this.requireHost(deviceId);
+    host.setIpv6Mode(modeInput);
+    if (startImmediately) {
+      this.requireBuiltLab().engine.runUntilIdle();
+    }
+    this.serialize();
+    this.emitStateChanged();
+    this.flushTrace();
+    return this.hostIpv6NetworkStatus(deviceId);
+  }
+
+  private renewHostDhcpv6(deviceId: string): HostIpv6NetworkStatus {
+    const host = this.requireHost(deviceId);
+    host.renewDhcpv6();
+    this.requireBuiltLab().engine.runUntilIdle();
+    this.serialize();
+    this.emitStateChanged();
+    this.flushTrace();
+    return this.hostIpv6NetworkStatus(deviceId);
+  }
+
+  private releaseHostDhcpv6(deviceId: string): HostIpv6NetworkStatus {
+    this.requireHost(deviceId).releaseDhcpv6();
+    this.requireBuiltLab().engine.runUntilIdle();
+    this.serialize();
+    this.emitStateChanged();
+    this.flushTrace();
+    return this.hostIpv6NetworkStatus(deviceId);
   }
 
   private setHostStaticConfiguration(deviceId: string, input: unknown): HostNetworkStatus {
@@ -913,6 +1046,17 @@ export class SimulationWorkerRuntime {
     if (device instanceof Layer3Switch) return device;
     if (device instanceof Router && device.deviceType === "router") return device;
     throw new SimulationWorkerError("ospf-not-supported", `Device '${deviceId}' cannot run an OSPF process`);
+  }
+
+  private ospfv3State(deviceId: string): Ospfv3View {
+    const ospfv3 = this.requireOspf(deviceId).ospfv3;
+    return {
+      deviceId,
+      overview: ospfv3.overview(),
+      neighbors: ospfv3.neighborSummaries(),
+      database: ospfv3.database(),
+      routes: ospfv3.routeTable(),
+    };
   }
 
   private requireDiscovery(deviceId: string) {
@@ -1082,6 +1226,47 @@ function applicationInspection(device: EndHost): NonNullable<DeviceInspection["a
     ntpResults: device.applications.ntpResults.map((result) => ({ ...result })),
     clockOffsetNs: device.applications.clockOffsetNs,
     clockTimeNs: device.applications.clockNow(),
+  };
+}
+
+function hostIpv6Inspection(device: EndHost): NonNullable<DeviceInspection["ipv6"]> {
+  return {
+    addresses: device.ipv6AddressSummaries().map((address) => ({
+      interfaceId: device.primary.name,
+      ...address,
+    })),
+    neighbors: device.ipv6NeighborEntries().map((entry) => ({
+      interfaceId: device.primary.name,
+      address: entry.address,
+      macAddress: entry.mac,
+      state: entry.state,
+    })),
+    routes: [],
+    problems: [...device.ipv6Problems],
+  };
+}
+
+function routedIpv6Inspection(device: Router | Layer3Switch): NonNullable<DeviceInspection["ipv6"]> {
+  return {
+    forwardingEnabled: device.ipv6UnicastRoutingEnabled,
+    addresses: device.ipv6InterfaceSummaries().flatMap((row) =>
+      row.addresses.map((address) => ({ interfaceId: row.name, ...address }))),
+    neighbors: device.ipv6NeighborEntries().map((entry) => ({
+      interfaceId: entry.interfaceName,
+      address: entry.address,
+      macAddress: entry.mac,
+      state: entry.state,
+    })),
+    routes: device.ipv6RoutingTable().map((route) => ({
+      kind: route.kind,
+      network: route.network,
+      prefixLength: route.prefixLength,
+      nextHop: route.viaIp,
+      interfaceId: route.egressName,
+      administrativeDistance: route.administrativeDistance,
+      metric: route.metric,
+    })),
+    problems: [...device.ipv6Problems, ...device.ospfv3.problemSummaries()],
   };
 }
 

@@ -1,6 +1,14 @@
 import { z } from "zod";
 import { DeviceCapabilitySchema, DeviceTypeSchema } from "./devices";
-import { Ipv4Schema, LabSubmissionDocumentSchema, PrefixLengthSchema, VlanIdSchema } from "./lab";
+import {
+  Ipv4Schema,
+  Ipv6CidrSchema,
+  Ipv6PrefixLengthSchema,
+  Ipv6Schema,
+  LabSubmissionDocumentSchema,
+  PrefixLengthSchema,
+  VlanIdSchema,
+} from "./lab";
 
 export const GradingVisibilitySchema = z.enum(["hidden", "visible"]);
 export type GradingVisibility = z.infer<typeof GradingVisibilitySchema>;
@@ -426,6 +434,98 @@ export const OspfPathCostGradingCheckSchema = CheckIdentitySchema.extend({
   }),
 });
 
+export const Ipv6AddressGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ipv6-address"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    interfaceId: z.string().min(1).optional(),
+    expectedAddress: Ipv6Schema,
+    expectedPrefixLength: Ipv6PrefixLengthSchema.optional(),
+  }),
+});
+
+export const Ipv6NeighborGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ipv6-neighbor"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    neighborAddress: Ipv6Schema,
+  }),
+});
+
+export const SlaacAddressGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("slaac-address"),
+  configuration: z.object({ deviceId: z.string().min(1), expectedPrefix: Ipv6CidrSchema }),
+});
+
+export const Dhcpv6AddressGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("dhcpv6-address"),
+  configuration: z.object({ deviceId: z.string().min(1), expectedPrefix: Ipv6CidrSchema }),
+});
+
+export const Ipv6RouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ipv6-route"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    network: Ipv6Schema,
+    prefixLength: Ipv6PrefixLengthSchema,
+    expectedNextHop: Ipv6Schema.optional(),
+  }),
+});
+
+export const Ipv6ConnectivityGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ipv6-connectivity"),
+  configuration: z.object({
+    sourceDeviceId: z.string().min(1),
+    destination: Ipv6Schema,
+    expected: z.enum(["success", "failure"]).default("success"),
+  }),
+});
+
+export const Ospfv3NeighborGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ospfv3-neighbor"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    neighborRouterId: Ipv4Schema,
+    expectedState: z.enum(["two-way", "full"]).default("full"),
+  }),
+});
+
+export const Ospfv3RouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ospfv3-route"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    network: Ipv6Schema,
+    prefixLength: Ipv6PrefixLengthSchema,
+  }),
+});
+
+export const Ipv6AclRuleGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ipv6-acl-rule"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    aclId: z.string().min(1),
+    sequence: z.number().int().nonnegative(),
+    expectedAction: z.enum(["permit", "deny"]),
+  }),
+});
+
+const Ipv6PacketPolicyActionSchema = z.object({
+  sourceDeviceId: z.string().min(1),
+  destination: Ipv6Schema,
+  nextHeader: z.union([z.literal(6), z.literal(17), z.literal(58)]).default(58),
+  destinationPort: z.number().int().min(1).max(65_535).optional(),
+});
+
+export const Ipv6PacketPermittedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ipv6-packet-permitted"),
+  configuration: Ipv6PacketPolicyActionSchema,
+});
+
+export const Ipv6PacketDeniedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ipv6-packet-denied"),
+  configuration: Ipv6PacketPolicyActionSchema,
+});
+
 export const GradingCheckSchema = z.discriminatedUnion("type", [
   PingGradingCheckSchema,
   InterfaceStateGradingCheckSchema,
@@ -473,6 +573,17 @@ export const GradingCheckSchema = z.discriminatedUnion("type", [
   OspfRouteGradingCheckSchema,
   OspfLsdbEntryGradingCheckSchema,
   OspfPathCostGradingCheckSchema,
+  Ipv6AddressGradingCheckSchema,
+  Ipv6NeighborGradingCheckSchema,
+  SlaacAddressGradingCheckSchema,
+  Dhcpv6AddressGradingCheckSchema,
+  Ipv6RouteGradingCheckSchema,
+  Ipv6ConnectivityGradingCheckSchema,
+  Ospfv3NeighborGradingCheckSchema,
+  Ospfv3RouteGradingCheckSchema,
+  Ipv6AclRuleGradingCheckSchema,
+  Ipv6PacketPermittedGradingCheckSchema,
+  Ipv6PacketDeniedGradingCheckSchema,
 ]);
 export type GradingCheck = z.infer<typeof GradingCheckSchema>;
 

@@ -60,11 +60,22 @@ const packetTypes = new Set([
   "ospf-adjacency-rejected", "ospf-routing-table-changed",
 ]);
 
+const ipv6PacketPrefixes = [
+  "icmpv6-", "ipv6-", "ndp-", "slaac-", "dhcpv6-", "ospfv3-",
+] as const;
+
+function isPacketTraceEvent(event: SimulationTraceEvent): boolean {
+  const type = event.type.toLowerCase();
+  return packetTypes.has(event.type)
+    || ipv6PacketPrefixes.some((prefix) => type.startsWith(prefix));
+}
+
 /** Packet-trace protocol filters, in the order the dropdown lists them. */
 export const TRACE_PROTOCOL_FILTERS = [
   "ALL", "ARP", "ICMP", "UDP", "TCP", "DNS", "HTTP", "TFTP", "NTP", "SYSLOG",
   "ACL", "NAT", "FIREWALL", "CLOUD", "TRAFFIC",
   "STP", "RSTP", "LACP", "PAGP", "CDP", "LLDP", "OSPF",
+  "IPv6", "ICMPv6", "NDP", "SLAAC", "DHCPv6", "OSPFv3", "IPv6 ACL",
 ] as const;
 
 /** Tab descriptors shared by the expanded panel and the minimized strip. */
@@ -73,7 +84,7 @@ export function bottomDockTabs(
   problems: WorkspaceProblem[],
   terminalTabs: string[],
 ) {
-  const packetEvents = traces.filter((event) => packetTypes.has(event.type));
+  const packetEvents = traces.filter(isPacketTraceEvent);
   return {
     packetEvents,
     options: [
@@ -254,6 +265,13 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
 function traceProtocol(event: SimulationTraceEvent): string {
   const type = event.type.toLowerCase();
   // Control protocols first: their event names are unambiguous prefixes.
+  if (type.startsWith("ipv6-acl-")) return "IPv6 ACL";
+  if (type.startsWith("ospfv3-")) return "OSPFv3";
+  if (type.startsWith("dhcpv6-")) return "DHCPv6";
+  if (type.startsWith("slaac-") || type === "ipv6-router-advertisement" || type === "ipv6-router-solicitation") return "SLAAC";
+  if (type.startsWith("ndp-") || type.startsWith("ipv6-dad-")) return "NDP";
+  if (type.startsWith("icmpv6-") || type === "ipv6-ping-success") return "ICMPv6";
+  if (type.startsWith("ipv6-")) return "IPv6";
   if (type.startsWith("rstp-")) return "RSTP";
   if (type.startsWith("stp-") || type.startsWith("bpdu")) {
     // A Rapid-PVST BPDU carries its version, so the filter can separate them.

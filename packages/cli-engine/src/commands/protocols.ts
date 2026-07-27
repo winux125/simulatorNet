@@ -283,7 +283,12 @@ export const protocolCommands: CommandSpec[] = [
     usage: "router-id <a.b.c.d>",
     modes: ["config-router"],
     device: "ospf",
-    run: (s, p) => { requireOspfDevice(s).ospf.setRouterId(parseIpv4(p.id!)); },
+    run: (s, p) => {
+      const device = requireOspfDevice(s);
+      const routerId = parseIpv4(p.id!);
+      if (s.routerCtx?.family === "ipv6") device.ospfv3.setRouterId(routerId);
+      else device.ospf.setRouterId(routerId);
+    },
   },
   {
     pattern: "network {network} {wildcard} area {area}",
@@ -291,6 +296,9 @@ export const protocolCommands: CommandSpec[] = [
     modes: ["config-router"],
     device: "ospf",
     run: (s, p) => {
+      if (s.routerCtx?.family === "ipv6") {
+        throw new InvalidModeError("OSPFv3 advertises enabled IPv6 interfaces; network statements are not used");
+      }
       const area = integer(p.area!, 0, 4_294_967_295, "OSPF area");
       requireOspfDevice(s).ospf.addNetwork(parseIpv4(p.network!), parseIpv4(p.wildcard!), area);
     },
@@ -300,6 +308,9 @@ export const protocolCommands: CommandSpec[] = [
     modes: ["config-router"],
     device: "ospf",
     run: (s, p) => {
+      if (s.routerCtx?.family === "ipv6") {
+        throw new InvalidModeError("OSPFv3 does not use network statements");
+      }
       requireOspfDevice(s).ospf.removeNetwork(parseIpv4(p.network!), parseIpv4(p.wildcard!));
     },
   },
@@ -308,13 +319,23 @@ export const protocolCommands: CommandSpec[] = [
     usage: "passive-interface <interface-name>",
     modes: ["config-router"],
     device: "ospf",
-    run: (s, p) => { requireOspfDevice(s).ospf.setPassiveInterface(resolveL3Name(s, p.name!), true); },
+    run: (s, p) => {
+      const device = requireOspfDevice(s);
+      const name = resolveL3Name(s, p.name!);
+      if (s.routerCtx?.family === "ipv6") device.ospfv3.setPassiveInterface(name, true);
+      else device.ospf.setPassiveInterface(name, true);
+    },
   },
   {
     pattern: "no passive-interface {name}",
     modes: ["config-router"],
     device: "ospf",
-    run: (s, p) => { requireOspfDevice(s).ospf.setPassiveInterface(resolveL3Name(s, p.name!), false); },
+    run: (s, p) => {
+      const device = requireOspfDevice(s);
+      const name = resolveL3Name(s, p.name!);
+      if (s.routerCtx?.family === "ipv6") device.ospfv3.setPassiveInterface(name, false);
+      else device.ospf.setPassiveInterface(name, false);
+    },
   },
 
   // --- OSPF: per interface -------------------------------------------------
@@ -338,6 +359,28 @@ export const protocolCommands: CommandSpec[] = [
     run: (s, p) => {
       const cost = integer(p.cost!, 1, 65_535, "OSPF cost");
       forEachL3Port(s, (name) => requireOspfDevice(s).ospf.configureInterface(name, { cost }));
+    },
+  },
+  {
+    pattern: "ipv6 ospf {process} area {area}",
+    usage: "ipv6 ospf <process-id> area 0",
+    modes: ["config-if"],
+    device: "ospf",
+    run: (s, p) => {
+      const device = requireOspfDevice(s);
+      const area = integer(p.area!, 0, 0, "OSPFv3 area");
+      device.ospfv3.createProcess(integer(p.process!, 1, 65_535, "OSPFv3 process id"));
+      forEachL3Port(s, (name) => device.ospfv3.configureInterface(name, { area, enabled: true }));
+    },
+  },
+  {
+    pattern: "ipv6 ospf cost {cost}",
+    usage: "ipv6 ospf cost <1-65535>",
+    modes: ["config-if"],
+    device: "ospf",
+    run: (s, p) => {
+      const cost = integer(p.cost!, 1, 65_535, "OSPFv3 cost");
+      forEachL3Port(s, (name) => requireOspfDevice(s).ospfv3.configureInterface(name, { cost }));
     },
   },
   {
@@ -536,6 +579,48 @@ export const protocolCommands: CommandSpec[] = [
       return rows
         .map((route) => `O    ${route.network}/${maskLength(route.maskInt)} [${route.administrativeDistance}/${route.metric}] via ${route.viaIp ?? "-"}, ${route.egressName}`)
         .join("\n");
+    },
+  },
+  {
+    pattern: "show ipv6 ospf",
+    modes: SHOW_MODES,
+    device: "ospf",
+    run: (s) => {
+      const overview = requireOspfDevice(s).ospfv3.overview();
+      if (!overview.enabled) return "% OSPFv3 is not running. Use 'ipv6 router ospf <process-id>' to start it.";
+      return [
+        `OSPFv3 process ${overview.processId}, Router ID ${overview.routerId ?? "not configured"}`,
+        `Neighbors: ${overview.fullNeighbors}/${overview.neighbors} Full`,
+        `LSAs: ${overview.lsas}, Routes: ${overview.routes}, SPF runs: ${overview.spfRuns}`,
+      ].join("\n");
+    },
+  },
+  {
+    pattern: "show ipv6 ospf neighbor",
+    modes: SHOW_MODES,
+    device: "ospf",
+    run: (s) => {
+      const rows = requireOspfDevice(s).ospfv3.neighborSummaries();
+      if (rows.length === 0) return "% No OSPFv3 neighbors.";
+      return [
+        "Neighbor ID      State       Interface       Address",
+        ...rows.map((row) =>
+          `${row.neighborRouterId.padEnd(16)} ${row.state.toUpperCase().padEnd(11)} ${row.interfaceId.padEnd(15)} ${row.address}`),
+      ].join("\n");
+    },
+  },
+  {
+    pattern: "show ipv6 ospf database",
+    modes: SHOW_MODES,
+    device: "ospf",
+    run: (s) => {
+      const rows = requireOspfDevice(s).ospfv3.database();
+      if (rows.length === 0) return "% OSPFv3 link-state database is empty.";
+      return [
+        "Advertising Router  Sequence    Checksum  Prefixes  Links",
+        ...rows.map((row) =>
+          `${row.advertisingRouter.padEnd(19)} ${row.sequence.toString(16).padStart(8, "0")}  ${row.checksum.toString(16).padStart(8, "0")}  ${String(row.prefixCount).padEnd(8)}  ${row.linkCount}`),
+      ].join("\n");
     },
   },
 

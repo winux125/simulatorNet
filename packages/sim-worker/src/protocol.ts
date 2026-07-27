@@ -2,6 +2,7 @@ import type {
   DeviceCapability,
   DeviceType,
   HostIpConfiguration,
+  HostIpv6Config,
   HostStaticConfiguration,
   LabDocument,
   DeviceConfig,
@@ -20,6 +21,10 @@ import type {
   OspfNeighborSummary,
   OspfOverview,
   OspfRoute,
+  Ospfv3LsdbEntry,
+  Ospfv3NeighborSummary,
+  Ospfv3Overview,
+  Ospfv3Route,
   SpanningTreeSummary,
   ServerServiceRuntimeSnapshot,
   ServerServiceSummary,
@@ -136,6 +141,32 @@ export interface DeviceInspection {
     administrativeDistance?: number;
     metric?: number;
   }>;
+  ipv6?: {
+    forwardingEnabled?: boolean;
+    addresses: Array<{
+      interfaceId: string;
+      address: string;
+      prefixLength: number;
+      source: "link-local" | "static" | "slaac" | "dhcpv6";
+      state: "tentative" | "preferred" | "deprecated" | "duplicate";
+    }>;
+    neighbors: Array<{
+      interfaceId: string;
+      address: string;
+      macAddress: string;
+      state: string;
+    }>;
+    routes: Array<{
+      kind: "connected" | "static" | "ospfv3";
+      network: string;
+      prefixLength: number;
+      nextHop?: string;
+      interfaceId: string;
+      administrativeDistance: number;
+      metric: number;
+    }>;
+    problems: string[];
+  };
   vlans: Array<{ id: number; name: string; interfaces: string[] }>;
   svis?: Array<{
     vlanId: number;
@@ -220,6 +251,35 @@ export interface HostNetworkStatus {
   guidance?: string;
 }
 
+export interface HostIpv6NetworkStatus {
+  deviceId: string;
+  configuration: HostIpv6Config;
+  runtime: {
+    mode: "static" | "slaac" | "dhcpv6";
+    linkLocal?: string;
+    addresses: Array<{
+      address: string;
+      prefixLength: number;
+      source: "link-local" | "static" | "slaac" | "dhcpv6";
+      state: "tentative" | "preferred" | "deprecated" | "duplicate";
+    }>;
+    defaultRouter?: string;
+    dnsServer?: string;
+    dhcpv6State: string;
+    lease?: {
+      address: string;
+      prefixLength: number;
+      dnsServers: readonly string[];
+    };
+    neighbors: Array<{
+      address: string;
+      macAddress: string;
+      state: string;
+    }>;
+    problems: string[];
+  };
+}
+
 export type SecurityDeviceConfiguration = Extract<
   DeviceConfig,
   { kind: "router" | "l3-switch" | "firewall" | "cloud" | "traffic-generator" }
@@ -281,6 +341,14 @@ export interface OspfDatabaseView {
   routes: OspfRoute[];
 }
 
+export interface Ospfv3View {
+  deviceId: string;
+  overview: Ospfv3Overview;
+  neighbors: Ospfv3NeighborSummary[];
+  database: Ospfv3LsdbEntry[];
+  routes: Ospfv3Route[];
+}
+
 export type SimWorkerRequest =
   | { type: "INITIALIZE_LAB"; requestId: string; document: LabDocument }
   | { type: "REBUILD_LAB"; requestId: string; document: LabDocument }
@@ -300,6 +368,12 @@ export type SimWorkerRequest =
   | { type: "RENEW_HOST_DHCP"; requestId: string; deviceId: string }
   | { type: "RELEASE_HOST_DHCP"; requestId: string; deviceId: string }
   | { type: "GET_HOST_NETWORK_STATUS"; requestId: string; deviceId: string }
+  | { type: "GET_HOST_IPV6_CONFIGURATION"; requestId: string; deviceId: string }
+  | { type: "SET_HOST_IPV6_STATIC_CONFIGURATION"; requestId: string; deviceId: string; configuration: HostIpv6Config }
+  | { type: "SET_HOST_IPV6_MODE"; requestId: string; deviceId: string; mode: "slaac" | "dhcpv6"; startImmediately: boolean }
+  | { type: "RENEW_HOST_DHCPV6"; requestId: string; deviceId: string }
+  | { type: "RELEASE_HOST_DHCPV6"; requestId: string; deviceId: string }
+  | { type: "GET_HOST_IPV6_NETWORK_STATUS"; requestId: string; deviceId: string }
   | { type: "GET_SERVER_SERVICES"; requestId: string; deviceId: string }
   | { type: "CONFIGURE_SERVER_SERVICE"; requestId: string; deviceId: string; configuration: ServerServiceConfig }
   | { type: "ENABLE_SERVER_SERVICE"; requestId: string; deviceId: string; serviceId: string }
@@ -321,6 +395,8 @@ export type SimWorkerRequest =
   | { type: "GET_OSPF_INTERFACES"; requestId: string; deviceId: string }
   | { type: "GET_OSPF_DATABASE"; requestId: string; deviceId: string }
   | { type: "RESTART_OSPF_PROCESS"; requestId: string; deviceId: string }
+  | { type: "GET_OSPFV3_STATE"; requestId: string; deviceId: string }
+  | { type: "RESTART_OSPFV3_PROCESS"; requestId: string; deviceId: string }
   | { type: "SERIALIZE_LAB"; requestId: string };
 
 export type SimWorkerPayload =
@@ -330,6 +406,8 @@ export type SimWorkerPayload =
   | DeviceInspection
   | HostIpConfiguration
   | HostNetworkStatus
+  | HostIpv6Config
+  | HostIpv6NetworkStatus
   | ServerServicesView
   | ServerServiceRuntimeSnapshot
   | SecurityConfigurationView
@@ -340,6 +418,7 @@ export type SimWorkerPayload =
   | OspfNeighborsView
   | OspfInterfacesView
   | OspfDatabaseView
+  | Ospfv3View
   | LabDocument
   | { closed: boolean }
   | { paused: boolean; snapshot: LabUiSnapshot };
@@ -383,6 +462,12 @@ export interface SimWorkerPayloadByType {
   RENEW_HOST_DHCP: HostNetworkStatus;
   RELEASE_HOST_DHCP: HostNetworkStatus;
   GET_HOST_NETWORK_STATUS: HostNetworkStatus;
+  GET_HOST_IPV6_CONFIGURATION: HostIpv6Config;
+  SET_HOST_IPV6_STATIC_CONFIGURATION: HostIpv6NetworkStatus;
+  SET_HOST_IPV6_MODE: HostIpv6NetworkStatus;
+  RENEW_HOST_DHCPV6: HostIpv6NetworkStatus;
+  RELEASE_HOST_DHCPV6: HostIpv6NetworkStatus;
+  GET_HOST_IPV6_NETWORK_STATUS: HostIpv6NetworkStatus;
   GET_SERVER_SERVICES: ServerServicesView;
   CONFIGURE_SERVER_SERVICE: ServerServicesView;
   ENABLE_SERVER_SERVICE: ServerServicesView;
@@ -403,6 +488,8 @@ export interface SimWorkerPayloadByType {
   GET_OSPF_INTERFACES: OspfInterfacesView;
   GET_OSPF_DATABASE: OspfDatabaseView;
   RESTART_OSPF_PROCESS: OspfOverviewView;
+  GET_OSPFV3_STATE: Ospfv3View;
+  RESTART_OSPFV3_PROCESS: Ospfv3View;
   SERIALIZE_LAB: LabDocument;
 }
 

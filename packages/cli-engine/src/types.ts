@@ -46,12 +46,13 @@ export interface InterfaceContext {
 
 export interface AclContext {
   id: string;
-  type: "standard" | "extended";
+  type: "standard" | "extended" | "ipv6";
 }
 
 /** The `router ospf <process-id>` configuration context. */
 export interface RouterProcessContext {
   processId: number;
+  family: "ipv4" | "ipv6";
 }
 
 /**

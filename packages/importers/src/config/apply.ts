@@ -13,6 +13,7 @@ import type {
   LoopbackInterfaceConfig,
   NeighborDiscoveryConfig,
   OspfProcessConfig,
+  Ospfv3ProcessConfig,
   SpanningTreeConfig,
 } from "@sim/contracts";
 import {
@@ -104,6 +105,7 @@ function loopbacksFrom(applied: ImportedDeviceConfiguration): LoopbackInterfaceC
     description: loopback.description,
     shutdown: loopback.shutdown,
     ipv4: loopback.ipv4,
+    ipv6: loopback.ipv6,
   }));
 }
 
@@ -133,6 +135,33 @@ function ospfFrom(applied: ImportedDeviceConfiguration): OspfProcessConfig | und
     passiveInterfaces: [...applied.ospf.passiveInterfaces].sort(),
     interfaces,
   };
+}
+
+function ospfv3From(applied: ImportedDeviceConfiguration): Ospfv3ProcessConfig | undefined {
+  if (!applied.ospfv3) return undefined;
+  return {
+    processId: applied.ospfv3.processId,
+    routerId: applied.ospfv3.routerId,
+    passiveInterfaces: [...applied.ospfv3.passiveInterfaces].sort(),
+    interfaces: applied.interfaces
+      .filter((iface) => iface.ospfv3 !== undefined)
+      .map((iface) => ({
+        interfaceId: iface.id,
+        area: iface.ospfv3?.enabled ? (0 as const) : undefined,
+        cost: iface.ospfv3?.cost,
+        enabled: iface.ospfv3?.enabled,
+      }))
+      .sort((left, right) => left.interfaceId.localeCompare(right.interfaceId)),
+  };
+}
+
+function ipv6BindingsFrom(applied: ImportedDeviceConfiguration) {
+  return applied.interfaces.flatMap((iface) =>
+    (iface.ipv6TrafficFilters ?? []).map((binding) => ({
+      interfaceName: iface.id,
+      direction: binding.direction,
+      aclId: binding.aclId,
+    })));
 }
 
 const ipToInt = (ip: string): number => ip.split(".").reduce((acc, octet) => ((acc << 8) + Number(octet)) >>> 0, 0) >>> 0;
@@ -180,6 +209,13 @@ export function buildDeviceConfigFromIos(
               defaultGateway: gateway && inSubnet(gateway, primary.ipv4.address, primary.ipv4.prefixLength) ? gateway : undefined,
             }
           : undefined,
+        ipv6: primary?.ipv6?.[0]
+          ? {
+              mode: "static",
+              address: primary.ipv6[0].address,
+              prefixLength: primary.ipv6[0].prefixLength,
+            }
+          : undefined,
         dhcpEnabled: false,
       },
     };
@@ -199,6 +235,13 @@ export function buildDeviceConfigFromIos(
           return { id, shutdown: iface?.shutdown ?? false, description: iface?.description, ipv4: isPrimary && iface?.ipv4 ? { address: iface.ipv4.address, prefixLength: iface.ipv4.prefixLength } : undefined };
         }),
         defaultGateway: gateway && primary?.ipv4 && inSubnet(gateway, primary.ipv4.address, primary.ipv4.prefixLength) ? gateway : undefined,
+        ipv6: primary?.ipv6?.[0]
+          ? {
+              mode: "static",
+              address: primary.ipv6[0].address,
+              prefixLength: primary.ipv6[0].prefixLength,
+            }
+          : undefined,
         dhcpClientEnabled: false,
         enabledServices: [],
         // A server is a vendor-neutral station: never CDP, LLDP only.
@@ -212,13 +255,24 @@ export function buildDeviceConfigFromIos(
       hostname,
       interfaces: interfaceIds.map((id) => {
         const iface = byId.get(id);
-        return { id, shutdown: iface?.shutdown ?? false, description: iface?.description, routed: iface?.ipv4 !== undefined, ipv4: iface?.ipv4 };
+        return {
+          id,
+          shutdown: iface?.shutdown ?? false,
+          description: iface?.description,
+          routed: iface?.ipv4 !== undefined || (iface?.ipv6?.length ?? 0) > 0,
+          ipv4: iface?.ipv4,
+          ipv6: iface?.ipv6,
+        };
       }),
       subinterfaces: [],
       staticRoutes: safeRoutes.map((route) => ({ network: route.network, prefixLength: route.prefixLength, nextHop: route.nextHop })),
       dhcpPools: [],
       acls: [],
       aclBindings: [],
+      ipv6UnicastRoutingEnabled: applied.ipv6UnicastRoutingEnabled,
+      ipv6StaticRoutes: applied.ipv6StaticRoutes,
+      ipv6Acls: applied.ipv6Acls,
+      ipv6AclBindings: ipv6BindingsFrom(applied),
       natPools: [],
       natRules: [],
       natInterfaceRoles: [],
@@ -233,7 +287,65 @@ export function buildDeviceConfigFromIos(
         config: { kind: "firewall", ...routed, ospf: undefined, zones: [], firewallPolicies: [], defaultPolicy: "deny" },
       };
     }
-    return { droppedRoutes, config: { kind: "router", ...routed, ospf: ospfFrom(applied) } };
+    return {
+      droppedRoutes,
+      config: { kind: "router", ...routed, ospf: ospfFrom(applied), ospfv3: ospfv3From(applied) },
+    };
+  }
+
+  if (deviceType === "l3-switch") {
+    const vlans = applied.vlans;
+    const knownVlans = new Set<number>([1, ...vlans.map((vlan) => vlan.id)]);
+    for (const iface of applied.interfaces) {
+      if (iface.accessVlan !== undefined) knownVlans.add(iface.accessVlan);
+    }
+    return {
+      droppedRoutes,
+      config: {
+        kind: "l3-switch",
+        hostname,
+        vlans: [...knownVlans].sort((left, right) => left - right).map((id) => ({
+          id,
+          name: vlans.find((vlan) => vlan.id === id)?.name ?? (id === 1 ? "default" : `VLAN${String(id).padStart(4, "0")}`),
+        })),
+        interfaces: interfaceIds.map((id) => {
+          const iface = byId.get(id);
+          if (iface && (iface.ipv4 !== undefined || (iface.ipv6?.length ?? 0) > 0)) {
+            return {
+              id,
+              shutdown: iface.shutdown,
+              description: iface.description,
+              mode: "routed" as const,
+              ipv4: iface.ipv4,
+              ipv6: iface.ipv6,
+            };
+          }
+          return {
+            id,
+            shutdown: iface?.shutdown ?? false,
+            description: iface?.description,
+            mode: iface?.switchportMode ?? "access",
+            accessVlan: iface?.accessVlan ?? 1,
+            nativeVlan: 1,
+          };
+        }),
+        svis: [],
+        staticRoutes: safeRoutes,
+        ipRoutingEnabled: safeRoutes.length > 0 || connected.length > 0,
+        ipv6UnicastRoutingEnabled: applied.ipv6UnicastRoutingEnabled,
+        ipv6StaticRoutes: applied.ipv6StaticRoutes,
+        ipv6Acls: applied.ipv6Acls,
+        ipv6AclBindings: ipv6BindingsFrom(applied),
+        spanningTree: spanningTreeFrom(applied, knownVlans),
+        etherChannels: etherChannelsFrom(applied),
+        discovery: discoveryFrom(applied),
+        loopbacks: loopbacksFrom(applied),
+        ospf: ospfFrom(applied),
+        ospfv3: ospfv3From(applied),
+        acls: [],
+        aclBindings: [],
+      },
+    };
   }
 
   if (deviceType === "l2-switch") {

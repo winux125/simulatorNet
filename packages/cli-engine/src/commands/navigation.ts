@@ -9,6 +9,8 @@ import {
   isRoutingDevice,
   isSwitch,
   parseIpv4,
+  parseIpv6,
+  parseIpv6Prefix,
   parseVlanId,
   resolveInterface,
 } from "./helpers";
@@ -231,7 +233,23 @@ export const navigationCommands: CommandSpec[] = [
       }
       if (!isOspfDevice(s.device)) throw new InvalidModeError("OSPF requires a Router or an L3 Switch");
       s.device.ospf.createProcess(processId);
-      s.routerCtx = { processId };
+      s.routerCtx = { processId, family: "ipv4" };
+      s.enter("config-router");
+    },
+  },
+  {
+    pattern: "ipv6 router ospf {process}",
+    usage: "ipv6 router ospf <1-65535>",
+    modes: ["config"],
+    device: "ospf",
+    run: (s, p) => {
+      const processId = Number(p.process!);
+      if (!Number.isInteger(processId) || processId < 1 || processId > 65_535) {
+        throw new ValidationError("OSPFv3 process id must be between 1 and 65535.");
+      }
+      if (!isOspfDevice(s.device)) throw new InvalidModeError("OSPFv3 requires a Router or an L3 Switch");
+      s.device.ospfv3.createProcess(processId);
+      s.routerCtx = { processId, family: "ipv6" };
       s.enter("config-router");
     },
   },
@@ -275,6 +293,36 @@ export const navigationCommands: CommandSpec[] = [
     device: "l3-switch",
     capabilities: ["ipv4-routing"],
     run: (s) => { if (isLayer3Switch(s.device)) s.device.setIpRouting(true); },
+  },
+  {
+    pattern: "ipv6 unicast-routing",
+    modes: ["config"],
+    device: "router",
+    run: (s) => {
+      if (isLayer3Switch(s.device)) s.device.setIpv6Routing(true);
+      else if (isRouter(s.device)) s.device.setIpv6ForwardingEnabled(true);
+    },
+  },
+  {
+    pattern: "no ipv6 unicast-routing",
+    modes: ["config"],
+    device: "router",
+    run: (s) => {
+      if (isLayer3Switch(s.device)) s.device.setIpv6Routing(false);
+      else if (isRouter(s.device)) s.device.setIpv6ForwardingEnabled(false);
+    },
+  },
+  {
+    pattern: "ipv6 route {prefix} {nexthop}",
+    usage: "ipv6 route <network>/<prefix-length> <next-hop>",
+    modes: ["config"],
+    device: "router",
+    run: (s, p) => {
+      const prefix = parseIpv6Prefix(p.prefix!);
+      if (isRoutingDevice(s.device)) {
+        s.device.addIpv6StaticRoute(prefix.network, prefix.prefixLength, parseIpv6(p.nexthop!));
+      }
+    },
   },
   {
     pattern: "no ip routing",

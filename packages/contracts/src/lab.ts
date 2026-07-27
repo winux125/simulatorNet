@@ -5,6 +5,10 @@ import { ConsoleAccessConfigurationSchema } from "./console";
 import {
   Ipv4InterfaceConfigSchema,
   Ipv4Schema,
+  IpAddressSchema,
+  Ipv6InterfaceAddressSchema,
+  Ipv6PrefixLengthSchema,
+  Ipv6Schema,
   PrefixLengthSchema,
   VlanIdSchema,
 } from "./primitives";
@@ -20,9 +24,13 @@ export const CURRENT_LAB_SCHEMA_VERSION = 1 as const;
 export {
   Ipv4InterfaceConfigSchema,
   Ipv4Schema,
+  Ipv6CidrSchema,
+  Ipv6PrefixLengthSchema,
+  Ipv6Schema,
   PrefixLengthSchema,
   VlanIdSchema,
   type Ipv4InterfaceConfig,
+  type Ipv6InterfaceAddress,
 } from "./primitives";
 
 export const PhysicalInterfaceConfigSchema = z.object({
@@ -31,6 +39,27 @@ export const PhysicalInterfaceConfigSchema = z.object({
   shutdown: z.boolean().default(false),
 });
 export type PhysicalInterfaceConfig = z.infer<typeof PhysicalInterfaceConfigSchema>;
+
+export const HostIpv6ConfigSchema = z.object({
+  mode: z.enum(["static", "slaac", "dhcpv6"]).default("static"),
+  address: Ipv6Schema.optional(),
+  prefixLength: Ipv6PrefixLengthSchema.optional(),
+  defaultRouter: Ipv6Schema.optional(),
+  dnsServer: Ipv6Schema.optional(),
+}).strict();
+export type HostIpv6Config = z.infer<typeof HostIpv6ConfigSchema>;
+
+export const Dhcpv6PoolConfigSchema = z.object({
+  id: z.string().min(1),
+  prefix: Ipv6Schema,
+  prefixLength: Ipv6PrefixLengthSchema,
+  rangeStart: Ipv6Schema,
+  rangeEnd: Ipv6Schema,
+  dnsServers: z.array(Ipv6Schema).max(4).default([]),
+  preferredLifetimeSeconds: z.number().int().positive().default(3_600),
+  validLifetimeSeconds: z.number().int().positive().default(7_200),
+}).strict();
+export type Dhcpv6PoolConfigDocument = z.infer<typeof Dhcpv6PoolConfigSchema>;
 
 export const PcDeviceConfigSchema = z.object({
   kind: z.literal("pc"),
@@ -41,11 +70,13 @@ export const PcDeviceConfigSchema = z.object({
   }).optional(),
   dhcpEnabled: z.boolean().default(false),
   dnsServer: Ipv4Schema.optional(),
+  ipv6: HostIpv6ConfigSchema.optional(),
 });
 export type PcDeviceConfig = z.infer<typeof PcDeviceConfigSchema>;
 
 export const HostInterfaceConfigSchema = PhysicalInterfaceConfigSchema.extend({
   ipv4: Ipv4InterfaceConfigSchema.optional(),
+  ipv6: z.array(Ipv6InterfaceAddressSchema).max(16).optional(),
 });
 export type HostInterfaceConfig = z.infer<typeof HostInterfaceConfigSchema>;
 
@@ -59,7 +90,8 @@ export const DnsRecordSchema = z.object({
     (value) => /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.?$/i.test(value.trim()),
     "Invalid DNS name",
   ),
-  address: Ipv4Schema,
+  address: IpAddressSchema,
+  recordType: z.enum(["A", "AAAA"]).optional(),
 }).strict();
 export type DnsRecord = z.infer<typeof DnsRecordSchema>;
 
@@ -133,6 +165,8 @@ export const ServerDeviceConfigSchema = z.object({
   defaultGateway: Ipv4Schema.optional(),
   dhcpClientEnabled: z.boolean().default(false),
   dnsServer: Ipv4Schema.optional(),
+  ipv6: HostIpv6ConfigSchema.optional(),
+  dhcpv6Pools: z.array(Dhcpv6PoolConfigSchema).max(32).optional(),
   enabledServices: z.array(ServerServiceConfigSchema).max(16).default([]),
   /** A server is a vendor-neutral station: LLDP only, never CDP. */
   discovery: NeighborDiscoveryConfigSchema.optional(),
@@ -186,6 +220,7 @@ export const RouterPhysicalInterfaceConfigSchema = PhysicalInterfaceConfigSchema
   /** Whether this physical port participates in layer 3. */
   routed: z.boolean().default(false),
   ipv4: Ipv4InterfaceConfigSchema.optional(),
+  ipv6: z.array(Ipv6InterfaceAddressSchema).max(16).optional(),
 });
 export type RouterPhysicalInterfaceConfig = z.infer<typeof RouterPhysicalInterfaceConfigSchema>;
 
@@ -195,6 +230,7 @@ export const RouterSubinterfaceConfigSchema = z.object({
   vlan: VlanIdSchema,
   native: z.boolean().default(false),
   ipv4: Ipv4InterfaceConfigSchema.optional(),
+  ipv6: z.array(Ipv6InterfaceAddressSchema).max(16).optional(),
 });
 export type RouterSubinterfaceConfig = z.infer<typeof RouterSubinterfaceConfigSchema>;
 
@@ -204,6 +240,30 @@ export const StaticRouteConfigSchema = z.object({
   nextHop: Ipv4Schema,
 });
 export type StaticRouteConfig = z.infer<typeof StaticRouteConfigSchema>;
+
+export const Ipv6StaticRouteConfigSchema = z.object({
+  network: Ipv6Schema,
+  prefixLength: Ipv6PrefixLengthSchema,
+  nextHop: Ipv6Schema,
+}).strict();
+export type Ipv6StaticRouteConfig = z.infer<typeof Ipv6StaticRouteConfigSchema>;
+
+export const RouterAdvertisementConfigSchema = z.object({
+  interfaceName: z.string().min(1),
+  managed: z.boolean().default(false),
+  otherConfiguration: z.boolean().default(false),
+  routerLifetimeSeconds: z.number().int().nonnegative().default(1_800),
+  dnsServers: z.array(Ipv6Schema).max(4).default([]),
+  prefixes: z.array(z.object({
+    prefix: Ipv6Schema,
+    prefixLength: Ipv6PrefixLengthSchema,
+    autonomous: z.boolean().default(true),
+    onLink: z.boolean().default(true),
+    validLifetimeSeconds: z.number().int().positive().default(2_592_000),
+    preferredLifetimeSeconds: z.number().int().positive().default(604_800),
+  }).strict()).max(16).default([]),
+}).strict();
+export type RouterAdvertisementConfigDocument = z.infer<typeof RouterAdvertisementConfigSchema>;
 
 export const DhcpPoolConfigSchema = z.object({
   id: z.string().min(1),
@@ -264,6 +324,31 @@ export const Ipv4AclConfigSchema = z.discriminatedUnion("type", [
 ]);
 export type Ipv4AclConfig = z.infer<typeof Ipv4AclConfigSchema>;
 
+export const Ipv6AddressMatcherSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("any") }).strict(),
+  z.object({ kind: z.literal("host"), address: Ipv6Schema }).strict(),
+  z.object({
+    kind: z.literal("prefix"),
+    address: Ipv6Schema,
+    prefixLength: Ipv6PrefixLengthSchema,
+  }).strict(),
+]);
+
+export const Ipv6AclConfigSchema = z.object({
+  id: z.string().min(1),
+  type: z.literal("ipv6"),
+  rules: z.array(z.object({
+    sequence: z.number().int().nonnegative(),
+    action: AclActionSchema,
+    protocol: z.union([z.literal("ipv6"), z.literal(6), z.literal(17), z.literal(58)]),
+    source: Ipv6AddressMatcherSchema,
+    destination: Ipv6AddressMatcherSchema,
+    sourcePort: PortMatcherSchema.optional(),
+    destinationPort: PortMatcherSchema.optional(),
+  }).strict()).max(256).default([]),
+}).strict();
+export type Ipv6AclConfig = z.infer<typeof Ipv6AclConfigSchema>;
+
 export const AclBindingConfigSchema = z.object({
   interfaceName: z.string().min(1),
   direction: AclDirectionSchema,
@@ -318,6 +403,15 @@ export type NatInterfaceRoleConfig = z.infer<typeof NatInterfaceRoleConfigSchema
 const RoutedSecurityConfigShape = {
   acls: z.array(Ipv4AclConfigSchema).max(64).default([]),
   aclBindings: z.array(AclBindingConfigSchema).max(128).default([]),
+  ipv6Acls: z.array(Ipv6AclConfigSchema).max(64).optional(),
+  ipv6AclBindings: z.array(AclBindingConfigSchema).max(128).optional(),
+};
+
+const RoutedIpv6ConfigShape = {
+  ipv6UnicastRoutingEnabled: z.boolean().optional(),
+  ipv6StaticRoutes: z.array(Ipv6StaticRouteConfigSchema).max(256).optional(),
+  routerAdvertisements: z.array(RouterAdvertisementConfigSchema).max(64).optional(),
+  dhcpv6Pools: z.array(Dhcpv6PoolConfigSchema).max(32).optional(),
 };
 
 export const RouterDeviceConfigSchema = z.object({
@@ -327,6 +421,7 @@ export const RouterDeviceConfigSchema = z.object({
   subinterfaces: z.array(RouterSubinterfaceConfigSchema).default([]),
   staticRoutes: z.array(StaticRouteConfigSchema).default([]),
   dhcpPools: z.array(DhcpPoolConfigSchema).default([]),
+  ...RoutedIpv6ConfigShape,
   ...RoutedSecurityConfigShape,
   natPools: z.array(NatPoolConfigSchema).max(32).default([]),
   natRules: z.array(NatRuleConfigSchema).max(128).default([]),
@@ -416,6 +511,7 @@ export const Layer3SwitchInterfaceConfigSchema = z.discriminatedUnion("mode", [
   PhysicalInterfaceConfigSchema.extend({
     mode: z.literal("routed"),
     ipv4: Ipv4InterfaceConfigSchema.optional(),
+    ipv6: z.array(Ipv6InterfaceAddressSchema).max(16).optional(),
   }).strict(),
 ]);
 export type Layer3SwitchInterfaceConfig = z.infer<typeof Layer3SwitchInterfaceConfigSchema>;
@@ -426,6 +522,7 @@ export const SviConfigSchema = z.object({
   prefixLength: PrefixLengthSchema.optional(),
   adminUp: z.boolean().default(true),
   description: z.string().min(1).optional(),
+  ipv6: z.array(Ipv6InterfaceAddressSchema).max(16).optional(),
 });
 export type SviConfig = z.infer<typeof SviConfigSchema>;
 
@@ -437,6 +534,7 @@ export const Layer3SwitchDeviceConfigSchema = z.object({
   svis: z.array(SviConfigSchema).default([]),
   staticRoutes: z.array(StaticRouteConfigSchema).default([]),
   ipRoutingEnabled: z.boolean().default(false),
+  ...RoutedIpv6ConfigShape,
   ...RoutedSecurityConfigShape,
   ...SwitchControlProtocolShape,
   ...RoutedControlProtocolShape,

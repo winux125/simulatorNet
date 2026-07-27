@@ -20,6 +20,10 @@ import {
   Layer3Switch,
   maskToInt,
   normalizeDnsName,
+  normalizeIpv6,
+  ipv6InPrefix,
+  ipv6Network,
+  Ipv6NextHeader,
   Router,
   TcpState,
   TrafficGenerator,
@@ -191,6 +195,60 @@ function executePing(
   return {
     source,
     success: source.pingResults.find((entry) => entry.sequence === sequence)?.success ?? false,
+    trace: runtime.built.engine.traceLog.slice(traceStart),
+    failure,
+  };
+}
+
+function executeIpv6Traffic(
+  runtime: VerificationRuntime,
+  sourceDeviceId: string,
+  destination: string,
+  nextHeader: 6 | 17 | 58 = Ipv6NextHeader.ICMPv6,
+  destinationPort = 80,
+): {
+  source: EndHost | Router | Layer3Switch;
+  success: boolean;
+  trace: SimulationEngine["traceLog"];
+  failure?: string;
+} | undefined {
+  const candidate = runtime.built.getDevice(sourceDeviceId);
+  const source = candidate instanceof EndHost || candidate instanceof Router || candidate instanceof Layer3Switch
+    ? candidate
+    : undefined;
+  if (!source) return undefined;
+  const traceStart = runtime.built.engine.traceLog.length;
+  let failure: string | undefined;
+  let success = false;
+  try {
+    if (nextHeader === Ipv6NextHeader.ICMPv6) {
+      const sequence = runtime.nextPingSequence();
+      source.ping6(destination, sequence);
+      runtime.runUntil(() => source.ipv6PingResults.some((entry) => entry.sequence === sequence));
+      success = source.ipv6PingResults.find((entry) => entry.sequence === sequence)?.success ?? false;
+    } else if (source instanceof EndHost && nextHeader === Ipv6NextHeader.TCP) {
+      source.connectTcp(destination, destinationPort);
+      runtime.runUntil(() => runtime.built.engine.nextEventTime() === undefined);
+      success = source.transport.tcp.inspect().some((entry) =>
+        entry.remoteAddress === destination && entry.remotePort === destinationPort && entry.state === TcpState.Established);
+    } else if (source instanceof EndHost && nextHeader === Ipv6NextHeader.UDP) {
+      source.sendUdp({
+        destinationAddress: destination,
+        destinationPort,
+        payload: { kind: "udp-application", protocol: "grading", data: "ipv6-policy-check" },
+      });
+      runtime.runUntil(() => runtime.built.engine.nextEventTime() === undefined);
+      success = true;
+    } else {
+      failure = "TCP and UDP IPv6 policy checks require an end host source";
+    }
+  } catch (error) {
+    if (error instanceof VerificationResourceLimitError) throw error;
+    failure = error instanceof Error ? error.message : "IPv6 operation failed";
+  }
+  return {
+    source,
+    success,
     trace: runtime.built.engine.traceLog.slice(traceStart),
     failure,
   };
@@ -788,6 +846,158 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
         sequence: entry?.sequence,
         linkCount: entry?.linkCount,
         databaseSize: device.ospf.database().length,
+      });
+    }
+    case "ipv6-address": {
+      const device = built.getDevice(check.configuration.deviceId);
+      if (!device) return errorResult(check, "IPv6 device was not found");
+      const addresses = device instanceof EndHost
+        ? device.ipv6AddressSummaries().map((entry) => ({ interfaceId: device.primary.name, ...entry }))
+        : device instanceof Router || device instanceof Layer3Switch
+          ? device.ipv6InterfaceSummaries().flatMap((entry) =>
+              entry.addresses.map((address) => ({ interfaceId: entry.name, ...address })))
+          : [];
+      const expectedAddress = normalizeIpv6(check.configuration.expectedAddress);
+      const address = addresses.find((entry) =>
+        entry.address === expectedAddress
+        && (check.configuration.interfaceId === undefined || entry.interfaceId === check.configuration.interfaceId)
+        && (check.configuration.expectedPrefixLength === undefined
+          || entry.prefixLength === check.configuration.expectedPrefixLength));
+      return result(check, !!address, `IPv6 address ${check.configuration.expectedAddress} ${address ? "is configured" : "is missing"}`, {
+        found: !!address,
+        actualAddresses: addresses,
+        expectedAddress: check.configuration.expectedAddress,
+        expectedPrefixLength: check.configuration.expectedPrefixLength,
+      });
+    }
+    case "ipv6-neighbor": {
+      const device = built.getDevice(check.configuration.deviceId);
+      const neighbors = device instanceof EndHost
+        ? device.ipv6NeighborEntries()
+        : device instanceof Router || device instanceof Layer3Switch
+          ? device.ipv6NeighborEntries()
+          : [];
+      if (!device) return errorResult(check, "IPv6 device was not found");
+      const expectedNeighbor = normalizeIpv6(check.configuration.neighborAddress);
+      const neighbor = neighbors.find((entry) => entry.address === expectedNeighbor);
+      return result(check, !!neighbor, `IPv6 neighbor ${check.configuration.neighborAddress} ${neighbor ? "was resolved" : "is missing"}`, {
+        found: !!neighbor,
+        macAddress: neighbor?.mac,
+        state: neighbor?.state,
+      });
+    }
+    case "slaac-address":
+    case "dhcpv6-address": {
+      const device = built.getDevice(check.configuration.deviceId);
+      if (!(device instanceof EndHost)) return errorResult(check, "IPv6 end host was not found");
+      const [prefix, lengthText] = check.configuration.expectedPrefix.split("/");
+      const prefixLength = Number(lengthText);
+      const expectedSource = check.type === "slaac-address" ? "slaac" : "dhcpv6";
+      const address = device.ipv6AddressSummaries().find((entry) =>
+        entry.source === expectedSource
+        && entry.state !== "duplicate"
+        && ipv6InPrefix(entry.address, prefix!, prefixLength));
+      return result(check, !!address, `${device.name} ${address ? "has" : "does not have"} a ${expectedSource.toUpperCase()} address in ${check.configuration.expectedPrefix}`, {
+        actualAddress: address?.address,
+        actualState: address?.state,
+        expectedPrefix: check.configuration.expectedPrefix,
+        source: expectedSource,
+      });
+    }
+    case "ipv6-route": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "IPv6 routing device was not found");
+      const expectedNetwork = ipv6Network(check.configuration.network, check.configuration.prefixLength);
+      const expectedNextHop = check.configuration.expectedNextHop === undefined
+        ? undefined
+        : normalizeIpv6(check.configuration.expectedNextHop);
+      const route = device.ipv6RoutingTable().find((entry) =>
+        entry.network === expectedNetwork
+        && entry.prefixLength === check.configuration.prefixLength
+        && (expectedNextHop === undefined || entry.viaIp === expectedNextHop));
+      return result(check, !!route, `IPv6 route ${check.configuration.network}/${check.configuration.prefixLength} ${route ? "exists" : "is missing"}`, {
+        found: !!route,
+        actualNextHop: route?.viaIp,
+        expectedNextHop: check.configuration.expectedNextHop,
+        routeKind: route?.kind,
+      });
+    }
+    case "ipv6-connectivity": {
+      const execution = executeIpv6Traffic(
+        runtime,
+        check.configuration.sourceDeviceId,
+        check.configuration.destination,
+      );
+      if (!execution) return errorResult(check, "IPv6 source device was not found");
+      const passed = check.configuration.expected === "success" ? execution.success : !execution.success;
+      return result(check, passed, `IPv6 connectivity ${execution.success ? "succeeded" : "failed"} to ${check.configuration.destination}`, {
+        actual: execution.success ? "success" : "failure",
+        expected: check.configuration.expected,
+        failure: execution.failure,
+      });
+    }
+    case "ospfv3-neighbor": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "OSPFv3-capable device was not found");
+      const neighbor = device.ospfv3.neighborSummaries()
+        .find((entry) => entry.neighborRouterId === check.configuration.neighborRouterId);
+      const actual = neighbor?.state ?? "down";
+      return result(check, actual === check.configuration.expectedState, `OSPFv3 neighbour ${check.configuration.neighborRouterId} is ${actual}`, {
+        actualState: actual,
+        expectedState: check.configuration.expectedState,
+        interfaceId: neighbor?.interfaceId,
+        address: neighbor?.address,
+      });
+    }
+    case "ospfv3-route": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "OSPFv3-capable device was not found");
+      const expectedNetwork = ipv6Network(check.configuration.network, check.configuration.prefixLength);
+      const route = device.ipv6RoutingTable().find((entry) =>
+        entry.kind === "ospfv3"
+        && entry.network === expectedNetwork
+        && entry.prefixLength === check.configuration.prefixLength);
+      return result(check, !!route, `OSPFv3 route ${check.configuration.network}/${check.configuration.prefixLength} ${route ? "exists" : "is missing"}`, {
+        found: !!route,
+        nextHop: route?.viaIp,
+        interfaceId: route?.egressName,
+        metric: route?.metric,
+      });
+    }
+    case "ipv6-acl-rule": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "IPv6 policy device was not found");
+      const rule = device.ipv6AclConfigurations()
+        .find((acl) => acl.id === check.configuration.aclId)?.rules
+        .find((candidate) => candidate.sequence === check.configuration.sequence);
+      const passed = rule?.action === check.configuration.expectedAction;
+      return result(check, passed, `IPv6 ACL ${check.configuration.aclId} sequence ${check.configuration.sequence} is ${rule?.action ?? "missing"}`, {
+        actualAction: rule?.action,
+        expectedAction: check.configuration.expectedAction,
+      });
+    }
+    case "ipv6-packet-permitted":
+    case "ipv6-packet-denied": {
+      const execution = executeIpv6Traffic(
+        runtime,
+        check.configuration.sourceDeviceId,
+        check.configuration.destination,
+        check.configuration.nextHeader,
+        check.configuration.destinationPort,
+      );
+      if (!execution) return errorResult(check, "IPv6 packet source was not found");
+      const permits = execution.trace.filter((entry) => entry.type === "ipv6-acl-permitted");
+      const denies = execution.trace.filter((entry) => entry.type === "ipv6-acl-denied");
+      const passed = check.type === "ipv6-packet-permitted"
+        ? permits.length > 0 && denies.length === 0
+        : denies.length > 0;
+      return result(check, passed, `IPv6 packet was ${denies.length > 0 ? "denied" : permits.length > 0 ? "permitted" : "not decided by policy"}`, {
+        operationSuccess: execution.success,
+        permitEvents: permits.length,
+        denyEvents: denies.length,
+        nextHeader: check.configuration.nextHeader,
+        destinationPort: check.configuration.destinationPort,
+        failure: execution.failure,
       });
     }
     case "traffic-flow-result": {

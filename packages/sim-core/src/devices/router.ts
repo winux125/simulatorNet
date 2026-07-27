@@ -516,11 +516,6 @@ export class Router extends Device {
     if (!iface) throw new Error(`Router ${this.id} has no L3 interface ${name}`);
     this.enableInterfaceIpv6(name);
     const address = normalizeIpv6(addressInput);
-    for (const assignment of iface.ipv6.summaries()) {
-      if (assignment.source === "static" && assignment.address !== address) {
-        iface.ipv6.remove(assignment.address);
-      }
-    }
     iface.ipv6.add({ address, prefixLength, source: "static", state: "tentative" });
     this.ipv6Discovery(iface).beginDad(address);
   }

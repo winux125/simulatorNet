@@ -7,6 +7,8 @@ import {
   Pc,
   Router,
   Server,
+  normalizeIpv6,
+  validateIpv6PrefixLength,
   supportsCdp,
 } from "@sim/sim-core";
 import { ValidationError } from "../errors/errors";
@@ -167,4 +169,25 @@ export function parseIpv4(token: string): string {
     throw new ValidationError(`Invalid IP address ${token}`);
   }
   return token;
+}
+
+export function parseIpv6(token: string): string {
+  try {
+    return normalizeIpv6(token);
+  } catch {
+    throw new ValidationError(`Invalid IPv6 address ${token}`);
+  }
+}
+
+export function parseIpv6Prefix(token: string): { network: string; prefixLength: number } {
+  const slash = token.lastIndexOf("/");
+  if (slash <= 0) throw new ValidationError(`IPv6 prefix must use address/length notation: ${token}`);
+  const network = parseIpv6(token.slice(0, slash));
+  const prefixLength = Number(token.slice(slash + 1));
+  try {
+    validateIpv6PrefixLength(prefixLength);
+  } catch {
+    throw new ValidationError("IPv6 prefix length must be between 0 and 128.");
+  }
+  return { network, prefixLength };
 }

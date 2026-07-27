@@ -186,6 +186,40 @@ describe("lab-format data-plane round trips", () => {
     expect(second.getPc("pc1")!.lease?.ip).toBe("192.168.1.10");
     expect(stringifyLabDocument(serializeLabDocument(second, metadata))).toBe(stringifyLabDocument(serialized));
   });
+
+  it("preserves IPv6 host configuration but rebuilds NDP runtime state", () => {
+    const firstPc = pc("pc1", "PC1");
+    const secondPc = pc("pc2", "PC2");
+    const firstPcConfig = { ...firstPc.config, ipv6: { mode: "static" as const, address: "2001:db8:10::10", prefixLength: 64 } };
+    const secondPcConfig = { ...secondPc.config, ipv6: { mode: "static" as const, address: "2001:db8:10::20", prefixLength: 64 } };
+    const document = documentOf(
+      [
+        firstPc.node,
+        secondPc.node,
+        { id: "sw1", kind: "l2-switch", name: "SW1", interfaces: [{ id: "Gi0/1" }, { id: "Gi0/2" }] },
+      ],
+      [
+        { id: "l1", a: { node: "pc1", iface: "eth0" }, b: { node: "sw1", iface: "Gi0/1" } },
+        { id: "l2", a: { node: "sw1", iface: "Gi0/2" }, b: { node: "pc2", iface: "eth0" } },
+      ],
+      {
+        pc1: firstPcConfig,
+        pc2: secondPcConfig,
+        sw1: { kind: "l2-switch", hostname: "SW1", vlans: [], interfaces: [] },
+      },
+    );
+    const { first, serialized, second } = roundTrip(document);
+    first.engine.runUntilIdle();
+    first.getPc("pc1")!.ping6("2001:db8:10::20", 1);
+    first.engine.runUntilIdle();
+    expect(first.getPc("pc1")!.ipv6PingResults.at(-1)).toMatchObject({ success: true });
+    expect(JSON.stringify(serialized)).not.toMatch(/neighborCache|dadState|dhcpv6Lease/i);
+    expect(second.getPc("pc1")!.ipv6NeighborEntries()).toEqual([]);
+    second.engine.runUntilIdle();
+    second.getPc("pc1")!.ping6("2001:db8:10::20", 2);
+    second.engine.runUntilIdle();
+    expect(second.getPc("pc1")!.ipv6PingResults.at(-1)).toMatchObject({ success: true });
+  });
 });
 
 describe("CLI-created structured configuration", () => {
@@ -223,6 +257,72 @@ describe("CLI-created structured configuration", () => {
     rebuilt.getPc("pc1")!.ping("192.168.20.10", 2);
     rebuilt.engine.runUntilIdle();
     expect(rebuilt.getPc("pc1")!.pingResults.at(-1)).toMatchObject({ success: true });
+  });
+
+  it("round-trips CLI-created IPv6 routing, OSPFv3 and ACL configuration", () => {
+    const document = documentOf(
+      [{ id: "r1", kind: "router", name: "R1", interfaces: [{ id: "Gi0/0" }] }],
+      [],
+      {
+        r1: {
+          kind: "router",
+          hostname: "R1",
+          interfaces: [{ id: "Gi0/0", routed: true, shutdown: false }],
+          subinterfaces: [],
+          staticRoutes: [],
+          dhcpPools: [],
+        },
+      },
+    );
+    const built = buildLabFromDocument(document);
+    const cli = createCliSession(built.getRouter("r1")!, built.engine);
+    for (const command of [
+      "enable",
+      "configure terminal",
+      "ipv6 unicast-routing",
+      "interface Gi0/0",
+      "ipv6 address 2001:db8:10::1/64",
+      "ipv6 ospf 1 area 0",
+      "ipv6 ospf cost 10",
+      "exit",
+      "ipv6 route 2001:db8:20::/64 2001:db8:10::2",
+      "ipv6 router ospf 1",
+      "router-id 1.1.1.1",
+      "exit",
+      "ipv6 access-list WEB6",
+      "permit tcp 2001:db8:10::/64 host 2001:db8:20::10 eq 80",
+      "deny ipv6 any any",
+      "exit",
+      "interface Gi0/0",
+      "ipv6 traffic-filter WEB6 in",
+      "end",
+    ]) expect(cli.execute(command)).not.toContain("% Invalid");
+
+    const serialized = serializeLabDocument(built, metadata);
+    expect(serialized.configurations.r1).toMatchObject({
+      kind: "router",
+      ipv6UnicastRoutingEnabled: true,
+      interfaces: [expect.objectContaining({
+        id: "Gi0/0",
+        ipv6: [{ address: "2001:db8:10::1", prefixLength: 64 }],
+      })],
+      ipv6StaticRoutes: [{
+        network: "2001:db8:20::",
+        prefixLength: 64,
+        nextHop: "2001:db8:10::2",
+      }],
+      ospfv3: expect.objectContaining({ processId: 1, routerId: "1.1.1.1" }),
+      ipv6Acls: [expect.objectContaining({ id: "WEB6", rules: expect.any(Array) })],
+      ipv6AclBindings: [{ interfaceName: "Gi0/0", direction: "in", aclId: "WEB6" }],
+    });
+    const rebuilt = buildLabFromDocument(serialized).getRouter("r1")!;
+    expect(rebuilt.ipv6StaticRouteConfigurations()).toEqual([{
+      network: "2001:db8:20::",
+      prefixLength: 64,
+      nextHop: "2001:db8:10::2",
+    }]);
+    expect(rebuilt.ospfv3.configuration()).toMatchObject({ processId: 1, routerId: "1.1.1.1" });
+    expect(rebuilt.ipv6AclConfigurations()[0]?.rules).toHaveLength(2);
   });
 });
 

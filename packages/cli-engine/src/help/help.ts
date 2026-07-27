@@ -14,7 +14,8 @@ const ROOT_DESCRIPTIONS: Record<string, string> = {
   hostname: "Set device hostname",
   interface: "Select an interface",
   ip: "Configure IP parameters",
-  ipconfig: "Display or manage host IPv4 configuration",
+  ipv6: "Configure IPv6 parameters",
+  ipconfig: "Display or manage host IP configuration",
   arp: "Display the host ARP cache",
   netstat: "Display host transport connections",
   name: "Set VLAN name",
@@ -25,7 +26,7 @@ const ROOT_DESCRIPTIONS: Record<string, string> = {
   show: "Display device information",
   shutdown: "Administratively disable an interface",
   switchport: "Configure Layer 2 interface settings",
-  tracert: "Trace a route to an IPv4 destination",
+  tracert: "Trace a route to an IP destination",
   vlan: "Configure a VLAN",
   "spanning-tree": "Configure PVST / Rapid-PVST spanning tree",
   "channel-group": "Add the interface to an EtherChannel",
@@ -41,9 +42,14 @@ const ROOT_DESCRIPTIONS: Record<string, string> = {
 
 const ARGUMENT_HELP: Record<string, string> = {
   ping: "<destination-ip>   IPv4 address to ping",
+  "ping -6": "<ipv6-address-or-hostname>   IPv6 address or DNS hostname to ping",
   tracert: "<destination-ip>   IPv4 address to trace",
+  "tracert -6": "<ipv6-address-or-hostname>   IPv6 address or DNS hostname to trace",
   interface: "<interface-name>   Interface to configure",
   "ip route": "<network> <mask> <next-hop>   Static route parameters",
+  "ipv6 route": "<prefix>/<length> <next-hop>   Static IPv6 route parameters",
+  "ipv6 router ospf": "<1-65535>   OSPFv3 process id (one process per device)",
+  "ipv6 access-list": "<name>   Named IPv6 access list",
   nslookup: "<hostname> [dns-server]   Resolve an IPv4 A record",
   "sim http get": "<url>   HTTP URL with an IPv4 host",
   "sim tftp get": "<server-ip> <filename>   Download a file",
@@ -104,6 +110,10 @@ export function renderHelp(session: SessionApi, prefix: string[]): string {
         .filter((part) => part.toLowerCase().startsWith(typed))
         .map((part) => part.toLowerCase()),
     );
+    if (literals.has(typed)) {
+      canonical.push(typed);
+      continue;
+    }
     if (literals.size > 1 && !literals.has(typed)) {
       return `% Ambiguous command: "${prefix.join(" ")}"`;
     }

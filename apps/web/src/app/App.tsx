@@ -1127,6 +1127,13 @@ function CliCommandsDialog({ onClose }: { onClose(): void }) {
         <li><code>ip route &lt;net&gt; &lt;mask&gt; &lt;next-hop&gt;</code> — static routes</li>
         <li><code>show ip interface brief</code>, <code>show ip route</code></li>
       </ul></section>
+      <section><h3>IPv6</h3><ul>
+        <li><code>ping -6 &lt;address-or-hostname&gt;</code>, <code>tracert -6 &lt;address-or-hostname&gt;</code>, <code>ipconfig /all</code></li>
+        <li><code>ipv6 unicast-routing</code>, <code>ipv6 address &lt;prefix&gt;/&lt;length&gt;</code>, <code>ipv6 route &lt;prefix&gt;/&lt;length&gt; &lt;next-hop&gt;</code></li>
+        <li><code>ipv6 router ospf &lt;process&gt;</code>, <code>ipv6 ospf &lt;process&gt; area 0</code></li>
+        <li><code>ipv6 access-list &lt;name&gt;</code>, <code>ipv6 traffic-filter &lt;name&gt; in|out</code></li>
+        <li><code>show ipv6 interface brief</code>, <code>show ipv6 neighbors</code>, <code>show ipv6 route</code>, <code>show ipv6 ospf</code>, <code>show ipv6 access-list</code></li>
+      </ul></section>
       <section><h3>Modes</h3><ul>
         <li>User EXEC <code>&gt;</code> → Privileged <code>#</code> (<code>enable</code>) → Global config (<code>configure terminal</code>) → Interface / VLAN sub-modes</li>
         <li><code>end</code> returns to privileged EXEC; <code>exit</code> steps up one mode</li>

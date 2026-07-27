@@ -5,10 +5,17 @@
  * it did NOT understand untouched. Nothing is executed or replayed through an
  * interactive terminal; unknown source config is never silently dropped.
  */
+import {
+  Ipv6CidrSchema,
+  Ipv6Schema,
+  type Ipv6AclConfig,
+  type Ospfv3ProcessConfig,
+} from "@sim/contracts";
 
 export interface ImportedInterfaceConfig {
   id: string;
   ipv4?: { address: string; prefixLength: number };
+  ipv6?: Array<{ address: string; prefixLength: number }>;
   shutdown: boolean;
   description?: string;
   switchportMode?: "access" | "trunk";
@@ -33,6 +40,11 @@ export interface ImportedInterfaceConfig {
     helloIntervalSeconds?: number;
     deadIntervalSeconds?: number;
   };
+  ospfv3?: {
+    enabled?: boolean;
+    cost?: number;
+  };
+  ipv6TrafficFilters?: Array<{ aclId: string; direction: "in" | "out" }>;
 }
 
 /** `interface Loopback<n>` recognised from an imported startup-config. */
@@ -41,6 +53,7 @@ export interface ImportedLoopbackConfig {
   description?: string;
   shutdown: boolean;
   ipv4?: { address: string; prefixLength: number };
+  ipv6?: Array<{ address: string; prefixLength: number }>;
 }
 
 export interface ImportedOspfConfig {
@@ -55,6 +68,10 @@ export interface ImportedDeviceConfiguration {
   interfaces: ImportedInterfaceConfig[];
   loopbacks: ImportedLoopbackConfig[];
   staticRoutes: Array<{ network: string; prefixLength: number; nextHop: string }>;
+  ipv6UnicastRoutingEnabled?: boolean;
+  ipv6StaticRoutes: Array<{ network: string; prefixLength: number; nextHop: string }>;
+  ipv6Acls: Ipv6AclConfig[];
+  ipv6AclBindings: Array<{ interfaceName: string; direction: "in" | "out"; aclId: string }>;
   vlans: Array<{ id: number; name: string }>;
   /** `spanning-tree mode pvst|rapid-pvst`; absent means the default (disabled). */
   spanningTreeMode?: "stp" | "rstp";
@@ -62,8 +79,30 @@ export interface ImportedDeviceConfiguration {
   cdpEnabled?: boolean;
   lldpEnabled?: boolean;
   ospf?: ImportedOspfConfig;
+  ospfv3?: Ospfv3ProcessConfig;
   appliedLines: string[];
   unparsedLines: string[];
+}
+
+function ipv6Cidr(value: string | undefined): { address: string; prefixLength: number } | undefined {
+  const parsed = Ipv6CidrSchema.safeParse(value);
+  if (!parsed.success) return undefined;
+  const slash = parsed.data.lastIndexOf("/");
+  return { address: parsed.data.slice(0, slash), prefixLength: Number(parsed.data.slice(slash + 1)) };
+}
+
+function ipv6Matcher(tokens: string[], start: number) {
+  const token = tokens[start]?.toLowerCase();
+  if (token === "any") return { matcher: { kind: "any" as const }, consumed: 1 };
+  if (token === "host" && Ipv6Schema.safeParse(tokens[start + 1]).success) {
+    return { matcher: { kind: "host" as const, address: tokens[start + 1]! }, consumed: 2 };
+  }
+  const prefix = ipv6Cidr(tokens[start]);
+  if (!prefix) return undefined;
+  return {
+    matcher: { kind: "prefix" as const, address: prefix.address, prefixLength: prefix.prefixLength },
+    consumed: 1,
+  };
 }
 
 function isIpv4(value: string | undefined): value is string {
@@ -126,6 +165,9 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     interfaces: [],
     loopbacks: [],
     staticRoutes: [],
+    ipv6StaticRoutes: [],
+    ipv6Acls: [],
+    ipv6AclBindings: [],
     vlans: [],
     spanningTreeVlanPriorities: [],
     appliedLines: [],
@@ -137,6 +179,8 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
   let currentLoopback: ImportedLoopbackConfig | undefined;
   let currentVlan: number | undefined;
   let inOspf = false;
+  let inOspfv3 = false;
+  let currentIpv6Acl: Ipv6AclConfig | undefined;
   const applied = (line: string): void => { result.appliedLines.push(line.trim()); };
   const unparsed = (line: string): void => { result.unparsedLines.push(line.trim()); };
 
@@ -149,6 +193,8 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       currentLoopback = undefined;
       currentVlan = undefined;
       inOspf = false;
+      inOspfv3 = false;
+      currentIpv6Acl = undefined;
       continue;
     }
     const tokens = trimmed.split(/\s+/u);
@@ -160,6 +206,8 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       const spec = tokens.slice(1).join("");
       currentVlan = undefined;
       inOspf = false;
+      inOspfv3 = false;
+      currentIpv6Acl = undefined;
       const loopbackMatch = /^lo(?:opback)?(\d+)$/u.exec(normalizeInterfaceName(spec));
       if (loopbackMatch) {
         const id = Number(loopbackMatch[1]);
@@ -176,6 +224,39 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     }
 
     // --- global control-protocol commands ---------------------------------
+    if (trimmed.toLowerCase() === "ipv6 unicast-routing") {
+      result.ipv6UnicastRoutingEnabled = true; applied(line); continue;
+    }
+    if (trimmed.toLowerCase() === "no ipv6 unicast-routing") {
+      result.ipv6UnicastRoutingEnabled = false; applied(line); continue;
+    }
+    if (head === "ipv6" && tokens[1]?.toLowerCase() === "route") {
+      const prefix = ipv6Cidr(tokens[2]);
+      if (prefix && Ipv6Schema.safeParse(tokens[3]).success) {
+        result.ipv6StaticRoutes.push({ network: prefix.address, prefixLength: prefix.prefixLength, nextHop: tokens[3]! });
+        applied(line);
+      } else unparsed(line);
+      continue;
+    }
+    if (head === "ipv6" && tokens[1]?.toLowerCase() === "router"
+      && tokens[2]?.toLowerCase() === "ospf" && /^\d+$/u.test(tokens[3] ?? "")) {
+      result.ospfv3 = { processId: Number(tokens[3]), passiveInterfaces: [], interfaces: [] };
+      inOspfv3 = true;
+      inOspf = false;
+      currentIpv6Acl = undefined;
+      applied(line);
+      continue;
+    }
+    if (head === "ipv6" && tokens[1]?.toLowerCase() === "access-list" && tokens[2]) {
+      currentIpv6Acl = { id: tokens[2], type: "ipv6", rules: [] };
+      result.ipv6Acls.push(currentIpv6Acl);
+      inOspf = false;
+      inOspfv3 = false;
+      current = undefined;
+      currentLoopback = undefined;
+      applied(line);
+      continue;
+    }
     if (head === "spanning-tree" && tokens[1]?.toLowerCase() === "mode") {
       const mode = tokens[2]?.toLowerCase();
       if (mode === "pvst") { result.spanningTreeMode = "stp"; applied(line); continue; }
@@ -209,6 +290,8 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     if (head === "router" && tokens[1]?.toLowerCase() === "ospf" && /^\d+$/u.test(tokens[2] ?? "")) {
       result.ospf = { processId: Number(tokens[2]), networks: [], passiveInterfaces: [] };
       inOspf = true;
+      inOspfv3 = false;
+      currentIpv6Acl = undefined;
       current = undefined;
       currentLoopback = undefined;
       applied(line);
@@ -216,6 +299,52 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     }
     // Other routing protocols stay unparsed and are reported honestly.
     if (head === "router") { inOspf = false; current = undefined; unparsed(line); continue; }
+
+    if (inOspfv3 && result.ospfv3 && isIndented) {
+      if (head === "router-id" && isIpv4(tokens[1])) {
+        result.ospfv3.routerId = tokens[1]; applied(line); continue;
+      }
+      if (head === "passive-interface" && tokens[1]) {
+        const actual = resolve.get(normalizeInterfaceName(tokens[1]))
+          ?? (/^lo(?:opback)?\d+$/u.test(normalizeInterfaceName(tokens[1]))
+            ? `Loopback${/(\d+)$/u.exec(tokens[1])?.[1]}`
+            : undefined);
+        if (actual) {
+          result.ospfv3.passiveInterfaces.push(actual);
+          applied(line);
+        } else unparsed(line);
+        continue;
+      }
+    }
+
+    if (currentIpv6Acl && isIndented) {
+      const action = head === "permit" || head === "deny" ? head : undefined;
+      const protocolToken = tokens[1]?.toLowerCase();
+      const protocol = protocolToken === "ipv6" ? "ipv6"
+        : protocolToken === "tcp" ? 6
+          : protocolToken === "udp" ? 17
+            : protocolToken === "icmp" || protocolToken === "icmpv6" ? 58
+              : undefined;
+      const source = ipv6Matcher(tokens, 2);
+      const destination = source ? ipv6Matcher(tokens, 2 + source.consumed) : undefined;
+      if (action && protocol !== undefined && source && destination) {
+        const portIndex = 2 + source.consumed + destination.consumed;
+        const destinationPort = tokens[portIndex]?.toLowerCase() === "eq"
+          && /^\d+$/u.test(tokens[portIndex + 1] ?? "")
+          ? { kind: "eq" as const, port: Number(tokens[portIndex + 1]) }
+          : undefined;
+        currentIpv6Acl.rules.push({
+          sequence: (currentIpv6Acl.rules.at(-1)?.sequence ?? 0) + 10,
+          action,
+          protocol,
+          source: source.matcher,
+          destination: destination.matcher,
+          destinationPort,
+        });
+        applied(line);
+      } else unparsed(line);
+      continue;
+    }
 
     if (inOspf && result.ospf && isIndented) {
       if (head === "router-id" && isIpv4(tokens[1])) { result.ospf.routerId = tokens[1]; applied(line); continue; }
@@ -240,6 +369,14 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     }
 
     if (currentLoopback && isIndented) {
+      if (head === "ipv6" && tokens[1]?.toLowerCase() === "address") {
+        const address = ipv6Cidr(tokens[2]);
+        if (address) {
+          currentLoopback.ipv6 = [...(currentLoopback.ipv6 ?? []), address];
+          applied(line);
+          continue;
+        }
+      }
       if (head === "ip" && tokens[1]?.toLowerCase() === "address" && isIpv4(tokens[2])) {
         const prefix = maskToPrefix(tokens[3]);
         if (prefix !== undefined) { currentLoopback.ipv4 = { address: tokens[2], prefixLength: prefix }; applied(line); continue; }
@@ -263,6 +400,38 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     if (head === "name" && currentVlan !== undefined && tokens[1]) { vlanNames.set(currentVlan, tokens.slice(1).join(" ")); applied(line); continue; }
 
     if (current && isIndented) {
+      if (head === "ipv6" && tokens[1]?.toLowerCase() === "address") {
+        const address = ipv6Cidr(tokens[2]);
+        if (address) {
+          current.ipv6 = [...(current.ipv6 ?? []), address];
+          applied(line);
+          continue;
+        }
+      }
+      if (head === "ipv6" && tokens[1]?.toLowerCase() === "traffic-filter" && tokens[2]
+        && (tokens[3] === "in" || tokens[3] === "out")) {
+        current.ipv6TrafficFilters = [
+          ...(current.ipv6TrafficFilters ?? []),
+          { aclId: tokens[2], direction: tokens[3] },
+        ];
+        applied(line);
+        continue;
+      }
+      if (head === "ipv6" && tokens[1]?.toLowerCase() === "ospf") {
+        const ospfv3 = current.ospfv3 ?? {};
+        if (/^\d+$/u.test(tokens[2] ?? "") && tokens[3]?.toLowerCase() === "area" && tokens[4] === "0") {
+          ospfv3.enabled = true;
+          current.ospfv3 = ospfv3;
+          applied(line);
+          continue;
+        }
+        if (tokens[2]?.toLowerCase() === "cost" && /^\d+$/u.test(tokens[3] ?? "")) {
+          ospfv3.cost = Number(tokens[3]);
+          current.ospfv3 = ospfv3;
+          applied(line);
+          continue;
+        }
+      }
       if (head === "ip" && tokens[1]?.toLowerCase() === "address" && isIpv4(tokens[2])) {
         const prefix = maskToPrefix(tokens[3]);
         if (prefix !== undefined) { current.ipv4 = { address: tokens[2], prefixLength: prefix }; applied(line); continue; }

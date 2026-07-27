@@ -8,6 +8,7 @@ import {
   type DiagramLinkLabel,
   type DiagramLinkStyle,
   type HostIpConfiguration,
+  type HostIpv6Config,
   type HostStaticConfiguration,
   type LabDocument,
   type NodeSpec,
@@ -250,6 +251,30 @@ export function hostIpConfigurationFromDocument(document: LabDocument, nodeId: s
     };
   }
   return undefined;
+}
+
+export function hostIpv6ConfigurationFromDocument(document: LabDocument, nodeId: string): HostIpv6Config | undefined {
+  const configuration = document.configurations[nodeId];
+  if (configuration?.kind === "pc" || configuration?.kind === "server") {
+    return configuration.ipv6 ?? { mode: "static" };
+  }
+  return undefined;
+}
+
+export function withHostIpv6Configuration(
+  document: LabDocument,
+  nodeId: string,
+  ipv6: HostIpv6Config,
+): LabDocument {
+  const configuration = document.configurations[nodeId];
+  if (configuration?.kind !== "pc" && configuration?.kind !== "server") return document;
+  return {
+    ...document,
+    configurations: {
+      ...document.configurations,
+      [nodeId]: { ...configuration, ipv6 },
+    },
+  };
 }
 
 export function withHostStaticConfiguration(
