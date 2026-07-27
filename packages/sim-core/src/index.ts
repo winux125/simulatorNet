@@ -9,6 +9,12 @@ export * from "./engine/simulation-engine";
 export * from "./net/link";
 export * from "./net/interface";
 export * from "./net/ipv6-interface";
+export * from "./net/wireless-interface";
+
+// Deterministic wireless LAN medium
+export * from "./wireless/limits";
+export * from "./wireless/messages";
+export * from "./wireless/wireless-medium";
 
 // Devices
 export * from "./devices/device";

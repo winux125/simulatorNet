@@ -6,6 +6,7 @@ import { DEFAULT_LINK_DELAY_NS } from "./constants";
 import { EventQueue } from "./event-queue";
 import { SeededRandom } from "./seeded-random";
 import { VirtualClock } from "./virtual-clock";
+import { WirelessMedium } from "../wireless/wireless-medium";
 
 /** A structured record of something the engine did, for golden/determinism tests. */
 export interface TraceEntry {
@@ -37,6 +38,8 @@ export class SimulationEngine {
   readonly aclRuleBudget = new AclRuleBudget();
   /** Shared per-operation event budget for STP, EtherChannel, discovery, OSPF. */
   readonly controlProtocolBudget = new ControlProtocolBudget();
+  /** Lab-scoped radio medium; it never derives reachability from canvas coordinates. */
+  readonly wireless: WirelessMedium;
 
   private readonly clock = new VirtualClock();
   private readonly queue = new EventQueue();
@@ -46,6 +49,7 @@ export class SimulationEngine {
   constructor(options: EngineOptions) {
     this.rng = new SeededRandom(options.seed);
     this.defaultLinkDelayNs = options.linkDelayNs ?? DEFAULT_LINK_DELAY_NS;
+    this.wireless = new WirelessMedium(this);
   }
 
   now(): number {

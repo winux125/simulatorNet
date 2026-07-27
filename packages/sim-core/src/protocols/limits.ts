@@ -35,6 +35,11 @@ export const DEFAULT_CONTROL_PROTOCOL_LIMITS = Object.freeze({
   maximumDhcpv6PoolsPerDevice: 32,
   maximumDhcpv6LeasesPerDevice: 256,
 
+  // --- wireless LAN ---------------------------------------------------
+  maximumWirelessManagementEventsPerOperation: 20_000,
+  maximumWirelessFramesPerOperation: 50_000,
+  maximumWirelessAssociationAttemptsPerOperation: 16,
+
   // --- OSPFv2 ----------------------------------------------------------
   maximumOspfRoutersPerLab: 128,
   maximumOspfNeighborsPerDevice: 64,
@@ -55,6 +60,9 @@ export type ControlProtocolBudgetKey =
   | "negotiationEvents"
   | "discoveryAdvertisements"
   | "ipv6ControlEvents"
+  | "wirelessManagementEvents"
+  | "wirelessFrames"
+  | "wirelessAssociationAttempts"
   | "lsaFloods"
   | "spfRuns"
   | "adjacencyTransitions"
@@ -67,6 +75,9 @@ const BUDGET_LIMIT_KEYS: Readonly<Record<ControlProtocolBudgetKey, keyof Control
   negotiationEvents: "maximumNegotiationEventsPerOperation",
   discoveryAdvertisements: "maximumDiscoveryAdvertisementsPerOperation",
   ipv6ControlEvents: "maximumIpv6ControlEventsPerOperation",
+  wirelessManagementEvents: "maximumWirelessManagementEventsPerOperation",
+  wirelessFrames: "maximumWirelessFramesPerOperation",
+  wirelessAssociationAttempts: "maximumWirelessAssociationAttemptsPerOperation",
   lsaFloods: "maximumLsaFloodsPerOperation",
   spfRuns: "maximumSpfRunsPerOperation",
   adjacencyTransitions: "maximumAdjacencyTransitionsPerOperation",

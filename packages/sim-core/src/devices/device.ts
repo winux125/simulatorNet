@@ -4,11 +4,13 @@ import {
   type DeviceCapability,
   type DeviceProfile,
   type DeviceType,
+  type WirelessInterfaceConfiguration,
 } from "@sim/contracts";
 import type { SimulationEngine } from "../engine/simulation-engine";
 import { EthernetInterface } from "../net/interface";
 import type { EthernetFrame } from "../packets/ethernet";
 import type { Mac } from "../util/mac";
+import { WirelessInterface } from "../net/wireless-interface";
 
 /**
  * Base class for every simulated device. Holds its named interfaces and a
@@ -45,6 +47,16 @@ export abstract class Device {
     }
     const iface = new EthernetInterface(this, name, mac);
     this.interfaces.set(name, iface);
+    return iface;
+  }
+
+  addWirelessInterface(configuration: WirelessInterfaceConfiguration): WirelessInterface {
+    if (this.interfaces.has(configuration.id)) {
+      throw new Error(`Interface ${configuration.id} already exists on ${this.id}`);
+    }
+    const iface = new WirelessInterface(this, configuration);
+    iface.attachMedium(this.engine.wireless);
+    this.interfaces.set(configuration.id, iface);
     return iface;
   }
 
