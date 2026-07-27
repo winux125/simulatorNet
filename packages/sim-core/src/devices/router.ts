@@ -31,6 +31,7 @@ import {
   type RouterAdvertisementPrefix,
 } from "../packets/icmpv6";
 import { Ipv6NextHeader, type Ipv6Packet } from "../packets/ipv6";
+import type { Ospfv3Packet } from "../packets/ospfv3";
 import {
   OSPF_ALL_DESIGNATED_ROUTERS_MAC,
   OSPF_ALL_ROUTERS_MAC,
@@ -49,6 +50,10 @@ import {
   OspfProcess,
   type OspfInterfaceDescriptor,
 } from "../protocols/ospf";
+import {
+  Ospfv3Process,
+  type Ospfv3InterfaceDescriptor,
+} from "../protocols/ospfv3";
 import type { Ipv4Packet } from "../packets/ipv4";
 import type { UdpDatagram } from "../packets/udp";
 import {
@@ -57,6 +62,7 @@ import {
   type AclDirection,
   type AclRuleBudget,
   type Ipv4Acl,
+  type Ipv6Acl,
   PacketPolicyEngine,
   PacketPolicyError,
 } from "../policy/packet-policy-engine";
@@ -252,6 +258,8 @@ export class Router extends Device {
   readonly discovery = new NeighborDiscovery(this, supportsCdp(this.deviceType));
   /** Deterministic OSPFv2 area-0 process; inert until `router ospf` runs. */
   readonly ospf = new OspfProcess(this);
+  /** OSPFv3 is independent from the OSPFv2 process and advertises IPv6 prefixes only. */
+  readonly ospfv3 = new Ospfv3Process(this);
   private readonly l3 = new Map<string, L3Interface>();
   private readonly loopbacks = new Map<number, LoopbackInterface>();
   private readonly natRoles = new Map<string, NatInterfaceRole>();
@@ -320,6 +328,36 @@ export class Router extends Device {
 
   resetAclCounters(): void {
     this.packetPolicy.resetCounters();
+  }
+
+  defineIpv6Acl(acl: Ipv6Acl): void {
+    this.packetPolicy.defineIpv6Acl(acl);
+  }
+
+  removeIpv6Acl(aclId: string): void {
+    this.packetPolicy.removeIpv6Acl(aclId);
+  }
+
+  applyIpv6Acl(interfaceName: string, direction: AclDirection, aclId: string): void {
+    if (!this.l3.has(interfaceName)) {
+      throw new PacketPolicyError(
+        "ACL_INVALID_CONFIGURATION",
+        `Router ${this.id} has no L3 interface ${interfaceName}.`,
+      );
+    }
+    this.packetPolicy.bindIpv6({ interfaceName, direction, aclId });
+  }
+
+  removeIpv6AclBinding(interfaceName: string, direction: AclDirection): void {
+    this.packetPolicy.unbindIpv6(interfaceName, direction);
+  }
+
+  ipv6AclConfigurations(): Ipv6Acl[] {
+    return this.packetPolicy.ipv6AclConfigurations();
+  }
+
+  ipv6AclBindings(): AclBinding[] {
+    return this.packetPolicy.ipv6BindingConfigurations();
   }
 
   setNatRole(interfaceName: string, role: NatInterfaceRole | undefined): void {
@@ -726,6 +764,19 @@ export class Router extends Device {
         metric: 0,
       });
     }
+    if (this.ospfv3.enabled) {
+      for (const route of this.ospfv3.routeTable()) {
+        rows.push({
+          kind: "ospfv3",
+          network: route.network,
+          prefixLength: route.prefixLength,
+          viaIp: route.nextHop,
+          egressName: route.interfaceId,
+          administrativeDistance: route.administrativeDistance,
+          metric: route.cost,
+        });
+      }
+    }
     return rows.sort((left, right) =>
       right.prefixLength - left.prefixLength
       || left.network.localeCompare(right.network)
@@ -883,11 +934,62 @@ export class Router extends Device {
   override onInterfaceStateChanged(iface: EthernetInterface): void {
     this.discovery.onPortStateChanged(iface.name);
     this.ospf.onInterfaceStateChanged(iface.name);
+    this.ospfv3.onInterfaceStateChanged(iface.name);
     for (const [name, l3] of this.l3) {
       if (l3.physical === iface && !iface.operationalUp) {
         this.ipv6DiscoveryByInterface.get(name)?.reset();
       }
+      if (l3.physical === iface && name !== iface.name) {
+        this.ospfv3.onInterfaceStateChanged(name);
+      }
     }
+  }
+
+  // --- OSPFv3 host --------------------------------------------------------
+
+  ospfv3Interfaces(): readonly Ospfv3InterfaceDescriptor[] {
+    return [...this.l3.values()]
+      .map((iface) => ({
+        id: iface.name,
+        linkLocal: iface.ipv6.summaries().find((address) =>
+          address.source === "link-local" && address.state === "preferred")?.address,
+        prefixes: iface.ipv6.summaries()
+          .filter((address) =>
+            address.source !== "link-local"
+            && address.state !== "tentative"
+            && address.state !== "duplicate")
+          .map((address) => ({
+            network: ipv6Network(address.address, address.prefixLength),
+            prefixLength: address.prefixLength,
+          })),
+        operationalUp: iface.physical.operationalUp,
+        loopback: iface.physical instanceof LoopbackInterface,
+      }))
+      .sort((left, right) => left.id.localeCompare(right.id));
+  }
+
+  ospfv3Send(interfaceId: string, destination: Ipv6, packet: Ospfv3Packet): void {
+    const iface = this.l3.get(interfaceId);
+    const source = iface?.ipv6.summaries().find((address) =>
+      address.source === "link-local" && address.state === "preferred")?.address;
+    if (!iface || !source || !iface.physical.operationalUp) return;
+    this.ipv6Discovery(iface).send({
+      kind: "ipv6",
+      src: source,
+      dst: destination,
+      nextHeader: Ipv6NextHeader.OSPF,
+      hopLimit: 1,
+      payload: packet,
+    }, destination);
+  }
+
+  ospfv3RoutesChanged(): void {
+    this.engine?.trace({
+      time: this.engine.now(),
+      type: "ospfv3-routing-table-changed",
+      device: this.id,
+      detail: { routes: this.ospfv3.routeTable().length },
+    });
   }
 
   // --- OSPF host ----------------------------------------------------------
@@ -1084,6 +1186,7 @@ export class Router extends Device {
       addresses: iface.ipv6,
       isRouter: true,
       transmit: (destinationMac, packet) => {
+        if (!this.permitByIpv6Acl(packet, iface, "out")) return;
         this.transmit(iface, destinationMac, EtherType.IPv6, packet);
       },
       onDadConflict: (_address, message) => {
@@ -1096,6 +1199,11 @@ export class Router extends Device {
   }
 
   private handleIpv6(packet: Ipv6Packet, frame: EthernetFrame, ingress: L3Interface): void {
+    if (!this.permitByIpv6Acl(packet, ingress, "in")) return;
+    if (packet.nextHeader === Ipv6NextHeader.OSPF && packet.payload.kind === "ospfv3") {
+      this.ospfv3.onPacket(packet.payload, ingress.name, packet.src);
+      return;
+    }
     const discovery = this.ipv6Discovery(ingress);
     if (discovery.receive(packet, frame.src)) return;
     if (packet.src !== "::") discovery.learnNeighbor(packet.src, frame.src);
@@ -1586,6 +1694,20 @@ export class Router extends Device {
         nextHopIp: route.nextHop,
       });
     }
+    if (this.ospfv3.enabled) {
+      for (const route of this.ospfv3.routeTable()) {
+        if (!ipv6InPrefix(destination, route.network, route.prefixLength)) continue;
+        const egress = this.l3.get(route.interfaceId);
+        if (!egress?.physical.operationalUp) continue;
+        consider({
+          prefixLength: route.prefixLength,
+          distance: route.administrativeDistance,
+          metric: route.cost,
+          egress,
+          nextHopIp: route.nextHop,
+        });
+      }
+    }
     return best ? { egress: best.egress, nextHopIp: best.nextHopIp } : undefined;
   }
 
@@ -1658,6 +1780,39 @@ export class Router extends Device {
       device: this.id,
       detail,
     });
+    return decision.action === "permit";
+  }
+
+  private permitByIpv6Acl(packet: Ipv6Packet, iface: L3Interface, direction: AclDirection): boolean {
+    const decision = this.packetPolicy.evaluateIpv6(iface.name, direction, packet);
+    if (!decision) return true;
+    const detail = {
+      aclId: decision.aclId,
+      interface: decision.interfaceName,
+      direction: decision.direction,
+      sequence: decision.sequence ?? null,
+      action: decision.action,
+      implicit: decision.implicit,
+      source: packet.src,
+      destination: packet.dst,
+      nextHeader: packet.nextHeader,
+    };
+    this.engine.trace({
+      time: this.engine.now(),
+      type: decision.action === "permit" ? "ipv6-acl-permitted" : "ipv6-acl-denied",
+      device: this.id,
+      detail,
+    });
+    if (
+      decision.action === "deny"
+      && packet.nextHeader === Ipv6NextHeader.ICMPv6
+      && packet.payload.kind === "icmpv6"
+      && packet.payload.type >= Icmpv6Type.RouterSolicitation
+      && packet.payload.type <= Icmpv6Type.NeighborAdvertisement
+    ) {
+      const problem = `IPv6 ACL ${decision.aclId} blocked required ICMPv6 control traffic on ${iface.name}; NDP or SLAAC may fail.`;
+      if (!this.ipv6Problems.includes(problem)) this.ipv6Problems.push(problem);
+    }
     return decision.action === "permit";
   }
 

@@ -22,6 +22,7 @@ import {
 import { intToIp, type Ipv4, ipToInt, maskToInt } from "../util/ipv4";
 import { ControlProtocolConfigurationError, enforceStructuralLimit } from "./limits";
 import { ProtocolActivity } from "./protocol-activity";
+import { compareOspfRouterIds, sortOspfElectionCandidates } from "./ospf-common";
 
 /**
  * Deterministic OSPFv2 for IPv4, area 0 only.
@@ -793,9 +794,7 @@ export class OspfProcess {
     address: Ipv4;
     priority: number;
   }> {
-    return this.candidatesOn(iface)
-      .filter((candidate) => candidate.priority > 0)
-      .sort((a, b) => b.priority - a.priority || ipToInt(b.routerId) - ipToInt(a.routerId));
+    return sortOspfElectionCandidates(this.candidatesOn(iface));
   }
 
   private candidatesOn(iface: OspfInterfaceDescriptor): Array<{
@@ -845,7 +844,7 @@ export class OspfProcess {
   private startExchange(neighbor: NeighborRuntime): void {
     this.setNeighborState(neighbor, "exstart", "adjacency required");
     // Deterministic master/slave: the higher router id drives the exchange.
-    neighbor.master = ipToInt(this.activeRouterId!) > ipToInt(neighbor.routerId);
+    neighbor.master = compareOspfRouterIds(this.activeRouterId!, neighbor.routerId) > 0;
     neighbor.ddSequence++;
     this.sendDatabaseDescription(neighbor, true);
   }
@@ -874,7 +873,7 @@ export class OspfProcess {
     if (!neighbor) return;
     if (neighbor.state === "two-way" || neighbor.state === "init") {
       this.setNeighborState(neighbor, "exstart", "database description received");
-      neighbor.master = ipToInt(this.activeRouterId!) > ipToInt(packet.routerId);
+      neighbor.master = compareOspfRouterIds(this.activeRouterId!, packet.routerId) > 0;
     }
     if (neighbor.state === "exstart") {
       this.setNeighborState(neighbor, "exchange", "database description exchange");
@@ -1442,7 +1441,7 @@ function lsaKeyOf(lsa: OspfLsa): string {
 }
 
 function byNeighborOrder(a: { interfaceId: string; routerId: Ipv4 }, b: { interfaceId: string; routerId: Ipv4 }): number {
-  return a.interfaceId.localeCompare(b.interfaceId) || ipToInt(a.routerId) - ipToInt(b.routerId);
+  return a.interfaceId.localeCompare(b.interfaceId) || compareOspfRouterIds(a.routerId, b.routerId);
 }
 
 /** `network <address> <wildcard>`: a zero wildcard bit must match exactly. */

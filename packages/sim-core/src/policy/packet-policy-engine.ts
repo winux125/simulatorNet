@@ -1,7 +1,9 @@
 import { IpProtocol } from "@sim/contracts";
 import type { Ipv4Packet } from "../packets/ipv4";
+import { Ipv6NextHeader, type Ipv6Packet } from "../packets/ipv6";
 import type { Ipv4 } from "../util/ipv4";
 import { ipToInt } from "../util/ipv4";
+import { ipv6InPrefix, normalizeIpv6, type Ipv6 } from "../util/ipv6";
 
 export const ACL_RESOURCE_LIMITS = {
   maximumAclsPerDevice: 64,
@@ -18,6 +20,11 @@ export type AclDirection = "in" | "out";
  * process before the policy pipeline and is never a policy subject.
  */
 export type PolicyProtocol = "ip" | typeof IpProtocol.ICMP | typeof IpProtocol.TCP | typeof IpProtocol.UDP;
+export type Ipv6PolicyProtocol =
+  | "ipv6"
+  | typeof Ipv6NextHeader.ICMPv6
+  | typeof Ipv6NextHeader.TCP
+  | typeof Ipv6NextHeader.UDP;
 
 /** Narrow an IPv4 protocol number to the policy set; anything else is "ip". */
 export function policyProtocolOf(protocol: IpProtocol): PolicyProtocol {
@@ -69,6 +76,27 @@ export type Ipv4Acl =
       readonly type: "extended";
       readonly rules: readonly ExtendedAclRule[];
     };
+
+export type Ipv6AddressMatcher =
+  | { readonly kind: "any" }
+  | { readonly kind: "host"; readonly address: Ipv6 }
+  | { readonly kind: "prefix"; readonly address: Ipv6; readonly prefixLength: number };
+
+export interface Ipv6AclRule {
+  readonly sequence: number;
+  readonly action: AclAction;
+  readonly protocol: Ipv6PolicyProtocol;
+  readonly source: Ipv6AddressMatcher;
+  readonly destination: Ipv6AddressMatcher;
+  readonly sourcePort?: PortMatcher;
+  readonly destinationPort?: PortMatcher;
+}
+
+export interface Ipv6Acl {
+  readonly id: string;
+  readonly type: "ipv6";
+  readonly rules: readonly Ipv6AclRule[];
+}
 
 export interface AclBinding {
   readonly interfaceName: string;
@@ -153,6 +181,8 @@ export class AclRuleBudget {
 export class PacketPolicyEngine {
   private readonly acls = new Map<string, Ipv4Acl>();
   private readonly bindings = new Map<string, AclBinding>();
+  private readonly ipv6Acls = new Map<string, Ipv6Acl>();
+  private readonly ipv6Bindings = new Map<string, AclBinding>();
   private readonly counters = new Map<string, number>();
   private budget: AclRuleBudget;
 
@@ -171,7 +201,7 @@ export class PacketPolicyEngine {
   defineAcl(acl: Ipv4Acl): void {
     validateAcl(acl);
     const existing = this.acls.get(acl.id);
-    if (!existing && this.acls.size >= ACL_RESOURCE_LIMITS.maximumAclsPerDevice) {
+    if (!existing && this.acls.size + this.ipv6Acls.size >= ACL_RESOURCE_LIMITS.maximumAclsPerDevice) {
       throw new PacketPolicyError(
         "ACL_LIMIT_EXCEEDED",
         `Device ACL limit exceeded (${ACL_RESOURCE_LIMITS.maximumAclsPerDevice}).`,
@@ -182,6 +212,23 @@ export class PacketPolicyEngine {
     const nextRules = acl.rules.length;
     this.budget.reserve(nextRules - priorRules);
     this.acls.set(acl.id, cloneAndOrderAcl(acl));
+    this.budget.release(priorRules - nextRules);
+    this.clearAclCounters(acl.id);
+  }
+
+  defineIpv6Acl(acl: Ipv6Acl): void {
+    validateIpv6Acl(acl);
+    const existing = this.ipv6Acls.get(acl.id);
+    if (!existing && this.acls.size + this.ipv6Acls.size >= ACL_RESOURCE_LIMITS.maximumAclsPerDevice) {
+      throw new PacketPolicyError(
+        "ACL_LIMIT_EXCEEDED",
+        `Device ACL limit exceeded (${ACL_RESOURCE_LIMITS.maximumAclsPerDevice}).`,
+      );
+    }
+    const priorRules = existing?.rules.length ?? 0;
+    const nextRules = acl.rules.length;
+    this.budget.reserve(nextRules - priorRules);
+    this.ipv6Acls.set(acl.id, cloneAndOrderIpv6Acl(acl));
     this.budget.release(priorRules - nextRules);
     this.clearAclCounters(acl.id);
   }
@@ -197,6 +244,17 @@ export class PacketPolicyEngine {
     }
   }
 
+  removeIpv6Acl(aclId: string): void {
+    const acl = this.ipv6Acls.get(aclId);
+    if (!acl) return;
+    this.ipv6Acls.delete(aclId);
+    this.budget.release(acl.rules.length);
+    this.clearAclCounters(aclId);
+    for (const [key, binding] of this.ipv6Bindings) {
+      if (binding.aclId === aclId) this.ipv6Bindings.delete(key);
+    }
+  }
+
   bind(binding: AclBinding): void {
     if (!this.acls.has(binding.aclId)) {
       throw new PacketPolicyError("ACL_NOT_FOUND", `ACL '${binding.aclId}' is not defined.`);
@@ -207,8 +265,22 @@ export class PacketPolicyEngine {
     this.bindings.set(bindingKey(binding.interfaceName, binding.direction), { ...binding });
   }
 
+  bindIpv6(binding: AclBinding): void {
+    if (!this.ipv6Acls.has(binding.aclId)) {
+      throw new PacketPolicyError("ACL_NOT_FOUND", `IPv6 ACL '${binding.aclId}' is not defined.`);
+    }
+    if (binding.interfaceName.trim().length === 0) {
+      throw new PacketPolicyError("ACL_INVALID_CONFIGURATION", "ACL interface name is required.");
+    }
+    this.ipv6Bindings.set(bindingKey(binding.interfaceName, binding.direction), { ...binding });
+  }
+
   unbind(interfaceName: string, direction: AclDirection): void {
     this.bindings.delete(bindingKey(interfaceName, direction));
+  }
+
+  unbindIpv6(interfaceName: string, direction: AclDirection): void {
+    this.ipv6Bindings.delete(bindingKey(interfaceName, direction));
   }
 
   /**
@@ -228,6 +300,40 @@ export class PacketPolicyEngine {
     }
 
     return this.evaluateDefinition(acl, interfaceName, direction, packet);
+  }
+
+  evaluateIpv6(
+    interfaceName: string,
+    direction: AclDirection,
+    packet: Ipv6Packet,
+  ): AclDecision | undefined {
+    const binding = this.ipv6Bindings.get(bindingKey(interfaceName, direction));
+    if (!binding) return undefined;
+    const acl = this.ipv6Acls.get(binding.aclId);
+    if (!acl) {
+      throw new PacketPolicyError("ACL_NOT_FOUND", `IPv6 ACL '${binding.aclId}' is not defined.`);
+    }
+    const match = acl.rules.find((rule) => matchesIpv6Rule(rule, packet));
+    if (match) {
+      this.incrementCounter(acl.id, match.sequence, match.action);
+      return {
+        aclId: acl.id,
+        interfaceName,
+        direction,
+        action: match.action,
+        sequence: match.sequence,
+        implicit: false,
+      };
+    }
+    this.incrementCounter(acl.id, undefined, "deny");
+    return {
+      aclId: acl.id,
+      interfaceName,
+      direction,
+      action: "deny",
+      sequence: undefined,
+      implicit: true,
+    };
   }
 
   /** Evaluate a named ACL as a selector (for example, a NAT source rule). */
@@ -273,12 +379,27 @@ export class PacketPolicyEngine {
       .map(cloneAcl);
   }
 
+  ipv6AclConfigurations(): Ipv6Acl[] {
+    return [...this.ipv6Acls.values()]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map(cloneIpv6Acl);
+  }
+
   bindingConfigurations(): AclBinding[] {
     return [...this.bindings.values()]
       .sort((a, b) =>
         a.interfaceName.localeCompare(b.interfaceName)
         || a.direction.localeCompare(b.direction)
         || a.aclId.localeCompare(b.aclId))
+      .map((binding) => ({ ...binding }));
+  }
+
+  ipv6BindingConfigurations(): AclBinding[] {
+    return [...this.ipv6Bindings.values()]
+      .sort((left, right) =>
+        left.interfaceName.localeCompare(right.interfaceName)
+        || left.direction.localeCompare(right.direction)
+        || left.aclId.localeCompare(right.aclId))
       .map((binding) => ({ ...binding }));
   }
 
@@ -305,6 +426,7 @@ export class PacketPolicyEngine {
   private ruleCount(): number {
     let total = 0;
     for (const acl of this.acls.values()) total += acl.rules.length;
+    for (const acl of this.ipv6Acls.values()) total += acl.rules.length;
     return total;
   }
 
@@ -366,6 +488,61 @@ function validateAcl(acl: Ipv4Acl): void {
   }
 }
 
+function validateIpv6Acl(acl: Ipv6Acl): void {
+  if (acl.id.trim().length === 0) {
+    throw new PacketPolicyError("ACL_INVALID_CONFIGURATION", "IPv6 ACL ID is required.");
+  }
+  if (acl.rules.length > ACL_RESOURCE_LIMITS.maximumRulesPerAcl) {
+    throw new PacketPolicyError(
+      "ACL_RULE_LIMIT_EXCEEDED",
+      `IPv6 ACL '${acl.id}' exceeds the ${ACL_RESOURCE_LIMITS.maximumRulesPerAcl}-rule limit.`,
+    );
+  }
+  const sequences = new Set<number>();
+  for (const rule of acl.rules) {
+    if (!Number.isSafeInteger(rule.sequence) || rule.sequence < 0 || sequences.has(rule.sequence)) {
+      throw new PacketPolicyError(
+        "ACL_INVALID_CONFIGURATION",
+        `IPv6 ACL '${acl.id}' has an invalid or duplicate sequence ${rule.sequence}.`,
+      );
+    }
+    sequences.add(rule.sequence);
+    validateIpv6AddressMatcher(rule.source);
+    validateIpv6AddressMatcher(rule.destination);
+    if (rule.protocol !== "ipv6"
+      && rule.protocol !== Ipv6NextHeader.ICMPv6
+      && rule.protocol !== Ipv6NextHeader.TCP
+      && rule.protocol !== Ipv6NextHeader.UDP) {
+      throw new PacketPolicyError("ACL_INVALID_CONFIGURATION", `Unsupported IPv6 next-header '${rule.protocol}'.`);
+    }
+    if (rule.sourcePort) validatePortMatcher(rule.sourcePort);
+    if (rule.destinationPort) validatePortMatcher(rule.destinationPort);
+    if (rule.protocol !== Ipv6NextHeader.TCP && rule.protocol !== Ipv6NextHeader.UDP
+      && (rule.sourcePort || rule.destinationPort)) {
+      throw new PacketPolicyError(
+        "ACL_INVALID_CONFIGURATION",
+        "Port matchers are valid only for TCP or UDP IPv6 ACL rules.",
+      );
+    }
+  }
+}
+
+function validateIpv6AddressMatcher(matcher: Ipv6AddressMatcher): void {
+  if (matcher.kind === "any") return;
+  try {
+    normalizeIpv6(matcher.address);
+    if (matcher.kind === "prefix"
+      && (!Number.isInteger(matcher.prefixLength) || matcher.prefixLength < 0 || matcher.prefixLength > 128)) {
+      throw new Error(`Invalid IPv6 prefix length: ${matcher.prefixLength}`);
+    }
+  } catch (error) {
+    throw new PacketPolicyError(
+      "ACL_INVALID_CONFIGURATION",
+      error instanceof Error ? error.message : "Invalid IPv6 ACL address.",
+    );
+  }
+}
+
 function validateAddressMatcher(matcher: Ipv4AddressMatcher): void {
   if (matcher.kind === "any") return;
   try {
@@ -422,6 +599,21 @@ function matchesAddress(matcher: Ipv4AddressMatcher, address: Ipv4): boolean {
   return ((ipToInt(address) & mustMatch) >>> 0) === ((ipToInt(matcher.address) & mustMatch) >>> 0);
 }
 
+function matchesIpv6Rule(rule: Ipv6AclRule, packet: Ipv6Packet): boolean {
+  if (rule.protocol !== "ipv6" && rule.protocol !== packet.nextHeader) return false;
+  if (!matchesIpv6Address(rule.source, packet.src) || !matchesIpv6Address(rule.destination, packet.dst)) return false;
+  if (!rule.sourcePort && !rule.destinationPort) return true;
+  if (packet.payload.kind !== "tcp" && packet.payload.kind !== "udp") return false;
+  return matchesPort(rule.sourcePort, packet.payload.srcPort)
+    && matchesPort(rule.destinationPort, packet.payload.dstPort);
+}
+
+function matchesIpv6Address(matcher: Ipv6AddressMatcher, address: Ipv6): boolean {
+  if (matcher.kind === "any") return true;
+  if (matcher.kind === "host") return normalizeIpv6(address) === normalizeIpv6(matcher.address);
+  return ipv6InPrefix(address, matcher.address, matcher.prefixLength);
+}
+
 function matchesPort(matcher: PortMatcher | undefined, port: number): boolean {
   if (!matcher || matcher.kind === "any") return true;
   if (matcher.kind === "eq") return port === matcher.port;
@@ -454,6 +646,28 @@ function cloneStandardRule(rule: StandardAclRule): StandardAclRule {
 }
 
 function cloneExtendedRule(rule: ExtendedAclRule): ExtendedAclRule {
+  return {
+    ...rule,
+    source: { ...rule.source },
+    destination: { ...rule.destination },
+    sourcePort: rule.sourcePort ? { ...rule.sourcePort } : undefined,
+    destinationPort: rule.destinationPort ? { ...rule.destinationPort } : undefined,
+  };
+}
+
+function cloneAndOrderIpv6Acl(acl: Ipv6Acl): Ipv6Acl {
+  return {
+    id: acl.id,
+    type: "ipv6",
+    rules: [...acl.rules].sort((left, right) => left.sequence - right.sequence).map(cloneIpv6Rule),
+  };
+}
+
+function cloneIpv6Acl(acl: Ipv6Acl): Ipv6Acl {
+  return { id: acl.id, type: "ipv6", rules: acl.rules.map(cloneIpv6Rule) };
+}
+
+function cloneIpv6Rule(rule: Ipv6AclRule): Ipv6AclRule {
   return {
     ...rule,
     source: { ...rule.source },

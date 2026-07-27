@@ -11,6 +11,7 @@ import type {
   AclCounter,
   AclDirection,
   Ipv4Acl,
+  Ipv6Acl,
 } from "../policy/packet-policy-engine";
 import {
   Router,
@@ -196,6 +197,11 @@ export class Layer3Switch extends L2Switch {
     return this.routingPlane.ospf;
   }
 
+  get ospfv3(): Router["ospfv3"] {
+    this.syncRoutingPlane();
+    return this.routingPlane.ospfv3;
+  }
+
   getOrCreateLoopback(index: number): ReturnType<Router["getOrCreateLoopback"]> {
     this.syncRoutingPlane();
     return this.routingPlane.getOrCreateLoopback(index);
@@ -255,6 +261,32 @@ export class Layer3Switch extends L2Switch {
 
   resetAclCounters(): void {
     this.routingPlane.resetAclCounters();
+  }
+
+  defineIpv6Acl(acl: Ipv6Acl): void {
+    this.syncRoutingPlane();
+    this.routingPlane.defineIpv6Acl(acl);
+  }
+
+  removeIpv6Acl(aclId: string): void {
+    this.routingPlane.removeIpv6Acl(aclId);
+  }
+
+  applyIpv6Acl(interfaceName: string, direction: AclDirection, aclId: string): void {
+    this.syncRoutingPlane();
+    this.routingPlane.applyIpv6Acl(interfaceName, direction, aclId);
+  }
+
+  removeIpv6AclBinding(interfaceName: string, direction: AclDirection): void {
+    this.routingPlane.removeIpv6AclBinding(interfaceName, direction);
+  }
+
+  ipv6AclConfigurations(): Ipv6Acl[] {
+    return this.routingPlane.ipv6AclConfigurations();
+  }
+
+  ipv6AclBindings(): AclBinding[] {
+    return this.routingPlane.ipv6AclBindings();
   }
 
   staticRouteConfigurations(): ReturnType<Router["staticRouteConfigurations"]> {
@@ -335,6 +367,13 @@ export class Layer3Switch extends L2Switch {
       return;
     }
     super.onReceive(frame, ingress);
+  }
+
+  override onInterfaceStateChanged(iface: EthernetInterface): void {
+    super.onInterfaceStateChanged(iface);
+    this.syncRoutingPlane();
+    this.routingPlane.onInterfaceStateChanged(iface);
+    for (const svi of this.svis.values()) this.routingPlane.onInterfaceStateChanged(svi);
   }
 
   /** Management address for discovery: the lowest SVI or routed-port address. */

@@ -32,6 +32,7 @@ export * from "./packets/bpdu";
 export * from "./packets/etherchannel";
 export * from "./packets/discovery";
 export * from "./packets/ospf";
+export * from "./packets/ospfv3";
 export * from "./packets/ipv4";
 export * from "./packets/icmp";
 export * from "./packets/icmpv6";
@@ -55,6 +56,8 @@ export * from "./protocols/neighbor-discovery";
 export * from "./protocols/ipv6-neighbor-discovery";
 export * from "./protocols/dhcpv6";
 export * from "./protocols/ospf";
+export * from "./protocols/ospf-common";
+export * from "./protocols/ospfv3";
 
 // Host transport
 export * from "./transport/errors";
