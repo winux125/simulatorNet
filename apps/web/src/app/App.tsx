@@ -50,6 +50,7 @@ const TopologyCanvas = lazy(() => import("../features/topology/TopologyCanvas"))
 const BottomDock = lazy(() => import("../features/dock/BottomDock"));
 const BottomPanelStrip = lazy(() => import("../features/dock/BottomDock").then((module) => ({ default: module.BottomPanelStrip })));
 const STEP_EXPLANATION_KEY = "simulatornet.stepModeExplained";
+const WIRELESS_ASSOCIATIONS_KEY = "simulatornet.wirelessAssociations";
 
 interface AppProps { client: SimulatorClient }
 
@@ -94,7 +95,12 @@ function draftDeviceNode(document: LabDocument, deviceId: string): LabUiNode | u
       const configured = configuredInterfaces.find((candidate) => candidate.id === iface.id);
       let ipAddress: string | undefined;
       let mode: "access" | "trunk" | "routed" | undefined;
-      if (configuration?.kind === "pc" && index === 0) ipAddress = configuration.ipv4?.address;
+      if (
+        (configuration?.kind === "pc"
+          || configuration?.kind === "laptop"
+          || configuration?.kind === "smartphone")
+        && index === 0
+      ) ipAddress = configuration.ipv4?.address;
       if (configuration?.kind === "traffic-generator" && index === 0) ipAddress = configuration.ipv4?.address;
       if (configuration?.kind === "server") ipAddress = configuration.interfaces.find((candidate) => candidate.id === iface.id)?.ipv4?.address;
       if (configuration?.kind === "router" || configuration?.kind === "firewall" || configuration?.kind === "cloud") {
@@ -123,6 +129,12 @@ export function App({ client }: AppProps) {
   const theme = useTheme();
   const deviceIconProfile = useDeviceIconProfile();
   const [terminalAppearance, setTerminalAppearanceState] = useState<TerminalAppearance>(getTerminalAppearance());
+  const [wirelessAssociationsShown, setWirelessAssociationsShown] = useState(() =>
+    window.localStorage.getItem(WIRELESS_ASSOCIATIONS_KEY) !== "hide");
+  const chooseWirelessAssociations = (shown: boolean) => {
+    window.localStorage.setItem(WIRELESS_ASSOCIATIONS_KEY, shown ? "show" : "hide");
+    setWirelessAssociationsShown(shown);
+  };
   const chooseTerminalAppearance = (id: TerminalAppearance) => { applyTerminalAppearance(id); setTerminalAppearanceState(id); };
   // Local-only terminal preference: never part of LabDocument or a submission.
   const [confirmMultilinePaste, setConfirmMultilinePasteState] = useState(() => readConfirmMultilinePaste());
@@ -544,6 +556,10 @@ export function App({ client }: AppProps) {
         { id: "ports-selected", label: "Selected", checked: workspace.portLabelMode === "selected", onSelect: () => workspace.setPortLabelMode("selected") },
         { id: "ports-hidden", label: "Hidden", checked: workspace.portLabelMode === "hidden", onSelect: () => workspace.setPortLabelMode("hidden") },
       ] },
+      { id: "view-wireless-associations", label: "Wireless Associations", submenu: [
+        { id: "wireless-associations-show", label: "Show", checked: wirelessAssociationsShown, onSelect: () => chooseWirelessAssociations(true) },
+        { id: "wireless-associations-hide", label: "Hide", checked: !wirelessAssociationsShown, onSelect: () => chooseWirelessAssociations(false) },
+      ] },
       { id: "view-bottom-panel", label: "Bottom Panel", icon: <PanelBottom size={14} />, submenu: [
         { id: "bottom-panel-show", label: "Show", shortcut: "Ctrl J", checked: bottomPanelExpanded, disabled: !labOpen, onSelect: () => setBottomPanel("expanded") },
         { id: "bottom-panel-minimize", label: "Minimize", checked: workspace.bottomPanelState === "minimized", disabled: !labOpen, onSelect: () => setBottomPanel("minimized") },
@@ -899,6 +915,7 @@ export function App({ client }: AppProps) {
       selectedLinkId: workspace.selectedLinkId,
       terminalTabs: workspace.terminalTabs,
       portLabelMode: workspace.portLabelMode,
+      wirelessAssociationsShown,
       fitRequest: workspace.fitRequest,
       zoomResetRequest: workspace.zoomResetRequest,
       zoomInRequest: workspace.zoomInRequest,

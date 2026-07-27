@@ -17,8 +17,10 @@ network CLI and Packet Tracer-style host tools.
 | Firewall | SimulatorNet firewall | `FW1>`, `FW1#`, `FW1(config)#`, `FW1(config-if)#` | Routed interfaces, ACL, NAT/PAT and deterministic diagnostics; not an ASA profile |
 | L2 Switch | IOS-like switch | `SW1>`, `SW1#`, `SW1(config)#`, `SW1(config-if)#` | VLANs, access/trunk ports, MAC learning |
 | Bridge | Managed bridge subset | `BR1>`, `BR1#`, `BR1(config-if)#` | Interface state/description and MAC table |
-| PC | Windows-like host | `C:\>` | `ipconfig`, `ping`, `tracert`, `arp -a`, `nslookup`, `netstat` |
+| PC / Laptop | Windows-like host | `C:\>` | `ipconfig`, `ping`, `tracert`, `arp -a`, `nslookup`, `netstat`; Laptop wireless setup remains in its Wireless panel |
 | Server | Host/service profile | `SRV1>` | Host diagnostics plus explicit SimulatorNet service inspection |
+| Smartphone | No required CLI | — | Focused Ping, DNS lookup and Web client UI |
+| Access Point / Wireless Router | No IOS CLI | — | Vendor-neutral Wireless/Setup device-window controls |
 | Hub | No CLI | — | Physical repeater state is shown in the UI |
 
 PC and Server are intentionally separate profiles even though both reuse the
@@ -114,7 +116,10 @@ sim show tcp connections
 
 Server adds `sim show services`, `sim show dns`, `sim show http`,
 `sim show tftp`, and `sim show syslog`. The PC/Server Desktop tools call these
-same deterministic commands through the worker adapter.
+same deterministic commands through the worker adapter. Laptop wireless
+connection, password entry, saved-network management, and AP configuration
+remain in the Wireless UI. Smartphone, Access Point, and Wireless Router
+deliberately do not pretend to expose Cisco IOS.
 
 Firewall accepts the Router security command shapes through its distinct
 SimulatorNet firewall profile. L3 Switch accepts ACLs on routed ports and SVIs,
@@ -259,6 +264,7 @@ contextual help: startup configuration, `copy`, `write`, `erase`, `reload`,
 authentication and redistribution, MSTP and MST regions, Loop Guard, Root Guard,
 UDLD, UplinkFast/BackboneFast/Flex Links, multi-chassis EtherChannel, LACP fast
 rate, PAgP silent modes, LLDP-MED, port security, reflexive/time-based ACLs, NAT
-hairpinning and IPv6. There is no Tab completion, fuzzy matching, network-device
+hairpinning, WPA3, 802.1X/RADIUS, wireless controllers, mesh, or real RF. There
+is no Tab completion, fuzzy matching, network-device
 `traceroute`, arbitrary command scripting, real DNS/network access or full Cisco
 contextual-help parity.

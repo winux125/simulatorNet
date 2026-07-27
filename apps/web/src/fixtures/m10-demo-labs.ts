@@ -3,6 +3,7 @@ import { DEMO_LAB } from "./demo-lab";
 import { PROTOCOL_DEMO_LABS } from "./protocol-demo-labs";
 import { IPV6_DEMO_LABS } from "./ipv6-demo-labs";
 import { SECURITY_DEMO_LABS } from "./security-demo-labs";
+import { WIRELESS_DEMO_LABS } from "./wireless-demo-labs";
 
 function ports(prefix: string, count: number): Array<{ id: string }> {
   return Array.from({ length: count }, (_, index) => ({ id: `${prefix}${index + 1}` }));
@@ -312,6 +313,7 @@ export const DEMO_LABS = [
   // the Demo Labs dialog, never loaded automatically.
   ...PROTOCOL_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
   ...IPV6_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
+  ...WIRELESS_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
 ] as const;
 
 export type DemoLabId = (typeof DEMO_LABS)[number]["id"];

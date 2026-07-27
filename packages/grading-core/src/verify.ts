@@ -13,6 +13,7 @@ import {
 } from "@sim/contracts/grading";
 import { buildLabFromDocument, parseLabDocument, type BuiltLab } from "@sim/lab-format";
 import {
+  AccessPoint,
   EndHost,
   Firewall,
   ipToInt,
@@ -27,6 +28,8 @@ import {
   Router,
   TcpState,
   TrafficGenerator,
+  WirelessEndHost,
+  WirelessRouter,
 } from "@sim/sim-core";
 import type { SimulationEngine } from "@sim/sim-core";
 import type { ZodIssue } from "zod";
@@ -998,6 +1001,151 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
         nextHeader: check.configuration.nextHeader,
         destinationPort: check.configuration.destinationPort,
         failure: execution.failure,
+      });
+    }
+    case "wireless-associated": {
+      const station = built.getDevice(check.configuration.stationDeviceId);
+      if (!(station instanceof WirelessEndHost)) {
+        return errorResult(check, "Wireless station was not found");
+      }
+      const status = station.wirelessStatus();
+      const passed = status.state === "associated"
+        && (check.configuration.accessPointDeviceId === undefined
+          || status.accessPointDeviceId === check.configuration.accessPointDeviceId);
+      return result(check, passed, `${station.name} is ${passed ? "associated" : "not associated"}`, {
+        state: status.state,
+        accessPointDeviceId: status.accessPointDeviceId,
+        bssid: status.bssid,
+      });
+    }
+    case "wireless-ssid":
+    case "wireless-security": {
+      const candidate = built.getDevice(check.configuration.deviceId);
+      const device = candidate instanceof AccessPoint || candidate instanceof WirelessRouter
+        ? candidate
+        : undefined;
+      if (!device) return errorResult(check, "Wireless access point was not found");
+      const accessPoint = device.configurationSnapshot().accessPoint;
+      if (check.type === "wireless-ssid") {
+        const passed = accessPoint.ssid === check.configuration.expectedSsid;
+        return result(check, passed, `${device.name} advertises SSID ${accessPoint.ssid}`, {
+          actualSsid: accessPoint.ssid,
+          expectedSsid: check.configuration.expectedSsid,
+        });
+      }
+      const passed = accessPoint.security.mode === check.configuration.expectedMode;
+      return result(check, passed, `${device.name} uses ${accessPoint.security.mode}`, {
+        actualMode: accessPoint.security.mode,
+        expectedMode: check.configuration.expectedMode,
+      });
+    }
+    case "wireless-client-count": {
+      const candidate = built.getDevice(check.configuration.deviceId);
+      const device = candidate instanceof AccessPoint || candidate instanceof WirelessRouter
+        ? candidate
+        : undefined;
+      if (!device) return errorResult(check, "Wireless access point was not found");
+      const count = device.associatedClients().length;
+      const passed = count >= check.configuration.minimumClients
+        && (check.configuration.maximumClients === undefined
+          || count <= check.configuration.maximumClients);
+      return result(check, passed, `${device.name} has ${count} associated wireless client${count === 1 ? "" : "s"}`, {
+        actualClients: count,
+        minimumClients: check.configuration.minimumClients,
+        maximumClients: check.configuration.maximumClients,
+      });
+    }
+    case "wireless-ipv4": {
+      const station = built.getDevice(check.configuration.deviceId);
+      if (!(station instanceof WirelessEndHost)) return errorResult(check, "Wireless station was not found");
+      const [network, prefixText] = check.configuration.expectedSubnet.split("/");
+      const mask = maskToInt(Number(prefixText));
+      const matches = station.wirelessStatus().state === "associated"
+        && station.ip !== undefined
+        && ((ipToInt(station.ip) & mask) >>> 0) === ((ipToInt(network!) & mask) >>> 0);
+      return result(check, matches, `${station.name} ${matches ? "has" : "does not have"} a wireless IPv4 address in ${check.configuration.expectedSubnet}`, {
+        actualAddress: station.ip,
+        expectedSubnet: check.configuration.expectedSubnet,
+        associationState: station.wirelessStatus().state,
+      });
+    }
+    case "wireless-ipv6": {
+      const station = built.getDevice(check.configuration.deviceId);
+      if (!(station instanceof WirelessEndHost)) return errorResult(check, "Wireless station was not found");
+      const [prefix, lengthText] = check.configuration.expectedPrefix.split("/");
+      const address = station.ipv6AddressSummaries().find((entry) =>
+        entry.state !== "duplicate"
+        && !entry.address.startsWith("fe80:")
+        && ipv6InPrefix(entry.address, prefix!, Number(lengthText)));
+      const passed = station.wirelessStatus().state === "associated" && address !== undefined;
+      return result(check, passed, `${station.name} ${passed ? "has" : "does not have"} a wireless IPv6 address in ${check.configuration.expectedPrefix}`, {
+        actualAddress: address?.address,
+        expectedPrefix: check.configuration.expectedPrefix,
+        source: address?.source,
+      });
+    }
+    case "wireless-connectivity": {
+      const station = built.getDevice(check.configuration.sourceDeviceId);
+      if (!(station instanceof WirelessEndHost)) return errorResult(check, "Wireless station was not found");
+      if (station.wirelessStatus().state !== "associated") {
+        return result(check, check.configuration.expected === "failure", `${station.name} is not associated`, {
+          associationState: station.wirelessStatus().state,
+          expected: check.configuration.expected,
+        });
+      }
+      const ipv6 = check.configuration.destination.includes(":");
+      const execution = ipv6
+        ? executeIpv6Traffic(runtime, station.id, check.configuration.destination)
+        : executePing(runtime, station.id, check.configuration.destination);
+      if (!execution) return errorResult(check, "Wireless connectivity operation could not start");
+      const passed = check.configuration.expected === "success" ? execution.success : !execution.success;
+      return result(check, passed, `Wireless connectivity ${execution.success ? "succeeded" : "failed"} to ${check.configuration.destination}`, {
+        actual: execution.success ? "success" : "failure",
+        expected: check.configuration.expected,
+        associationState: station.wirelessStatus().state,
+        failure: execution.failure,
+      });
+    }
+    case "wireless-roamed": {
+      const station = built.getDevice(check.configuration.stationDeviceId);
+      if (!(station instanceof WirelessEndHost)) return errorResult(check, "Wireless station was not found");
+      if (check.configuration.triggerAccessPointShutdownDeviceId) {
+        const trigger = built.getDevice(check.configuration.triggerAccessPointShutdownDeviceId);
+        if (!(trigger instanceof AccessPoint) && !(trigger instanceof WirelessRouter)) {
+          return errorResult(check, "Wireless failover trigger access point was not found");
+        }
+        trigger.updateWireless({
+          ...trigger.configurationSnapshot().accessPoint,
+          enabled: false,
+        });
+        runtime.runUntil(() => {
+          const current = station.wirelessStatus();
+          return current.state === "associated"
+            && current.accessPointDeviceId !== check.configuration.triggerAccessPointShutdownDeviceId;
+        });
+      }
+      const status = station.wirelessStatus();
+      const passed = status.lastRoamedAtNs !== undefined
+        && (check.configuration.expectedFromBssid === undefined
+          || status.lastRoamedFromBssid === check.configuration.expectedFromBssid)
+        && (check.configuration.expectedToAccessPointDeviceId === undefined
+          || status.accessPointDeviceId === check.configuration.expectedToAccessPointDeviceId);
+      return result(check, passed, `${station.name} ${passed ? "roamed successfully" : "has no matching roam event"}`, {
+        fromBssid: status.lastRoamedFromBssid,
+        toBssid: status.bssid,
+        accessPointDeviceId: status.accessPointDeviceId,
+        lastRoamedAtNs: status.lastRoamedAtNs,
+      });
+    }
+    case "wireless-router-nat": {
+      const device = built.getDevice(check.configuration.deviceId);
+      if (!(device instanceof WirelessRouter)) return errorResult(check, "Wireless router was not found");
+      const enabled = device.configurationSnapshot().natEnabled;
+      const passed = enabled === check.configuration.expectedEnabled;
+      return result(check, passed, `${device.name} NAT is ${enabled ? "enabled" : "disabled"}`, {
+        actualEnabled: enabled,
+        expectedEnabled: check.configuration.expectedEnabled,
+        translations: device.firewallRouter.natTranslations().length,
       });
     }
     case "traffic-flow-result": {

@@ -20,6 +20,10 @@ import type { ConfigFamily, ImportReportEntry, ImportSourceAsset } from "../type
 export function classifyVendorImage(text: string): { sourceKind: string; configFamily: ConfigFamily } | undefined {
   const hay = text.toLowerCase();
   const has = (...tokens: string[]): boolean => tokens.some((token) => hay.includes(token));
+  if (has("wireless-router", "wifi-router", "home-router")) return { sourceKind: "wireless-router", configFamily: "unknown" };
+  if (has("wireless-access-point", "access-point", "wifi-ap")) return { sourceKind: "access-point", configFamily: "unknown" };
+  if (has("laptop", "notebook")) return { sourceKind: "laptop", configFamily: "unknown" };
+  if (has("smartphone", "mobile-phone", "mobile-device", "tablet")) return { sourceKind: "smartphone", configFamily: "unknown" };
   if (has("iol", "iou")) return { sourceKind: has("l2", "switch") ? "iol-l2" : "iol-l3", configFamily: "ios-like" };
   if (has("iosv", "vios")) return { sourceKind: has("l2") ? "iol-l2" : "iosv", configFamily: "ios-like" };
   if (has("csr", "c8000v")) return { sourceKind: "csr1000v", configFamily: "ios-like" };

@@ -140,7 +140,8 @@ describe("M10.3.3c cable-only connection workflow", () => {
     expect(canvas).toContain("const cableHandleAvailable = structuralEditable");
     expect(canvas).toContain('props.activeTool === "select" || props.activeTool === "add-link"');
     expect(canvas).toContain("textEditing === undefined");
-    expect(canvas).toContain("connectable: cableHandleAvailable && node.interfaces.length > 0");
+    expect(canvas).toContain("connectable: cableHandleAvailable && getDeviceProfile(node.kind).interfaceTemplates");
+    expect(canvas).toContain('template.media !== "wireless"');
   });
 
   it("10. still exposes Connect through the context menu and the toolbar", () => {

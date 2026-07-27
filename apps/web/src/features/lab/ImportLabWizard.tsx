@@ -2,6 +2,7 @@ import { DEVICE_TYPES, getDeviceProfile, type DeviceType, type LabDocument } fro
 import {
   DEFAULT_IMPORT_LIMITS,
   applyImportedConsoleCredentials,
+  applyImportedWirelessCredentials,
   detectLabImportFormat,
   executeLabImport,
   inspectLabImport,
@@ -168,7 +169,9 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
     if (!plan) return;
     setPhase("importing");
     try {
-      const imported = await applyImportedConsoleCredentials(executeLabImport(plan, selection));
+      const imported = await applyImportedWirelessCredentials(
+        await applyImportedConsoleCredentials(executeLabImport(plan, selection)),
+      );
       setResult(imported);
       setPhase("result");
       setStep(4);

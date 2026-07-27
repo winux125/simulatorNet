@@ -1,4 +1,7 @@
-import type { WirelessInterfaceConfiguration } from "@sim/contracts";
+import type {
+  WirelessInterfaceConfiguration,
+  WirelessRadioSettings,
+} from "@sim/contracts";
 import type { Device } from "../devices/device";
 import type { EthernetFrame } from "../packets/ethernet";
 import { normalizeMac } from "../util/mac";
@@ -13,12 +16,17 @@ import { EthernetInterface } from "./interface";
 export class WirelessInterface extends EthernetInterface {
   private medium: WirelessMedium | undefined;
   private configuredEnabled: boolean;
+  private wirelessConfiguration: WirelessInterfaceConfiguration;
 
   constructor(
     device: Device,
-    readonly wirelessConfiguration: WirelessInterfaceConfiguration,
+    wirelessConfiguration: WirelessInterfaceConfiguration,
   ) {
     super(device, wirelessConfiguration.id, normalizeMac(wirelessConfiguration.macAddress));
+    this.wirelessConfiguration = {
+      ...wirelessConfiguration,
+      supportedChannels: [...wirelessConfiguration.supportedChannels],
+    };
     this.configuredEnabled = wirelessConfiguration.enabled;
   }
 
@@ -34,6 +42,16 @@ export class WirelessInterface extends EthernetInterface {
 
   get wirelessEnabled(): boolean {
     return this.configuredEnabled;
+  }
+
+  updateRadioSettings(settings: WirelessRadioSettings): void {
+    this.wirelessConfiguration = {
+      ...this.wirelessConfiguration,
+      ...settings,
+      supportedChannels: [...settings.supportedChannels],
+    };
+    this.configuredEnabled = settings.enabled;
+    this.notifyStateChanged();
   }
 
   override peer(): undefined {

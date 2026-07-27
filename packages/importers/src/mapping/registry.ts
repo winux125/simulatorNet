@@ -26,6 +26,12 @@ export interface ImportDeviceMapping {
  * format adapters) take precedence over these "*" rows during resolution.
  */
 export const IMPORT_DEVICE_MAPPINGS: ImportDeviceMapping[] = [
+  // Deterministic educational WLAN devices. Radio interfaces are configuration
+  // endpoints, never synthesized as Ethernet cable ports by the importer.
+  { sourcePlatform: "*", sourceKinds: ["wireless-access-point", "wifi-access-point", "access-point", "wifi-ap"], targetDeviceType: "access-point", supportLevel: "topology-only", interfaceNaming: "preserve" },
+  { sourcePlatform: "*", sourceKinds: ["wireless-router", "wifi-router", "home-router"], targetDeviceType: "wireless-router", supportLevel: "topology-only", interfaceNaming: "preserve" },
+  { sourcePlatform: "*", sourceKinds: ["laptop", "notebook"], targetDeviceType: "laptop", supportLevel: "topology-only", interfaceNaming: "preserve" },
+  { sourcePlatform: "*", sourceKinds: ["smartphone", "mobile-phone", "mobile-device", "tablet"], targetDeviceType: "smartphone", supportLevel: "topology-only", interfaceNaming: "preserve" },
   // Layer-2 switching appliances.
   { sourcePlatform: "*", sourceKinds: ["iol-l2", "iou-l2", "unmanaged-switch", "ethernet-switch", "l2-switch", "veos-l2"], targetDeviceType: "l2-switch", supportLevel: "configuration-partial", interfaceNaming: "preserve", authLikelyRequired: true },
   // Routers (IOS-like families get a partial config apply; others topology-only).

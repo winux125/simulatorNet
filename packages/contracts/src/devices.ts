@@ -261,6 +261,7 @@ export const DEVICE_PROFILES = {
     category: "end-device",
     capabilities: ["ipv4-host", "dhcp-client", "application-services", "wireless-station"],
     interfaceTemplates: wireless(["wlan0"]),
+    cliProfile: "pc-host",
     iconKey: "smartphone",
     description: "A compact wireless end host with educational network applications.",
   },

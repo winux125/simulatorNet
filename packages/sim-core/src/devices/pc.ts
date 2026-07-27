@@ -367,6 +367,25 @@ export abstract class EndHost extends Device {
     if (this.ipv6Addresses.get(linkLocal)?.state === "preferred") this.startIpv6Autoconfiguration();
   }
 
+  /**
+   * Resume DAD/address discovery when a presentation-independent L2 bearer
+   * becomes operational. Existing preferred addresses and transport state are
+   * preserved (important for same-LAN roaming).
+   */
+  resumeIpv6AfterLinkUp(): void {
+    const linkLocal = this.enableIpv6();
+    const tentative = this.ipv6Addresses.summaries()
+      .filter((assignment) => assignment.state === "tentative");
+    for (const assignment of tentative) this.ipv6Discovery().beginDad(assignment.address);
+    if (
+      tentative.length === 0
+      && this.ipv6Addresses.get(linkLocal)?.state === "preferred"
+      && this.ipv6Mode !== "static"
+    ) {
+      this.startIpv6Autoconfiguration();
+    }
+  }
+
   renewDhcpv6(): void {
     if (this.ipv6Mode !== "dhcpv6") throw new Error("DHCPv6 mode is not enabled");
     if (this.dhcpv6Lease) {

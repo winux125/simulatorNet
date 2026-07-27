@@ -36,6 +36,7 @@ export abstract class WirelessEndHost extends EndHost {
       receive: (frame) => {
         if (iface.adminUp && iface.wirelessEnabled) this.onReceive(frame, iface);
       },
+      onAssociated: () => this.resumeAddressProtocols(),
       preferredSsid: stationConfiguration.preferredSsid,
       preferredBssid: stationConfiguration.preferredBssid as Mac | undefined,
       autoConnect: stationConfiguration.autoConnect,
@@ -79,9 +80,14 @@ export abstract class WirelessEndHost extends EndHost {
 
   forgetWirelessNetwork(profileId: string): void {
     const configuration = this.wirelessConfigurationSnapshot();
+    const removed = configuration.savedNetworks.find((entry) => entry.id === profileId);
+    const removedPreferred = removed?.ssid === configuration.preferredSsid;
     this.updateStationConfiguration({
       ...configuration,
       savedNetworks: configuration.savedNetworks.filter((entry) => entry.id !== profileId),
+      autoConnect: removedPreferred ? false : configuration.autoConnect,
+      preferredSsid: removedPreferred ? undefined : configuration.preferredSsid,
+      preferredBssid: removedPreferred ? undefined : configuration.preferredBssid,
     });
   }
 
@@ -131,6 +137,13 @@ export abstract class WirelessEndHost extends EndHost {
       autoConnect: configuration.autoConnect,
       credentials: runtimeCredentials(configuration.savedNetworks),
     });
+  }
+
+  private resumeAddressProtocols(): void {
+    if (this.dhcpEnabled && !this.dhcpBound && this.dhcpState !== "discovering" && this.dhcpState !== "requesting") {
+      this.requestDhcp();
+    }
+    this.resumeIpv6AfterLinkUp();
   }
 }
 

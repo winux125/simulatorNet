@@ -18,4 +18,5 @@ export * from "./adapters/builtins";
 export * from "./config/ios-config";
 export * from "./config/apply";
 export * from "./config/console-credentials";
+export * from "./config/wireless-credentials";
 export * from "./plan/plan";

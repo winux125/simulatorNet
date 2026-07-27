@@ -989,3 +989,48 @@ the submitted lab itself; hidden expected values remain redacted. IOS import
 recognises the supported IPv6 address, route, forwarding, OSPFv3 and ACL
 subset, and keeps unsupported lines in its report. See
 [`docs/ipv6.md`](docs/ipv6.md) for the architecture and explicit limitations.
+
+## Milestone 10.6 — deterministic wireless LAN
+
+M10.6 adds a separate bounded `WirelessMedium` shared by the browser worker and
+server verifier. Laptop and Smartphone stations scan structured radio domains,
+authenticate, associate, and then reuse the existing Ethernet, ARP/NDP,
+IPv4/IPv6, DHCP/DHCPv6, TCP/UDP, DNS, and application stacks. Canvas distance
+does not represent RF distance and moving a node never changes connectivity.
+
+Four device profiles are available:
+
+- **Access Point** bridges associated stations to its Ethernet uplink and does
+  not route or assign addresses;
+- **Laptop** reuses the end-host stack with `eth0`, `wlan0`, host tools, and a
+  `C:\>` terminal;
+- **Smartphone** reuses the end-host stack on `wlan0` with focused Ping, DNS,
+  and Web client tools;
+- **Wireless Router** composes the existing AP, LAN switch, router,
+  DHCP/DHCPv6, SLAAC, PAT, and stateful firewall implementations.
+
+Open and educational WPA2-Personal association are supported. WPA2 keys are
+converted through Web Crypto into SSID-scoped PBKDF2-HMAC-SHA-256 verifier
+material; plaintext is not persisted, logged, returned by grading, or shown
+after entry. This models authentication only and does not claim real 802.11
+encryption. Roaming is deterministic by preferred BSSID, AP priority, then
+stable BSSID, and is triggered by AP shutdown, explicit selection, preference
+change, or client-capacity failure.
+
+Wireless association is shown by an optional dashed runtime overlay. It is not
+a cable or a structural topology link. The worker exposes typed scan, connect,
+disconnect, forget, AP configuration, client inspection, and client-disconnect
+requests. Packet Trace can filter Beacon, Probe, Authentication, Association,
+Roaming, and general Wireless events in both Auto and Step modes.
+
+Nine wireless grading checks cover association, SSID/security configuration,
+client count, IPv4/IPv6 addressing, connectivity, roaming, and home-router NAT.
+Expected credential material is never accepted by a student-facing check or
+returned in student results. Importers map recognizable AP, wireless-router,
+laptop, and mobile kinds; imported plaintext keys are immediately converted to
+verifiers and vendor hashes require a reset.
+
+Four explicit, non-auto-loaded demos cover Open WLAN + DHCP, WPA2 + DNS/HTTP,
+Home Wireless Router + PAT, and deterministic AP failover. See
+[`docs/wireless-simulation.md`](docs/wireless-simulation.md) for the model,
+workflow, and limitations.

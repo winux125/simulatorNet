@@ -113,6 +113,20 @@ can be Always, Selected, or Hidden. Editable subnet/WAN labels and
 straight/orthogonal visual routes belong to `LabDocument.diagram`; forwarding
 still uses the physical domain link.
 
+Wireless association is intentionally not drawn as a cable. View ▸ Wireless
+Associations toggles a dashed curved runtime overlay from station to AP, with
+the SSID as an optional label and association-state color. The overlay has no
+interface port, is not selectable as a physical link, never enters the cable
+workflow, and is not persisted. Laptop `eth0` remains available to the ordinary
+cable modal; `wlan0` never appears there. Smartphone has no Ethernet cable
+endpoint, while an Access Point exposes only its `eth0` uplink.
+
+Laptop and Smartphone device windows own scan/connect/disconnect/forget actions.
+Access Point windows own Wireless and Associated Clients views. Wireless Router
+windows group Setup, Wireless, LAN, WAN, DHCP, IPv6, NAT, Firewall, Connected
+Clients, and Runtime views while reusing the existing protocol runtime rather
+than maintaining UI-only network state.
+
 ## Lab power and edit impact
 
 The workspace distinguishes three classes of change:

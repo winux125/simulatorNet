@@ -29,6 +29,12 @@ import type {
 } from "./types";
 import { diagramAssetDataUrl } from "../diagram-image-assets";
 import { textAnnotationHeight } from "../diagram-editor";
+import {
+  isWirelessAssociationEdgeId,
+  wirelessAssociationEdgeAppearance,
+  wirelessAssociationEdgeId,
+  type WirelessAssociationView,
+} from "./wireless-association-overlay";
 
 export interface CreateControllerOptions {
   container: HTMLElement;
@@ -327,6 +333,7 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       options.callbacks.onConnect(sourceCell.id, sourcePort, targetCell.id, targetPort);
     },
     onEdgeClick: (id, additive) => {
+      if (isWirelessAssociationEdgeId(id)) return;
       const diagramId = annotationId(id);
       if (diagramId) options.callbacks.onSelectAnnotation(diagramId, additive);
       else options.callbacks.onSelectLink(id);
@@ -334,11 +341,13 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     // Double-clicking an edge edits its label inline: a diagram line/arrow
     // label, or the presentation label of a physical topology link.
     onEdgeDoubleClick: (id) => {
+      if (isWirelessAssociationEdgeId(id)) return;
       const diagramId = annotationId(id);
       if (diagramId) options.callbacks.onEditAnnotation(diagramId);
       else options.callbacks.onEditLinkLabel(id);
     },
     onEdgeContextMenu: (id, x, y) => {
+      if (isWirelessAssociationEdgeId(id)) return;
       if (!annotationId(id)) options.callbacks.onLinkContextMenu(id, x, y);
     },
     onBlankClick: (local) => options.callbacks.onPaneClick(local),
@@ -620,6 +629,8 @@ export function createTopologyGraphController(options: CreateControllerOptions):
 
     const linkIds = new Set([
       ...links.map((link) => link.id),
+      ...(state.view.wirelessAssociations ?? []).map((association) =>
+        wirelessAssociationEdgeId(association.id)),
       ...annotations
         .filter((annotation) => annotation.type === "line" || annotation.type === "arrow")
         .map((annotation) => annotationCellId(annotation.id)),
@@ -631,9 +642,102 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       if (existing && existing.isEdge()) updateLinkEdge(existing, link, linkView, anchors);
       else addLinkEdge(graph, link, linkView, anchors);
     }
+    for (const association of state.view.wirelessAssociations ?? []) {
+      renderWirelessAssociation(association);
+    }
     for (const cell of graph.getEdges()) {
       if (!linkIds.has(cell.id)) graph.removeCell(cell);
     }
+  }
+
+  function renderWirelessAssociation(association: WirelessAssociationView): void {
+    if (
+      !graph.getCellById(association.stationDeviceId)
+      || !graph.getCellById(association.accessPointDeviceId)
+    ) return;
+    const appearance = wirelessAssociationEdgeAppearance(association);
+    const metadata = {
+      kind: "wireless-association",
+      stationDeviceId: association.stationDeviceId,
+      accessPointDeviceId: association.accessPointDeviceId,
+      ssid: association.ssid,
+    };
+    const source = {
+      cell: association.stationDeviceId,
+      anchor: { name: "center" },
+      connectionPoint: { name: "boundary" },
+    };
+    const target = {
+      cell: association.accessPointDeviceId,
+      anchor: { name: "center" },
+      connectionPoint: { name: "boundary" },
+    };
+    const attrs = {
+      line: {
+        stroke: appearance.stroke,
+        strokeWidth: 1.5,
+        strokeDasharray: appearance.dashArray,
+        sourceMarker: null,
+        targetMarker: null,
+        pointerEvents: "none",
+        "data-wireless-association": association.id,
+        "data-wireless-station": association.stationDeviceId,
+        "data-wireless-access-point": association.accessPointDeviceId,
+      },
+      wrap: {
+        stroke: "transparent",
+        strokeWidth: 0,
+        pointerEvents: "none",
+      },
+    };
+    const labels = appearance.label
+      ? [{
+          attrs: {
+            label: {
+              text: appearance.label,
+              fill: "var(--color-text-muted, #52657a)",
+              fontSize: 10,
+              fontWeight: 600,
+              pointerEvents: "none",
+            },
+            body: {
+              fill: "var(--color-surface-raised, #f4f7fa)",
+              stroke: "var(--color-border-subtle, #cbd6e0)",
+              strokeWidth: 1,
+              rx: 4,
+              ry: 4,
+              ref: "label",
+              refWidth: "120%",
+              refHeight: "150%",
+              refX: "-10%",
+              refY: "-25%",
+              pointerEvents: "none",
+            },
+          },
+          position: { distance: 0.5 },
+        }]
+      : [];
+    const existing = graph.getCellById(appearance.id);
+    if (existing?.isEdge()) {
+      existing.setSource(source);
+      existing.setTarget(target);
+      existing.setData(metadata, { overwrite: true });
+      existing.setAttrs(attrs);
+      existing.setLabels(labels);
+      existing.setConnector("smooth");
+      existing.setZIndex(TOPOLOGY_EDGE_Z_INDEX - 1);
+      return;
+    }
+    graph.addEdge({
+      id: appearance.id,
+      source,
+      target,
+      data: metadata,
+      attrs,
+      labels,
+      connector: { name: "smooth" },
+      zIndex: TOPOLOGY_EDGE_Z_INDEX - 1,
+    });
   }
 
   return {

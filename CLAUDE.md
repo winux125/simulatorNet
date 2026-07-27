@@ -131,6 +131,27 @@ labels, and diagram annotations. It must not contain:
 Both browser and verifier must reach protocol behavior through the same core.
 Do not recreate protocol logic in React, Fastify handlers, or grading checks.
 
+### Wireless simulation
+
+Wi-Fi is a separate deterministic `WirelessMedium`, not an invisible Ethernet
+cable and not a browser-network API. Radio reachability comes only from
+structured radio domain, band, channel, enabled state, SSID, and explicit
+preference. Canvas positions are presentation-only and never affect signal,
+association, grading, or rebuilds.
+
+Management messages and association transitions run through `VirtualClock` and
+the bounded event queue. An associated station then exposes the existing
+Ethernet/IP/transport stack through its wireless interface. A standalone Access
+Point is only a wireless-to-Ethernet bridge; it never gains implicit routing,
+DHCP, NAT, or firewall behavior. The Wireless Router composes existing bridge,
+router, DHCP/DHCPv6, NAT/PAT, firewall, and wireless components rather than
+copying them.
+
+WPA2-Personal is an educational authentication model. Web Crypto derives an
+SSID-scoped opaque verifier before packet/event processing; no plaintext key,
+real 802.11 encryption, or async cryptography belongs in `sim-core`. Never log,
+render, grade, or import raw credentials. See `docs/wireless-simulation.md`.
+
 ### Browser worker
 
 The Web Worker owns the live engine, device instances, CLI sessions, virtual
@@ -207,6 +228,11 @@ owns domain state and passes explicit updates to the controller.
 Topology links retain domain node/interface identifiers. A responsive redraw
 may re-anchor visuals, but it must never swap, infer, or mutate semantic
 endpoints. Persist only canonical domain data through `lab-format`.
+
+Runtime wireless-association overlays are dashed presentation edges derived
+from worker state. They have no X6 port identity, never enter
+`LabDocument.topology.links`, never open the cable modal, and never trigger
+Apply Topology.
 
 The canvas owns exactly one viewport: one graph translation and one graph
 scale. Do not add an X6 Scroller, an inner canvas scrollbar, or a second

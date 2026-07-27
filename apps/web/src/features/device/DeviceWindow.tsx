@@ -13,6 +13,7 @@ import { ServerServicesPanel } from "../inspector/ServerServicesPanel";
 import { CONSOLE_CAPABLE_KINDS } from "../lab/document";
 import { ConsoleAccessPanel } from "./ConsoleAccessPanel";
 import { HostIpConfigurationPanel } from "./HostIpConfigurationPanel";
+import { WirelessPanel } from "./WirelessPanel";
 import {
   SecurityConfigurationPanel,
   type SecuritySection,
@@ -22,7 +23,8 @@ type DeviceWindowTab =
   | "overview" | "desktop" | "config" | "console" | "services" | "terminal" | "interfaces" | "attributes"
   | "routing" | "routes" | "vlans" | "svis" | "acl" | "nat" | "runtime"
   | "zones" | "policies" | "connections" | "impairments" | "flows" | "run" | "results"
-  | "ipv6";
+  | "ipv6"
+  | "wireless" | "clients" | "apps" | "setup" | "lan" | "wan" | "dhcp" | "firewall";
 type DesktopTool = "ip" | "command" | "web" | "tftp" | "ntp" | "syslog" | "transport";
 
 interface DeviceWindowProps {
@@ -41,6 +43,10 @@ export function DeviceWindow(props: DeviceWindowProps) {
   const profile = getDeviceProfile(props.node.type);
   const isServer = props.node.type === "server";
   const isPc = props.node.type === "pc";
+  const isLaptop = props.node.type === "laptop";
+  const isSmartphone = props.node.type === "smartphone";
+  const isAccessPoint = props.node.type === "access-point";
+  const isWirelessRouter = props.node.type === "wireless-router";
   const tabs = useMemo<Array<{ id: DeviceWindowTab; label: string }>>(() => {
     const base = ((): Array<{ id: DeviceWindowTab; label: string }> => {
     if (isServer) return [
@@ -55,6 +61,41 @@ export function DeviceWindow(props: DeviceWindowProps) {
       { id: "config", label: "Config" },
       { id: "terminal", label: "Terminal" },
       { id: "attributes", label: "Attributes" },
+    ];
+    if (isLaptop) return [
+      { id: "desktop", label: "Desktop" },
+      { id: "wireless", label: "Wireless" },
+      { id: "config", label: "Config" },
+      { id: "terminal", label: "Terminal" },
+      { id: "interfaces", label: "Interfaces" },
+      { id: "attributes", label: "Attributes" },
+    ];
+    if (isSmartphone) return [
+      { id: "wireless", label: "Wireless" },
+      { id: "config", label: "IP Configuration" },
+      { id: "apps", label: "Apps" },
+      { id: "interfaces", label: "Interfaces" },
+      { id: "attributes", label: "Attributes" },
+    ];
+    if (isAccessPoint) return [
+      { id: "overview", label: "Overview" },
+      { id: "wireless", label: "Wireless" },
+      { id: "clients", label: "Associated Clients" },
+      { id: "interfaces", label: "Interfaces" },
+      { id: "config", label: "Configuration" },
+      { id: "runtime", label: "Runtime" },
+    ];
+    if (isWirelessRouter) return [
+      { id: "setup", label: "Setup" },
+      { id: "wireless", label: "Wireless" },
+      { id: "lan", label: "LAN" },
+      { id: "wan", label: "WAN" },
+      { id: "dhcp", label: "DHCP" },
+      { id: "ipv6", label: "IPv6" },
+      { id: "nat", label: "NAT" },
+      { id: "firewall", label: "Firewall" },
+      { id: "clients", label: "Connected Clients" },
+      { id: "runtime", label: "Runtime" },
     ];
     if (props.node.type === "router") return [
       { id: "interfaces", label: "Interfaces" },
@@ -107,7 +148,16 @@ export function DeviceWindow(props: DeviceWindowProps) {
     return CONSOLE_CAPABLE_KINDS.has(props.node.type)
       ? [...base, { id: "console" as const, label: "Console Access" }]
       : base;
-  }, [isPc, isServer, profile.cliProfile, props.node.type]);
+  }, [
+    isAccessPoint,
+    isLaptop,
+    isPc,
+    isServer,
+    isSmartphone,
+    isWirelessRouter,
+    profile.cliProfile,
+    props.node.type,
+  ]);
   const [tab, setTab] = useState<DeviceWindowTab>(tabs[0]!.id);
 
   useEffect(() => {
@@ -139,7 +189,32 @@ export function DeviceWindow(props: DeviceWindowProps) {
             onTerminal={() => props.onOpenTerminal(props.node.id)}
             onError={props.onError}
           />}
-          {tab === "config" && <StructuredConfiguration document={props.document} node={props.node} />}
+          {tab === "config" && (isSmartphone
+            ? <HostIpConfigurationPanel
+                client={props.client}
+                document={props.document}
+                node={props.node}
+                powerState={props.powerState}
+                runtimeAvailable={props.runtimeAvailable}
+                onConfigurationChanged={props.onConfigurationChanged}
+                onError={props.onError}
+              />
+            : <StructuredConfiguration document={props.document} node={props.node} />)}
+          {(tab === "wireless" || tab === "clients") && props.runtimeAvailable && (
+            isLaptop || isSmartphone || isAccessPoint || isWirelessRouter
+          ) && <WirelessPanel
+            client={props.client}
+            deviceId={props.node.id}
+            deviceType={props.node.type}
+            section={tab}
+            onConfigurationChanged={props.onConfigurationChanged}
+            onError={props.onError}
+          />}
+          {(tab === "wireless" || tab === "clients") && !props.runtimeAvailable && <DraftRuntimeNotice />}
+          {tab === "apps" && <SmartphoneApps client={props.client} node={props.node} runtimeAvailable={props.runtimeAvailable} onError={props.onError} />}
+          {(["setup", "lan", "wan", "dhcp", "firewall"] as DeviceWindowTab[]).includes(tab) && (
+            <StructuredConfiguration document={props.document} node={props.node} section={tab} />
+          )}
           {tab === "console" && <ConsoleAccessPanel
             document={props.document}
             node={props.node}
@@ -156,10 +231,11 @@ export function DeviceWindow(props: DeviceWindowProps) {
               />
             : <DraftRuntimeNotice />)}
           {tab === "interfaces" && <Interfaces node={props.node} />}
-          {tab === "ipv6" && (props.runtimeAvailable
+          {tab === "ipv6" && isWirelessRouter && <StructuredConfiguration document={props.document} node={props.node} section="ipv6" />}
+          {tab === "ipv6" && !isWirelessRouter && (props.runtimeAvailable
             ? <Ipv6RuntimePanel client={props.client} document={props.document} deviceId={props.node.id} onError={props.onError} />
             : <DraftRuntimeNotice />)}
-          {isSecuritySection(tab) && (props.runtimeAvailable
+          {isSecuritySection(tab) && !isWirelessRouter && !isAccessPoint && (props.runtimeAvailable
             ? <SecurityConfigurationPanel
                 client={props.client}
                 deviceId={props.node.id}
@@ -167,7 +243,8 @@ export function DeviceWindow(props: DeviceWindowProps) {
                 onConfigurationChanged={props.onConfigurationChanged}
                 onError={props.onError}
               />
-            : <DraftRuntimeNotice />)}
+              : <DraftRuntimeNotice />)}
+          {tab === "runtime" && (isWirelessRouter || isAccessPoint) && <StructuredConfiguration document={props.document} node={props.node} section="runtime" />}
           {tab === "attributes" && <Attributes node={props.node} description={profile.description} capabilities={profile.capabilities} />}
         </div>
       </section>
@@ -186,8 +263,31 @@ function Overview({ node, description }: { node: LabUiNode; description: string 
   return <div className="device-window-section"><p className="section-eyebrow">Device overview</p><h2>{node.hostname}</h2><p>{description}</p><dl className="property-list"><div><dt>Type</dt><dd>{node.type}</dd></div><div><dt>Status</dt><dd>{node.status}</dd></div><div><dt>Interfaces</dt><dd>{node.interfaces.length}</dd></div></dl></div>;
 }
 
-function StructuredConfiguration({ document, node }: { document: LabDocument; node: LabUiNode }) {
-  return <div className="device-window-section"><p className="section-eyebrow">Worker-owned configuration</p><p className="section-note">This is one view of the canonical device configuration; it is not an independent copy.</p><pre className="configuration-view">{JSON.stringify(document.configurations[node.id] ?? {}, null, 2)}</pre></div>;
+function StructuredConfiguration({
+  document,
+  node,
+  section,
+}: {
+  document: LabDocument;
+  node: LabUiNode;
+  section?: DeviceWindowTab;
+}) {
+  const configuration = document.configurations[node.id] as Record<string, unknown> | undefined;
+  const selected = section && configuration && section in configuration
+    ? configuration[section]
+    : configuration ?? {};
+  return <div className="device-window-section"><p className="section-eyebrow">Worker-owned configuration</p><p className="section-note">This is one redacted view of the canonical device configuration; it is not an independent copy.</p><pre className="configuration-view">{JSON.stringify(redactCredentialMaterial(selected), null, 2)}</pre></div>;
+}
+
+function redactCredentialMaterial(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactCredentialMaterial);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+    key,
+    /(?:password|credential|secret).*verifier|verifier|passphrase|plaintext/iu.test(key)
+      ? "Security key configured"
+      : redactCredentialMaterial(entry),
+  ]));
 }
 
 function Interfaces({ node }: { node: LabUiNode }) {
@@ -334,6 +434,51 @@ function Desktop({
   );
 }
 
+function SmartphoneApps({
+  client,
+  node,
+  runtimeAvailable,
+  onError,
+}: {
+  client: SimulatorClient;
+  node: LabUiNode;
+  runtimeAvailable: boolean;
+  onError(message: string): void;
+}) {
+  const [target, setTarget] = useState("192.168.1.1");
+  const [output, setOutput] = useState("Choose Ping, DNS lookup, or Web client.");
+  const execute = async (input: string) => {
+    if (!runtimeAvailable) {
+      setOutput("Start the lab to use network apps.");
+      return;
+    }
+    try {
+      const result = await client.request({
+        type: "EXECUTE_CLI",
+        sessionId: `smartphone-apps:${node.id}`,
+        deviceId: node.id,
+        input,
+      });
+      setOutput(result.output || "Operation queued in Step mode. Open Packet Trace and use Step or Run All.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Smartphone app failed";
+      setOutput(message);
+      onError(message);
+    }
+  };
+  return <div className="device-window-section smartphone-apps">
+    <p className="section-eyebrow">Network apps</p>
+    <h2>Smartphone utilities</h2>
+    <label>Address or hostname<input value={target} onChange={(event) => setTarget(event.target.value)} /></label>
+    <div>
+      <Button onClick={() => void execute(`ping ${target}`)}>Ping</Button>
+      <Button onClick={() => void execute(`nslookup ${target}`)}>DNS lookup</Button>
+      <Button onClick={() => void execute(`sim http get http://${target}/`)}>Web client</Button>
+    </div>
+    <pre className="desktop-tool-output">{output}</pre>
+  </div>;
+}
+
 function DraftRuntimeNotice() {
   return <div className="device-window-section"><p className="section-eyebrow">Pending rebuild</p><h2>Start the lab to open this tool</h2><p>This device exists in the topology draft. Its runtime tools become available after Apply &amp; Rebuild.</p></div>;
 }
@@ -342,7 +487,7 @@ function TerminalWorkspaceLauncher({ node, onOpen }: { node: LabUiNode; onOpen()
   return <div className="device-window-section terminal-workspace-launcher">
     <span className="terminal-workspace-launcher__icon"><TerminalSquare size={28} aria-hidden="true" /></span>
     <p className="section-eyebrow">Unified terminal workspace</p>
-    <h2>{node.hostname} {node.type === "pc" ? "Command Prompt" : "CLI"}</h2>
+    <h2>{node.hostname} {node.type === "pc" || node.type === "laptop" ? "Command Prompt" : "CLI"}</h2>
     <p>Open this device in the shared terminal workspace. Docking, floating, or maximizing keeps the same session, login state, command history, and scrollback.</p>
     <Button variant="primary" onClick={onOpen}>Open in Terminal Workspace</Button>
   </div>;

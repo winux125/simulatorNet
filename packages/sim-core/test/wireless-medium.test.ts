@@ -206,6 +206,23 @@ describe("deterministic wireless medium", () => {
     ]));
   });
 
+  it("keeps an existing association operational after an active scan", () => {
+    const engine = createSimulationEngine({ seed: 106 });
+    registerStation(engine, "laptop", 1, { frames: [] });
+    registerAccessPoint(engine, "ap1", 100, { frames: [] });
+
+    engine.wireless.connect("laptop", "wlan0");
+    engine.runUntilIdle();
+    engine.wireless.scan("laptop", "wlan0");
+    engine.runUntilIdle();
+
+    expect(engine.wireless.status("laptop", "wlan0")).toMatchObject({
+      state: "associated",
+      accessPointDeviceId: "ap1",
+    });
+    expect(engine.wireless.isOperational("laptop", "wlan0")).toBe(true);
+  });
+
   it("delivers station and AP data without creating an Ethernet link", () => {
     const engine = createSimulationEngine({ seed: 106 });
     const stationCapture = { frames: [] as EthernetFrame[] };

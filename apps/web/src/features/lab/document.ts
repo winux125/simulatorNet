@@ -314,7 +314,11 @@ export function mergeRunningConfiguration(running: LabDocument, draft: LabDocume
 
 export function hostIpConfigurationFromDocument(document: LabDocument, nodeId: string): HostIpConfiguration | undefined {
   const configuration = document.configurations[nodeId];
-  if (configuration?.kind === "pc") {
+  if (
+    configuration?.kind === "pc"
+    || configuration?.kind === "laptop"
+    || configuration?.kind === "smartphone"
+  ) {
     return {
       mode: configuration.dhcpEnabled ? "dhcp" : "static",
       address: configuration.ipv4?.address,
@@ -338,7 +342,12 @@ export function hostIpConfigurationFromDocument(document: LabDocument, nodeId: s
 
 export function hostIpv6ConfigurationFromDocument(document: LabDocument, nodeId: string): HostIpv6Config | undefined {
   const configuration = document.configurations[nodeId];
-  if (configuration?.kind === "pc" || configuration?.kind === "server") {
+  if (
+    configuration?.kind === "pc"
+    || configuration?.kind === "server"
+    || configuration?.kind === "laptop"
+    || configuration?.kind === "smartphone"
+  ) {
     return configuration.ipv6 ?? { mode: "static" };
   }
   return undefined;
@@ -350,7 +359,12 @@ export function withHostIpv6Configuration(
   ipv6: HostIpv6Config,
 ): LabDocument {
   const configuration = document.configurations[nodeId];
-  if (configuration?.kind !== "pc" && configuration?.kind !== "server") return document;
+  if (
+    configuration?.kind !== "pc"
+    && configuration?.kind !== "server"
+    && configuration?.kind !== "laptop"
+    && configuration?.kind !== "smartphone"
+  ) return document;
   return {
     ...document,
     configurations: {
@@ -366,7 +380,11 @@ export function withHostStaticConfiguration(
   next: HostStaticConfiguration,
 ): LabDocument {
   const configuration = document.configurations[nodeId];
-  if (configuration?.kind === "pc") {
+  if (
+    configuration?.kind === "pc"
+    || configuration?.kind === "laptop"
+    || configuration?.kind === "smartphone"
+  ) {
     return {
       ...document,
       configurations: {
@@ -425,7 +443,11 @@ export function withHostStaticConfiguration(
 
 export function withHostDhcpMode(document: LabDocument, nodeId: string): LabDocument {
   const configuration = document.configurations[nodeId];
-  if (configuration?.kind === "pc") {
+  if (
+    configuration?.kind === "pc"
+    || configuration?.kind === "laptop"
+    || configuration?.kind === "smartphone"
+  ) {
     return {
       ...document,
       configurations: {

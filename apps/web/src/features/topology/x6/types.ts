@@ -54,6 +54,20 @@ export interface LinkView {
 export interface TopologyView {
   nodes: Record<string, NodeView>;
   links: Record<string, LinkView>;
+  wirelessAssociations?: Array<{
+    id: string;
+    stationDeviceId: string;
+    accessPointDeviceId: string;
+    ssid: string;
+    state:
+      | "disabled"
+      | "disconnected"
+      | "scanning"
+      | "authenticating"
+      | "associating"
+      | "associated"
+      | "failed";
+  }>;
   /** `editing` blanks the rendered text while the inline editor draws it live. */
   annotations?: Record<string, { selected: boolean; editing?: boolean }>;
 }

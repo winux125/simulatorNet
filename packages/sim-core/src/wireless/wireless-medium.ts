@@ -52,6 +52,8 @@ export interface WirelessStationRegistration {
   readonly deviceId: string;
   readonly interface: WirelessInterfaceConfiguration;
   readonly receive: (frame: EthernetFrame) => void;
+  /** Data-link became operational; higher layers may resume bounded address protocols. */
+  readonly onAssociated?: (roamed: boolean) => void;
   readonly preferredSsid?: string;
   readonly preferredBssid?: Mac;
   readonly autoConnect?: boolean;
@@ -291,6 +293,8 @@ export class WirelessMedium {
 
   scan(deviceId: string, interfaceId: string, explicitSsid?: string): void {
     const station = this.requireStation(deviceId, interfaceId);
+    const restoreAssociated = station.state === "associated"
+      && station.associatedAccessPointKey !== undefined;
     station.connectionGeneration++;
     const generation = station.connectionGeneration;
     station.scanResults = [];
@@ -333,7 +337,7 @@ export class WirelessMedium {
       station.key,
       generation,
       () => {
-        station.state = "disconnected";
+        station.state = restoreAssociated ? "associated" : "disconnected";
       },
     );
   }
@@ -376,6 +380,7 @@ export class WirelessMedium {
       : undefined;
     if (
       currentAccessPoint
+      && station.state === "associated"
       && currentAccessPoint.configuration.ssid === effectiveRequest.ssid
       && (requestedBssid === undefined || currentAccessPoint.bssid === requestedBssid)
       && securityMatches(currentAccessPoint.configuration.security, effectiveRequest)
@@ -705,6 +710,7 @@ export class WirelessMedium {
           bssid: accessPoint.bssid,
         },
       });
+      station.onAssociated?.(Boolean(roamingFromBssid && roamingFromBssid !== accessPoint.bssid));
       if (roamingFromBssid && roamingFromBssid !== accessPoint.bssid) {
         station.lastRoamedFromBssid = roamingFromBssid;
         station.lastRoamedAtNs = this.engine.now();

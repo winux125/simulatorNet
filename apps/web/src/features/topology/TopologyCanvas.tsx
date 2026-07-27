@@ -113,6 +113,7 @@ interface TopologyCanvasProps {
   selectedLinkId: string | undefined;
   terminalTabs: string[];
   portLabelMode: PortLabelMode;
+  wirelessAssociationsShown: boolean;
   fitRequest: number;
   zoomResetRequest: number;
   zoomInRequest: number;
@@ -396,12 +397,25 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     && textEditing === undefined;
 
   const view = useMemo<TopologyView>(() => {
-    const result: TopologyView = { nodes: {}, links: {}, annotations: {} };
+    const result: TopologyView = {
+      nodes: {},
+      links: {},
+      annotations: {},
+      wirelessAssociations: props.wirelessAssociationsShown
+        ? props.snapshot?.wirelessAssociations?.map((association) => ({
+            ...association,
+            state: association.state,
+          }))
+        : [],
+    };
     if (!props.document) return result;
     for (const node of props.document.topology.nodes) {
       const live = status.get(node.id);
       const ip = live?.interfaces.find((iface) => iface.ipAddress)?.ipAddress;
-      const subtitle = node.kind === "pc" || node.kind === "server"
+      const subtitle = node.kind === "pc"
+        || node.kind === "server"
+        || node.kind === "laptop"
+        || node.kind === "smartphone"
         ? ip ?? "No IPv4 address"
         : `${node.interfaces.length} ports`;
       const original = props.snapshot?.nodes.find((candidate) => candidate.id === node.id);
@@ -423,7 +437,11 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           terminalOpen: props.terminalTabs.includes(node.id),
           configurationChanged: changed,
           // An appliance with no known/supported interfaces cannot be wired.
-          connectable: cableHandleAvailable && node.interfaces.length > 0,
+          connectable: cableHandleAvailable && getDeviceProfile(node.kind).interfaceTemplates
+            .some((template) =>
+              template.media !== "wireless"
+              && node.interfaces.some((iface) => iface.id === template.id),
+            ),
           onActivate: activateNode,
           onOpen: props.onOpenDevice,
           onConnectStart: startConnection,

@@ -136,12 +136,19 @@ describe("wireless devices", () => {
       credentialVerifier: TEST_WPA2_VERIFIER,
       autoConnect: false,
     });
+    laptop.setWirelessPreferences({
+      autoConnect: true,
+      preferredSsid: "Secure Lab",
+    });
 
     expect(laptop.wirelessConfigurationSnapshot().savedNetworks).toHaveLength(1);
     expect(JSON.stringify(engine.traceLog)).not.toContain(TEST_WPA2_VERIFIER.hashBase64);
 
     laptop.forgetWirelessNetwork("secure-lab");
-    expect(laptop.wirelessConfigurationSnapshot().savedNetworks).toEqual([]);
+    expect(laptop.wirelessConfigurationSnapshot()).toMatchObject({
+      savedNetworks: [],
+      autoConnect: false,
+    });
   });
 
   it("reuses EndHost DHCP and ping through an AP Ethernet bridge", () => {
@@ -324,6 +331,43 @@ describe("wireless devices", () => {
       lan: { dhcpEnabled: true },
       wan: { mode: "static" },
     });
+  });
+
+  it("reuses the bounded EndHost DORA client for wireless-router WAN DHCP", () => {
+    const engine = createSimulationEngine({ seed: 106 });
+    engine.enableTrace();
+    const provider = engine.add(new Router("provider", "ISP"));
+    provider.addInterface("Gi0/0", macFromIndex(400));
+    provider.configureInterface("Gi0/0", { ip: "203.0.113.1", mask: 24 });
+    provider.addDhcpPool({
+      network: "203.0.113.0",
+      mask: 24,
+      gateway: "203.0.113.1",
+      rangeStart: "203.0.113.20",
+      rangeEnd: "203.0.113.30",
+    });
+    const homeRouter = engine.add(new WirelessRouter("home-router", "HOME"));
+    for (const [index, name] of ["LAN1", "LAN2", "LAN3", "LAN4", "WAN"].entries()) {
+      homeRouter.addInterface(name, macFromIndex(300 + index));
+    }
+    homeRouter.configureHomeNetwork(radio(306), {
+      ...homeRouterConfiguration(),
+      wan: { mode: "dhcp" },
+    });
+    engine.connect(homeRouter.id, "WAN", provider.id, "Gi0/0");
+
+    engine.runUntilIdle();
+
+    expect(homeRouter.wanRuntimeStatus()).toMatchObject({
+      mode: "dhcp",
+      state: "bound",
+      address: "203.0.113.20",
+      defaultGateway: "203.0.113.1",
+    });
+    expect(homeRouter.configurationSnapshot().wan).toEqual({ mode: "dhcp" });
+    expect(engine.traceLog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "wireless-router-wan-dhcp-bound", device: homeRouter.id }),
+    ]));
   });
 });
 

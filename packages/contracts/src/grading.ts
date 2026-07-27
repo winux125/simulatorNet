@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DeviceCapabilitySchema, DeviceTypeSchema } from "./devices";
+import { WirelessSecurityModeSchema } from "./wireless";
 import {
   Ipv4Schema,
   Ipv6CidrSchema,
@@ -526,6 +527,85 @@ export const Ipv6PacketDeniedGradingCheckSchema = CheckIdentitySchema.extend({
   configuration: Ipv6PacketPolicyActionSchema,
 });
 
+// --- M10.6 deterministic wireless checks ----------------------------------
+
+export const WirelessAssociatedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("wireless-associated"),
+  configuration: z.object({
+    stationDeviceId: z.string().min(1),
+    accessPointDeviceId: z.string().min(1).optional(),
+  }),
+});
+
+export const WirelessSsidGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("wireless-ssid"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    expectedSsid: z.string().min(1).max(32),
+  }),
+});
+
+export const WirelessSecurityGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("wireless-security"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    expectedMode: WirelessSecurityModeSchema,
+  }),
+});
+
+export const WirelessClientCountGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("wireless-client-count"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    minimumClients: z.number().int().nonnegative().default(1),
+    maximumClients: z.number().int().nonnegative().optional(),
+  }),
+});
+
+export const WirelessIpv4GradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("wireless-ipv4"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    expectedSubnet: Ipv4CidrSchema,
+  }),
+});
+
+export const WirelessIpv6GradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("wireless-ipv6"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    expectedPrefix: Ipv6CidrSchema,
+  }),
+});
+
+export const WirelessConnectivityGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("wireless-connectivity"),
+  configuration: z.object({
+    sourceDeviceId: z.string().min(1),
+    destination: z.union([Ipv4Schema, Ipv6Schema]),
+    expected: z.enum(["success", "failure"]).default("success"),
+  }),
+});
+
+export const WirelessRoamedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("wireless-roamed"),
+  configuration: z.object({
+    stationDeviceId: z.string().min(1),
+    expectedFromBssid: z.string().min(11).max(32).optional(),
+    expectedToAccessPointDeviceId: z.string().min(1).optional(),
+    /** Optional hidden deterministic action used to grade failover behavior. */
+    triggerAccessPointShutdownDeviceId: z.string().min(1).optional(),
+  }),
+});
+
+export const WirelessRouterNatGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("wireless-router-nat"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    expectedEnabled: z.boolean().default(true),
+  }),
+});
+
 export const GradingCheckSchema = z.discriminatedUnion("type", [
   PingGradingCheckSchema,
   InterfaceStateGradingCheckSchema,
@@ -584,6 +664,15 @@ export const GradingCheckSchema = z.discriminatedUnion("type", [
   Ipv6AclRuleGradingCheckSchema,
   Ipv6PacketPermittedGradingCheckSchema,
   Ipv6PacketDeniedGradingCheckSchema,
+  WirelessAssociatedGradingCheckSchema,
+  WirelessSsidGradingCheckSchema,
+  WirelessSecurityGradingCheckSchema,
+  WirelessClientCountGradingCheckSchema,
+  WirelessIpv4GradingCheckSchema,
+  WirelessIpv6GradingCheckSchema,
+  WirelessConnectivityGradingCheckSchema,
+  WirelessRoamedGradingCheckSchema,
+  WirelessRouterNatGradingCheckSchema,
 ]);
 export type GradingCheck = z.infer<typeof GradingCheckSchema>;
 

@@ -67,7 +67,8 @@ const ipv6PacketPrefixes = [
 function isPacketTraceEvent(event: SimulationTraceEvent): boolean {
   const type = event.type.toLowerCase();
   return packetTypes.has(event.type)
-    || ipv6PacketPrefixes.some((prefix) => type.startsWith(prefix));
+    || ipv6PacketPrefixes.some((prefix) => type.startsWith(prefix))
+    || type.startsWith("wireless-");
 }
 
 /** Packet-trace protocol filters, in the order the dropdown lists them. */
@@ -76,6 +77,7 @@ export const TRACE_PROTOCOL_FILTERS = [
   "ACL", "NAT", "FIREWALL", "CLOUD", "TRAFFIC",
   "STP", "RSTP", "LACP", "PAGP", "CDP", "LLDP", "OSPF",
   "IPv6", "ICMPv6", "NDP", "SLAAC", "DHCPv6", "OSPFv3", "IPv6 ACL",
+  "Wireless", "Beacon", "Probe", "Authentication", "Association", "Roaming",
 ] as const;
 
 /** Tab descriptors shared by the expanded panel and the minimized strip. */
@@ -265,6 +267,16 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
 function traceProtocol(event: SimulationTraceEvent): string {
   const type = event.type.toLowerCase();
   // Control protocols first: their event names are unambiguous prefixes.
+  if (type === "wireless-roamed") return "Roaming";
+  if (type.startsWith("wireless-beacon-")) return "Beacon";
+  if (type.startsWith("wireless-probe-")) return "Probe";
+  if (type.startsWith("wireless-authentication-")) return "Authentication";
+  if (
+    type === "wireless-associated"
+    || type === "wireless-disassociated"
+    || type === "wireless-deauthenticated"
+  ) return "Association";
+  if (type.startsWith("wireless-")) return "Wireless";
   if (type.startsWith("ipv6-acl-")) return "IPv6 ACL";
   if (type.startsWith("ospfv3-")) return "OSPFv3";
   if (type.startsWith("dhcpv6-")) return "DHCPv6";

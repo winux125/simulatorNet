@@ -91,6 +91,15 @@ stored. Recognized console-access intent may be converted into SimulatorNet's
 own credential flow; otherwise the report marks that a credential reset is
 required. Never present imported vendor authentication as if it remained valid.
 
+Wireless source kinds are mapped conservatively: an explicit AP becomes an
+Access Point, a combined home/wireless gateway becomes a Wireless Router, a
+laptop becomes a Laptop, and an unambiguous phone/tablet-like end device becomes
+a Smartphone. Ambiguous appliances remain External Appliance placeholders.
+Recognized plaintext wireless keys are converted immediately into an
+SSID-scoped SimulatorNet verifier and the raw source line is redacted from the
+report. Unsupported vendor hashes and enterprise security settings are never
+reused; the report records **Credential Reset Required**.
+
 ## Images and executable content
 
 Vendor appliance images, VM disks, kernels, executables, scripts, and nested

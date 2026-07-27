@@ -2,6 +2,9 @@ import { createCliSession, type CliSession } from "@sim/cli-engine";
 import {
   HostStaticConfigurationSchema,
   HostIpv6ConfigSchema,
+  PasswordVerifierSchema,
+  WirelessAccessPointConfigurationSchema,
+  WirelessSecurityConfigurationSchema,
   DeviceConfigSchema,
   ServerServiceConfigSchema,
   type DeviceConfig,
@@ -31,9 +34,11 @@ import {
   Server,
   TrafficGenerator,
   WirelessRouter,
+  WirelessEndHost,
   Firewall,
   IspCloud,
   type Device,
+  type Mac,
   type TraceEntry,
 } from "@sim/sim-core";
 import { SimulationWorkerError, serializeWorkerError } from "./errors";
@@ -41,6 +46,7 @@ import type {
   EngineUiState,
   DeviceInspection,
   HostNetworkStatus,
+  HostNetworkWarning,
   HostIpv6NetworkStatus,
   LabUiInterface,
   LabUiNode,
@@ -57,6 +63,8 @@ import type {
   SecurityConfigurationView,
   SecurityDeviceConfiguration,
   Ospfv3View,
+  WirelessAccessPointView,
+  WirelessStationView,
 } from "./protocol";
 
 interface CliSessionEntry {
@@ -85,6 +93,29 @@ function describeTrace(entry: TraceEntry): string {
   const detail = entry.detail ?? {};
   const fragments = Object.entries(detail).slice(0, 3).map(([key, value]) => `${key}=${String(value)}`);
   return fragments.length > 0 ? `${entry.type}: ${fragments.join(", ")}` : entry.type;
+}
+
+function wirelessFailureCode(
+  reason: string | undefined,
+): HostNetworkWarning["code"] {
+  if (reason === "authentication-failed") return "wireless-authentication-failed";
+  if (reason === "incompatible-band-or-channel") return "wireless-incompatible-radio";
+  if (reason === "access-point-client-limit") return "wireless-client-limit";
+  if (reason === "wireless-interface-disabled") return "wireless-interface-disabled";
+  return "wireless-no-access-point";
+}
+
+function wirelessFailureMessage(reason: string | undefined): string | undefined {
+  if (reason === "authentication-failed") {
+    return "Authentication failed. The wireless security key is incorrect.";
+  }
+  if (reason === "no-access-point") return "No access point with the requested SSID was found.";
+  if (reason === "incompatible-band-or-channel") {
+    return "No compatible access point is available on this radio band and channel set.";
+  }
+  if (reason === "access-point-client-limit") return "The access point client limit has been reached.";
+  if (reason === "wireless-interface-disabled") return "The wireless interface is disabled.";
+  return undefined;
 }
 
 export class SimulationWorkerRuntime {
@@ -163,6 +194,30 @@ export class SimulationWorkerRuntime {
         return this.releaseHostDhcpv6(requireString(request, "deviceId"));
       case "GET_HOST_IPV6_NETWORK_STATUS":
         return this.hostIpv6NetworkStatus(requireString(request, "deviceId"));
+      case "SCAN_WIRELESS_NETWORKS":
+        return this.scanWirelessNetworks(requireString(request, "deviceId"), request.explicitSsid);
+      case "CONNECT_WIRELESS_NETWORK":
+        return this.connectWirelessNetwork(requireString(request, "deviceId"), request);
+      case "DISCONNECT_WIRELESS_NETWORK":
+        return this.disconnectWirelessNetwork(requireString(request, "deviceId"));
+      case "FORGET_WIRELESS_NETWORK":
+        return this.forgetWirelessNetwork(
+          requireString(request, "deviceId"),
+          requireString(request, "profileId"),
+        );
+      case "GET_WIRELESS_STATUS":
+        return this.wirelessStationView(requireString(request, "deviceId"));
+      case "GET_AP_CLIENTS":
+        return this.wirelessAccessPointView(requireString(request, "deviceId"));
+      case "CONFIGURE_ACCESS_POINT":
+        return this.configureAccessPoint(requireString(request, "deviceId"), request.configuration);
+      case "SET_WIRELESS_SECURITY":
+        return this.setWirelessSecurity(requireString(request, "deviceId"), request.security);
+      case "DISCONNECT_AP_CLIENT":
+        return this.disconnectAccessPointClient(
+          requireString(request, "deviceId"),
+          requireString(request, "stationDeviceId"),
+        );
       case "GET_SERVER_SERVICES":
         return this.serverServices(requireString(request, "deviceId"));
       case "CONFIGURE_SERVER_SERVICE":
@@ -289,6 +344,8 @@ export class SimulationWorkerRuntime {
       if (config?.kind === "pc" && config.dhcpEnabled) this.builtLab.getPc(node.id)?.requestDhcp();
       if (config?.kind === "server" && config.dhcpClientEnabled) this.builtLab.getServer(node.id)?.requestDhcp();
     }
+    // Wireless stations resume DHCP/SLAAC/DHCPv6 from the medium's
+    // association-complete callback, identically in worker and verifier.
     this.builtLab.engine.runUntilIdle();
   }
 
@@ -503,6 +560,25 @@ export class SimulationWorkerRuntime {
         targetNode: link.b.node,
         targetInterface: link.b.iface,
       })),
+      wirelessAssociations: document.topology.nodes.flatMap((node) => {
+        const device = built.getDevice(node.id);
+        if (!(device instanceof WirelessEndHost)) return [];
+        const status = device.wirelessStatus();
+        if (
+          status.state !== "associated"
+          || !status.accessPointDeviceId
+          || !status.ssid
+          || !status.bssid
+        ) return [];
+        return [{
+          id: `wireless:${node.id}:${status.accessPointDeviceId}`,
+          stationDeviceId: node.id,
+          accessPointDeviceId: status.accessPointDeviceId,
+          ssid: status.ssid,
+          bssid: status.bssid,
+          state: status.state,
+        }];
+      }),
     };
   }
 
@@ -974,7 +1050,39 @@ export class SimulationWorkerRuntime {
     const records = [...this.requireBuiltLab().devices.values()]
       .filter((device): device is EndHost => device instanceof EndHost && device.ip !== undefined)
       .map((device) => ({ deviceId: device.id, address: device.ip! }));
-    return findDuplicateHostAddresses(document, records);
+    const warnings: HostNetworkWarning[] = findDuplicateHostAddresses(document, records);
+    for (const device of this.requireBuiltLab().devices.values()) {
+      if (device instanceof WirelessEndHost) {
+        const status = device.wirelessStatus();
+        const message = wirelessFailureMessage(status.failureReason);
+        if (message) {
+          warnings.push({
+            code: wirelessFailureCode(status.failureReason),
+            message,
+            deviceIds: [device.id],
+          });
+        }
+        if (status.state === "associated" && device.dhcpEnabled && device.dhcpState === "failed") {
+          warnings.push({
+            code: "wireless-no-dhcp",
+            message: "No DHCP server responded after wireless association.",
+            deviceIds: [device.id],
+          });
+        }
+      }
+      if (
+        device instanceof AccessPoint
+        && device.associatedClients().length > 0
+        && !device.getInterface("eth0")?.operationalUp
+      ) {
+        warnings.push({
+          code: "access-point-no-uplink",
+          message: "Access Point has associated clients but no operational wired uplink.",
+          deviceIds: [device.id],
+        });
+      }
+    }
+    return warnings;
   }
 
   private emitHostWarnings(): void {
@@ -1016,6 +1124,194 @@ export class SimulationWorkerRuntime {
         ? device.listServices().filter((service) => service.state === "listening").map((service) => service.type.toUpperCase())
         : undefined,
     };
+  }
+
+  private requireWirelessStation(deviceId: string): WirelessEndHost {
+    const device = this.requireBuiltLab().getDevice(deviceId);
+    if (!(device instanceof WirelessEndHost)) {
+      throw new SimulationWorkerError(
+        "wireless-station-required",
+        `Device '${deviceId}' is not a wireless station`,
+      );
+    }
+    return device;
+  }
+
+  private requireAccessPointDevice(deviceId: string): AccessPoint | WirelessRouter {
+    const device = this.requireBuiltLab().getDevice(deviceId);
+    if (!(device instanceof AccessPoint) && !(device instanceof WirelessRouter)) {
+      throw new SimulationWorkerError(
+        "access-point-required",
+        `Device '${deviceId}' is not an Access Point or Wireless Router`,
+      );
+    }
+    return device;
+  }
+
+  private runWirelessAction(): void {
+    if (this.executionMode === "auto") this.requireBuiltLab().engine.runUntilIdle();
+    this.serialize();
+    this.emitStateChanged();
+    this.emitHostWarnings();
+    this.flushTrace();
+  }
+
+  private wirelessStationView(deviceId: string): WirelessStationView {
+    const station = this.requireWirelessStation(deviceId);
+    return {
+      deviceId,
+      configuration: station.wirelessConfigurationSnapshot(),
+      status: station.wirelessStatus(),
+      networks: station.wirelessScanResults(),
+      document: this.serialize(),
+    };
+  }
+
+  private scanWirelessNetworks(deviceId: string, explicitSsid: unknown): WirelessStationView {
+    if (explicitSsid !== undefined && (typeof explicitSsid !== "string" || explicitSsid.length > 32)) {
+      throw new SimulationWorkerError("invalid-ssid", "Explicit SSID must be a string of at most 32 characters");
+    }
+    this.requireWirelessStation(deviceId).scanWirelessNetworks(explicitSsid as string | undefined);
+    this.runWirelessAction();
+    return this.wirelessStationView(deviceId);
+  }
+
+  private connectWirelessNetwork(
+    deviceId: string,
+    input: Record<string, unknown>,
+  ): WirelessStationView {
+    const station = this.requireWirelessStation(deviceId);
+    const ssid = requireString(input, "ssid");
+    if (ssid.length === 0 || ssid.length > 32) {
+      throw new SimulationWorkerError("invalid-ssid", "SSID must contain between 1 and 32 characters");
+    }
+    const securityMode = input.securityMode;
+    if (securityMode !== "open" && securityMode !== "wpa2-personal") {
+      throw new SimulationWorkerError("invalid-wireless-security", "Wireless security must be open or wpa2-personal");
+    }
+    const preferredBssid = input.preferredBssid;
+    if (preferredBssid !== undefined && typeof preferredBssid !== "string") {
+      throw new SimulationWorkerError("invalid-bssid", "Preferred BSSID must be a string");
+    }
+    const saveNetwork = input.saveNetwork;
+    if (typeof saveNetwork !== "boolean") {
+      throw new SimulationWorkerError("invalid-request", "saveNetwork must be a boolean");
+    }
+    const verifier = input.credentialVerifier === undefined
+      ? undefined
+      : PasswordVerifierSchema.safeParse(input.credentialVerifier);
+    if (verifier && !verifier.success) {
+      throw new SimulationWorkerError("invalid-wireless-credential", "Wireless credential verifier is invalid");
+    }
+    if (securityMode === "wpa2-personal" && !verifier?.success) {
+      throw new SimulationWorkerError(
+        "wireless-credential-required",
+        "A configured WPA2 security key is required",
+      );
+    }
+    if (saveNetwork) {
+      station.saveWirelessNetwork({
+        id: `saved:${ssid}`,
+        ssid,
+        securityMode,
+        credentialVerifier: verifier?.success ? verifier.data : undefined,
+        autoConnect: true,
+        preferredBssid: preferredBssid as string | undefined,
+      });
+      station.setWirelessPreferences({
+        autoConnect: true,
+        preferredSsid: ssid,
+        preferredBssid: preferredBssid as string | undefined,
+      });
+    }
+    station.connectWireless({
+      ssid,
+      preferredBssid: preferredBssid as Mac | undefined,
+      securityMode,
+      credentialFingerprint: verifier?.success ? verifier.data.hashBase64 : undefined,
+    });
+    this.runWirelessAction();
+    return this.wirelessStationView(deviceId);
+  }
+
+  private disconnectWirelessNetwork(deviceId: string): WirelessStationView {
+    this.requireWirelessStation(deviceId).disconnectWireless();
+    this.runWirelessAction();
+    return this.wirelessStationView(deviceId);
+  }
+
+  private forgetWirelessNetwork(deviceId: string, profileId: string): WirelessStationView {
+    this.requireWirelessStation(deviceId).forgetWirelessNetwork(profileId);
+    this.runWirelessAction();
+    return this.wirelessStationView(deviceId);
+  }
+
+  private wirelessAccessPointView(deviceId: string): WirelessAccessPointView {
+    const accessPoint = this.requireAccessPointDevice(deviceId);
+    const configuration = accessPoint instanceof AccessPoint
+      ? accessPoint.configurationSnapshot().accessPoint
+      : accessPoint.configurationSnapshot().accessPoint;
+    const clients = accessPoint.associatedClients().map((client) => {
+      const device = this.requireBuiltLab().getDevice(client.deviceId);
+      const host = device instanceof EndHost ? device : undefined;
+      return {
+        deviceId: client.deviceId,
+        hostname: device?.name ?? client.deviceId,
+        macAddress: client.macAddress,
+        associatedAtNs: client.associatedAtNs,
+        ipv4Address: host?.ip,
+        ipv6Addresses: host?.ipv6AddressSummaries().map((entry) => entry.address) ?? [],
+        security: configuration.security.mode,
+      };
+    });
+    return {
+      deviceId,
+      configuration,
+      clients,
+      document: this.serialize(),
+    };
+  }
+
+  private configureAccessPoint(deviceId: string, input: unknown): WirelessAccessPointView {
+    const parsed = WirelessAccessPointConfigurationSchema.safeParse(input);
+    if (!parsed.success) {
+      throw new SimulationWorkerError(
+        "invalid-access-point-configuration",
+        parsed.error.issues[0]?.message ?? "Access Point configuration is invalid",
+      );
+    }
+    this.requireAccessPointDevice(deviceId).updateWireless(parsed.data);
+    this.runWirelessAction();
+    return this.wirelessAccessPointView(deviceId);
+  }
+
+  private setWirelessSecurity(deviceId: string, input: unknown): WirelessAccessPointView {
+    const parsed = WirelessSecurityConfigurationSchema.safeParse(input);
+    if (!parsed.success) {
+      throw new SimulationWorkerError("invalid-wireless-security", "Wireless security configuration is invalid");
+    }
+    const accessPoint = this.requireAccessPointDevice(deviceId);
+    const current = accessPoint instanceof AccessPoint
+      ? accessPoint.configurationSnapshot().accessPoint
+      : accessPoint.configurationSnapshot().accessPoint;
+    accessPoint.updateWireless({ ...current, security: parsed.data });
+    this.runWirelessAction();
+    return this.wirelessAccessPointView(deviceId);
+  }
+
+  private disconnectAccessPointClient(
+    deviceId: string,
+    stationDeviceId: string,
+  ): WirelessAccessPointView {
+    const accessPoint = this.requireAccessPointDevice(deviceId);
+    if (!accessPoint.disconnectClient(stationDeviceId)) {
+      throw new SimulationWorkerError(
+        "wireless-client-not-associated",
+        `Device '${stationDeviceId}' is not associated with '${deviceId}'`,
+      );
+    }
+    this.runWirelessAction();
+    return this.wirelessAccessPointView(deviceId);
   }
 
   private serverServices(deviceId: string): ServerServicesView {

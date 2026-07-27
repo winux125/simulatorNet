@@ -6,7 +6,13 @@ import type {
   HostStaticConfiguration,
   LabDocument,
   DeviceConfig,
+  PasswordVerifier,
   ServerServiceConfig,
+  WirelessAccessPointConfiguration,
+  WirelessAssociationStatus,
+  WirelessNetworkSummary,
+  WirelessSecurityConfiguration,
+  WirelessStationConfiguration,
 } from "@sim/contracts";
 import type { CliMode } from "@sim/cli-engine";
 import type {
@@ -67,6 +73,16 @@ export interface LabUiLink {
   targetInterface: string;
 }
 
+/** Runtime-only WLAN association overlay. It is never a structural LabDocument link. */
+export interface LabUiWirelessAssociation {
+  id: string;
+  stationDeviceId: string;
+  accessPointDeviceId: string;
+  ssid: string;
+  bssid: string;
+  state: WirelessAssociationStatus["state"];
+}
+
 export interface LabUiSnapshot {
   labId: string;
   title: string;
@@ -75,6 +91,7 @@ export interface LabUiSnapshot {
   queuedEvents: number;
   nodes: LabUiNode[];
   links: LabUiLink[];
+  wirelessAssociations?: LabUiWirelessAssociation[];
 }
 
 export interface SimulationTraceEvent {
@@ -224,10 +241,18 @@ export interface ServerServicesView {
 }
 
 export interface HostNetworkWarning {
-  code: "duplicate-ip";
+  code:
+    | "duplicate-ip"
+    | "wireless-authentication-failed"
+    | "wireless-no-access-point"
+    | "wireless-incompatible-radio"
+    | "wireless-client-limit"
+    | "wireless-interface-disabled"
+    | "wireless-no-dhcp"
+    | "access-point-no-uplink";
   message: string;
-  address: string;
-  deviceIds: readonly [string, string];
+  address?: string;
+  deviceIds: readonly string[];
 }
 
 export interface HostNetworkStatus {
@@ -278,6 +303,31 @@ export interface HostIpv6NetworkStatus {
     }>;
     problems: string[];
   };
+}
+
+export interface WirelessStationView {
+  deviceId: string;
+  configuration: WirelessStationConfiguration;
+  status: WirelessAssociationStatus;
+  networks: WirelessNetworkSummary[];
+  document: LabDocument;
+}
+
+export interface WirelessAccessPointClientView {
+  deviceId: string;
+  hostname: string;
+  macAddress: string;
+  associatedAtNs: number;
+  ipv4Address?: string;
+  ipv6Addresses: string[];
+  security: "open" | "wpa2-personal";
+}
+
+export interface WirelessAccessPointView {
+  deviceId: string;
+  configuration: WirelessAccessPointConfiguration;
+  clients: WirelessAccessPointClientView[];
+  document: LabDocument;
 }
 
 export type SecurityDeviceConfiguration = Extract<
@@ -374,6 +424,24 @@ export type SimWorkerRequest =
   | { type: "RENEW_HOST_DHCPV6"; requestId: string; deviceId: string }
   | { type: "RELEASE_HOST_DHCPV6"; requestId: string; deviceId: string }
   | { type: "GET_HOST_IPV6_NETWORK_STATUS"; requestId: string; deviceId: string }
+  | { type: "SCAN_WIRELESS_NETWORKS"; requestId: string; deviceId: string; explicitSsid?: string }
+  | {
+      type: "CONNECT_WIRELESS_NETWORK";
+      requestId: string;
+      deviceId: string;
+      ssid: string;
+      securityMode: "open" | "wpa2-personal";
+      preferredBssid?: string;
+      credentialVerifier?: PasswordVerifier;
+      saveNetwork: boolean;
+    }
+  | { type: "DISCONNECT_WIRELESS_NETWORK"; requestId: string; deviceId: string }
+  | { type: "FORGET_WIRELESS_NETWORK"; requestId: string; deviceId: string; profileId: string }
+  | { type: "GET_WIRELESS_STATUS"; requestId: string; deviceId: string }
+  | { type: "GET_AP_CLIENTS"; requestId: string; deviceId: string }
+  | { type: "CONFIGURE_ACCESS_POINT"; requestId: string; deviceId: string; configuration: WirelessAccessPointConfiguration }
+  | { type: "SET_WIRELESS_SECURITY"; requestId: string; deviceId: string; security: WirelessSecurityConfiguration }
+  | { type: "DISCONNECT_AP_CLIENT"; requestId: string; deviceId: string; stationDeviceId: string }
   | { type: "GET_SERVER_SERVICES"; requestId: string; deviceId: string }
   | { type: "CONFIGURE_SERVER_SERVICE"; requestId: string; deviceId: string; configuration: ServerServiceConfig }
   | { type: "ENABLE_SERVER_SERVICE"; requestId: string; deviceId: string; serviceId: string }
@@ -408,6 +476,8 @@ export type SimWorkerPayload =
   | HostNetworkStatus
   | HostIpv6Config
   | HostIpv6NetworkStatus
+  | WirelessStationView
+  | WirelessAccessPointView
   | ServerServicesView
   | ServerServiceRuntimeSnapshot
   | SecurityConfigurationView
@@ -468,6 +538,15 @@ export interface SimWorkerPayloadByType {
   RENEW_HOST_DHCPV6: HostIpv6NetworkStatus;
   RELEASE_HOST_DHCPV6: HostIpv6NetworkStatus;
   GET_HOST_IPV6_NETWORK_STATUS: HostIpv6NetworkStatus;
+  SCAN_WIRELESS_NETWORKS: WirelessStationView;
+  CONNECT_WIRELESS_NETWORK: WirelessStationView;
+  DISCONNECT_WIRELESS_NETWORK: WirelessStationView;
+  FORGET_WIRELESS_NETWORK: WirelessStationView;
+  GET_WIRELESS_STATUS: WirelessStationView;
+  GET_AP_CLIENTS: WirelessAccessPointView;
+  CONFIGURE_ACCESS_POINT: WirelessAccessPointView;
+  SET_WIRELESS_SECURITY: WirelessAccessPointView;
+  DISCONNECT_AP_CLIENT: WirelessAccessPointView;
   GET_SERVER_SERVICES: ServerServicesView;
   CONFIGURE_SERVER_SERVICE: ServerServicesView;
   ENABLE_SERVER_SERVICE: ServerServicesView;

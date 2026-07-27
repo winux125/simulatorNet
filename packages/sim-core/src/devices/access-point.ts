@@ -45,13 +45,23 @@ export class AccessPoint extends Device {
 
   updateWireless(configuration: WirelessAccessPointConfiguration): void {
     const iface = this.wirelessInterface;
-    validateMatchingRadio(iface.configurationSnapshot(), configuration);
+    const supportedChannels = configuration.band === "5ghz"
+      ? [36, 40, 44, 48, 149, 153, 157, 161]
+      : [1, 6, 11];
+    if (!supportedChannels.includes(configuration.channel)) {
+      throw new Error(`Access point channel ${configuration.channel} is not supported for ${configuration.band}.`);
+    }
     this.engine.wireless.updateAccessPoint(
       this.id,
       iface.name,
       runtimeAccessPointConfiguration(configuration),
     );
-    iface.setWirelessEnabled(configuration.enabled);
+    iface.updateRadioSettings({
+      enabled: configuration.enabled,
+      band: configuration.band,
+      supportedChannels,
+      radioDomainId: configuration.radioDomainId,
+    });
     this.accessPointConfiguration = cloneAccessPointConfiguration(configuration);
   }
 
