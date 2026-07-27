@@ -26,6 +26,13 @@ export const DEFAULT_CONTROL_PROTOCOL_LIMITS = Object.freeze({
   maximumDiscoveryNeighborsPerLab: 512,
   maximumDiscoveryAdvertisementsPerOperation: 10_000,
 
+  // --- IPv6 neighbour discovery ---------------------------------------
+  maximumIpv6NeighborsPerDevice: 128,
+  maximumPendingIpv6ResolutionsPerDevice: 64,
+  maximumPendingIpv6PacketsPerResolution: 32,
+  maximumDadAttemptsPerAddress: 3,
+  maximumIpv6ControlEventsPerOperation: 20_000,
+
   // --- OSPFv2 ----------------------------------------------------------
   maximumOspfRoutersPerLab: 128,
   maximumOspfNeighborsPerDevice: 64,
@@ -45,6 +52,7 @@ export type ControlProtocolBudgetKey =
   | "topologyChanges"
   | "negotiationEvents"
   | "discoveryAdvertisements"
+  | "ipv6ControlEvents"
   | "lsaFloods"
   | "spfRuns"
   | "adjacencyTransitions"
@@ -56,6 +64,7 @@ const BUDGET_LIMIT_KEYS: Readonly<Record<ControlProtocolBudgetKey, keyof Control
   topologyChanges: "maximumTopologyChangesPerOperation",
   negotiationEvents: "maximumNegotiationEventsPerOperation",
   discoveryAdvertisements: "maximumDiscoveryAdvertisementsPerOperation",
+  ipv6ControlEvents: "maximumIpv6ControlEventsPerOperation",
   lsaFloods: "maximumLsaFloodsPerOperation",
   spfRuns: "maximumSpfRunsPerOperation",
   adjacencyTransitions: "maximumAdjacencyTransitionsPerOperation",

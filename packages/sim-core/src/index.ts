@@ -8,6 +8,7 @@ export * from "./engine/simulation-engine";
 // Wiring
 export * from "./net/link";
 export * from "./net/interface";
+export * from "./net/ipv6-interface";
 
 // Devices
 export * from "./devices/device";
@@ -33,6 +34,8 @@ export * from "./packets/discovery";
 export * from "./packets/ospf";
 export * from "./packets/ipv4";
 export * from "./packets/icmp";
+export * from "./packets/icmpv6";
+export * from "./packets/ipv6";
 export * from "./packets/udp";
 export * from "./packets/tcp";
 export * from "./packets/dhcp";
@@ -48,6 +51,7 @@ export * from "./protocols/spanning-tree";
 export * from "./protocols/etherchannel";
 export * from "./protocols/discovery-support";
 export * from "./protocols/neighbor-discovery";
+export * from "./protocols/ipv6-neighbor-discovery";
 export * from "./protocols/ospf";
 
 // Host transport
@@ -66,3 +70,5 @@ export * from "./services/server-services";
 // Address utilities
 export * from "./util/mac";
 export * from "./util/ipv4";
+export * from "./util/ipv6";
+export * from "./util/ip-address";

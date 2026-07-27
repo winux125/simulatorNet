@@ -10,6 +10,7 @@ import {
 import {
   DEFAULT_DHCP_TIMEOUT_NS,
   DEFAULT_IP_TTL,
+  DEFAULT_IPV6_HOP_LIMIT,
   DEFAULT_PING_TIMEOUT_NS,
   DHCP_CLIENT_PORT,
   DHCP_SERVER_PORT,
@@ -20,6 +21,8 @@ import type { DhcpMessage } from "../packets/dhcp";
 import type { EthernetFrame } from "../packets/ethernet";
 import type { IcmpMessage } from "../packets/icmp";
 import type { Ipv4Packet } from "../packets/ipv4";
+import { Icmpv6Type, type Icmpv6Message } from "../packets/icmpv6";
+import { Ipv6NextHeader, type Ipv6Packet } from "../packets/ipv6";
 import type { UdpDatagram } from "../packets/udp";
 import type { TcpSegment } from "../packets/tcp";
 import { HostTransportStack } from "../transport/host-transport";
@@ -29,6 +32,15 @@ import type { UdpListener, UdpSendOptions } from "../transport/udp";
 import { BROADCAST_IP, type Ipv4, ipsShareNetwork, maskToInt, UNSPECIFIED_IP } from "../util/ipv4";
 import { BROADCAST_MAC, type Mac, normalizeMac, ZERO_MAC } from "../util/mac";
 import { Device } from "./device";
+import { Ipv6InterfaceState, type Ipv6AddressAssignment } from "../net/ipv6-interface";
+import { Ipv6NeighborDiscovery, type Ipv6NeighborEntry } from "../protocols/ipv6-neighbor-discovery";
+import {
+  deterministicLinkLocalAddress,
+  ipv6SameSubnet,
+  isIpv6Multicast,
+  normalizeIpv6,
+  type Ipv6,
+} from "../util/ipv6";
 
 export interface DhcpLease {
   ip: Ipv4;
@@ -83,6 +95,12 @@ export abstract class EndHost extends Device {
 
   readonly arpTable = new Map<Ipv4, Mac>();
   readonly pingResults: PingResult[] = [];
+  readonly ipv6Addresses = new Ipv6InterfaceState();
+  readonly ipv6PingResults: PingResult[] = [];
+  readonly ipv6Problems: string[] = [];
+  private ipv6NeighborRuntime: Ipv6NeighborDiscovery | undefined;
+  private readonly pendingIpv6Pings = new Map<number, PendingPing>();
+  private readonly icmpv6Identifier = 0x6262;
 
   /** DHCP client state (see `requestDhcp`). */
   dhcpState: DhcpState = "idle";
@@ -228,6 +246,84 @@ export abstract class EndHost extends Device {
     this.primaryInterfaceName = name;
   }
 
+  /** Enable IPv6 on the primary interface and create its deterministic link-local address. */
+  enableIpv6(): Ipv6 {
+    const linkLocal = deterministicLinkLocalAddress(this.primary.mac);
+    if (!this.ipv6Addresses.get(linkLocal)) {
+      this.ipv6Addresses.add({
+        address: linkLocal,
+        prefixLength: 64,
+        source: "link-local",
+        state: "tentative",
+      });
+      this.ipv6Discovery().beginDad(linkLocal);
+    }
+    return linkLocal;
+  }
+
+  /** Replace the persistent static global address; runtime NDP state is discarded. */
+  configureIpv6Static(addressInput: Ipv6, prefixLength: number): void {
+    const address = normalizeIpv6(addressInput);
+    if (!Number.isInteger(prefixLength) || prefixLength < 0 || prefixLength > 128) {
+      throw new Error(`Invalid IPv6 prefix length: ${prefixLength}`);
+    }
+    this.ipv6Discovery().reset();
+    for (const assignment of this.ipv6Addresses.summaries()) {
+      if (assignment.source === "static") this.ipv6Addresses.remove(assignment.address);
+    }
+    this.enableIpv6();
+    this.ipv6Addresses.add({
+      address,
+      prefixLength,
+      source: "static",
+      state: "tentative",
+    });
+    this.ipv6Discovery().beginDad(address);
+  }
+
+  ipv6AddressSummaries(): Ipv6AddressAssignment[] {
+    return this.ipv6Addresses.summaries();
+  }
+
+  ipv6NeighborEntries(): Ipv6NeighborEntry[] {
+    return this.ipv6Discovery().neighborEntries();
+  }
+
+  /** Re-run bounded DAD for inspection/tests after a configured address changes. */
+  beginIpv6Dad(address: Ipv6, attempts?: number): void {
+    this.ipv6Discovery().beginDad(address, attempts);
+  }
+
+  /** Initiate one ICMPv6 echo request after selecting a valid source address. */
+  ping6(targetInput: Ipv6, sequence = 0): void {
+    const target = normalizeIpv6(targetInput);
+    const source = this.ipv6Addresses.sourceFor(target);
+    if (!source) throw new Error(`PC ${this.id} has no usable IPv6 address`);
+    const packet: Ipv6Packet = {
+      kind: "ipv6",
+      src: source,
+      dst: target,
+      nextHeader: Ipv6NextHeader.ICMPv6,
+      hopLimit: DEFAULT_IPV6_HOP_LIMIT,
+      payload: {
+        kind: "icmpv6",
+        type: Icmpv6Type.EchoRequest,
+        code: 0,
+        identifier: this.icmpv6Identifier,
+        sequence,
+      },
+    };
+    this.pendingIpv6Pings.set(sequence, { sentAt: this.engine.now() });
+    this.engine.scheduleIn(DEFAULT_PING_TIMEOUT_NS, () => this.timeoutIpv6Ping(sequence));
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "icmpv6-echo-request",
+      device: this.id,
+      detail: { src: source, dst: target, sequence },
+    });
+    this.sendIpv6(packet);
+  }
+
   /** Initiate one ICMP echo request. Result is recorded in `pingResults`. */
   ping(target: Ipv4, sequence = 0): void {
     if (this.ip === undefined) throw new Error(`PC ${this.id} has no IP configured`);
@@ -260,14 +356,112 @@ export abstract class EndHost extends Device {
   override onReceive(frame: EthernetFrame, _ingress: EthernetInterface): void {
     const dst = normalizeMac(frame.dst);
     const mine = normalizeMac(this.primary.mac);
-    if (dst !== mine && dst !== BROADCAST_MAC) return; // not for us
+    if (dst !== mine && dst !== BROADCAST_MAC && !dst.startsWith("33:33:")) return; // not for us
 
     const payload = frame.payload;
     if (payload.kind === "arp") {
       this.handleArp(payload);
     } else if (payload.kind === "ipv4") {
       this.handleIpv4(payload, frame);
+    } else if (payload.kind === "ipv6") {
+      this.handleIpv6(payload, frame);
     }
+  }
+
+  // --- IPv6 / ICMPv6 / NDP ---------------------------------------------
+
+  private ipv6Discovery(): Ipv6NeighborDiscovery {
+    if (this.ipv6NeighborRuntime) return this.ipv6NeighborRuntime;
+    this.ipv6NeighborRuntime = new Ipv6NeighborDiscovery({
+      deviceId: this.id,
+      interfaceId: this.primary.name,
+      engine: () => this.engine,
+      mac: () => this.primary.mac,
+      addresses: this.ipv6Addresses,
+      isRouter: false,
+      transmit: (destinationMac, packet) => {
+        this.primary.transmit({
+          src: this.primary.mac,
+          dst: destinationMac,
+          etherType: EtherType.IPv6,
+          payload: packet,
+        });
+      },
+      onDadConflict: (_address, message) => {
+        if (!this.ipv6Problems.includes(message)) this.ipv6Problems.push(message);
+      },
+    });
+    return this.ipv6NeighborRuntime;
+  }
+
+  private sendIpv6(packet: Ipv6Packet): void {
+    if (isIpv6Multicast(packet.dst)) {
+      this.ipv6Discovery().send(packet, packet.dst);
+      return;
+    }
+    const source = this.ipv6Addresses.get(packet.src);
+    if (!source) return;
+    const nextHop = ipv6SameSubnet(packet.dst, packet.src, source.prefixLength)
+      ? packet.dst
+      : undefined;
+    if (!nextHop) return;
+    this.ipv6Discovery().send(packet, nextHop);
+  }
+
+  private handleIpv6(packet: Ipv6Packet, frame: EthernetFrame): void {
+    if (packet.hopLimit <= 0) return;
+    if (this.ipv6Discovery().receive(packet, frame.src)) return;
+    if (!this.ipv6Addresses.owns(packet.dst) && !isIpv6Multicast(packet.dst)) return;
+    if (packet.nextHeader !== Ipv6NextHeader.ICMPv6 || packet.payload.kind !== "icmpv6") return;
+    const icmp = packet.payload;
+    if (icmp.type === Icmpv6Type.EchoRequest && this.ipv6Addresses.owns(packet.dst)) {
+      this.sendIpv6EchoReply(packet.src, packet.dst, icmp);
+    } else if (icmp.type === Icmpv6Type.EchoReply) {
+      this.completeIpv6Ping(icmp.sequence);
+    }
+  }
+
+  private sendIpv6EchoReply(destination: Ipv6, source: Ipv6, request: Icmpv6Message): void {
+    if (request.type !== Icmpv6Type.EchoRequest) return;
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "icmpv6-echo-reply",
+      device: this.id,
+      detail: { dst: destination, sequence: request.sequence },
+    });
+    this.sendIpv6({
+      kind: "ipv6",
+      src: source,
+      dst: destination,
+      nextHeader: Ipv6NextHeader.ICMPv6,
+      hopLimit: DEFAULT_IPV6_HOP_LIMIT,
+      payload: {
+        kind: "icmpv6",
+        type: Icmpv6Type.EchoReply,
+        code: 0,
+        identifier: request.identifier,
+        sequence: request.sequence,
+      },
+    });
+  }
+
+  private completeIpv6Ping(sequence: number): void {
+    const pending = this.pendingIpv6Pings.get(sequence);
+    if (!pending) return;
+    this.pendingIpv6Pings.delete(sequence);
+    const rttNs = this.engine.now() - pending.sentAt;
+    this.ipv6PingResults.push({ sequence, success: true, rttNs });
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "ipv6-ping-success",
+      device: this.id,
+      detail: { sequence, rttNs },
+    });
+  }
+
+  private timeoutIpv6Ping(sequence: number): void {
+    if (!this.pendingIpv6Pings.delete(sequence)) return;
+    this.ipv6PingResults.push({ sequence, success: false });
   }
 
   // --- ARP ---------------------------------------------------------------
@@ -445,6 +639,10 @@ export abstract class EndHost extends Device {
     this.pingResults.length = 0;
     this.transport.reset();
     this.applications.resetRuntime();
+    this.ipv6NeighborRuntime?.reset();
+    this.pendingIpv6Pings.clear();
+    this.ipv6PingResults.length = 0;
+    this.ipv6Problems.length = 0;
   }
 
   /** Server overrides this to recreate address-bound service listeners. */

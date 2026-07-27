@@ -21,6 +21,8 @@ export const DEFAULT_DHCP_TIMEOUT_NS = 4 * NS_PER_S;
 
 /** Default TTL stamped on IPv4 packets a host originates. */
 export const DEFAULT_IP_TTL = 64;
+/** Default hop limit stamped on IPv6 packets a host originates. */
+export const DEFAULT_IPV6_HOP_LIMIT = 64;
 
 /** Deterministic transport defaults and safety bounds. */
 export const DEFAULT_TCP_RETRANSMISSION_TIMEOUT_NS = NS_PER_S;
