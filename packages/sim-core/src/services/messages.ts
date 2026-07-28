@@ -58,3 +58,63 @@ export interface SyslogMessage {
   readonly timestampNs: number;
   readonly message: string;
 }
+
+/**
+ * Educational RADIUS model carried by UDP. There is no Request Authenticator,
+ * no MD5 construction and no attribute encoding: the shared key travels as an
+ * opaque, scope-bound fingerprint and the payload is structured data.
+ */
+export type RadiusCode =
+  | "Access-Request"
+  | "Access-Accept"
+  | "Access-Reject"
+  | "Accounting-Request"
+  | "Accounting-Response";
+
+export interface RadiusMessage {
+  readonly kind: "radius";
+  readonly code: RadiusCode;
+  readonly identifier: number;
+  readonly username?: string;
+  /** Opaque fingerprint of the user's password; never a plaintext secret. */
+  readonly credentialFingerprint?: string;
+  /** Opaque fingerprint of the client/server shared key. */
+  readonly sharedKeyFingerprint?: string;
+  /** Reply attribute: the privilege level an accepted user receives. */
+  readonly privilegeLevel?: number;
+  readonly replyMessage?: string;
+  /** Accounting only. */
+  readonly accountingStatus?: "start" | "stop";
+  readonly sessionId?: string;
+  readonly deviceName?: string;
+  readonly detail?: string;
+}
+
+/** Educational TACACS+ model carried by TCP. No body obfuscation is simulated. */
+export type TacacsMessageType =
+  | "authentication-request"
+  | "authentication-reply"
+  | "authorization-request"
+  | "authorization-reply"
+  | "accounting-request"
+  | "accounting-reply";
+
+export interface TacacsMessage {
+  readonly kind: "tacacs";
+  readonly messageType: TacacsMessageType;
+  readonly sequence: number;
+  readonly username?: string;
+  readonly credentialFingerprint?: string;
+  readonly sharedKeyFingerprint?: string;
+  readonly status?: "pass" | "fail" | "error";
+  readonly privilegeLevel?: number;
+  /** Authorization only: `exec` or the command being authorized. */
+  readonly service?: "exec" | "command";
+  readonly command?: string;
+  readonly replyMessage?: string;
+  /** Accounting only. */
+  readonly accountingStatus?: "start" | "stop" | "command";
+  readonly sessionId?: string;
+  readonly deviceName?: string;
+  readonly detail?: string;
+}

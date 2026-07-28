@@ -7,10 +7,12 @@ export {
 } from "./session/session";
 export { type CliMode, promptSuffix } from "./session/mode";
 export type {
+  RemoteLineSummary,
   RemoteSessionBridge,
   RemoteSessionOpener,
   RemoteSessionProtocol,
   RemoteSessionRequest,
+  RemoteSessionSummaryView,
 } from "./session/remote";
 
 // Types

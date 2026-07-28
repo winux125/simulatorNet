@@ -10,6 +10,12 @@
 import type { ConsoleAccessConfiguration, ConsoleUserConfiguration, DeviceConfig } from "@sim/contracts";
 import { createPasswordVerifier } from "@sim/console-auth";
 import type { ImportReport, ImportResult, ImportedSourceArtifact } from "../types";
+import {
+  deriveManagementSecrets,
+  parseManagementConfigFromIos,
+  redactManagementSecrets,
+  type ParsedManagementConfig,
+} from "./management-config";
 
 const CONSOLE_KINDS = new Set(["router", "l2-switch", "l3-switch", "firewall", "server", "bridge"]);
 
@@ -104,6 +110,33 @@ async function buildConsoleAccess(parsed: ParsedCredentials): Promise<ConsoleAcc
   };
 }
 
+/** Only devices with a management plane accept remote-access/AAA configuration. */
+const MANAGED_KINDS = new Set(["router", "l2-switch", "l3-switch", "firewall"]);
+
+function applyManagement(
+  config: DeviceConfig,
+  access: ConsoleAccessConfiguration | undefined,
+  management: ParsedManagementConfig,
+): DeviceConfig {
+  const next: Record<string, unknown> = { ...config };
+  if (access) next.consoleAccess = access;
+  if (!MANAGED_KINDS.has(config.kind)) return next as DeviceConfig;
+  if (management.remoteAccess) {
+    next.remoteAccess = {
+      ...management.remoteAccess,
+      // A simulated host key is derived when the lab is built, not imported:
+      // an imported config never carries usable key material.
+      ssh: { ...management.remoteAccess.ssh, enabled: false, hostKeyFingerprint: undefined },
+    };
+  }
+  if (management.aaa) next.aaa = management.aaa;
+  if (config.kind === "l2-switch") {
+    if (management.managementSvi) next.managementSvi = management.managementSvi;
+    if (management.managementDefaultGateway) next.managementDefaultGateway = management.managementDefaultGateway;
+  }
+  return next as DeviceConfig;
+}
+
 /**
  * Post-process an import result: for every console-capable device with an
  * imported IOS-like config, create console-access verifiers, attach them to the
@@ -112,6 +145,7 @@ async function buildConsoleAccess(parsed: ParsedCredentials): Promise<ConsoleAcc
 export async function applyImportedConsoleCredentials(result: ImportResult): Promise<ImportResult> {
   const configurations: Record<string, DeviceConfig> = { ...result.document.configurations };
   const artifacts: ImportedSourceArtifact[] = [];
+  const unsupportedManagement = new Set<string>();
   let credentialsDetected = 0;
   let credentialsRequiringReset = 0;
 
@@ -121,14 +155,39 @@ export async function applyImportedConsoleCredentials(result: ImportResult): Pro
     if (!config || !CONSOLE_KINDS.has(config.kind)) { artifacts.push(artifact); continue; }
     const parsed = parseConsoleCredentialsFromIos(artifact.text);
     const access = await buildConsoleAccess(parsed);
-    if (!access) { artifacts.push(artifact); continue; }
-    configurations[artifact.nodeId] = { ...config, consoleAccess: access } as DeviceConfig;
-    credentialsDetected += parsed.users.length + (parsed.enableSecret ? 1 : 0) + (parsed.consolePassword ? 1 : 0);
-    if (access.credentialResetRequired) credentialsRequiringReset += 1;
-    artifacts.push({ ...artifact, text: redactCredentials(artifact.text) });
+    const management = await deriveManagementSecrets(
+      artifact.text,
+      parseManagementConfigFromIos(artifact.text),
+    );
+    const hasManagement = management.remoteAccess !== undefined
+      || management.aaa !== undefined
+      || management.managementSvi !== undefined
+      || management.managementDefaultGateway !== undefined;
+    if (!access && !hasManagement) { artifacts.push(artifact); continue; }
+    configurations[artifact.nodeId] = applyManagement(config, access, management);
+    credentialsDetected += parsed.users.length
+      + (parsed.enableSecret ? 1 : 0)
+      + (parsed.consolePassword ? 1 : 0)
+      + (management.remoteAccess?.vtyLines.filter((line) => line.passwordVerifier).length ?? 0)
+      + (management.aaa?.servers.filter((server) => server.sharedKeyFingerprint).length ?? 0);
+    if (access?.credentialResetRequired || management.resetRequired) credentialsRequiringReset += 1;
+    for (const ignored of management.ignored) unsupportedManagement.add(ignored);
+    artifacts.push({
+      ...artifact,
+      text: redactManagementSecrets(redactCredentials(artifact.text)),
+    });
   }
 
   const entries = [...result.report.entries];
+  if (unsupportedManagement.size > 0) {
+    // Reported honestly rather than silently dropped: the learner sees exactly
+    // which advanced AAA syntax SimulatorNet does not simulate.
+    entries.push({
+      level: "warning",
+      code: "management-config-ignored",
+      message: `Unsupported management configuration was preserved but not applied: ${[...unsupportedManagement].slice(0, 10).join("; ")}`,
+    });
+  }
   if (credentialsDetected > 0) {
     entries.push({ level: "info", code: "credential-imported", message: `Explicit console credential imported and converted to a verifier (${credentialsDetected} total)` });
   }

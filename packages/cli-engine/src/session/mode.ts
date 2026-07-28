@@ -7,6 +7,7 @@ export type CliMode =
   | "config-vlan" // VLAN config: Switch(config-vlan)#
   | "config-acl" // named IPv4 ACL config
   | "config-line" // VTY line config: Router(config-line)#
+  | "config-aaa-server" // radius/tacacs server config: Router(config-radius-server)#
   | "config-router"; // routing process config: Router(config-router)#
 
 /** The prompt suffix for a mode, appended after the device hostname. */
@@ -26,6 +27,8 @@ export function promptSuffix(mode: CliMode): string {
       return "(config-acl)#";
     case "config-line":
       return "(config-line)#";
+    case "config-aaa-server":
+      return "(config-aaa-server)#";
     case "config-router":
       return "(config-router)#";
   }

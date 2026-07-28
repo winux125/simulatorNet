@@ -13,6 +13,7 @@ export * from "./limits";
 export * from "./messages";
 export * from "./managed-device";
 export * from "./authentication";
+export * from "./aaa";
 export * from "./vty";
 export * from "./service";
 export * from "./client";

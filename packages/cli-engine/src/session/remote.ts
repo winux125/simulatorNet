@@ -45,11 +45,42 @@ export interface RemoteSessionBridge {
   readonly label: string;
 }
 
+/** One VTY line as `show line` renders it. Runtime only. */
+export interface RemoteLineSummary {
+  readonly index: number;
+  readonly state: string;
+  readonly protocol?: RemoteSessionProtocol;
+  readonly username?: string;
+  readonly peerAddress?: string;
+  readonly idleForNs?: number;
+  readonly transports: readonly RemoteSessionProtocol[];
+  readonly loginMode: string;
+  readonly execTimeoutSeconds: number;
+}
+
+/** One active remote session as `show users` renders it. Runtime only. */
+export interface RemoteSessionSummaryView {
+  readonly line: number;
+  readonly protocol: RemoteSessionProtocol;
+  readonly username: string | undefined;
+  readonly peerAddress: string;
+  readonly clientHostname: string;
+  readonly idleForNs: number;
+}
+
 /**
- * Creates remote sessions for a host device. Injected into a `CliSession` by
- * whoever owns the runtime (the browser worker or the verifier), so the CLI
- * itself never reaches into the management plane.
+ * Everything the CLI needs from the management plane.
+ *
+ * Injected into a `CliSession` by whoever owns the runtime (the browser worker
+ * or the verifier), so the CLI itself never reaches into the management plane
+ * and `cli-engine` keeps no dependency on `@sim/remote-management`.
  */
 export interface RemoteSessionOpener {
   open(deviceId: string, request: RemoteSessionRequest): RemoteSessionBridge;
+  /** Sessions this device is currently terminating. */
+  sessionsOf?(deviceId: string): RemoteSessionSummaryView[];
+  /** Configured VTY lines and their runtime state. */
+  linesOf?(deviceId: string): RemoteLineSummary[];
+  /** `clear line vty <n>`: drop whatever is on that line. */
+  clearLine?(deviceId: string, index: number): boolean;
 }

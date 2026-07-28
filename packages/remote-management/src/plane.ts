@@ -3,7 +3,13 @@ import {
   type ConsoleAccessConfiguration,
   type RemoteAccessConfiguration,
 } from "@sim/contracts";
-import type { RemoteSessionBridge, RemoteSessionOpener, RemoteSessionRequest } from "@sim/cli-engine";
+import type {
+  RemoteLineSummary,
+  RemoteSessionBridge,
+  RemoteSessionOpener,
+  RemoteSessionRequest,
+  RemoteSessionSummaryView,
+} from "@sim/cli-engine";
 import {
   EndHost,
   L2Switch,
@@ -14,6 +20,7 @@ import {
   type IpAddress,
   type SimulationEngine,
 } from "@sim/sim-core";
+import { AaaAuthenticationProvider, type AaaStatusView } from "./aaa";
 import { KnownHostStore, RemoteCliClient } from "./client";
 import { managedDeviceOf } from "./managed-device";
 import type { RemoteCloseReason } from "./messages";
@@ -34,6 +41,7 @@ export interface ManagementPlaneDevice {
  */
 export class ManagementPlane implements RemoteSessionOpener {
   private readonly services = new Map<string, RemoteCliService>();
+  private readonly authenticators = new Map<string, AaaAuthenticationProvider>();
   private readonly clients = new Map<string, RemoteCliClient>();
   private readonly knownHosts = new Map<string, KnownHostStore>();
   private sessionCounter = 0;
@@ -46,6 +54,22 @@ export class ManagementPlane implements RemoteSessionOpener {
       const managed = managedDeviceOf(device, engine);
       if (!managed) continue;
       const service = new RemoteCliService(managed, () => this.totalSessions() < MANAGEMENT_LIMITS.maximumRemoteSessionsPerLab);
+      const aaaState = device instanceof L2Switch || device instanceof Router ? device.aaa : undefined;
+      if (aaaState) {
+        // One shared decision layer per device: console, VTY, Telnet, SSH and
+        // AAA local fallback all resolve through it.
+        const provider = new AaaAuthenticationProvider(
+          managed,
+          () => aaaState,
+          () => this.accessOf(deviceId),
+          (index) => service.vtyLineConfig(index),
+        );
+        service.useAuthenticationProvider(provider, {
+          authorizeCommand: (request, done) => provider.authorizeCommand(request, done),
+          account: (event, session, detail) => provider.account(event, session, detail),
+        });
+        this.authenticators.set(deviceId, provider);
+      }
       this.services.set(deviceId, service);
     }
   }
@@ -56,7 +80,19 @@ export class ManagementPlane implements RemoteSessionOpener {
     remote: RemoteAccessConfiguration | undefined,
     access: ConsoleAccessConfiguration | undefined,
   ): void {
+    this.consoleAccess.set(deviceId, access);
     this.services.get(deviceId)?.configure(remote, access);
+  }
+
+  /** AAA status for inspection: method lists, servers, health, sessions. */
+  aaaStatus(deviceId: string): AaaStatusView | undefined {
+    return this.authenticators.get(deviceId)?.status();
+  }
+
+  private readonly consoleAccess = new Map<string, ConsoleAccessConfiguration | undefined>();
+
+  private accessOf(deviceId: string): ConsoleAccessConfiguration | undefined {
+    return this.consoleAccess.get(deviceId);
   }
 
   serviceOf(deviceId: string): RemoteCliService | undefined {
@@ -118,6 +154,42 @@ export class ManagementPlane implements RemoteSessionOpener {
 
   clientSessions(): RemoteCliClient[] {
     return [...this.clients.values()];
+  }
+
+  // --- CLI inspection (`show users`, `show line`, `clear line vty`) ---------
+
+  sessionsOf(deviceId: string): RemoteSessionSummaryView[] {
+    return (this.services.get(deviceId)?.sessionSummaries() ?? []).map((session) => ({
+      line: session.line,
+      protocol: session.protocol,
+      username: session.username,
+      peerAddress: session.peerAddress,
+      clientHostname: session.clientHostname,
+      idleForNs: session.idleForNs,
+    }));
+  }
+
+  linesOf(deviceId: string): RemoteLineSummary[] {
+    const service = this.services.get(deviceId);
+    if (!service) return [];
+    return service.vtyRows().map((row) => {
+      const config = service.vtyLineConfig(row.index);
+      return {
+        index: row.index,
+        state: row.state,
+        protocol: row.protocol,
+        username: row.username,
+        peerAddress: row.peerAddress,
+        idleForNs: row.idleForNs,
+        transports: config?.transports ?? [],
+        loginMode: config?.loginMode ?? "none",
+        execTimeoutSeconds: config?.execTimeoutSeconds ?? 0,
+      };
+    });
+  }
+
+  clearLine(deviceId: string, index: number): boolean {
+    return this.services.get(deviceId)?.clearLine(index) ?? false;
   }
 
   // --- RemoteSessionOpener --------------------------------------------------

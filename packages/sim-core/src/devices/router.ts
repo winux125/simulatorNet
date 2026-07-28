@@ -59,6 +59,7 @@ import type { UdpDatagram } from "../packets/udp";
 import type { TcpSegment } from "../packets/tcp";
 import { HostTransportStack } from "../transport/host-transport";
 import { RemoteAccessState } from "../management/remote-access-state";
+import { AaaState } from "../management/aaa-state";
 import { ipFamilyOf, type IpAddress, type IpFamily } from "../util/ip-address";
 import {
   type AclBinding,
@@ -294,6 +295,8 @@ export class Router extends Device {
    */
   /** Persistent Telnet/SSH/VTY configuration; behaviour lives in the service. */
   readonly remoteAccess = new RemoteAccessState(this.id);
+  /** Persistent AAA method lists and servers; the decision layer is separate. */
+  readonly aaa = new AaaState();
 
   readonly management: HostTransportStack = new HostTransportStack({
     deviceId: this.id,

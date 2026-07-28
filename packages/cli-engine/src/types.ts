@@ -65,6 +65,12 @@ export interface VtyLineContext {
   last: number;
 }
 
+/** The `radius server <name>` / `tacacs server <name>` context. */
+export interface AaaServerContext {
+  name: string;
+  protocol: "radius" | "tacacs+";
+}
+
 /**
  * The surface a command handler is given. Implemented by `CliSession`; commands
  * depend on this interface (not the class) so there is no import cycle.
@@ -78,6 +84,7 @@ export interface SessionApi {
   aclCtx: AclContext | undefined;
   routerCtx: RouterProcessContext | undefined;
   lineCtx: VtyLineContext | undefined;
+  aaaServerCtx: AaaServerContext | undefined;
   /** Transition to another mode (clears context as appropriate). */
   enter(mode: CliMode): void;
   /**

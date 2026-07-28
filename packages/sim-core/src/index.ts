@@ -18,6 +18,7 @@ export * from "./wireless/wireless-medium";
 
 // Management-plane configuration state (behaviour lives in remote-management)
 export * from "./management/remote-access-state";
+export * from "./management/aaa-state";
 
 // Devices
 export * from "./devices/device";

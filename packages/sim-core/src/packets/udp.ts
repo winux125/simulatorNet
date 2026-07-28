@@ -1,6 +1,12 @@
 import type { DhcpMessage } from "./dhcp";
 import type { Dhcpv6Message } from "./dhcpv6";
-import type { DnsMessage, NtpMessage, SyslogMessage, TftpMessage } from "../services/messages";
+import type {
+  DnsMessage,
+  NtpMessage,
+  RadiusMessage,
+  SyslogMessage,
+  TftpMessage,
+} from "../services/messages";
 
 /** Generic structured payload used by transport tests and simple applications. */
 export interface UdpApplicationPayload {
@@ -17,6 +23,7 @@ export type UdpPayload =
   | TftpMessage
   | NtpMessage
   | SyslogMessage
+  | RadiusMessage
   | UdpApplicationPayload;
 
 export interface UdpDatagram {

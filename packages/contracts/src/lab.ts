@@ -3,6 +3,7 @@ import { TopologySchema } from "./topology";
 import { LabDiagramSchema } from "./diagram";
 import { ConsoleAccessConfigurationSchema } from "./console";
 import { ManagementSviConfigSchema, RemoteAccessConfigurationSchema } from "./management";
+import { AaaConfigurationSchema, RadiusServiceConfigSchema, TacacsServiceConfigSchema } from "./aaa";
 import {
   Ipv4InterfaceConfigSchema,
   Ipv4Schema,
@@ -161,6 +162,8 @@ export const ServerServiceConfigSchema = z.discriminatedUnion("type", [
   TftpServiceConfigSchema,
   NtpServiceConfigSchema,
   SyslogServiceConfigSchema,
+  RadiusServiceConfigSchema,
+  TacacsServiceConfigSchema,
 ]);
 export type ServerServiceConfig = z.infer<typeof ServerServiceConfigSchema>;
 
@@ -224,6 +227,7 @@ export const SwitchDeviceConfigSchema = z.object({
   /** `ip default-gateway`: a host default route for management replies only. */
   managementDefaultGateway: Ipv4Schema.optional(),
   remoteAccess: RemoteAccessConfigurationSchema.optional(),
+  aaa: AaaConfigurationSchema.optional(),
 });
 export type SwitchDeviceConfig = z.infer<typeof SwitchDeviceConfigSchema>;
 
@@ -441,6 +445,7 @@ export const RouterDeviceConfigSchema = z.object({
   discovery: NeighborDiscoveryConfigSchema.optional(),
   consoleAccess: ConsoleAccessConfigurationSchema.optional(),
   remoteAccess: RemoteAccessConfigurationSchema.optional(),
+  aaa: AaaConfigurationSchema.optional(),
 });
 export type RouterDeviceConfig = z.infer<typeof RouterDeviceConfigSchema>;
 
@@ -552,6 +557,7 @@ export const Layer3SwitchDeviceConfigSchema = z.object({
   ...RoutedControlProtocolShape,
   consoleAccess: ConsoleAccessConfigurationSchema.optional(),
   remoteAccess: RemoteAccessConfigurationSchema.optional(),
+  aaa: AaaConfigurationSchema.optional(),
 });
 export type Layer3SwitchDeviceConfig = z.infer<typeof Layer3SwitchDeviceConfigSchema>;
 

@@ -1,12 +1,28 @@
 import {
+  AAA_LIMITS,
   ServerServiceConfigSchema,
   type DnsServiceConfig,
   type HttpServiceConfig,
   type NtpServiceConfig,
+  type RadiusServiceConfig,
   type ServerServiceConfig,
   type SyslogServiceConfig,
+  type TacacsServiceConfig,
   type TftpServiceConfig,
 } from "@sim/contracts";
+import {
+  AaaAccountingLog,
+  authenticateAaaUser,
+  authorizeClient,
+  authorizeCommand,
+  radiusAccept,
+  redactAccountedCommand,
+  tacacsAuthenticationReply,
+  tacacsAuthorizationReply,
+  type AaaAccountingEntry,
+  type AaaServiceRuntimeSnapshot,
+} from "./aaa-services";
+import type { RadiusMessage, TacacsMessage } from "./messages";
 import type { SimulationEngine } from "../engine/simulation-engine";
 import type { TcpConnection } from "../transport/tcp";
 import type { HostTransportStack } from "../transport/host-transport";
@@ -50,6 +66,8 @@ export interface ServerServiceRuntimeSnapshot {
   readonly tftp: { readonly activeTransfers: number; readonly completedTransfers: number };
   readonly ntp: { readonly queries: number };
   readonly syslog: { readonly entries: SyslogEntry[] };
+  readonly radius: AaaServiceRuntimeSnapshot;
+  readonly tacacs: AaaServiceRuntimeSnapshot;
 }
 
 interface ServiceState {
@@ -90,6 +108,11 @@ export class ServerServiceRegistry {
   private syslogSequence = 0;
   private readonly syslogEntries: SyslogEntry[] = [];
   private runtimeGeneration = 0;
+  private readonly accounting = new AaaAccountingLog();
+  private readonly aaaCounters = {
+    radius: { accessAccepted: 0, accessRejected: 0, authorizationPermitted: 0, authorizationDenied: 0 },
+    tacacs: { accessAccepted: 0, accessRejected: 0, authorizationPermitted: 0, authorizationDenied: 0 },
+  };
 
   constructor(
     private readonly host: ServerServiceAdapter,
@@ -180,6 +203,8 @@ export class ServerServiceRegistry {
       tftp: { activeTransfers: this.tftpTransfers.size, completedTransfers: this.completedTftpTransfers },
       ntp: { queries: this.ntpQueries },
       syslog: { entries: this.syslogEntries.map((entry) => ({ ...entry })) },
+      radius: this.aaaSnapshot("radius"),
+      tacacs: this.aaaSnapshot("tacacs+"),
     };
   }
 
@@ -187,10 +212,30 @@ export class ServerServiceRegistry {
     this.syslogEntries.length = 0;
   }
 
+  /** Accounting is runtime state: clearing it never touches configuration. */
+  clearAaaRuntime(): void {
+    this.accounting.clear();
+    for (const counters of Object.values(this.aaaCounters)) {
+      counters.accessAccepted = 0;
+      counters.accessRejected = 0;
+      counters.authorizationPermitted = 0;
+      counters.authorizationDenied = 0;
+    }
+  }
+
+  private aaaSnapshot(protocol: AaaAccountingEntry["protocol"]): AaaServiceRuntimeSnapshot {
+    const counters = protocol === "radius" ? this.aaaCounters.radius : this.aaaCounters.tacacs;
+    return {
+      ...counters,
+      accounting: this.accounting.snapshot().filter((entry) => entry.protocol === protocol),
+    };
+  }
+
   /** Recreate listeners and clear transient service state after an IP change. */
   restartRuntime(): void {
     const configurations = this.configurations();
     this.runtimeGeneration++;
+    this.clearAaaRuntime();
     this.tftpTransfers.clear();
     this.dnsQueries = 0;
     this.httpRequests = 0;
@@ -244,13 +289,37 @@ export class ServerServiceRegistry {
         return;
       case "syslog":
         this.host.transport.udp.bind(config.port, (received) => this.handleSyslog(config, received.sourceAddress, received.payload), "syslog");
+        return;
+      case "radius":
+        this.host.transport.udp.bind(
+          config.port,
+          (received) => this.handleRadius(config, received.sourceAddress, received.sourcePort, received.payload, false),
+          "radius",
+        );
+        this.host.transport.udp.bind(
+          config.accountingPort,
+          (received) => this.handleRadius(config, received.sourceAddress, received.sourcePort, received.payload, true),
+          "radius-accounting",
+        );
+        return;
+      case "tacacs":
+        this.host.transport.tcp.listen(
+          config.port,
+          (connection) => connection.setHandlers({
+            onMessage: (payload) => this.handleTacacs(config, connection, payload),
+          }),
+          "tacacs",
+        );
     }
   }
 
   private stop(config: ServerServiceConfig): void {
     if (this.states.get(config.id)?.state !== "listening") return;
-    if (config.type === "http") this.host.transport.tcp.unlisten(config.port);
-    else this.host.transport.udp.unbind(config.port);
+    if (config.type === "http" || config.type === "tacacs") this.host.transport.tcp.unlisten(config.port);
+    else if (config.type === "radius") {
+      this.host.transport.udp.unbind(config.port);
+      this.host.transport.udp.unbind(config.accountingPort);
+    } else this.host.transport.udp.unbind(config.port);
     for (const [key, transfer] of this.tftpTransfers) {
       if (transfer.service.id === config.id) this.tftpTransfers.delete(key);
     }
@@ -442,6 +511,176 @@ export class ServerServiceRegistry {
     this.trace("syslog-received", { serviceId: config.id, sourceAddress, severity: payload.severity, sequence: this.syslogSequence });
   }
 
+  // --- AAA services --------------------------------------------------------
+
+  /**
+   * Educational RADIUS. Authentication and accounting are structured messages
+   * over UDP; the shared key and the user's password travel only as opaque
+   * fingerprints, so nothing here can leak a secret into a trace or a result.
+   */
+  private handleRadius(
+    config: RadiusServiceConfig,
+    sourceAddress: IpAddress,
+    sourcePort: number,
+    payload: unknown,
+    accounting: boolean,
+  ): void {
+    if (!isRadiusMessage(payload)) return;
+    const client = authorizeClient(
+      config.clients,
+      config.restrictToConfiguredClients,
+      sourceAddress,
+      payload.sharedKeyFingerprint,
+    );
+    if (accounting) {
+      if (!client.ok || payload.code !== "Accounting-Request") return;
+      this.recordAccounting("radius", sourceAddress, payload.deviceName, payload.username, payload.sessionId, payload.accountingStatus === "stop" ? "stop" : "start", payload.detail);
+      this.reply(sourceAddress, sourcePort, config.accountingPort, {
+        kind: "radius",
+        code: "Accounting-Response",
+        identifier: payload.identifier,
+      });
+      return;
+    }
+    if (payload.code !== "Access-Request") return;
+    if (!client.ok) {
+      this.aaaCounters.radius.accessRejected++;
+      this.trace("radius-client-rejected", { serviceId: config.id, sourceAddress, reason: client.reason });
+      this.reply(sourceAddress, sourcePort, config.port, {
+        kind: "radius",
+        code: "Access-Reject",
+        identifier: payload.identifier,
+        replyMessage: "Client not authorized",
+      });
+      return;
+    }
+    const decision = authenticateAaaUser(config.users, payload.username, payload.credentialFingerprint);
+    if (decision.status === "accept") this.aaaCounters.radius.accessAccepted++;
+    else this.aaaCounters.radius.accessRejected++;
+    this.trace("radius-access-request", {
+      serviceId: config.id,
+      username: payload.username,
+      sourceAddress,
+      result: decision.status,
+      reason: decision.reason,
+    });
+    this.reply(sourceAddress, sourcePort, config.port, radiusAccept(payload, decision));
+  }
+
+  /**
+   * Educational TACACS+ over TCP: authentication, exec authorization, per
+   * command authorization and accounting. Command matching is a bounded
+   * declarative matcher, never a regular expression from a LabDocument.
+   */
+  private handleTacacs(config: TacacsServiceConfig, connection: TcpConnection, payload: unknown): void {
+    if (!isTacacsMessage(payload)) return;
+    const sourceAddress = connection.remoteAddress;
+    const client = authorizeClient(
+      config.clients,
+      config.restrictToConfiguredClients,
+      sourceAddress,
+      payload.sharedKeyFingerprint,
+    );
+    if (!client.ok) {
+      this.aaaCounters.tacacs.accessRejected++;
+      this.trace("tacacs-client-rejected", { serviceId: config.id, sourceAddress, reason: client.reason });
+      connection.send({
+        kind: "tacacs",
+        messageType: payload.messageType === "authorization-request" ? "authorization-reply" : "authentication-reply",
+        sequence: payload.sequence + 1,
+        status: "fail",
+        replyMessage: "Client not authorized",
+      });
+      return;
+    }
+    if (payload.messageType === "authentication-request") {
+      const decision = authenticateAaaUser(config.users, payload.username, payload.credentialFingerprint);
+      if (decision.status === "accept") this.aaaCounters.tacacs.accessAccepted++;
+      else this.aaaCounters.tacacs.accessRejected++;
+      this.trace("tacacs-authentication", {
+        serviceId: config.id,
+        username: payload.username,
+        sourceAddress,
+        result: decision.status,
+        reason: decision.reason,
+      });
+      connection.send(tacacsAuthenticationReply(payload, decision));
+      return;
+    }
+    if (payload.messageType === "authorization-request") {
+      const username = payload.username?.trim() ?? "";
+      const user = config.users.find((candidate) => candidate.enabled && candidate.username === username);
+      const privilegeLevel = payload.privilegeLevel ?? user?.privilegeLevel ?? 0;
+      const action = payload.service === "exec"
+        ? config.execAuthorizationDefault
+        : authorizeCommand(config, username, privilegeLevel, payload.command ?? "").action;
+      if (action === "permit") this.aaaCounters.tacacs.authorizationPermitted++;
+      else this.aaaCounters.tacacs.authorizationDenied++;
+      this.trace("tacacs-authorization", {
+        serviceId: config.id,
+        username,
+        service: payload.service,
+        command: payload.command ? redactAccountedCommand(payload.command) : undefined,
+        result: action,
+      });
+      connection.send(tacacsAuthorizationReply(payload, action, privilegeLevel));
+      return;
+    }
+    if (payload.messageType === "accounting-request") {
+      const event = payload.accountingStatus === "stop"
+        ? "stop"
+        : payload.accountingStatus === "command" ? "command" : "start";
+      this.recordAccounting(
+        "tacacs+",
+        sourceAddress,
+        payload.deviceName,
+        payload.username,
+        payload.sessionId,
+        event,
+        payload.command ?? payload.detail,
+      );
+      connection.send({
+        kind: "tacacs",
+        messageType: "accounting-reply",
+        sequence: payload.sequence + 1,
+        status: "pass",
+      });
+    }
+  }
+
+  private recordAccounting(
+    protocol: AaaAccountingEntry["protocol"],
+    deviceAddress: IpAddress,
+    deviceName: string | undefined,
+    username: string | undefined,
+    sessionId: string | undefined,
+    event: AaaAccountingEntry["event"],
+    detail: string | undefined,
+  ): void {
+    const entry = this.accounting.record({
+      receivedAtNs: this.host.engine().now(),
+      protocol,
+      event,
+      deviceName: deviceName ?? deviceAddress,
+      deviceAddress,
+      username: username ?? "",
+      sessionId: sessionId ?? "",
+      // A command argument that carries a secret is redacted before storage.
+      detail: detail ? redactAccountedCommand(detail) : event,
+    });
+    this.trace("aaa-accounting", {
+      protocol,
+      event,
+      username: entry.username,
+      sessionId: entry.sessionId,
+      sequence: entry.sequence,
+    });
+  }
+
+  private reply(destinationAddress: IpAddress, destinationPort: number, sourcePort: number, payload: RadiusMessage): void {
+    this.host.transport.udp.send({ destinationAddress, destinationPort, sourcePort, payload });
+  }
+
   private requireConfig(id: string): ServerServiceConfig {
     const config = this.configs.get(id);
     if (!config) throw new Error(`Unknown server service '${id}'`);
@@ -485,6 +724,28 @@ function normalizeServiceConfiguration(
       if (unique.size !== files.length) throw new Error("TFTP filenames must be unique");
       return { ...config, files: files.sort((a, b) => a.filename.localeCompare(b.filename)) };
     }
+    case "radius":
+    case "tacacs": {
+      if (config.users.length > AAA_LIMITS.maximumUsersPerServer) throw new Error("AAA user limit exceeded");
+      if (config.clients.length > AAA_LIMITS.maximumClientsPerServer) throw new Error("AAA client limit exceeded");
+      const usernames = new Set(config.users.map((user) => user.username));
+      if (usernames.size !== config.users.length) throw new Error("AAA usernames must be unique");
+      const base = {
+        ...config,
+        users: [...config.users].sort((a, b) => a.username.localeCompare(b.username)).map((user) => ({ ...user })),
+        clients: [...config.clients].sort((a, b) => a.address.localeCompare(b.address)).map((client) => ({ ...client })),
+      };
+      if (base.type !== "tacacs") return base;
+      if (base.commandRules.length > AAA_LIMITS.maximumCommandRulesPerServer) {
+        throw new Error("TACACS+ command rule limit exceeded");
+      }
+      return {
+        ...base,
+        commandRules: [...base.commandRules]
+          .sort((a, b) => a.sequence - b.sequence || a.id.localeCompare(b.id))
+          .map((rule) => ({ ...rule })),
+      };
+    }
     default:
       return { ...config };
   }
@@ -494,6 +755,21 @@ function cloneServiceConfiguration(config: ServerServiceConfig): ServerServiceCo
   if (config.type === "dns") return { ...config, records: config.records.map((record) => ({ ...record })) };
   if (config.type === "http") return { ...config, resources: config.resources.map((resource) => ({ ...resource })) };
   if (config.type === "tftp") return { ...config, files: config.files.map((file) => ({ ...file })) };
+  if (config.type === "radius") {
+    return {
+      ...config,
+      users: config.users.map((user) => ({ ...user })),
+      clients: config.clients.map((client) => ({ ...client })),
+    };
+  }
+  if (config.type === "tacacs") {
+    return {
+      ...config,
+      users: config.users.map((user) => ({ ...user })),
+      clients: config.clients.map((client) => ({ ...client })),
+      commandRules: config.commandRules.map((rule) => ({ ...rule })),
+    };
+  }
   return { ...config };
 }
 
@@ -523,6 +799,20 @@ function isNtpQuery(payload: unknown): payload is NtpMessage & { messageType: "q
     && (payload as { messageType?: unknown }).messageType === "query"
     && typeof (payload as { requestId?: unknown }).requestId === "number"
     && typeof (payload as { clientTimeNs?: unknown }).clientTimeNs === "number";
+}
+
+function isRadiusMessage(payload: unknown): payload is RadiusMessage {
+  return typeof payload === "object" && payload !== null
+    && (payload as { kind?: unknown }).kind === "radius"
+    && typeof (payload as { identifier?: unknown }).identifier === "number"
+    && typeof (payload as { code?: unknown }).code === "string";
+}
+
+function isTacacsMessage(payload: unknown): payload is TacacsMessage {
+  return typeof payload === "object" && payload !== null
+    && (payload as { kind?: unknown }).kind === "tacacs"
+    && typeof (payload as { sequence?: unknown }).sequence === "number"
+    && typeof (payload as { messageType?: unknown }).messageType === "string";
 }
 
 function isSyslogMessage(payload: unknown): payload is SyslogMessage {

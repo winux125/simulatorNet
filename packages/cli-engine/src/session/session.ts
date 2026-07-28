@@ -18,6 +18,7 @@ import {
   usageFromPattern,
 } from "../parser/matcher";
 import type {
+  AaaServerContext,
   AclContext,
   InterfaceContext,
   RouterProcessContext,
@@ -46,6 +47,7 @@ export class CliSession implements SessionApi {
   aclCtx: AclContext | undefined;
   routerCtx: RouterProcessContext | undefined;
   lineCtx: VtyLineContext | undefined;
+  aaaServerCtx: AaaServerContext | undefined;
   private pendingInput: "ping-target" | undefined;
   private executionMode: NetworkExecutionMode = "auto";
   private pendingOperation: (() => string | undefined) | undefined;
@@ -76,6 +78,11 @@ export class CliSession implements SessionApi {
    */
   useRemoteSessionOpener(opener: RemoteSessionOpener | undefined): void {
     this.remoteOpener = opener;
+  }
+
+  /** Read-only management runtime for `show users`, `show line`, `clear line`. */
+  managementRuntime(): RemoteSessionOpener | undefined {
+    return this.remoteOpener;
   }
 
   /**
@@ -131,6 +138,7 @@ export class CliSession implements SessionApi {
     if (mode !== "config-acl") this.aclCtx = undefined;
     if (mode !== "config-router") this.routerCtx = undefined;
     if (mode !== "config-line") this.lineCtx = undefined;
+    if (mode !== "config-aaa-server") this.aaaServerCtx = undefined;
     this.mode = mode;
   }
 

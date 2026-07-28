@@ -1,4 +1,5 @@
 import {
+  AAA_AUTHORIZATION_FAILED,
   MANAGEMENT_LIMITS,
   SSH_PORT,
   TELNET_PLAINTEXT_WARNING,
@@ -15,6 +16,7 @@ import {
   LocalAuthenticationProvider,
   PRIVILEGED_EXEC_LEVEL,
   type AuthenticationProvider,
+  type AuthenticationRequest,
   type AuthenticationResult,
 } from "./authentication";
 import { boundedRemoteText } from "./limits";
@@ -47,6 +49,19 @@ export interface RemoteSessionSummary {
 }
 
 type LoginStage = "awaiting-username" | "awaiting-password" | "authenticated";
+
+/** TACACS+ command authorization, injected by the AAA decision layer. */
+export type CommandAuthorizer = (
+  request: AuthenticationRequest & { readonly privilegeLevel: number; readonly command: string },
+  done: (permitted: boolean) => void,
+) => void;
+
+/** Accounting is fire-and-forget: it never blocks or fails a session. */
+export type AccountingHook = (
+  event: "start" | "stop" | "command",
+  session: { readonly sessionId: string; readonly username: string; readonly privilegeLevel: number },
+  detail?: string,
+) => void;
 
 interface RemoteSession {
   readonly id: string;
@@ -90,6 +105,8 @@ export class RemoteCliService {
   private listeningSsh = false;
   private sessionCounter = 0;
   private closeListener: ((session: RemoteSessionSummary, reason: RemoteCloseReason) => void) | undefined;
+  private commandAuthorizer: CommandAuthorizer | undefined;
+  private accountingHook: AccountingHook | undefined;
 
   constructor(
     private readonly host: ManagedDevice,
@@ -102,9 +119,18 @@ export class RemoteCliService {
     );
   }
 
-  /** Replace the authentication decision layer (AAA method lists in M10.7b). */
-  useAuthenticationProvider(provider: AuthenticationProvider): void {
+  /**
+   * Replace the authentication decision layer with the AAA one. Command
+   * authorization and accounting are optional hooks so a device without
+   * `aaa new-model` keeps the plain local behaviour and pays nothing.
+   */
+  useAuthenticationProvider(
+    provider: AuthenticationProvider,
+    hooks: { readonly authorizeCommand?: CommandAuthorizer; readonly account?: AccountingHook } = {},
+  ): void {
     this.authenticator = provider;
+    this.commandAuthorizer = hooks.authorizeCommand;
+    this.accountingHook = hooks.account;
   }
 
   onSessionClosed(listener: (session: RemoteSessionSummary, reason: RemoteCloseReason) => void): void {
@@ -142,6 +168,11 @@ export class RemoteCliService {
 
   get domainName(): string | undefined {
     return this.configuration?.ssh.domainName;
+  }
+
+  /** The configuration of one VTY line, for the AAA decision layer. */
+  vtyLineConfig(index: number): VtyLineConfig | undefined {
+    return this.lines.lineConfig(index);
   }
 
   vtyRows(): VtyLineRuntime[] {
@@ -400,19 +431,63 @@ export class RemoteCliService {
   }
 
   private completeLogin(session: RemoteSession, result: Extract<AuthenticationResult, { status: "accept" }>): void {
+    const line = this.lineConfigOf(session);
+    const request = {
+      listName: line?.authorizationListName,
+      username: result.username || session.pendingUsername,
+      credentialFingerprint: "",
+      protocol: session.protocol,
+      line: session.line,
+      peerAddress: session.peerAddress,
+    };
+    // Exec authorization decides whether an authenticated user may open a CLI
+    // at all; without an authorization list it accepts, exactly like IOS.
+    const authorize = this.authenticator.authorizeExec?.bind(this.authenticator)
+      ?? ((_request: typeof request, done: (outcome: AuthenticationResult) => void) => done({
+        status: "accept",
+        username: request.username,
+        privilegeLevel: result.privilegeLevel,
+        method: "none",
+      }));
+    authorize(request, (authorization) => {
+      if (session.closed) return;
+      if (authorization.status !== "accept") {
+        this.trace(`${session.protocol}-authorization-failed`, {
+          line: session.line,
+          username: request.username,
+          method: authorization.method,
+        });
+        this.sendPrompt(session, AAA_AUTHORIZATION_FAILED, "");
+        this.closeSession(session, "authorization-failed");
+        return;
+      }
+      this.finishLogin(session, result, Math.max(result.privilegeLevel, authorization.privilegeLevel));
+    });
+  }
+
+  private finishLogin(
+    session: RemoteSession,
+    result: Extract<AuthenticationResult, { status: "accept" }>,
+    privilegeLevel: number,
+  ): void {
     session.stage = "authenticated";
     session.username = result.username || session.pendingUsername || undefined;
-    session.privilegeLevel = result.privilegeLevel;
+    session.privilegeLevel = privilegeLevel;
     session.attempts = 0;
     const cli = this.host.createSession();
-    if (result.privilegeLevel >= PRIVILEGED_EXEC_LEVEL) cli.enter("privileged");
+    if (privilegeLevel >= PRIVILEGED_EXEC_LEVEL) cli.enter("privileged");
     session.cli = cli;
     this.lines.activate(session.line, session.username, session.peerAddress, session.id, session.lastActivityNs);
     this.trace(`${session.protocol}-login-succeeded`, {
       line: session.line,
       username: session.username,
       method: result.method,
-      privilege: result.privilegeLevel,
+      privilege: privilegeLevel,
+    });
+    this.accountingHook?.("start", {
+      sessionId: session.id,
+      username: session.username ?? "",
+      privilegeLevel,
     });
     this.sendOutput(session, "");
   }
@@ -486,8 +561,51 @@ export class RemoteCliService {
       username: session.username,
       command: command.slice(0, 120),
     });
-    const output = cli.execute(command);
-    this.sendOutput(session, output);
+    const authorize = this.commandAuthorizer;
+    if (!authorize) {
+      this.executeAuthorized(session, cli, command);
+      return;
+    }
+    authorize(
+      {
+        listName: this.lineConfigOf(session)?.authorizationListName,
+        username: session.username ?? "",
+        credentialFingerprint: "",
+        protocol: session.protocol,
+        line: session.line,
+        peerAddress: session.peerAddress,
+        privilegeLevel: session.privilegeLevel,
+        command,
+      },
+      (permitted) => {
+        if (session.closed) return;
+        if (!permitted) {
+          // A denied command is never executed and never changes configuration.
+          this.trace(`${session.protocol}-command-denied`, {
+            line: session.line,
+            username: session.username,
+            command: command.slice(0, 120),
+          });
+          this.accountingHook?.("command", {
+            sessionId: session.id,
+            username: session.username ?? "",
+            privilegeLevel: session.privilegeLevel,
+          }, `${command} (denied)`);
+          this.sendOutput(session, AAA_AUTHORIZATION_FAILED);
+          return;
+        }
+        this.executeAuthorized(session, cli, command);
+      },
+    );
+  }
+
+  private executeAuthorized(session: RemoteSession, cli: CliSession, command: string): void {
+    this.accountingHook?.("command", {
+      sessionId: session.id,
+      username: session.username ?? "",
+      privilegeLevel: session.privilegeLevel,
+    }, command);
+    this.sendOutput(session, cli.execute(command));
   }
 
   // --- transport helpers ---------------------------------------------------
@@ -535,6 +653,13 @@ export class RemoteCliService {
   }
 
   private finishSession(session: RemoteSession, reason: RemoteCloseReason, closeTransport: boolean): void {
+    if (session.stage === "authenticated") {
+      this.accountingHook?.("stop", {
+        sessionId: session.id,
+        username: session.username ?? "",
+        privilegeLevel: session.privilegeLevel,
+      }, reason);
+    }
     session.closed = true;
     this.lines.markClosing(session.line);
     this.sessions.delete(session.id);

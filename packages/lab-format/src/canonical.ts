@@ -36,10 +36,12 @@ import type {
   WirelessStationConfiguration,
   WirelessAccessPointConfiguration,
 } from "@sim/contracts";
-import type { ManagementSviConfig, RemoteAccessConfiguration } from "@sim/contracts";
+import type { AaaConfiguration, ManagementSviConfig, RemoteAccessConfiguration } from "@sim/contracts";
 import {
   ipToInt,
+  isDefaultAaaConfiguration,
   isDefaultRemoteAccess,
+  normalizeAaaConfiguration,
   macFromIndex,
   normalizeIpv6,
   normalizeServiceConfiguration,
@@ -216,11 +218,18 @@ function switchConfiguration(node: NodeSpec, config: SwitchDeviceConfig | undefi
     managementSvi: canonicalManagementSvi(config?.managementSvi),
     managementDefaultGateway: config?.managementDefaultGateway,
     remoteAccess: canonicalRemoteAccess(config),
+    aaa: canonicalAaa(config),
   };
 }
 
 function canonicalManagementSvi(svi: ManagementSviConfig | undefined): ManagementSviConfig | undefined {
   return svi ? { ...svi } : undefined;
+}
+
+/** AAA in canonical order; absent when nothing was configured. */
+function canonicalAaa(config: { aaa?: AaaConfiguration } | undefined): AaaConfiguration | undefined {
+  const aaa = config?.aaa;
+  return isDefaultAaaConfiguration(aaa) || !aaa ? undefined : normalizeAaaConfiguration(aaa);
 }
 
 /**
@@ -452,6 +461,7 @@ function routerConfiguration(node: NodeSpec, config: RouterDeviceConfig | undefi
     discovery: canonicalDiscovery(config?.discovery),
     consoleAccess: canonicalConsoleAccess(config),
     remoteAccess: canonicalRemoteAccess(config),
+    aaa: canonicalAaa(config),
   };
 }
 
@@ -555,6 +565,7 @@ function layer3SwitchConfiguration(
     ...canonicalRoutedProtocols(config),
     consoleAccess: canonicalConsoleAccess(config),
     remoteAccess: canonicalRemoteAccess(config),
+    aaa: canonicalAaa(config),
   };
 }
 

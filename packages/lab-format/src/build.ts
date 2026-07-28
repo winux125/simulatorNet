@@ -12,6 +12,7 @@ import {
   type HostIpv6Config,
   type NodeSpec,
   type PhysicalInterfaceConfig,
+  type AaaConfiguration,
   type Layer3SwitchDeviceConfig,
   type RemoteAccessConfiguration,
   type SwitchDeviceConfig,
@@ -23,6 +24,7 @@ import {
   createSimulationEngine,
   ExternalAppliance,
   Firewall,
+  isDefaultAaaConfiguration,
   isDefaultRemoteAccess,
   EthernetBridge,
   Hub,
@@ -396,6 +398,7 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
   }
   if (device instanceof L2Switch && config.kind === "l2-switch") {
     device.remoteAccess.configure(config.remoteAccess);
+    device.aaa.configure(config.aaa);
     for (const vlan of config.vlans) device.setVlanName(vlan.id, vlan.name);
     // Bundles first: spanning tree must see the logical ports, not the members,
     // and a member inherits the Port-channel's switchport configuration.
@@ -413,7 +416,10 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
   }
   if (device instanceof Router
     && (config.kind === "router" || config.kind === "firewall" || config.kind === "cloud")) {
-    if (config.kind !== "cloud") device.remoteAccess.configure(config.remoteAccess);
+    if (config.kind !== "cloud") {
+      device.remoteAccess.configure(config.remoteAccess);
+      device.aaa.configure(config.aaa);
+    }
     for (const iface of config.interfaces) {
       applyPhysical(device, iface);
       if (iface.routed || iface.ipv4) {
@@ -533,6 +539,7 @@ function applyManagementSvi(device: L2Switch, config: SwitchDeviceConfig): void 
 
 function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3SwitchDeviceConfig): void {
   device.remoteAccess.configure(config.remoteAccess);
+  device.aaa.configure(config.aaa);
   for (const vlan of config.vlans) device.setVlanName(vlan.id, vlan.name);
   applyEtherChannelConfiguration(device, config.etherChannels ?? []);
   for (const iface of config.interfaces) {
@@ -763,6 +770,11 @@ function serializeRemoteAccess(state: { snapshot(): RemoteAccessConfiguration })
   return isDefaultRemoteAccess(snapshot) ? undefined : snapshot;
 }
 
+function serializeAaa(state: { snapshot(): AaaConfiguration }): AaaConfiguration | undefined {
+  const snapshot = state.snapshot();
+  return isDefaultAaaConfiguration(snapshot) ? undefined : snapshot;
+}
+
 function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
   if (device instanceof AccessPoint) {
     const wireless = device.configurationSnapshot();
@@ -924,6 +936,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       ospf: serializeOspfConfiguration(device),
       ospfv3: serializeOspfv3Configuration(device),
       remoteAccess: serializeRemoteAccess(device.remoteAccess),
+      aaa: serializeAaa(device.aaa),
     };
   }
   if (device instanceof L2Switch) {
@@ -957,6 +970,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
         : undefined,
       managementDefaultGateway: device.managementDefaultGateway,
       remoteAccess: serializeRemoteAccess(device.remoteAccess),
+      aaa: serializeAaa(device.aaa),
     };
   }
 
@@ -1037,6 +1051,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
     ospf: serializeOspfConfiguration(device),
     ospfv3: serializeOspfv3Configuration(device),
     remoteAccess: device instanceof IspCloud ? undefined : serializeRemoteAccess(device.remoteAccess),
+    aaa: device instanceof IspCloud ? undefined : serializeAaa(device.aaa),
   };
   if (device instanceof Firewall) {
     return {

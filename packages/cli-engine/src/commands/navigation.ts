@@ -105,13 +105,13 @@ export const navigationCommands: CommandSpec[] = [
   },
   {
     pattern: "exit",
-    modes: ["config-if", "config-vlan", "config-acl", "config-line", "config-router"],
+    modes: ["config-if", "config-vlan", "config-acl", "config-line", "config-aaa-server", "config-router"],
     device: "network",
     run: (s) => s.enter("config"),
   },
   {
     pattern: "end",
-    modes: ["config", "config-if", "config-vlan", "config-acl", "config-line", "config-router"],
+    modes: ["config", "config-if", "config-vlan", "config-acl", "config-line", "config-aaa-server", "config-router"],
     device: "network",
     run: (s) => s.enter("privileged"),
   },

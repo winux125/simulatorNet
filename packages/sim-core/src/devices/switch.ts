@@ -33,6 +33,7 @@ import type { HostTransportStack } from "../transport/host-transport";
 import type { IpAddress } from "../util/ip-address";
 import type { Ipv4 } from "../util/ipv4";
 import { RemoteAccessState } from "../management/remote-access-state";
+import { AaaState } from "../management/aaa-state";
 import { Device } from "./device";
 import { ForwardingDatabase } from "./forwarding-database";
 import { ManagementSviPlane, type ManagementSviRow } from "./management-svi";
@@ -133,6 +134,8 @@ export class L2Switch extends Device {
   private managementPlane: ManagementSviPlane | undefined;
   /** Persistent Telnet/SSH/VTY configuration; behaviour lives in the service. */
   readonly remoteAccess = new RemoteAccessState(this.id);
+  /** Persistent AAA method lists and servers; the decision layer is separate. */
+  readonly aaa = new AaaState();
 
   // --- management SVI ------------------------------------------------------
 
