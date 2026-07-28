@@ -34,6 +34,9 @@ import type { IpAddress } from "../util/ip-address";
 import type { Ipv4 } from "../util/ipv4";
 import { RemoteAccessState } from "../management/remote-access-state";
 import { AaaState } from "../management/aaa-state";
+import { emitLinkTrap, SnmpAgent } from "../management/snmp-agent";
+import { deviceMibSource } from "../management/device-mib";
+import type { SnmpInterfaceRow } from "../management/snmp-mib";
 import { Device } from "./device";
 import { ForwardingDatabase } from "./forwarding-database";
 import { ManagementSviPlane, type ManagementSviRow } from "./management-svi";
@@ -136,6 +139,78 @@ export class L2Switch extends Device {
   readonly remoteAccess = new RemoteAccessState(this.id);
   /** Persistent AAA method lists and servers; the decision layer is separate. */
   readonly aaa = new AaaState();
+  /** SNMPv2c agent reached through the management interface. */
+  readonly snmp: SnmpAgent = new SnmpAgent({
+    deviceId: this.id,
+    engine: () => this.engine,
+    transport: () => this.managementTransport(),
+    mib: () => deviceMibSource(this, this.snmp),
+  });
+
+  // --- SNMP MIB source ------------------------------------------------------
+
+  snmpInterfaceRows(): SnmpInterfaceRow[] {
+    const svi = this.managementSviSummary();
+    const ports = this.portSummaries().map((row, index) => ({
+      index: index + 1,
+      name: row.name,
+      ifType: 6,
+      adminUp: row.adminUp,
+      operationalUp: row.operUp,
+      inUnicastPackets: 0,
+      outUnicastPackets: 0,
+      inDiscards: 0,
+      outDiscards: 0,
+    }));
+    if (!svi) return ports;
+    return [
+      ...ports,
+      {
+        index: ports.length + 1,
+        name: svi.name,
+        ifType: 53,
+        adminUp: svi.adminUp,
+        operationalUp: svi.operUp,
+        inUnicastPackets: 0,
+        outUnicastPackets: 0,
+        inDiscards: 0,
+        outDiscards: 0,
+      },
+    ];
+  }
+
+  snmpIpv4Addresses(): string[] {
+    const ip = this.managementSviSummary()?.ip;
+    return ip ? [ip] : [];
+  }
+
+  snmpIpv6Addresses(): string[] {
+    return [];
+  }
+
+  snmpRouteCount(): number {
+    // A layer-2 switch has no routing table; only its default gateway exists.
+    return this.managementDefaultGateway === undefined ? 0 : 1;
+  }
+
+  snmpNeighborCount(): number {
+    return this.discovery.neighborTable().length;
+  }
+
+  snmpSpanningTree(): { rootId: string; portStates: string } | undefined {
+    const summary = this.spanningTreeSummary();
+    if (summary.mode === "disabled") return undefined;
+    return {
+      rootId: summary.instances[0]?.rootId ?? "",
+      portStates: summary.instances
+        .flatMap((instance) => instance.ports.map((port) => `${instance.vlanId}:${port.port}=${port.state}`))
+        .join(","),
+    };
+  }
+
+  snmpEtherChannelCount(): number {
+    return this.etherChannelSummaries().length;
+  }
 
   // --- management SVI ------------------------------------------------------
 
@@ -248,6 +323,7 @@ export class L2Switch extends Device {
     // A management SVI follows its VLAN: losing the last active member port
     // takes it operationally down and closes whatever it was terminating.
     if (this.managementPlane) this.management().onInterfaceStateChanged();
+    emitLinkTrap(this.snmp, iface.name, iface.operationalUp);
   }
 
   override rename(name: string): void {

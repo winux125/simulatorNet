@@ -36,12 +36,19 @@ import type {
   WirelessStationConfiguration,
   WirelessAccessPointConfiguration,
 } from "@sim/contracts";
-import type { AaaConfiguration, ManagementSviConfig, RemoteAccessConfiguration } from "@sim/contracts";
+import type {
+  AaaConfiguration,
+  ManagementSviConfig,
+  RemoteAccessConfiguration,
+  SnmpAgentConfiguration,
+} from "@sim/contracts";
 import {
   ipToInt,
   isDefaultAaaConfiguration,
   isDefaultRemoteAccess,
+  isDefaultSnmpAgentConfiguration,
   normalizeAaaConfiguration,
+  normalizeSnmpAgentConfiguration,
   macFromIndex,
   normalizeIpv6,
   normalizeServiceConfiguration,
@@ -219,6 +226,7 @@ function switchConfiguration(node: NodeSpec, config: SwitchDeviceConfig | undefi
     managementDefaultGateway: config?.managementDefaultGateway,
     remoteAccess: canonicalRemoteAccess(config),
     aaa: canonicalAaa(config),
+    snmp: canonicalSnmp(config),
   };
 }
 
@@ -230,6 +238,14 @@ function canonicalManagementSvi(svi: ManagementSviConfig | undefined): Managemen
 function canonicalAaa(config: { aaa?: AaaConfiguration } | undefined): AaaConfiguration | undefined {
   const aaa = config?.aaa;
   return isDefaultAaaConfiguration(aaa) || !aaa ? undefined : normalizeAaaConfiguration(aaa);
+}
+
+/** SNMP agent configuration in canonical order; absent when unconfigured. */
+function canonicalSnmp(
+  config: { snmp?: SnmpAgentConfiguration } | undefined,
+): SnmpAgentConfiguration | undefined {
+  const snmp = config?.snmp;
+  return isDefaultSnmpAgentConfiguration(snmp) || !snmp ? undefined : normalizeSnmpAgentConfiguration(snmp);
 }
 
 /**
@@ -462,6 +478,7 @@ function routerConfiguration(node: NodeSpec, config: RouterDeviceConfig | undefi
     consoleAccess: canonicalConsoleAccess(config),
     remoteAccess: canonicalRemoteAccess(config),
     aaa: canonicalAaa(config),
+    snmp: canonicalSnmp(config),
   };
 }
 
@@ -566,6 +583,7 @@ function layer3SwitchConfiguration(
     consoleAccess: canonicalConsoleAccess(config),
     remoteAccess: canonicalRemoteAccess(config),
     aaa: canonicalAaa(config),
+    snmp: canonicalSnmp(config),
   };
 }
 

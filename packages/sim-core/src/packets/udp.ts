@@ -7,6 +7,7 @@ import type {
   SyslogMessage,
   TftpMessage,
 } from "../services/messages";
+import type { SnmpMessage } from "../management/snmp-messages";
 
 /** Generic structured payload used by transport tests and simple applications. */
 export interface UdpApplicationPayload {
@@ -24,6 +25,7 @@ export type UdpPayload =
   | NtpMessage
   | SyslogMessage
   | RadiusMessage
+  | SnmpMessage
   | UdpApplicationPayload;
 
 export interface UdpDatagram {

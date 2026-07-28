@@ -21,15 +21,18 @@ import type {
   ManagementSviConfig,
   RemoteAccessConfiguration,
   RemoteProtocol,
+  SnmpAgentConfiguration,
   VtyLineConfig,
   VtyLoginMode,
 } from "@sim/contracts";
+import { SNMP_TRAP_PORT } from "@sim/contracts";
 
 export interface ParsedManagementConfig {
   readonly managementSvi?: ManagementSviConfig;
   readonly managementDefaultGateway?: string;
   readonly remoteAccess?: RemoteAccessConfiguration;
   readonly aaa?: AaaConfiguration;
+  readonly snmp?: SnmpAgentConfiguration;
   /** Lines recognised as management config but deliberately not applied. */
   readonly ignored: string[];
   /** A vendor hash appeared where a comparable secret was required. */
@@ -61,6 +64,12 @@ interface Draft {
   accountingExec: Array<{ name: string; mode: AaaAccountingMode; methods: AaaMethod[] }>;
   accountingCommands: Array<{ name: string; privilegeLevel: number; mode: AaaAccountingMode; methods: AaaMethod[] }>;
   servers: Array<{ name: string; protocol: "radius" | "tacacs+"; address?: string; authPort?: number; acctPort?: number; key?: string; timeoutSeconds?: number }>;
+  snmpEnabled: boolean;
+  snmpTrapsEnabled: boolean;
+  snmpLocation?: string;
+  snmpContact?: string;
+  snmpCommunities: Array<{ id: string; secret: string }>;
+  snmpTrapHosts: Array<{ id: string; address: string; secret?: string }>;
   ignored: string[];
   resetRequired: boolean;
 }
@@ -79,6 +88,10 @@ function newDraft(): Draft {
     accountingExec: [],
     accountingCommands: [],
     servers: [],
+    snmpEnabled: false,
+    snmpTrapsEnabled: false,
+    snmpCommunities: [],
+    snmpTrapHosts: [],
     ignored: [],
     resetRequired: false,
   };
@@ -263,6 +276,10 @@ export function parseManagementConfigFromIos(text: string): ParsedManagementConf
       parseAaaLine(draft, tokens);
       continue;
     }
+    if (head === "snmp-server") {
+      parseSnmpLine(draft, tokens);
+      continue;
+    }
   }
 
   return finalize(draft);
@@ -307,6 +324,55 @@ function parseAaaLine(draft: Draft, tokens: readonly string[]): void {
         methods: parseMethods(tokens.slice(6)),
       });
     }
+    return;
+  }
+  draft.ignored.push(tokens.join(" "));
+}
+
+/**
+ * `snmp-server` subset. Community strings and trap-host communities are held
+ * as plaintext only long enough for `deriveManagementSecrets` to turn them into
+ * fingerprints; nothing plaintext ever reaches a LabDocument.
+ */
+function parseSnmpLine(draft: Draft, tokens: readonly string[]): void {
+  const second = tokens[1]?.toLowerCase();
+  if (second === "community" && tokens[2]) {
+    const access = tokens[3]?.toLowerCase();
+    if (access === "rw") {
+      // Read-write and SET are out of scope: importing it would imply a
+      // capability the simulator does not have.
+      draft.ignored.push(tokens.join(" "));
+      return;
+    }
+    draft.snmpCommunities.push({ id: `community-${draft.snmpCommunities.length + 1}`, secret: tokens[2] });
+    draft.snmpEnabled = true;
+    return;
+  }
+  if (second === "location") {
+    draft.snmpLocation = tokens.slice(2).join(" ").slice(0, 255) || undefined;
+    return;
+  }
+  if (second === "contact") {
+    draft.snmpContact = tokens.slice(2).join(" ").slice(0, 255) || undefined;
+    return;
+  }
+  if (second === "host" && tokens[2]) {
+    const versionIndex = tokens.findIndex((token) => token.toLowerCase() === "version");
+    const version = versionIndex >= 0 ? tokens[versionIndex + 1] : "2c";
+    if (version !== "2c") {
+      draft.ignored.push(tokens.join(" "));
+      return;
+    }
+    draft.snmpTrapHosts.push({
+      id: `host-${draft.snmpTrapHosts.length + 1}`,
+      address: tokens[2],
+      secret: versionIndex >= 0 ? tokens[versionIndex + 2] : undefined,
+    });
+    draft.snmpEnabled = true;
+    return;
+  }
+  if (second === "enable" && tokens[2]?.toLowerCase() === "traps") {
+    draft.snmpTrapsEnabled = true;
     return;
   }
   draft.ignored.push(tokens.join(" "));
@@ -373,11 +439,34 @@ function finalize(draft: Draft): ParsedManagementConfig {
       }
     : undefined;
 
+  // Communities and trap communities become fingerprints in the second pass;
+  // an agent with no usable community is still recorded so the learner sees it.
+  const snmp: SnmpAgentConfiguration | undefined = draft.snmpEnabled
+    || draft.snmpLocation !== undefined
+    || draft.snmpContact !== undefined
+    ? {
+        enabled: draft.snmpEnabled,
+        communities: [],
+        location: draft.snmpLocation,
+        contact: draft.snmpContact,
+        trapsEnabled: draft.snmpTrapsEnabled,
+        trapDestinations: draft.snmpTrapHosts.map((host) => ({
+          id: host.id,
+          address: host.address,
+          port: SNMP_TRAP_PORT,
+          version: "2c" as const,
+          enabled: true,
+        })),
+        enabledTrapTypes: [],
+      }
+    : undefined;
+
   return {
     managementSvi: draft.svi,
     managementDefaultGateway: draft.defaultGateway,
     remoteAccess,
     aaa,
+    snmp,
     ignored: draft.ignored,
     resetRequired: draft.resetRequired,
   };
@@ -391,6 +480,8 @@ function finalize(draft: Draft): ParsedManagementConfig {
 export async function deriveManagementSecrets(
   text: string,
   parsed: ParsedManagementConfig,
+  /** Scope for SNMP communities: the importing device's node id. */
+  deviceId = "imported",
 ): Promise<ParsedManagementConfig> {
   const draftSecrets = collectSecrets(text);
   let remoteAccess = parsed.remoteAccess;
@@ -419,21 +510,55 @@ export async function deriveManagementSecrets(
     }));
     aaa = { ...aaa, servers };
   }
-  return { ...parsed, remoteAccess, aaa };
+  let snmp = parsed.snmp;
+  if (snmp) {
+    const scope = managementCredentialScope.community(deviceId);
+    const communities = await Promise.all(draftSecrets.snmpCommunities.map(async (secret, index) => ({
+      id: `community-${index + 1}`,
+      fingerprint: (await createManagementCredentialVerifier(scope, secret)).hashBase64,
+      access: "read-only" as const,
+      enabled: true,
+    })));
+    const trapDestinations = await Promise.all(snmp.trapDestinations.map(async (destination, index) => {
+      const secret = draftSecrets.snmpTrapCommunities[index];
+      if (!secret) return destination;
+      return {
+        ...destination,
+        communityFingerprint: (await createManagementCredentialVerifier(scope, secret)).hashBase64,
+      };
+    }));
+    snmp = { ...snmp, communities, trapDestinations };
+  }
+  return { ...parsed, remoteAccess, aaa, snmp };
 }
 
 /** Second pass over the raw text purely to pair secrets with their owners. */
 function collectSecrets(text: string): {
   linePasswords: Map<string, string>;
   serverKeys: Map<string, string>;
+  snmpCommunities: string[];
+  snmpTrapCommunities: Array<string | undefined>;
 } {
   const linePasswords = new Map<string, string>();
   const serverKeys = new Map<string, string>();
+  const snmpCommunities: string[] = [];
+  const snmpTrapCommunities: Array<string | undefined> = [];
   let vtyKey: string | undefined;
   let serverName: string | undefined;
   for (const raw of text.split(/\r\n|\r|\n/u)) {
     const tokens = raw.trim().split(/\s+/u);
     const head = tokens[0]?.toLowerCase();
+    if (head === "snmp-server" && tokens[1]?.toLowerCase() === "community" && tokens[2]) {
+      if (tokens[3]?.toLowerCase() !== "rw") snmpCommunities.push(tokens[2]);
+      continue;
+    }
+    if (head === "snmp-server" && tokens[1]?.toLowerCase() === "host" && tokens[2]) {
+      const versionIndex = tokens.findIndex((token) => token.toLowerCase() === "version");
+      if (versionIndex < 0 || tokens[versionIndex + 1] === "2c") {
+        snmpTrapCommunities.push(versionIndex >= 0 ? tokens[versionIndex + 2] : undefined);
+      }
+      continue;
+    }
     if (head === "line" && tokens[1]?.toLowerCase() === "vty") {
       vtyKey = `${Number(tokens[2])}:${Number(tokens[3] ?? tokens[2])}`;
       serverName = undefined;
@@ -459,7 +584,7 @@ function collectSecrets(text: string): {
       if (!isVendorHash(rest) && rest[0]) serverKeys.set(serverName, rest.join(" "));
     }
   }
-  return { linePasswords, serverKeys };
+  return { linePasswords, serverKeys, snmpCommunities, snmpTrapCommunities };
 }
 
 /** Remove management secrets from preserved artifact text before it is shown. */

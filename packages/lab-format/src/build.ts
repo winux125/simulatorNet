@@ -15,6 +15,7 @@ import {
   type AaaConfiguration,
   type Layer3SwitchDeviceConfig,
   type RemoteAccessConfiguration,
+  type SnmpAgentConfiguration,
   type SwitchDeviceConfig,
   type Topology,
   getDeviceProfile,
@@ -26,6 +27,7 @@ import {
   Firewall,
   isDefaultAaaConfiguration,
   isDefaultRemoteAccess,
+  isDefaultSnmpAgentConfiguration,
   EthernetBridge,
   Hub,
   IspCloud,
@@ -411,7 +413,10 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
     }
     applySpanningTreeConfiguration(device, config.spanningTree ?? DEFAULT_SPANNING_TREE_CONFIG);
     applyDiscoveryConfiguration(device, config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG);
+    // The SVI first: addressing the management interface resets its sockets, so
+    // the SNMP agent must bind afterwards or it would lose its listener.
     applyManagementSvi(device, config);
+    device.snmp.configure(config.snmp);
     return;
   }
   if (device instanceof Router
@@ -419,6 +424,7 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
     if (config.kind !== "cloud") {
       device.remoteAccess.configure(config.remoteAccess);
       device.aaa.configure(config.aaa);
+      device.snmp.configure(config.snmp);
     }
     for (const iface of config.interfaces) {
       applyPhysical(device, iface);
@@ -540,6 +546,7 @@ function applyManagementSvi(device: L2Switch, config: SwitchDeviceConfig): void 
 function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3SwitchDeviceConfig): void {
   device.remoteAccess.configure(config.remoteAccess);
   device.aaa.configure(config.aaa);
+  device.snmp.configure(config.snmp);
   for (const vlan of config.vlans) device.setVlanName(vlan.id, vlan.name);
   applyEtherChannelConfiguration(device, config.etherChannels ?? []);
   for (const iface of config.interfaces) {
@@ -775,6 +782,11 @@ function serializeAaa(state: { snapshot(): AaaConfiguration }): AaaConfiguration
   return isDefaultAaaConfiguration(snapshot) ? undefined : snapshot;
 }
 
+function serializeSnmp(agent: { snapshot(): SnmpAgentConfiguration }): SnmpAgentConfiguration | undefined {
+  const snapshot = agent.snapshot();
+  return isDefaultSnmpAgentConfiguration(snapshot) ? undefined : snapshot;
+}
+
 function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
   if (device instanceof AccessPoint) {
     const wireless = device.configurationSnapshot();
@@ -937,6 +949,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       ospfv3: serializeOspfv3Configuration(device),
       remoteAccess: serializeRemoteAccess(device.remoteAccess),
       aaa: serializeAaa(device.aaa),
+      snmp: serializeSnmp(device.snmp),
     };
   }
   if (device instanceof L2Switch) {
@@ -971,6 +984,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       managementDefaultGateway: device.managementDefaultGateway,
       remoteAccess: serializeRemoteAccess(device.remoteAccess),
       aaa: serializeAaa(device.aaa),
+      snmp: serializeSnmp(device.snmp),
     };
   }
 
@@ -1052,6 +1066,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
     ospfv3: serializeOspfv3Configuration(device),
     remoteAccess: device instanceof IspCloud ? undefined : serializeRemoteAccess(device.remoteAccess),
     aaa: device instanceof IspCloud ? undefined : serializeAaa(device.aaa),
+    snmp: device instanceof IspCloud ? undefined : serializeSnmp(device.snmp),
   };
   if (device instanceof Firewall) {
     return {

@@ -23,6 +23,7 @@ import {
   type AaaServiceRuntimeSnapshot,
 } from "./aaa-services";
 import type { RadiusMessage, TacacsMessage } from "./messages";
+import { NetworkManagementService, type NmsRuntimeSnapshot } from "../management/nms-service";
 import type { SimulationEngine } from "../engine/simulation-engine";
 import type { TcpConnection } from "../transport/tcp";
 import type { HostTransportStack } from "../transport/host-transport";
@@ -68,6 +69,7 @@ export interface ServerServiceRuntimeSnapshot {
   readonly syslog: { readonly entries: SyslogEntry[] };
   readonly radius: AaaServiceRuntimeSnapshot;
   readonly tacacs: AaaServiceRuntimeSnapshot;
+  readonly networkManagement: NmsRuntimeSnapshot;
 }
 
 interface ServiceState {
@@ -109,6 +111,8 @@ export class ServerServiceRegistry {
   private readonly syslogEntries: SyslogEntry[] = [];
   private runtimeGeneration = 0;
   private readonly accounting = new AaaAccountingLog();
+  /** The Server-side SNMP manager and trap receiver. */
+  readonly networkManagement: NetworkManagementService;
   private readonly aaaCounters = {
     radius: { accessAccepted: 0, accessRejected: 0, authorizationPermitted: 0, authorizationDenied: 0 },
     tacacs: { accessAccepted: 0, accessRejected: 0, authorizationPermitted: 0, authorizationDenied: 0 },
@@ -117,7 +121,13 @@ export class ServerServiceRegistry {
   constructor(
     private readonly host: ServerServiceAdapter,
     private readonly limits: ServiceLimits = DEFAULT_SERVICE_LIMITS,
-  ) {}
+  ) {
+    this.networkManagement = new NetworkManagementService({
+      deviceId: host.deviceId,
+      engine: host.engine,
+      transport: host.transport,
+    });
+  }
 
   configureAll(configurations: readonly ServerServiceConfig[]): void {
     if (configurations.length > this.limits.maximumServicesPerServer) {
@@ -205,6 +215,7 @@ export class ServerServiceRegistry {
       syslog: { entries: this.syslogEntries.map((entry) => ({ ...entry })) },
       radius: this.aaaSnapshot("radius"),
       tacacs: this.aaaSnapshot("tacacs+"),
+      networkManagement: this.networkManagement.runtimeSnapshot(),
     };
   }
 
@@ -236,6 +247,7 @@ export class ServerServiceRegistry {
     const configurations = this.configurations();
     this.runtimeGeneration++;
     this.clearAaaRuntime();
+    this.networkManagement.resetRuntime();
     this.tftpTransfers.clear();
     this.dnsQueries = 0;
     this.httpRequests = 0;
@@ -310,6 +322,10 @@ export class ServerServiceRegistry {
           }),
           "tacacs",
         );
+        return;
+      case "network-management":
+        this.networkManagement.configure(config);
+        this.networkManagement.listen(config.port);
     }
   }
 
@@ -319,6 +335,8 @@ export class ServerServiceRegistry {
     else if (config.type === "radius") {
       this.host.transport.udp.unbind(config.port);
       this.host.transport.udp.unbind(config.accountingPort);
+    } else if (config.type === "network-management") {
+      this.networkManagement.unlisten(config.port);
     } else this.host.transport.udp.unbind(config.port);
     for (const [key, transfer] of this.tftpTransfers) {
       if (transfer.service.id === config.id) this.tftpTransfers.delete(key);

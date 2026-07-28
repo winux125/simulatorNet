@@ -60,6 +60,9 @@ import type { TcpSegment } from "../packets/tcp";
 import { HostTransportStack } from "../transport/host-transport";
 import { RemoteAccessState } from "../management/remote-access-state";
 import { AaaState } from "../management/aaa-state";
+import { emitLinkTrap, SnmpAgent } from "../management/snmp-agent";
+import { deviceMibSource } from "../management/device-mib";
+import type { SnmpInterfaceRow } from "../management/snmp-mib";
 import { ipFamilyOf, type IpAddress, type IpFamily } from "../util/ip-address";
 import {
   type AclBinding,
@@ -297,6 +300,13 @@ export class Router extends Device {
   readonly remoteAccess = new RemoteAccessState(this.id);
   /** Persistent AAA method lists and servers; the decision layer is separate. */
   readonly aaa = new AaaState();
+  /** SNMPv2c agent over the management transport; disabled until configured. */
+  readonly snmp: SnmpAgent = new SnmpAgent({
+    deviceId: this.id,
+    engine: () => this.engine,
+    transport: () => this.management,
+    mib: () => deviceMibSource(this, this.snmp),
+  });
 
   readonly management: HostTransportStack = new HostTransportStack({
     deviceId: this.id,
@@ -969,6 +979,7 @@ export class Router extends Device {
         this.ospfv3.onInterfaceStateChanged(name);
       }
     }
+    emitLinkTrap(this.snmp, iface.name, iface.operationalUp);
   }
 
   // --- OSPFv3 host --------------------------------------------------------
@@ -1595,6 +1606,53 @@ export class Router extends Device {
     return [...this.l3.values()]
       .flatMap((iface) => (iface.ip === undefined ? [] : [iface.ip]))
       .sort((a, b) => ipToInt(a) - ipToInt(b))[0];
+  }
+
+  // --- SNMP MIB source ------------------------------------------------------
+  // Only state the engine genuinely models is reported; nothing is invented.
+
+  snmpInterfaceRows(): SnmpInterfaceRow[] {
+    return this.interfaceSummaries()
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((row, index) => ({
+        index: index + 1,
+        name: row.name,
+        ifType: row.vlan === undefined ? 6 : 53,
+        adminUp: row.adminUp,
+        operationalUp: row.operUp,
+        inUnicastPackets: 0,
+        outUnicastPackets: 0,
+        inDiscards: 0,
+        outDiscards: 0,
+      }));
+  }
+
+  snmpIpv4Addresses(): string[] {
+    return [...this.l3.values()]
+      .flatMap((iface) => (iface.ip === undefined ? [] : [iface.ip]))
+      .sort((a, b) => ipToInt(a) - ipToInt(b));
+  }
+
+  snmpIpv6Addresses(): string[] {
+    return this.ipv6InterfaceSummaries()
+      .flatMap((row) => row.addresses.map((address) => address.address))
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  snmpRouteCount(): number {
+    return this.routingTable().length + this.ipv6RoutingTable().length;
+  }
+
+  snmpNeighborCount(): number {
+    return this.discovery.neighborTable().length;
+  }
+
+  snmpOspfNeighborCount(): number {
+    return this.ospf.neighborSummaries().length;
+  }
+
+  snmpOspfv3NeighborCount(): number {
+    return this.ospfv3.neighborSummaries().length;
   }
 
   /** Every address this device answers management traffic on, lowest first. */

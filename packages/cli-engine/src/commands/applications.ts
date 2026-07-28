@@ -156,6 +156,34 @@ export const applicationCommands: CommandSpec[] = [
       "No application services configured.",
     ),
   },
+  // --- NMS host tools -------------------------------------------------------
+  // Deliberately host tools, not Cisco IOS commands: an NMS polls its targets
+  // over the simulated UDP stack exactly as a real manager would.
+  ...(["snmpget", "snmpwalk"] as const).map((tool): CommandSpec => ({
+    pattern: `${tool} {target} {oid}`,
+    usage: `${tool} <target-name-or-ip> <oid>`,
+    modes: [...EXEC_MODES],
+    device: "server",
+    capabilities: ["application-services"],
+    run: (session, params) => safely(() => runSnmp(session, tool === "snmpget" ? "get" : "walk", params.target!, params.oid!)),
+  })),
+  {
+    pattern: "sim show snmp traps",
+    modes: [...EXEC_MODES],
+    device: "server",
+    capabilities: ["application-services"],
+    run: (session) => formatRows(
+      ["Seq", "Time", "Source", "Trap", "Detail"],
+      server(session).services.networkManagement.runtimeSnapshot().traps.map((entry) => [
+        String(entry.sequence),
+        String(entry.receivedAtNs),
+        entry.sourceName ?? entry.sourceAddress,
+        entry.trapType,
+        entry.varBinds.map((bind) => `${bind.oid}=${bind.value}`).join(" "),
+      ]),
+      "No SNMP traps have been received.",
+    ),
+  },
   ...(["dns", "http", "tftp", "syslog"] as const).map((type): CommandSpec => ({
     pattern: `sim show ${type}`,
     modes: [...EXEC_MODES],
@@ -164,6 +192,32 @@ export const applicationCommands: CommandSpec[] = [
     run: (session) => showService(server(session), type),
   })),
 ];
+
+/**
+ * Poll a configured NMS target. The result arrives only after the bounded
+ * deterministic event queue has carried the request and its reply, so Auto
+ * completes the round trip and Step keeps every packet observable.
+ */
+function runSnmp(session: SessionApi, operation: "get" | "walk", target: string, oid: string): string {
+  const nms = server(session).services.networkManagement;
+  const profile = nms.targetByName(target)
+    ?? nms.targets.find((candidate) => candidate.address === target);
+  if (!profile) throw new ValidationError(`No Network Management target named '${target}' is configured.`);
+  if (!profile.enabled) throw new ValidationError(`Target '${target}' is disabled.`);
+  let requestId = -1;
+  return session.runNetworkOperation(
+    () => { requestId = nms.poll(profile, operation, oid); },
+    () => {
+      const result = nms.runtimeSnapshot().results.find((entry) => entry.requestId === requestId);
+      if (!result) return undefined;
+      if (result.status === "invalid-oid") return `% '${oid}' is not a valid OID.`;
+      if (result.status === "invalid-community") return `% ${profile.name}: invalid community.`;
+      if (result.status === "timeout") return `% ${profile.name}: no response (timeout).`;
+      if (result.varBinds.length === 0) return `% ${profile.name}: no such object.`;
+      return result.varBinds.map((bind) => `${bind.oid} = ${bind.type}: ${bind.value}`).join("\n");
+    },
+  );
+}
 
 function runNslookup(session: SessionApi, hostname: string, dnsServer?: string): string {
   const device = host(session);

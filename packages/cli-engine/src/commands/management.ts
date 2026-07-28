@@ -8,7 +8,15 @@ import {
   type AaaServerConfig,
   type AaaServerProtocol,
 } from "@sim/contracts";
-import { EndHost, L2Switch, Layer3Switch, Router, type AaaState, type RemoteAccessState } from "@sim/sim-core";
+import {
+  EndHost,
+  L2Switch,
+  Layer3Switch,
+  Router,
+  type AaaState,
+  type RemoteAccessState,
+  type SnmpAgent,
+} from "@sim/sim-core";
 import { InvalidModeError, ValidationError } from "../errors/errors";
 import type { CommandSpec, SessionApi, VtyLineContext } from "../types";
 import type { RemoteSessionProtocol, RemoteSessionRequest } from "../session/remote";
@@ -550,12 +558,108 @@ export const managementCommands: CommandSpec[] = [
       return table(["Type", "List", "Methods"], rows, "No AAA method lists are configured.");
     },
   },
+
+  // --- SNMP agent -----------------------------------------------------------
+  {
+    pattern: "snmp-server location {text...}",
+    usage: "snmp-server location <text>",
+    modes: ["config"],
+    device: "managed",
+    run: (session, params) => {
+      snmpOf(session).setLocation(params.text!.slice(0, 255));
+      return "";
+    },
+  },
+  {
+    pattern: "snmp-server contact {text...}",
+    usage: "snmp-server contact <text>",
+    modes: ["config"],
+    device: "managed",
+    run: (session, params) => {
+      snmpOf(session).setContact(params.text!.slice(0, 255));
+      return "";
+    },
+  },
+  {
+    pattern: "snmp-server enable traps",
+    modes: ["config"],
+    device: "managed",
+    run: (session) => {
+      snmpOf(session).setTrapsEnabled(true);
+      return "";
+    },
+  },
+  {
+    pattern: "no snmp-server enable traps",
+    modes: ["config"],
+    device: "managed",
+    run: (session) => {
+      snmpOf(session).setTrapsEnabled(false);
+      return "";
+    },
+  },
+  {
+    pattern: "show snmp",
+    modes: ["exec", "privileged"],
+    device: "managed",
+    run: (session) => {
+      const snmp = snmpOf(session).snapshot();
+      if (!snmp.enabled) return "SNMP agent not enabled.";
+      return [
+        `Chassis: ${session.device.name}`,
+        `Contact: ${snmp.contact ?? "not configured"}`,
+        `Location: ${snmp.location ?? "not configured"}`,
+        `SNMP agent enabled (v2c, simulated)`,
+        `Communities configured: ${snmp.communities.length}`,
+        `Traps: ${snmp.trapsEnabled ? "enabled" : "disabled"} (${snmp.trapDestinations.length} destination(s))`,
+      ].join("\n");
+    },
+  },
+  {
+    pattern: "show snmp community",
+    modes: ["privileged"],
+    device: "managed",
+    run: (session) => table(
+      ["Index", "Access", "Manager", "Value"],
+      snmpOf(session).snapshot().communities.map((entry) => [
+        entry.id,
+        entry.access,
+        entry.managerAddress ?? "any",
+        // The community string is a shared secret: never rendered, not even
+        // as its fingerprint, and `show running-config` redacts it too.
+        "<redacted>",
+      ]),
+      "No SNMP communities are configured.",
+    ),
+  },
+  {
+    pattern: "show snmp host",
+    modes: ["privileged"],
+    device: "managed",
+    run: (session) => table(
+      ["Destination", "Port", "Version", "Community"],
+      snmpOf(session).snapshot().trapDestinations.map((entry) => [
+        entry.address,
+        String(entry.port),
+        entry.version,
+        entry.communityFingerprint ? "<redacted>" : "not set",
+      ]),
+      "No SNMP trap destinations are configured.",
+    ),
+  },
 ];
 
 /** AAA method lists and servers live on the same devices as remote access. */
 function aaaOf(session: SessionApi): AaaState {
   const device = session.device;
   if (device instanceof L2Switch || device instanceof Router) return device.aaa;
+  throw new InvalidModeError("This command requires a Router, Switch or Firewall");
+}
+
+/** The SNMP agent lives on the same devices as remote access and AAA. */
+function snmpOf(session: SessionApi): SnmpAgent {
+  const device = session.device;
+  if (device instanceof L2Switch || device instanceof Router) return device.snmp;
   throw new InvalidModeError("This command requires a Router, Switch or Firewall");
 }
 

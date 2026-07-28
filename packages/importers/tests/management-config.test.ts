@@ -40,6 +40,13 @@ tacacs server TAC1
  address ipv4 192.168.50.10
  key SuperSecretTacacs
 !
+snmp-server community LabReadOnly ro
+snmp-server community LabReadWrite rw
+snmp-server location Lab rack 1
+snmp-server contact netops@lab.local
+snmp-server host 192.168.50.10 version 2c LabReadOnly
+snmp-server enable traps
+!
 line vty 0 4
  login local
  transport input ssh
@@ -134,9 +141,34 @@ describe("IOS management and AAA import", () => {
     expect(serialized).not.toContain("LinePassword");
   });
 
-  it("reports advanced AAA syntax it does not simulate instead of dropping it", () => {
+  it("maps the SNMP agent and its trap destination", () => {
+    const parsed = parseManagementConfigFromIos(CONFIG);
+    expect(parsed.snmp).toMatchObject({
+      enabled: true,
+      trapsEnabled: true,
+      location: "Lab rack 1",
+      contact: "netops@lab.local",
+    });
+    expect(parsed.snmp?.trapDestinations).toEqual([
+      expect.objectContaining({ address: "192.168.50.10", port: 162, version: "2c" }),
+    ]);
+  });
+
+  it("converts SNMP communities into fingerprints and never keeps the string", async () => {
+    const derived = await deriveManagementSecrets(CONFIG, parseManagementConfigFromIos(CONFIG), "sw1");
+    expect(derived.snmp?.communities).toHaveLength(1);
+    expect(derived.snmp?.communities[0]?.access).toBe("read-only");
+    expect(derived.snmp?.trapDestinations[0]?.communityFingerprint).toBeDefined();
+    const serialized = JSON.stringify(derived.snmp);
+    expect(serialized).not.toContain("LabReadOnly");
+    expect(serialized).not.toContain("LabReadWrite");
+  });
+
+  it("reports advanced AAA and SNMP syntax it does not simulate instead of dropping it", () => {
     const parsed = parseManagementConfigFromIos(CONFIG);
     expect(parsed.ignored).toContain("aaa server radius dynamic-author");
+    // Read-write communities and SET are out of scope for this milestone.
+    expect(parsed.ignored).toContain("snmp-server community LabReadWrite rw");
   });
 
   it("flags a vendor hash as requiring a reset rather than importing it", () => {

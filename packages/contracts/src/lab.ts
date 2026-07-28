@@ -4,6 +4,7 @@ import { LabDiagramSchema } from "./diagram";
 import { ConsoleAccessConfigurationSchema } from "./console";
 import { ManagementSviConfigSchema, RemoteAccessConfigurationSchema } from "./management";
 import { AaaConfigurationSchema, RadiusServiceConfigSchema, TacacsServiceConfigSchema } from "./aaa";
+import { NetworkManagementServiceConfigSchema, SnmpAgentConfigurationSchema } from "./snmp";
 import {
   Ipv4InterfaceConfigSchema,
   Ipv4Schema,
@@ -164,6 +165,7 @@ export const ServerServiceConfigSchema = z.discriminatedUnion("type", [
   SyslogServiceConfigSchema,
   RadiusServiceConfigSchema,
   TacacsServiceConfigSchema,
+  NetworkManagementServiceConfigSchema,
 ]);
 export type ServerServiceConfig = z.infer<typeof ServerServiceConfigSchema>;
 
@@ -228,6 +230,7 @@ export const SwitchDeviceConfigSchema = z.object({
   managementDefaultGateway: Ipv4Schema.optional(),
   remoteAccess: RemoteAccessConfigurationSchema.optional(),
   aaa: AaaConfigurationSchema.optional(),
+  snmp: SnmpAgentConfigurationSchema.optional(),
 });
 export type SwitchDeviceConfig = z.infer<typeof SwitchDeviceConfigSchema>;
 
@@ -446,6 +449,7 @@ export const RouterDeviceConfigSchema = z.object({
   consoleAccess: ConsoleAccessConfigurationSchema.optional(),
   remoteAccess: RemoteAccessConfigurationSchema.optional(),
   aaa: AaaConfigurationSchema.optional(),
+  snmp: SnmpAgentConfigurationSchema.optional(),
 });
 export type RouterDeviceConfig = z.infer<typeof RouterDeviceConfigSchema>;
 
@@ -558,6 +562,7 @@ export const Layer3SwitchDeviceConfigSchema = z.object({
   consoleAccess: ConsoleAccessConfigurationSchema.optional(),
   remoteAccess: RemoteAccessConfigurationSchema.optional(),
   aaa: AaaConfigurationSchema.optional(),
+  snmp: SnmpAgentConfigurationSchema.optional(),
 });
 export type Layer3SwitchDeviceConfig = z.infer<typeof Layer3SwitchDeviceConfigSchema>;
 

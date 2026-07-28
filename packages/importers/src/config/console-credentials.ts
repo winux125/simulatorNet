@@ -130,6 +130,7 @@ function applyManagement(
     };
   }
   if (management.aaa) next.aaa = management.aaa;
+  if (management.snmp) next.snmp = management.snmp;
   if (config.kind === "l2-switch") {
     if (management.managementSvi) next.managementSvi = management.managementSvi;
     if (management.managementDefaultGateway) next.managementDefaultGateway = management.managementDefaultGateway;
@@ -158,9 +159,11 @@ export async function applyImportedConsoleCredentials(result: ImportResult): Pro
     const management = await deriveManagementSecrets(
       artifact.text,
       parseManagementConfigFromIos(artifact.text),
+      artifact.nodeId,
     );
     const hasManagement = management.remoteAccess !== undefined
       || management.aaa !== undefined
+      || management.snmp !== undefined
       || management.managementSvi !== undefined
       || management.managementDefaultGateway !== undefined;
     if (!access && !hasManagement) { artifacts.push(artifact); continue; }

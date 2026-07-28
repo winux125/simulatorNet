@@ -10,4 +10,5 @@ export * from "./diagram";
 export * from "./console";
 export * from "./management";
 export * from "./aaa";
+export * from "./snmp";
 export * from "./wireless";

@@ -19,6 +19,10 @@ export * from "./wireless/wireless-medium";
 // Management-plane configuration state (behaviour lives in remote-management)
 export * from "./management/remote-access-state";
 export * from "./management/aaa-state";
+export * from "./management/snmp-messages";
+export * from "./management/snmp-mib";
+export * from "./management/snmp-agent";
+export * from "./management/device-mib";
 
 // Devices
 export * from "./devices/device";

@@ -58,7 +58,14 @@ const packetTypes = new Set([
   "ospf-lsa-originated", "ospf-lsa-flooded", "ospf-lsa-acknowledged", "ospf-lsdb-changed",
   "ospf-spf-started", "ospf-spf-completed", "ospf-route-installed", "ospf-route-withdrawn",
   "ospf-adjacency-rejected", "ospf-routing-table-changed",
+  // M10.7 management plane: remote CLI, AAA and SNMP.
+  "tcp-connection", "remote-session-refused", "aaa-accounting",
 ]);
+
+/** Management-plane trace prefixes; all of them are packet-trace events. */
+const managementPacketPrefixes = [
+  "telnet-", "ssh-", "radius-", "tacacs-", "snmp-",
+] as const;
 
 const ipv6PacketPrefixes = [
   "icmpv6-", "ipv6-", "ndp-", "slaac-", "dhcpv6-", "ospfv3-",
@@ -68,6 +75,7 @@ function isPacketTraceEvent(event: SimulationTraceEvent): boolean {
   const type = event.type.toLowerCase();
   return packetTypes.has(event.type)
     || ipv6PacketPrefixes.some((prefix) => type.startsWith(prefix))
+    || managementPacketPrefixes.some((prefix) => type.startsWith(prefix))
     || type.startsWith("wireless-");
 }
 
@@ -78,6 +86,7 @@ export const TRACE_PROTOCOL_FILTERS = [
   "STP", "RSTP", "LACP", "PAGP", "CDP", "LLDP", "OSPF",
   "IPv6", "ICMPv6", "NDP", "SLAAC", "DHCPv6", "OSPFv3", "IPv6 ACL",
   "Wireless", "Beacon", "Probe", "Authentication", "Association", "Roaming",
+  "Telnet", "SSH", "AAA", "RADIUS", "TACACS+", "SNMP",
 ] as const;
 
 /** Tab descriptors shared by the expanded panel and the minimized strip. */
@@ -266,7 +275,14 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
 
 function traceProtocol(event: SimulationTraceEvent): string {
   const type = event.type.toLowerCase();
-  // Control protocols first: their event names are unambiguous prefixes.
+  // Management plane first: its event names are unambiguous prefixes.
+  if (type.startsWith("telnet-")) return "Telnet";
+  if (type.startsWith("ssh-")) return "SSH";
+  if (type.startsWith("radius-")) return "RADIUS";
+  if (type.startsWith("tacacs-")) return "TACACS+";
+  if (type.startsWith("snmp-")) return "SNMP";
+  if (type === "aaa-accounting") return "AAA";
+  // Control protocols next: their event names are unambiguous prefixes.
   if (type === "wireless-roamed") return "Roaming";
   if (type.startsWith("wireless-beacon-")) return "Beacon";
   if (type.startsWith("wireless-probe-")) return "Probe";
