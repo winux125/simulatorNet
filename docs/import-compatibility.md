@@ -168,3 +168,40 @@ speaker in this release, so its OSPF lines are preserved and reported too.
 Import safety is unchanged: nothing is executed, unknown lines are preserved as
 bounded redacted artifacts, and every recognised-but-unsupported construct is
 listed honestly in the import report.
+
+## Management, AAA and SNMP configuration (M10.7)
+
+The IOS-like management subset is imported into structured `LabDocument`
+fields. Nothing is executed: lines are matched literally and converted.
+
+Recognized:
+
+- the L2 management SVI (`interface vlan <id>` with `ip address`, `shutdown` /
+  `no shutdown`, `description`) and `ip default-gateway`;
+- `username`, `enable secret`, and console `line` credentials;
+- `ip domain-name`, `crypto key generate rsa`, `ip ssh version`;
+- `line vty`, `login`, `login local`, `login authentication`,
+  `authorization exec`, `transport input`, `exec-timeout`;
+- `aaa new-model`, `aaa authentication login`, `aaa authorization exec`,
+  `aaa authorization commands`, `aaa accounting exec`,
+  `aaa accounting commands`;
+- `radius server` and `tacacs server` blocks with `address`, `key` and
+  `timeout`;
+- `snmp-server community … ro`, `snmp-server location`, `snmp-server contact`,
+  `snmp-server host … version 2c`, `snmp-server enable traps`.
+
+Secret handling is the same as for console credentials:
+
+- a plaintext line password, AAA key or SNMP community is converted into a
+  scope-bound verifier and **removed from the preserved artifact**;
+- a vendor password hash (type 5/7/8/9) cannot be verified, so no active
+  credential is created and the device is flagged as needing a reset;
+- a known default vendor password is never substituted automatically;
+- an imported configuration never carries usable SSH key material — the
+  simulated host key is derived when the lab is built.
+
+Anything recognized as management configuration but deliberately not applied —
+for example `aaa server radius dynamic-author`, a read-write SNMP community, or
+an SNMP version other than 2c — is reported in the import report rather than
+silently dropped. Read-write communities and SNMP SET are out of scope, so
+importing one would imply a capability the simulator does not have.

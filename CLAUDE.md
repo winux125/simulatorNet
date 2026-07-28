@@ -87,7 +87,8 @@ Do not silently skip database tests in a quality gate.
 | `packages/contracts` | Serializable Zod schemas and shared domain types |
 | `packages/sim-core` | Deterministic protocol engine, devices, services, transport, event queue |
 | `packages/cli-engine` | Lexer, parser, contextual help, session state, command formatting |
-| `packages/console-auth` | Device-console login and privilege session behavior |
+| `packages/console-auth` | Device-console login, privilege session behavior, management credential verifiers |
+| `packages/remote-management` | Simulated Telnet/SSH remote CLI, VTY lines, AAA decision layer |
 | `packages/lab-format` | Canonical LabDocument parsing, migration, semantic validation, build/restore |
 | `packages/sim-worker` | Typed browser-worker protocol, runtime ownership, UI-safe snapshots |
 | `packages/grading-core` | Pure deterministic grading checks and resource limits |
@@ -151,6 +152,39 @@ WPA2-Personal is an educational authentication model. Web Crypto derives an
 SSID-scoped opaque verifier before packet/event processing; no plaintext key,
 real 802.11 encryption, or async cryptography belongs in `sim-core`. Never log,
 render, grade, or import raw credentials. See `docs/wireless-simulation.md`.
+
+### Management plane
+
+Remote management is a real path through the simulated network. A Telnet or SSH
+command travels over `sim-core` TCP — through routing, ACLs, NAT, firewall
+policy and interface state — is authenticated, and is then executed by the same
+`cli-engine` parser the local console uses. Never open a target device's CLI
+directly to shortcut that path.
+
+`packages/remote-management` owns the management-plane *behavior*; the matching
+*configuration* lives on the device in `sim-core` beside ACLs and NAT, so
+`lab-format` serializes it uniformly. `cli-engine` depends only on two small
+structural interfaces the runtime injects, never on `remote-management`.
+
+Simulated SSH is an educational model: a derived host-key fingerprint, no key
+exchange, no encryption, no public-key authentication. Simulated Telnet has no
+option negotiation and always warns that it carries credentials in the clear.
+RADIUS, TACACS+ and SNMPv2c are protocol models, not implementations.
+
+A credential must be comparable inside the synchronous deterministic engine, so
+— exactly like WPA2-PSK — Web Crypto derives an opaque, scope-bound verifier
+*before* packet processing and only that fingerprint crosses the simulated wire.
+No plaintext password, shared key or community string may reach `sim-core`, a
+trace, Problems, a log, `show` output or a grading result. There is exactly one
+local-user database per device, shared by console, VTY, Telnet, SSH and the AAA
+`local` method.
+
+An AAA method list stops at the first conclusive result: accept succeeds, an
+explicit reject fails, and only an unavailable method falls through. A denied
+command is never executed. An L2 Switch management SVI terminates management
+traffic and never enables routing or forwards transit packets. See
+`docs/remote-management.md`, `docs/aaa-simulation.md` and
+`docs/snmp-management.md`.
 
 ### Browser worker
 

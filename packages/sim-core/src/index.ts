@@ -23,6 +23,7 @@ export * from "./management/snmp-messages";
 export * from "./management/snmp-mib";
 export * from "./management/snmp-agent";
 export * from "./management/device-mib";
+export * from "./management/nms-service";
 
 // Devices
 export * from "./devices/device";

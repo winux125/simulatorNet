@@ -240,3 +240,37 @@ behavior, device configuration, lab persistence, or grading.
 
 The terminal is a simulated local console. SimulatorNet does not provide real
 SSH or Telnet access to host machines or external network devices.
+
+## Remote sessions (M10.7)
+
+A remote CLI session is **not** a second terminal implementation. It is pushed
+onto the terminal that opened it: the local host session stays intact
+underneath, keeps its scrollback and history, and `exit` returns to the host
+prompt.
+
+```
+C:\>
+→ ssh admin@192.168.10.2
+→ R1>
+→ exit
+→ C:\>
+```
+
+While a remote session is open the tab shows what it is really driving, for
+example `PC1 → SSH R1` or `PC1 → Telnet SW1`, with the source host, protocol,
+target and connection state. Docked, Floating and Maximized all preserve the
+same session; only **Close Tab** ends it, which also closes the simulated TCP
+connection and frees the VTY line.
+
+A remote credential prompt is treated exactly like the console one: the input is
+never echoed, never recorded in command history, never written to the transcript
+or Problems, and never logged. The terminal derives an opaque, scope-bound
+fingerprint in the main thread and sends only that to the worker, so no
+plaintext password ever reaches the simulation engine.
+
+Native paste keeps working inside a remote CLI. A pasted sequence **pauses** at a
+remote credential prompt rather than answering it with the next command line,
+just as it pauses at a console login or a `[confirm]` prompt.
+
+Deleting the device, stopping the lab, or losing the link closes the remote
+session and returns the terminal to the host prompt with a stated reason.

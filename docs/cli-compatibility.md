@@ -256,6 +256,51 @@ still matches more than one command remains an error.
 `root primary` / `root secondary` set a deterministic low priority (24576 /
 28672); they do not promise full Cisco automation.
 
+## Management plane (M10.7)
+
+Router, L2 Switch, L3 Switch and Firewall only. See
+[`remote-management.md`](remote-management.md), [`aaa-simulation.md`](aaa-simulation.md)
+and [`snmp-management.md`](snmp-management.md).
+
+| Command | Mode | Notes |
+| --- | --- | --- |
+| `interface vlan <id>` | config | On an L2 Switch this selects the single management interface |
+| `ip address <ip> <mask>` | config-if | Addresses the L2 management SVI; routing stays disabled |
+| `ip default-gateway <ip>` | config | Host default route for management replies only |
+| `ip domain-name <name>` | config | Required before a simulated host key |
+| `crypto key generate rsa [modulus <bits>]` | config | Derives an educational fingerprint, never key material |
+| `crypto key zeroize rsa` | config | Removes the fingerprint and disables SSH |
+| `ip ssh version 2` | config | Version 2 only |
+| `line vty <first> <last>` | config | Enters `config-line` |
+| `login` / `login local` / `no login` | config-line | Line password, local database, or no login |
+| `login authentication <list>` | config-line | Selects an AAA method list |
+| `authorization exec <list>` | config-line | Selects an AAA exec authorization list |
+| `transport input {telnet \| ssh \| all \| none}` | config-line | |
+| `exec-timeout <minutes> [seconds]` | config-line | Applied when virtual time is advanced |
+| `aaa new-model` | config | Enables the AAA decision layer |
+| `aaa authentication login <list> <methods>` | config | `local`, `none`, `group radius`, `group tacacs+` |
+| `aaa authorization exec\|commands <level> <list> <methods>` | config | |
+| `aaa accounting exec\|commands <level> <list> <mode> <methods>` | config | `start-stop`, `stop-only`, `none` |
+| `radius server <name>` / `tacacs server <name>` | config | Enters `config-aaa-server` |
+| `address ipv4\|ipv6 <ip> [auth-port <p> acct-port <p>]` | config-aaa-server | |
+| `timeout <seconds>` | config-aaa-server | |
+| `snmp-server location\|contact <text>` | config | |
+| `snmp-server enable traps` | config | |
+| `show users` / `show line` | exec/privileged | Active remote sessions and VTY lines |
+| `show ip ssh` / `show ssh` | exec/privileged | Simulated SSH server state |
+| `show aaa servers` / `show aaa method-lists` | exec/privileged | Keys are shown as `configured`, never rendered |
+| `show snmp` / `show snmp community` / `show snmp host` | exec/privileged | Communities are redacted |
+| `clear line vty <n>` | privileged | Drops the session on that line |
+
+Host commands: `telnet <host> [port]`, `ssh <user>@<host>`,
+`ssh -l <user> <host> [port]`, and on a Server `snmpget`, `snmpwalk` and
+`sim show snmp traps`.
+
+Commands that *set* a secret — `username … secret`, `enable secret`, a line
+`password`, a AAA `key`, and `snmp-server community`/`snmp-server host` — are
+configured through the credential UI panels and the importer, which derive a
+verifier asynchronously. The interactive CLI never handles a plaintext secret.
+
 ## Deliberate omissions
 
 The following familiar IOS operations are not implemented and are omitted from
@@ -264,7 +309,15 @@ contextual help: startup configuration, `copy`, `write`, `erase`, `reload`,
 authentication and redistribution, MSTP and MST regions, Loop Guard, Root Guard,
 UDLD, UplinkFast/BackboneFast/Flex Links, multi-chassis EtherChannel, LACP fast
 rate, PAgP silent modes, LLDP-MED, port security, reflexive/time-based ACLs, NAT
-hairpinning, WPA3, 802.1X/RADIUS, wireless controllers, mesh, or real RF. There
+hairpinning, WPA3, 802.1X, wireless controllers, mesh, or real RF. There
 is no Tab completion, fuzzy matching, network-device
 `traceroute`, arbitrary command scripting, real DNS/network access or full Cisco
 contextual-help parity.
+
+The management plane omits, deliberately: real SSH cryptography, key exchange,
+packet encryption, public-key user authentication, SCP/SFTP, tunnelling, port
+forwarding and SSH agents; full Telnet option negotiation; 802.1X, EAP, CoA,
+downloadable ACLs and wireless enterprise authentication; real RADIUS and
+TACACS+ packet crypto; and SNMPv1, SNMPv3, USM, VACM, BER/ASN.1 encoding,
+dynamic MIB loading, arbitrary OID scripting and SNMP SET. Nothing in
+SimulatorNet reaches a real device or a real network.

@@ -35,6 +35,7 @@ import type { SimulationEngine } from "@sim/sim-core";
 import type { ZodIssue } from "zod";
 import { VerificationError, VerificationResourceLimitError } from "./errors";
 import { DEFAULT_VERIFICATION_LIMITS, type VerificationLimits } from "./limits";
+import { isManagementCheck, runManagementCheck } from "./management-checks";
 import { stableHash, stableStringify, utf8ByteLength } from "./stable";
 
 interface InternalCheckResult extends VerificationCheckResult {
@@ -47,7 +48,12 @@ class VerificationRuntime {
   processedEvents = 0;
   private pingSequence = 0;
 
-  constructor(readonly built: BuiltLab, readonly limits: VerificationLimits) {}
+  constructor(
+    readonly built: BuiltLab,
+    readonly limits: VerificationLimits,
+    /** The rebuilt submission, so a check can read stored configuration. */
+    readonly document: LabDocument,
+  ) {}
 
   nextPingSequence(): number {
     return ++this.pingSequence;
@@ -266,6 +272,19 @@ function ospfDeviceOf(built: BuiltLab, deviceId: string): Router | Layer3Switch 
 
 function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCheckResult {
   const built = runtime.built;
+  // The management plane drives real simulated sessions, so it gets the
+  // rebuilt document too: the verifier replays the credential the learner
+  // stored instead of a grading spec ever carrying one.
+  if (isManagementCheck(check)) {
+    const outcome = runManagementCheck(check, built, runtime.document, () => runtime.runUntil(() => built.engine.pendingEventCount() === 0));
+    return result(
+      check,
+      outcome.passed,
+      outcome.message,
+      outcome.error ? { ...outcome.diagnostics, failure: outcome.error } : outcome.diagnostics,
+      outcome.error && !outcome.passed ? "error" : outcome.passed ? "passed" : "failed",
+    );
+  }
   switch (check.type) {
     case "ping": {
       const candidate = built.getDevice(check.configuration.sourceDeviceId);
@@ -1206,7 +1225,7 @@ export function verifySubmission(input: unknown, limits: VerificationLimits = DE
     throw new VerificationError("invalid-submission", error instanceof Error ? error.message : "Lab build failed");
   }
   built.engine.enableTrace(limits.maximumTraceRecords);
-  const runtime = new VerificationRuntime(built, limits);
+  const runtime = new VerificationRuntime(built, limits, document);
   prepareDhcp(runtime, document);
   runtime.runUntil(() => built.engine.nextEventTime() === undefined);
   const internalChecks = request.gradingSpec.checks.map((check) => {

@@ -31,6 +31,21 @@ export interface ManagementPlaneDevice {
   readonly service: RemoteCliService;
 }
 
+/** Problems are a bounded, de-duplicated list, never an unbounded log. */
+const MANAGEMENT_PROBLEM_LIMIT = 32;
+
+/** Learner-facing explanation for each way a remote session can end badly. */
+const CLOSE_PROBLEM: Partial<Record<RemoteCloseReason, string>> = {
+  "authentication-failed": "Remote login rejected",
+  "authorization-failed": "Remote exec authorization denied",
+  "no-vty-line": "No VTY line was available for the remote session",
+  "service-disabled": "The remote management service is not enabled on the target",
+  "transport-not-permitted": "The VTY lines do not permit that transport",
+  "session-limit": "The remote session limit was reached",
+  "idle-timeout": "A remote session was closed by its exec-timeout",
+  "management-interface-down": "The management interface went down during a remote session",
+};
+
 /**
  * Lab-wide management plane.
  *
@@ -54,6 +69,10 @@ export class ManagementPlane implements RemoteSessionOpener {
       const managed = managedDeviceOf(device, engine);
       if (!managed) continue;
       const service = new RemoteCliService(managed, () => this.totalSessions() < MANAGEMENT_LIMITS.maximumRemoteSessionsPerLab);
+      service.onSessionClosed((_session, reason) => {
+        const explanation = CLOSE_PROBLEM[reason];
+        if (explanation) this.reportProblem(`${device.name}: ${explanation}.`);
+      });
       const aaaState = device instanceof L2Switch || device instanceof Router ? device.aaa : undefined;
       if (aaaState) {
         // One shared decision layer per device: console, VTY, Telnet, SSH and
@@ -68,6 +87,7 @@ export class ManagementPlane implements RemoteSessionOpener {
           authorizeCommand: (request, done) => provider.authorizeCommand(request, done),
           account: (event, session, detail) => provider.account(event, session, detail),
         });
+        provider.onProblem((message) => this.reportProblem(message));
         this.authenticators.set(deviceId, provider);
       }
       this.services.set(deviceId, service);
@@ -123,6 +143,26 @@ export class ManagementPlane implements RemoteSessionOpener {
     for (const service of this.services.values()) service.enforceIdleTimeouts();
   }
 
+  /**
+   * Give every SNMP agent a fresh trap budget.
+   *
+   * Each Auto run is one bounded operation, exactly like the control-protocol
+   * event budget, so a long session can never exhaust the trap allowance by
+   * accident — while a single flapping link still cannot flood one operation.
+   */
+  resetTrapBudgets(): void {
+    for (const device of this.devices.values()) {
+      if (device instanceof L2Switch || device instanceof Router) device.snmp.resetOperationBudget();
+    }
+  }
+
+  /** Emit `coldStart` once the lab is running, from every enabled agent. */
+  startSnmpAgents(): void {
+    for (const device of this.devices.values()) {
+      if (device instanceof L2Switch || device instanceof Router) device.snmp.start();
+    }
+  }
+
   /** Close everything: Stop Lab, rebuild, or a removed device. */
   closeAll(reason: RemoteCloseReason = "cleared-by-administrator"): void {
     for (const service of this.services.values()) service.closeAll(reason);
@@ -139,6 +179,30 @@ export class ManagementPlane implements RemoteSessionOpener {
       this.clients.delete(sessionId);
     }
   }
+
+  /**
+   * Bounded, learner-facing management problems.
+   *
+   * They explain *why* a management action failed — no route, blocked port,
+   * SSH not configured, no free VTY line, login rejected, AAA server
+   * unreachable, invalid community — and never contain a secret value.
+   */
+  problems(): string[] {
+    return [...this.problemMessages];
+  }
+
+  /** @internal */
+  reportProblem(message: string): void {
+    if (this.problemMessages.includes(message)) return;
+    this.problemMessages.push(message);
+    if (this.problemMessages.length > MANAGEMENT_PROBLEM_LIMIT) this.problemMessages.shift();
+  }
+
+  clearProblems(): void {
+    this.problemMessages.length = 0;
+  }
+
+  private readonly problemMessages: string[] = [];
 
   knownHostsOf(deviceId: string): KnownHostStore {
     const existing = this.knownHosts.get(deviceId);

@@ -34,6 +34,7 @@ import type { IpAddress } from "../util/ip-address";
 import type { Ipv4 } from "../util/ipv4";
 import { RemoteAccessState } from "../management/remote-access-state";
 import { AaaState } from "../management/aaa-state";
+import { ConsoleAccessState } from "../management/console-access-state";
 import { emitLinkTrap, SnmpAgent } from "../management/snmp-agent";
 import { deviceMibSource } from "../management/device-mib";
 import type { SnmpInterfaceRow } from "../management/snmp-mib";
@@ -139,6 +140,8 @@ export class L2Switch extends Device {
   readonly remoteAccess = new RemoteAccessState(this.id);
   /** Persistent AAA method lists and servers; the decision layer is separate. */
   readonly aaa = new AaaState();
+  /** The one shared local-user database: console, VTY, Telnet, SSH and AAA. */
+  readonly consoleAccess = new ConsoleAccessState();
   /** SNMPv2c agent reached through the management interface. */
   readonly snmp: SnmpAgent = new SnmpAgent({
     deviceId: this.id,

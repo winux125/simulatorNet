@@ -19,6 +19,7 @@ import type {
   Layer3SwitchDeviceConfig,
   Layer3SwitchInterfaceConfig,
   LabDocument,
+  LabDocumentDraft,
   NodeSpec,
   PcDeviceConfig,
   PhysicalInterfaceConfig,
@@ -795,7 +796,13 @@ function configurationFor(node: NodeSpec, existing: DeviceConfig | undefined): D
   );
 }
 
-export function canonicalizeLabDocument(document: LabDocument): LabDocument {
+/**
+ * Accepts a draft as well as a complete document: `parseLabDocument` applies
+ * every schema default, which is exactly what `LabDocumentDraft` exists for —
+ * a demo or fixture may omit `spanningTree: { mode: "disabled" }` on every
+ * switch and still canonicalize to a fully-populated `LabDocument`.
+ */
+export function canonicalizeLabDocument(document: LabDocument | LabDocumentDraft): LabDocument {
   const parsed = parseLabDocument(document);
   const nodes = canonicalInterfaces(parsed.topology.nodes);
   const configurations: Record<string, DeviceConfig> = {};

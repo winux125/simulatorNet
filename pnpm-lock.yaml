@@ -231,6 +231,9 @@ importers:
 
   packages/grading-core:
     dependencies:
+      '@sim/cli-engine':
+        specifier: workspace:*
+        version: link:../cli-engine
       '@sim/contracts':
         specifier: workspace:*
         version: link:../contracts

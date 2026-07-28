@@ -341,6 +341,24 @@ export class RemoteCliService {
     connection.send(remoteCliPayload({ type: "close", reason, message: remoteCloseMessage(reason) }));
     connection.close();
     this.trace("remote-session-refused", { reason });
+    // A refusal never became a session, so report it directly: the learner
+    // still needs to know why the connection was turned away.
+    this.closeListener?.(
+      {
+        id: `${this.host.deviceId}:refused`,
+        line: -1,
+        protocol: "telnet",
+        clientDeviceId: "",
+        clientHostname: "",
+        peerAddress: connection.remoteAddress,
+        username: undefined,
+        privilegeLevel: 0,
+        authenticated: false,
+        openedAtNs: this.host.engine().now(),
+        idleForNs: 0,
+      },
+      reason,
+    );
   }
 
   // --- login --------------------------------------------------------------

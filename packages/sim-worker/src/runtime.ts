@@ -37,8 +37,11 @@ import {
   WirelessEndHost,
   Firewall,
   IspCloud,
+  deviceMibSource,
+  mibVarBinds,
   type Device,
   type Mac,
+  type SnmpOperation,
   type TraceEntry,
 } from "@sim/sim-core";
 import { SimulationWorkerError, serializeWorkerError } from "./errors";
@@ -64,6 +67,8 @@ import type {
   SecurityConfigurationView,
   SecurityDeviceConfiguration,
   Ospfv3View,
+  RemoteSessionsView,
+  SnmpOperationView,
   WirelessAccessPointView,
   WirelessStationView,
 } from "./protocol";
@@ -310,6 +315,56 @@ export class SimulationWorkerRuntime {
         this.runProtocolConvergence();
         return this.ospfv3State(deviceId);
       }
+      case "GET_REMOTE_SESSIONS":
+        return this.remoteSessions(requireString(request, "deviceId"));
+      case "CLEAR_REMOTE_LINE": {
+        const deviceId = requireString(request, "deviceId");
+        const line = request.line;
+        if (typeof line !== "number" || !Number.isInteger(line)) {
+          throw new SimulationWorkerError("invalid-request", "line must be an integer");
+        }
+        this.requireBuiltLab().management.clearLine(deviceId, line);
+        this.runManagementAction();
+        return this.remoteSessions(deviceId);
+      }
+      case "GET_AAA_STATUS": {
+        const deviceId = requireString(request, "deviceId");
+        const status = this.requireBuiltLab().management.aaaStatus(deviceId);
+        if (!status) throw new SimulationWorkerError("aaa-not-supported", `Device '${deviceId}' has no AAA plane`);
+        return {
+          deviceId,
+          enabled: status.enabled,
+          configuration: status.configuration,
+          servers: status.servers.map((server) => ({ ...server })),
+          lastAuthentication: status.lastAuthentication,
+          sessions: status.sessions.map((session) => ({ ...session })),
+        };
+      }
+      case "GET_SNMP_AGENT_STATUS": {
+        const deviceId = requireString(request, "deviceId");
+        const device = this.requireSnmpDevice(deviceId);
+        return {
+          deviceId,
+          configuration: device.snmp.snapshot(),
+          mib: mibVarBinds(deviceMibSource(device, device.snmp)),
+        };
+      }
+      case "SNMP_GET":
+      case "SNMP_GETNEXT":
+      case "SNMP_WALK":
+        return this.snmpPoll(
+          requireString(request, "deviceId"),
+          requireString(request, "targetId"),
+          requireString(request, "oid"),
+          type === "SNMP_GET" ? "get" : type === "SNMP_GETNEXT" ? "getnext" : "walk",
+        );
+      case "GET_NMS_TRAPS":
+        return this.nmsRuntime(requireString(request, "deviceId"));
+      case "CLEAR_NMS_TRAPS": {
+        const deviceId = requireString(request, "deviceId");
+        this.requireServer(deviceId).services.networkManagement.clearTraps();
+        return this.nmsRuntime(deviceId);
+      }
       case "SERIALIZE_LAB":
         return this.serialize();
       default:
@@ -343,6 +398,7 @@ export class SimulationWorkerRuntime {
     // A rebuild replaces every device instance, so no remote session can
     // survive it: close them explicitly instead of leaking sockets and lines.
     this.builtLab?.management.closeAll("cleared-by-administrator");
+    this.builtLab?.management.clearProblems();
     for (const entry of this.sessions.values()) entry.session.closeRemoteSession();
     this.builtLab = buildLabFromDocument(document);
     this.sessions.clear();
@@ -357,6 +413,11 @@ export class SimulationWorkerRuntime {
     // Wireless stations resume DHCP/SLAAC/DHCPv6 from the medium's
     // association-complete callback, identically in worker and verifier.
     this.builtLab.engine.runUntilIdle();
+    // `coldStart` is sent once the lab is running, then the trap budget is
+    // fresh for the first learner-driven operation.
+    this.builtLab.management.startSnmpAgents();
+    this.builtLab.engine.runUntilIdle();
+    this.builtLab.management.resetTrapBudgets();
   }
 
   private executeCli(sessionId: string, deviceId: string, input: string, credential?: string) {
@@ -385,6 +446,8 @@ export class SimulationWorkerRuntime {
     this.sessions.set(sessionId, entry);
     const output = entry.session.execute(input, credential);
     this.emitStateChanged();
+    // A refused or rejected remote session explains itself in Problems.
+    this.emitHostWarnings();
     this.flushTrace();
     return this.cliResult(sessionId, entry, output);
   }
@@ -416,8 +479,10 @@ export class SimulationWorkerRuntime {
   private runUntilIdle(): SimulationRunResult {
     const built = this.requireRunnable();
     // Each Auto run is one bounded operation, so the control-protocol event
-    // budget starts fresh; a long session can never exhaust it by accident.
+    // and SNMP trap budgets start fresh; a long session can never exhaust
+    // either by accident.
     built.engine.controlProtocolBudget.reset();
+    built.management.resetTrapBudgets();
     this.engineState = "running";
     let processedEvents = 0;
     try {
@@ -469,6 +534,7 @@ export class SimulationWorkerRuntime {
     }
     const built = this.requireRunnable();
     built.engine.controlProtocolBudget.reset();
+    built.management.resetTrapBudgets();
     this.engineState = "running";
     const target = built.engine.now() + Math.round(milliseconds * 1_000_000);
     const processedEvents = built.engine.advanceTo(target);
@@ -1116,6 +1182,11 @@ export class SimulationWorkerRuntime {
         });
       }
     }
+    // Management-plane problems explain why a remote session, an AAA lookup or
+    // an SNMP poll failed. They never carry a credential value.
+    for (const message of this.requireBuiltLab().management.problems()) {
+      warnings.push({ code: "management-plane", message, deviceIds: [] });
+    }
     return warnings;
   }
 
@@ -1378,6 +1449,54 @@ export class SimulationWorkerRuntime {
     this.emitStateChanged();
     this.flushTrace();
     return this.serverServices(deviceId);
+  }
+
+  // --- M10.7 management plane ----------------------------------------------
+
+  private remoteSessions(deviceId: string): RemoteSessionsView {
+    const management = this.requireBuiltLab().management;
+    const service = management.serviceOf(deviceId);
+    if (!service) {
+      throw new SimulationWorkerError("management-not-supported", `Device '${deviceId}' has no management plane`);
+    }
+    return {
+      deviceId,
+      sessions: service.sessionSummaries().map((session) => ({ ...session })),
+      lines: management.linesOf(deviceId).map((line) => ({ ...line, transports: [...line.transports] })),
+      telnetEnabled: service.telnetEnabled,
+      sshEnabled: service.sshEnabled,
+      hostKeyFingerprint: service.hostKeyFingerprint,
+    };
+  }
+
+  private requireSnmpDevice(deviceId: string): L2Switch | Router {
+    const device = this.requireBuiltLab().getDevice(deviceId);
+    if (device instanceof L2Switch || device instanceof Router) return device;
+    throw new SimulationWorkerError("snmp-not-supported", `Device '${deviceId}' has no SNMP agent`);
+  }
+
+  private nmsRuntime(deviceId: string): SnmpOperationView {
+    return { deviceId, runtime: this.requireServer(deviceId).services.networkManagement.runtimeSnapshot() };
+  }
+
+  private snmpPoll(deviceId: string, targetId: string, oid: string, operation: SnmpOperation): SnmpOperationView {
+    const nms = this.requireServer(deviceId).services.networkManagement;
+    const target = nms.targetByName(targetId) ?? nms.targets.find((entry) => entry.id === targetId);
+    if (!target) {
+      throw new SimulationWorkerError("unknown-snmp-target", `No Network Management target '${targetId}'`);
+    }
+    nms.poll(target, operation, oid);
+    this.runManagementAction();
+    return this.nmsRuntime(deviceId);
+  }
+
+  /** Drain the queue in Auto; in Step the learner walks the packets instead. */
+  private runManagementAction(): void {
+    if (this.executionMode === "auto") this.runUntilIdle();
+    else {
+      this.emitStateChanged();
+      this.flushTrace();
+    }
   }
 
   private requireServer(deviceId: string): Server {

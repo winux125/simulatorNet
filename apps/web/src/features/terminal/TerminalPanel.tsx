@@ -1,6 +1,6 @@
 import type { ConsoleAccessConfiguration } from "@sim/contracts";
 import type { CliExecutionResult, LabUiNode } from "@sim/sim-worker";
-import { ConsoleAuthSession } from "@sim/console-auth";
+import { ConsoleAuthSession, managementCredentialFingerprint } from "@sim/console-auth";
 import { stripControlSequences } from "@sim/importers";
 import { Clipboard, ClipboardPaste, Eraser, Search, TerminalSquare, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -61,6 +61,9 @@ function terminalText(value: string): string {
 export function TerminalWorkspace(props: TerminalWorkspaceProps) {
   const activeNode = props.nodes.find((node) => node.id === props.activeDeviceId);
   const [tabMenu, setTabMenu] = useState<{ deviceId: string; x: number; y: number }>();
+  // A tab shows what its terminal is really driving: the local device, or the
+  // remote session opened from it. The session itself never changes.
+  const [remoteLabels, setRemoteLabels] = useState<Record<string, string | undefined>>({});
   useEffect(() => {
     if (!tabMenu) return;
     const close = () => setTabMenu(undefined);
@@ -100,16 +103,18 @@ export function TerminalWorkspace(props: TerminalWorkspaceProps) {
         {props.tabs.map((deviceId, index) => {
           const node = props.nodes.find((candidate) => candidate.id === deviceId);
           const active = props.activeDeviceId === deviceId;
-          const title = node?.type === "pc"
+          const remoteLabel = remoteLabels[deviceId];
+          const localTitle = node?.type === "pc"
             ? `${node.hostname} — Command Prompt`
             : node?.type === "server" ? `${node.hostname} — Terminal` : `${node?.hostname ?? deviceId} — CLI`;
+          const title = remoteLabel ? `${node?.hostname ?? deviceId} → ${remoteLabel}` : localTitle;
           return (
             <button
               key={deviceId}
               type="button"
               role="tab"
               aria-selected={active}
-              aria-label={`${node?.hostname ?? deviceId} terminal${active ? ", active" : ""}`}
+              aria-label={`${node?.hostname ?? deviceId}${remoteLabel ? ` → ${remoteLabel}` : ""} terminal${active ? ", active" : ""}`}
               className={active ? "is-active" : ""}
               draggable={Boolean(props.onReorder)}
               onDragStart={(event) => {
@@ -142,7 +147,7 @@ export function TerminalWorkspace(props: TerminalWorkspaceProps) {
                 ? <DeviceIcon type={node.type} size={15} state={node.status === "up" ? "running" : "stopped"} />
                 : <TerminalSquare size={13} aria-hidden="true" />}
               <span>{title}</span>
-              <small><i className={node?.status === "up" ? "is-ready" : ""} />{node?.status === "up" ? "connected" : deviceId}</small>
+              <small><i className={node?.status === "up" ? "is-ready" : ""} />{remoteLabel ? "remote session" : node?.status === "up" ? "connected" : deviceId}</small>
               <span className="terminal-tab-close" role="button" aria-label={`Close ${node?.hostname ?? deviceId} CLI`} tabIndex={0} onClick={(event) => { event.stopPropagation(); props.onClose(deviceId); }} onKeyDown={(event) => { if (event.key === "Enter") props.onClose(deviceId); }}><X size={12} /></span>
             </button>
           );
@@ -178,6 +183,7 @@ export function TerminalWorkspace(props: TerminalWorkspaceProps) {
               measurable={props.measurable ?? true}
               sessionNamespace={props.sessionNamespace ?? "terminal"}
               consoleAccess={props.consoleAccessFor?.(deviceId)}
+              onRemoteLabel={(label) => setRemoteLabels((current) => ({ ...current, [deviceId]: label }))}
               onCloseTab={() => props.onClose(deviceId)}
               onError={props.onError}
             />
@@ -200,6 +206,8 @@ interface TerminalSessionProps {
   measurable: boolean;
   sessionNamespace: string;
   consoleAccess?: ConsoleAccessConfiguration;
+  /** Reports the remote session this terminal drives, e.g. "SSH R1". */
+  onRemoteLabel?(label: string | undefined): void;
   onCloseTab(): void;
   onError(message: string): void;
 }
@@ -231,7 +239,7 @@ const NO_PASTE_CONTROLS: PasteControls = {
   cancel: () => undefined,
 };
 
-function TerminalSession({ client, deviceId, hostname, active, enabled, theme, appearance, layoutSignal, measurable, sessionNamespace, consoleAccess, onCloseTab, onError }: TerminalSessionProps) {
+function TerminalSession({ client, deviceId, hostname, active, enabled, theme, appearance, layoutSignal, measurable, sessionNamespace, consoleAccess, onRemoteLabel, onCloseTab, onError }: TerminalSessionProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<XtermTerminal | undefined>(undefined);
@@ -247,6 +255,8 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
   // Captured at mount: reopening the terminal starts a fresh login.
   const consoleAccessRef = useRef(consoleAccess);
   consoleAccessRef.current = consoleAccess;
+  const remoteLabelRef = useRef(onRemoteLabel);
+  remoteLabelRef.current = onRemoteLabel;
   const appearanceRef = useRef(appearance);
   appearanceRef.current = appearance;
   const [transcript, setTranscript] = useState("");
@@ -284,6 +294,14 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
     let pager: TerminalPager | undefined;
     let pendingPromptResult: CliExecutionResult | undefined;
     let pasteListenerCleanup: (() => void) | undefined;
+    /** Set while a remote device is asking this terminal for a credential. */
+    let remoteCredentialScope: string | undefined;
+    let currentRemoteLabel: string | undefined;
+    const setRemoteLabel = (label: string | undefined) => {
+      if (label === currentRemoteLabel) return;
+      currentRemoteLabel = label;
+      remoteLabelRef.current?.(label);
+    };
     const buffer = new LineBuffer();
     const history = new TerminalCommandHistory();
 
@@ -344,6 +362,11 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
         scrollToBottom();
       };
       const renderResult = (result: CliExecutionResult, fromDeferredEvent = false) => {
+        // A remote login prompt owns the next line: hide echo and derive the
+        // credential fingerprint against the scope the device published.
+        remoteCredentialScope = result.secret ? result.credentialScope : undefined;
+        // The tab shows what this terminal is really driving, e.g. "SSH R1".
+        setRemoteLabel(result.remote?.label);
         // Sanitize CLI output: strip any escape sequence an imported config might
         // carry, so only the terminal's own generated sequences ever run.
         const output = result.output ? stripControlSequences(result.output) : "";
@@ -370,15 +393,31 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
       const execute = (value: string, alreadyEchoed = false): Promise<CliExecutionResult | undefined> => {
         const submittedPrompt = prompt;
         if (!alreadyEchoed) terminal.write(`${terminalText(value)}\r\n`);
-        return client.request({ type: "EXECUTE_CLI", sessionId, deviceId, input: value }).then((result) => {
-          if (disposed) return undefined;
-          renderResult(result);
-          if (value || result.output) setTranscript((current) => `${current}${submittedPrompt} ${value}\n${result.output ? `${result.output}\n` : ""}`);
-          return result;
-        }).catch((error: unknown) => {
-          onError(error instanceof Error ? error.message : "CLI request failed");
-          return undefined;
-        });
+        // A remote device asked for a credential: derive the opaque, scope-bound
+        // fingerprint here, in the main thread, and send only that. The
+        // plaintext never reaches the worker, the engine, a trace or a log, and
+        // it never enters the transcript or command history.
+        const scope = remoteCredentialScope;
+        remoteCredentialScope = undefined;
+        const request = scope === undefined
+          ? Promise.resolve({ input: value })
+          : managementCredentialFingerprint(scope, value)
+            .then((credential) => ({ input: "", credential }))
+            .catch(() => ({ input: "" }));
+        return request
+          .then((payload) => client.request({ type: "EXECUTE_CLI", sessionId, deviceId, ...payload }))
+          .then((result) => {
+            if (disposed) return undefined;
+            renderResult(result);
+            const echoed = scope === undefined ? value : "";
+            if (echoed || result.output) {
+              setTranscript((current) => `${current}${submittedPrompt} ${echoed}\n${result.output ? `${result.output}\n` : ""}`);
+            }
+            return result;
+          }).catch((error: unknown) => {
+            onError(error instanceof Error ? error.message : "CLI request failed");
+            return undefined;
+          });
       };
 
       // --- Console login gate: async credential check in front of the worker CLI.
@@ -423,7 +462,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
       let shiftInsertTimer: number | undefined;
 
       /** A credential prompt owns the line: never repaint the hidden buffer. */
-      const secretExpected = () => gate?.expectsSecret() ?? false;
+      const secretExpected = () => (gate?.expectsSecret() ?? false) || remoteCredentialScope !== undefined;
       const notify = (message: string) => {
         terminal.write(`\r\n${terminalText(message)}\r\n`);
         if (!secretExpected()) redraw();
@@ -461,6 +500,9 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
        */
       const pauseReason = (): "input" | "operation" | undefined => {
         if (pager) return "input";
+        // A remote credential prompt must never be answered by the next pasted
+        // command line: the queue stops and waits for the learner.
+        if (remoteCredentialScope !== undefined) return "input";
         if (gate && (!gate.isAuthenticated() || secretExpected())) return "input";
         if (awaitingDeferredOutput) return "operation";
         if (isInteractivePrompt(prompt)) return "input";
@@ -485,7 +527,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
           const line = pasteQueue.shift() ?? "";
           // Echo the pasted line exactly as if it had been typed and submitted.
           terminal.write(`${terminalText(line)}\r\n`);
-          if (gate) await submitGate(line);
+          if (gate && !remoteCredentialScope) await submitGate(line);
           else { history.record(line); await execute(line, true); }
         }
         if (!disposed && generation === pasteGeneration) finishPaste();
@@ -632,8 +674,12 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
             const submitted = buffer.value;
             buffer.clear();
             terminal.write("\r\n");
-            if (gate) void submitGate(submitted);
-            else { history.record(submitted); void execute(submitted, true); }
+            if (gate && !remoteCredentialScope) void submitGate(submitted);
+            else {
+              // A credential never reaches history or the transcript.
+              if (!secret) history.record(submitted);
+              void execute(submitted, true);
+            }
             break;
           }
           case "insert": buffer.insert(key.text); if (!secret) redraw(); break;
@@ -681,6 +727,8 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
       terminalRef.current?.dispose();
       terminalRef.current = undefined;
       fitRef.current = undefined;
+      remoteLabelRef.current?.(undefined);
+      // Closing the tab also ends whatever remote session it carried.
       void client.request({ type: "CLOSE_CLI_SESSION", sessionId }).catch(() => undefined);
     };
   }, [client, deviceId, hostname, onError, sessionNamespace]);

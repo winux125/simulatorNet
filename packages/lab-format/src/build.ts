@@ -352,6 +352,7 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
         validLifetimeNs: pool.validLifetimeSeconds * NS_PER_S,
       });
     }
+    device.consoleAccess.configure(config.consoleAccess);
     device.configureServices(config.enabledServices);
     // A server is a vendor-neutral station: LLDP only, never CDP.
     applyDiscoveryConfiguration(device, config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG);
@@ -378,6 +379,7 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
   if (device instanceof EthernetBridge && config.kind === "bridge") {
     for (const iface of config.interfaces) applyPhysical(device, iface);
     device.setAgingTimeNs(config.agingTimeNs);
+    device.consoleAccess.configure(config.consoleAccess);
     return;
   }
   if (device instanceof ExternalAppliance && config.kind === "external-appliance") {
@@ -401,6 +403,7 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
   if (device instanceof L2Switch && config.kind === "l2-switch") {
     device.remoteAccess.configure(config.remoteAccess);
     device.aaa.configure(config.aaa);
+    device.consoleAccess.configure(config.consoleAccess);
     for (const vlan of config.vlans) device.setVlanName(vlan.id, vlan.name);
     // Bundles first: spanning tree must see the logical ports, not the members,
     // and a member inherits the Port-channel's switchport configuration.
@@ -425,6 +428,7 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
       device.remoteAccess.configure(config.remoteAccess);
       device.aaa.configure(config.aaa);
       device.snmp.configure(config.snmp);
+      device.consoleAccess.configure(config.consoleAccess);
     }
     for (const iface of config.interfaces) {
       applyPhysical(device, iface);
@@ -547,6 +551,7 @@ function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3Swit
   device.remoteAccess.configure(config.remoteAccess);
   device.aaa.configure(config.aaa);
   device.snmp.configure(config.snmp);
+  device.consoleAccess.configure(config.consoleAccess);
   for (const vlan of config.vlans) device.setVlanName(vlan.id, vlan.name);
   applyEtherChannelConfiguration(device, config.etherChannels ?? []);
   for (const iface of config.interfaces) {
@@ -843,6 +848,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       dhcpv6Pools: serializeDhcpv6Pools(device.dhcpv6PoolConfigurations()),
       enabledServices: device.services.configurations(),
       discovery: serializeDiscoveryConfiguration(device),
+      consoleAccess: device.consoleAccess.snapshot(),
     };
   }
   if (device instanceof Pc) {
@@ -889,6 +895,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       hostname: device.name,
       interfaces: node.interfaces.map((iface) => physicalConfiguration(device, iface.id)),
       agingTimeNs: device.agingTimeNs,
+      consoleAccess: device.consoleAccess.snapshot(),
     };
   }
   if (device instanceof Layer3Switch) {
@@ -947,6 +954,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       loopbacks: serializeLoopbackConfiguration(device),
       ospf: serializeOspfConfiguration(device),
       ospfv3: serializeOspfv3Configuration(device),
+      consoleAccess: device.consoleAccess.snapshot(),
       remoteAccess: serializeRemoteAccess(device.remoteAccess),
       aaa: serializeAaa(device.aaa),
       snmp: serializeSnmp(device.snmp),
@@ -982,6 +990,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
           }
         : undefined,
       managementDefaultGateway: device.managementDefaultGateway,
+      consoleAccess: device.consoleAccess.snapshot(),
       remoteAccess: serializeRemoteAccess(device.remoteAccess),
       aaa: serializeAaa(device.aaa),
       snmp: serializeSnmp(device.snmp),
@@ -1064,6 +1073,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
     loopbacks: serializeLoopbackConfiguration(device),
     ospf: serializeOspfConfiguration(device),
     ospfv3: serializeOspfv3Configuration(device),
+    consoleAccess: device instanceof IspCloud ? undefined : device.consoleAccess.snapshot(),
     remoteAccess: device instanceof IspCloud ? undefined : serializeRemoteAccess(device.remoteAccess),
     aaa: device instanceof IspCloud ? undefined : serializeAaa(device.aaa),
     snmp: device instanceof IspCloud ? undefined : serializeSnmp(device.snmp),

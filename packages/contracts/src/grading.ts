@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { DeviceCapabilitySchema, DeviceTypeSchema } from "./devices";
 import { WirelessSecurityModeSchema } from "./wireless";
+import { IpAddressSchema } from "./primitives";
 import {
   Ipv4Schema,
   Ipv6CidrSchema,
@@ -606,7 +607,155 @@ export const WirelessRouterNatGradingCheckSchema = CheckIdentitySchema.extend({
   }),
 });
 
+// --- M10.7 management plane ---------------------------------------------------
+// A student result never reveals a password, enable secret, community string,
+// shared key, verifier or hidden command policy: these checks compare
+// configuration and observable outcomes, never credential material.
+
+export const RemoteServiceEnabledGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("remote-service-enabled"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    service: z.enum(["telnet", "ssh"]),
+    expected: z.boolean().default(true),
+  }).strict(),
+}).strict();
+
+export const VtyTransportGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("vty-transport"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    line: z.number().int().min(0).max(15),
+    /** Transports the line must permit, exactly. */
+    expected: z.array(z.enum(["telnet", "ssh"])).max(2),
+    loginMode: z.enum(["none", "password", "local"]).optional(),
+  }).strict(),
+}).strict();
+
+const RemoteSessionConfigurationSchema = z.object({
+  clientDeviceId: z.string().min(1),
+  targetDeviceId: z.string().min(1),
+  targetAddress: IpAddressSchema,
+  /** The local user the check logs in as; its stored credential is used. */
+  username: z.string().min(1).max(64),
+  expected: z.enum(["success", "failure"]).default("success"),
+}).strict();
+
+export const SshSessionEstablishedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ssh-session-established"),
+  configuration: RemoteSessionConfigurationSchema,
+}).strict();
+
+export const TelnetSessionEstablishedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("telnet-session-established"),
+  configuration: RemoteSessionConfigurationSchema,
+}).strict();
+
+export const AaaMethodListGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("aaa-method-list"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    purpose: z.enum(["authentication-login", "authorization-exec", "authorization-commands", "accounting-exec", "accounting-commands"]),
+    listName: z.string().min(1).max(64).default("default"),
+    privilegeLevel: z.number().int().min(0).max(15).optional(),
+    expectedMethods: z.array(z.enum(["local", "group radius", "group tacacs+", "none"])).min(1).max(4),
+  }).strict(),
+}).strict();
+
+const AaaAuthenticationConfigurationSchema = z.object({
+  clientDeviceId: z.string().min(1),
+  targetDeviceId: z.string().min(1),
+  targetAddress: IpAddressSchema,
+  username: z.string().min(1).max(64),
+  /** The AAA server that must answer, so a lab can prove which one decided. */
+  serverDeviceId: z.string().min(1).optional(),
+  expected: z.enum(["success", "failure"]).default("success"),
+}).strict();
+
+export const RadiusAuthenticationGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("radius-authentication"),
+  configuration: AaaAuthenticationConfigurationSchema,
+}).strict();
+
+export const TacacsAuthenticationGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("tacacs-authentication"),
+  configuration: AaaAuthenticationConfigurationSchema,
+}).strict();
+
+const CommandAuthorizationConfigurationSchema = z.object({
+  clientDeviceId: z.string().min(1),
+  targetDeviceId: z.string().min(1),
+  targetAddress: IpAddressSchema,
+  username: z.string().min(1).max(64),
+  command: z.string().min(1).max(200),
+}).strict();
+
+export const CommandAuthorizedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("command-authorized"),
+  configuration: CommandAuthorizationConfigurationSchema,
+}).strict();
+
+export const CommandDeniedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("command-denied"),
+  configuration: CommandAuthorizationConfigurationSchema,
+}).strict();
+
+export const SnmpAgentConfiguredGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("snmp-agent-configured"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    expectCommunity: z.boolean().default(true),
+    expectTraps: z.boolean().optional(),
+    location: z.string().max(255).optional(),
+    contact: z.string().max(255).optional(),
+  }).strict(),
+}).strict();
+
+export const SnmpValueGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("snmp-value"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    oid: z.string().min(1).max(128),
+    /** Compared as text so Integer, Counter32 and OctetString all work. */
+    expectedValue: z.string().max(255),
+  }).strict(),
+}).strict();
+
+export const SnmpTrapReceivedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("snmp-trap-received"),
+  configuration: z.object({
+    /** The NMS Server that must have received the trap. */
+    managerDeviceId: z.string().min(1),
+    sourceDeviceId: z.string().min(1).optional(),
+    trapType: z.enum([
+      "coldStart",
+      "warmStart",
+      "linkUp",
+      "linkDown",
+      "authenticationFailure",
+      "stpRootChange",
+      "ospfNeighborDown",
+      "wirelessClientAssociated",
+      "wirelessClientDisassociated",
+    ]),
+    /** Interface whose state change must have produced the trap. */
+    interfaceId: z.string().min(1).optional(),
+  }).strict(),
+}).strict();
+
 export const GradingCheckSchema = z.discriminatedUnion("type", [
+  RemoteServiceEnabledGradingCheckSchema,
+  VtyTransportGradingCheckSchema,
+  SshSessionEstablishedGradingCheckSchema,
+  TelnetSessionEstablishedGradingCheckSchema,
+  AaaMethodListGradingCheckSchema,
+  RadiusAuthenticationGradingCheckSchema,
+  TacacsAuthenticationGradingCheckSchema,
+  CommandAuthorizedGradingCheckSchema,
+  CommandDeniedGradingCheckSchema,
+  SnmpAgentConfiguredGradingCheckSchema,
+  SnmpValueGradingCheckSchema,
+  SnmpTrapReceivedGradingCheckSchema,
   PingGradingCheckSchema,
   InterfaceStateGradingCheckSchema,
   SwitchportGradingCheckSchema,

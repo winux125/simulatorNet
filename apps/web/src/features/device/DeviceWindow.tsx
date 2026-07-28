@@ -12,6 +12,10 @@ import { Button, IconButton } from "../../ui";
 import { ServerServicesPanel } from "../inspector/ServerServicesPanel";
 import { CONSOLE_CAPABLE_KINDS } from "../lab/document";
 import { ConsoleAccessPanel } from "./ConsoleAccessPanel";
+import { isManagementSection, ManagementPanel, type ManagementSection } from "./ManagementPanel";
+
+/** Devices with a management plane: Router, L2/L3 Switch and Firewall. */
+const MANAGED_KINDS = new Set(["router", "l2-switch", "l3-switch", "firewall"]);
 import { HostIpConfigurationPanel } from "./HostIpConfigurationPanel";
 import { WirelessPanel } from "./WirelessPanel";
 import {
@@ -24,7 +28,8 @@ type DeviceWindowTab =
   | "routing" | "routes" | "vlans" | "svis" | "acl" | "nat" | "runtime"
   | "zones" | "policies" | "connections" | "impairments" | "flows" | "run" | "results"
   | "ipv6"
-  | "wireless" | "clients" | "apps" | "setup" | "lan" | "wan" | "dhcp" | "firewall";
+  | "wireless" | "clients" | "apps" | "setup" | "lan" | "wan" | "dhcp" | "firewall"
+  | ManagementSection;
 type DesktopTool = "ip" | "command" | "web" | "tftp" | "ntp" | "syslog" | "transport";
 
 interface DeviceWindowProps {
@@ -145,9 +150,20 @@ export function DeviceWindow(props: DeviceWindowProps) {
       { id: "attributes", label: "Attributes" },
     ];
     })();
-    return CONSOLE_CAPABLE_KINDS.has(props.node.type)
+    // Management sections are grouped together at the end so a device window
+    // stays readable instead of growing one flat row of a dozen tabs.
+    const management: Array<{ id: DeviceWindowTab; label: string }> = MANAGED_KINDS.has(props.node.type)
+      ? [
+          { id: "remote-access", label: "Remote Access" },
+          { id: "aaa", label: "AAA" },
+          { id: "snmp", label: "SNMP" },
+          { id: "sessions", label: "Sessions" },
+        ]
+      : [];
+    const withConsole = CONSOLE_CAPABLE_KINDS.has(props.node.type)
       ? [...base, { id: "console" as const, label: "Console Access" }]
       : base;
+    return [...withConsole, ...management];
   }, [
     isAccessPoint,
     isLaptop,
@@ -215,6 +231,13 @@ export function DeviceWindow(props: DeviceWindowProps) {
           {(["setup", "lan", "wan", "dhcp", "firewall"] as DeviceWindowTab[]).includes(tab) && (
             <StructuredConfiguration document={props.document} node={props.node} section={tab} />
           )}
+          {isManagementSection(tab) && <ManagementPanel
+            client={props.client}
+            node={props.node}
+            section={tab}
+            runtimeAvailable={props.runtimeAvailable}
+            onError={props.onError}
+          />}
           {tab === "console" && <ConsoleAccessPanel
             document={props.document}
             node={props.node}

@@ -1034,3 +1034,83 @@ Four explicit, non-auto-loaded demos cover Open WLAN + DHCP, WPA2 + DNS/HTTP,
 Home Wireless Router + PAT, and deterministic AP failover. See
 [`docs/wireless-simulation.md`](docs/wireless-simulation.md) for the model,
 workflow, and limitations.
+
+## Milestone 10.7 — remote CLI, AAA, RADIUS/TACACS+ and SNMP management
+
+M10.7 adds a management plane that runs over the *simulated* network. A PC,
+Laptop or Server opens a Telnet or SSH session to a Router, L2 Switch, L3 Switch
+or Firewall; the connection traverses routing, ACLs, NAT, firewall policy,
+interface state and TCP, is authenticated, and is then executed by the same
+cli-engine parser the local console uses. packages/remote-management binds
+those parts together and is built identically by the browser worker and the
+headless verifier.
+
+Simulated SSH is an educational model — a derived host-key fingerprint, no key
+exchange, no encryption, no public-key authentication — and simulated Telnet has
+no option negotiation and always warns that it carries credentials in the clear.
+
+Credentials never travel or rest as plaintext. Exactly as in the WPA2-PSK model,
+Web Crypto derives an opaque, scope-bound verifier before any packet processing,
+and only that fingerprint crosses the simulated wire, so nothing reaches
+sim-core, a trace, Problems, a log or a grading result. There is one local-user
+database per device, shared by console, VTY, Telnet, SSH and AAA local fallback.
+
+An L2 Switch gains a management SVI plus ip default-gateway. It terminates
+management traffic only: IP routing stays disabled, transit is never forwarded,
+and the interface follows its VLAN operationally.
+
+AAA adds method lists that stop at the first conclusive result — accept
+succeeds, an explicit reject fails, and only an unavailable method falls through
+— with educational RADIUS (UDP 1812/1813) and TACACS+ (TCP 49) services on the
+Server, a bounded declarative command-authorization matcher, and accounting that
+redacts secret-setting command arguments.
+
+SNMPv2c adds an agent on network devices, traps, and a Server 
+
+## Milestone 10.7 — remote CLI, AAA, RADIUS/TACACS+ and SNMP management
+
+M10.7 adds a management plane that runs over the *simulated* network. A PC,
+Laptop or Server opens a Telnet or SSH session to a Router, L2 Switch, L3 Switch
+or Firewall; the connection traverses routing, ACLs, NAT, firewall policy,
+interface state and TCP, is authenticated, and is then executed by the same
+`cli-engine` parser the local console uses. `packages/remote-management` binds
+those parts together and is built identically by the browser worker and the
+headless verifier.
+
+Simulated SSH is an educational model — a derived host-key fingerprint, no key
+exchange, no encryption, no public-key authentication — and simulated Telnet has
+no option negotiation and always warns that it carries credentials in the clear.
+
+Credentials never travel or rest as plaintext. Exactly as in the WPA2-PSK model,
+Web Crypto derives an opaque, scope-bound verifier before any packet processing,
+and only that fingerprint crosses the simulated wire, so nothing reaches
+sim-core, a trace, Problems, a log or a grading result. There is one local-user
+database per device, shared by console, VTY, Telnet, SSH and AAA local fallback.
+
+An L2 Switch gains a management SVI plus `ip default-gateway`. It terminates
+management traffic only: IP routing stays disabled, transit is never forwarded,
+and the interface follows its VLAN operationally.
+
+AAA adds method lists that stop at the first conclusive result — accept
+succeeds, an explicit reject fails, and only an unavailable method falls through
+— with educational RADIUS (UDP 1812/1813) and TACACS+ (TCP 49) services on the
+Server, a bounded declarative command-authorization matcher, and accounting that
+redacts secret-setting command arguments.
+
+SNMPv2c adds an agent on network devices, traps, and a Server "Network
+Management" service with GET, GETNEXT and a bounded WALK plus a trap inbox. The
+built-in SimulatorNet MIB reports only state the engine models: system identity,
+virtual `sysUpTime`, the interface table, addresses, route and neighbour counts,
+and protocol summaries — never invented CPU or memory figures.
+
+Twelve management grading checks cover service state, VTY transport, Telnet/SSH
+sessions, AAA method lists, RADIUS/TACACS+ authentication, command
+authorization, and SNMP configuration, values and traps. No student result ever
+reveals a password, enable secret, community, shared key, verifier or hidden
+command policy.
+
+Four explicit, non-auto-loaded demos cover SSH Management, Telnet vs SSH,
+Centralized AAA, and SNMP Network Management. See
+[`docs/remote-management.md`](docs/remote-management.md),
+[`docs/aaa-simulation.md`](docs/aaa-simulation.md) and
+[`docs/snmp-management.md`](docs/snmp-management.md).

@@ -574,7 +574,17 @@ export class AaaAuthenticationProvider implements AuthenticationProvider {
       lastResultAtNs: this.host.engine().now(),
       failures: reachable ? current.failures : current.failures + 1,
     });
+    if (!reachable) {
+      this.problemReporter?.(`${this.host.hostname()}: AAA server ${name} is unreachable.`);
+    }
   }
+
+  /** Report learner-facing problems (never a secret) to the management plane. */
+  onProblem(reporter: (message: string) => void): void {
+    this.problemReporter = reporter;
+  }
+
+  private problemReporter: ((message: string) => void) | undefined;
 
   private serverNameFor(address: string): string | undefined {
     return this.aaa().servers.find((server) => server.address === address)?.name;

@@ -1,6 +1,8 @@
 import type {
+  AaaConfiguration,
   DeviceCapability,
   DeviceType,
+  SnmpAgentConfiguration,
   HostIpConfiguration,
   HostIpv6Config,
   HostStaticConfiguration,
@@ -40,6 +42,8 @@ import type {
   AclCounter,
   FirewallConnection,
   NatTranslation,
+  NmsRuntimeSnapshot,
+  SnmpVarBind,
   TrafficFlowResult,
 } from "@sim/sim-core";
 export type { ServerServiceRuntimeSnapshot } from "@sim/sim-core";
@@ -258,7 +262,8 @@ export interface HostNetworkWarning {
     | "wireless-client-limit"
     | "wireless-interface-disabled"
     | "wireless-no-dhcp"
-    | "access-point-no-uplink";
+    | "access-point-no-uplink"
+    | "management-plane";
   message: string;
   address?: string;
   deviceIds: readonly string[];
@@ -408,6 +413,70 @@ export interface Ospfv3View {
   routes: Ospfv3Route[];
 }
 
+/**
+ * Read-only management views. Everything here is runtime state recomputed from
+ * the engine on demand: it never reaches a `LabDocument`, a submission or the
+ * database, and it never carries a password, shared key or community string.
+ */
+export interface RemoteSessionsView {
+  deviceId: string;
+  sessions: Array<{
+    id: string;
+    line: number;
+    protocol: "telnet" | "ssh";
+    clientDeviceId: string;
+    clientHostname: string;
+    peerAddress: string;
+    username?: string;
+    privilegeLevel: number;
+    authenticated: boolean;
+    openedAtNs: number;
+    idleForNs: number;
+  }>;
+  lines: Array<{
+    index: number;
+    state: string;
+    protocol?: "telnet" | "ssh";
+    username?: string;
+    peerAddress?: string;
+    idleForNs?: number;
+    transports: string[];
+    loginMode: string;
+    execTimeoutSeconds: number;
+  }>;
+  telnetEnabled: boolean;
+  sshEnabled: boolean;
+  hostKeyFingerprint?: string;
+}
+
+export interface AaaStatusResponse {
+  deviceId: string;
+  enabled: boolean;
+  configuration: AaaConfiguration;
+  servers: Array<{
+    name: string;
+    protocol: "radius" | "tacacs+";
+    address: string;
+    reachable?: boolean;
+    lastResultAtNs?: number;
+    failures: number;
+  }>;
+  lastAuthentication?: { username: string; method: string; result: "accept" | "reject"; atNs: number };
+  sessions: Array<{ sessionId: string; username: string; privilegeLevel: number; method: string; startedAtNs: number }>;
+}
+
+export interface SnmpAgentStatusView {
+  deviceId: string;
+  configuration: SnmpAgentConfiguration;
+  /** Every readable object of the built-in MIB, in canonical OID order. */
+  mib: SnmpVarBind[];
+}
+
+export interface SnmpOperationView {
+  deviceId: string;
+  runtime: NmsRuntimeSnapshot;
+}
+
 export type SimWorkerRequest =
   | { type: "INITIALIZE_LAB"; requestId: string; document: LabDocument }
   | { type: "REBUILD_LAB"; requestId: string; document: LabDocument }
@@ -482,6 +551,16 @@ export type SimWorkerRequest =
   | { type: "RESTART_OSPF_PROCESS"; requestId: string; deviceId: string }
   | { type: "GET_OSPFV3_STATE"; requestId: string; deviceId: string }
   | { type: "RESTART_OSPFV3_PROCESS"; requestId: string; deviceId: string }
+  // --- M10.7 management plane (inspection + bounded runtime actions) ---
+  | { type: "GET_REMOTE_SESSIONS"; requestId: string; deviceId: string }
+  | { type: "CLEAR_REMOTE_LINE"; requestId: string; deviceId: string; line: number }
+  | { type: "GET_AAA_STATUS"; requestId: string; deviceId: string }
+  | { type: "GET_SNMP_AGENT_STATUS"; requestId: string; deviceId: string }
+  | { type: "SNMP_GET"; requestId: string; deviceId: string; targetId: string; oid: string }
+  | { type: "SNMP_GETNEXT"; requestId: string; deviceId: string; targetId: string; oid: string }
+  | { type: "SNMP_WALK"; requestId: string; deviceId: string; targetId: string; oid: string }
+  | { type: "GET_NMS_TRAPS"; requestId: string; deviceId: string }
+  | { type: "CLEAR_NMS_TRAPS"; requestId: string; deviceId: string }
   | { type: "SERIALIZE_LAB"; requestId: string };
 
 export type SimWorkerPayload =
@@ -506,6 +585,10 @@ export type SimWorkerPayload =
   | OspfInterfacesView
   | OspfDatabaseView
   | Ospfv3View
+  | RemoteSessionsView
+  | AaaStatusResponse
+  | SnmpAgentStatusView
+  | SnmpOperationView
   | LabDocument
   | { closed: boolean }
   | { paused: boolean; snapshot: LabUiSnapshot };
@@ -586,6 +669,15 @@ export interface SimWorkerPayloadByType {
   RESTART_OSPF_PROCESS: OspfOverviewView;
   GET_OSPFV3_STATE: Ospfv3View;
   RESTART_OSPFV3_PROCESS: Ospfv3View;
+  GET_REMOTE_SESSIONS: RemoteSessionsView;
+  CLEAR_REMOTE_LINE: RemoteSessionsView;
+  GET_AAA_STATUS: AaaStatusResponse;
+  GET_SNMP_AGENT_STATUS: SnmpAgentStatusView;
+  SNMP_GET: SnmpOperationView;
+  SNMP_GETNEXT: SnmpOperationView;
+  SNMP_WALK: SnmpOperationView;
+  GET_NMS_TRAPS: SnmpOperationView;
+  CLEAR_NMS_TRAPS: SnmpOperationView;
   SERIALIZE_LAB: LabDocument;
 }
 

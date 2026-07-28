@@ -2,6 +2,7 @@ import { DEFAULT_BRIDGE_AGING_TIME_NS } from "@sim/contracts";
 import type { EthernetInterface } from "../net/interface";
 import type { EthernetFrame } from "../packets/ethernet";
 import { isBroadcastMac, normalizeMac } from "../util/mac";
+import { ConsoleAccessState } from "../management/console-access-state";
 import { Device } from "./device";
 import { ForwardingDatabase } from "./forwarding-database";
 
@@ -14,6 +15,8 @@ export interface BridgeMacEntry {
 /** Two-segment learning bridge without VLANs or spanning tree. */
 export class EthernetBridge extends Device {
   readonly deviceType = "bridge" as const;
+  /** The one shared local-user database, for the simulated bridge console. */
+  readonly consoleAccess = new ConsoleAccessState();
   private forwardingDatabase: ForwardingDatabase<"bridge">;
 
   constructor(id: string, name: string, public agingTimeNs = DEFAULT_BRIDGE_AGING_TIME_NS) {

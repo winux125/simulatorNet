@@ -8,6 +8,7 @@ import type { UdpDatagram } from "../packets/udp";
 import { Dhcpv6Server, type Dhcpv6PoolConfig } from "../protocols/dhcpv6";
 import { discoveryCapabilitiesFor, discoveryPlatformFor } from "../protocols/discovery-support";
 import { NeighborDiscovery } from "../protocols/neighbor-discovery";
+import { ConsoleAccessState } from "../management/console-access-state";
 import type { Ipv4 } from "../util/ipv4";
 import type { Ipv6 } from "../util/ipv6";
 import { LLDP_MAC, type Mac, normalizeMac, ZERO_MAC } from "../util/mac";
@@ -28,6 +29,8 @@ export class Server extends EndHost {
   readonly dhcpv6 = new Dhcpv6Server(`duid-server-${this.id}`);
   /** LLDP only; `supportsCdp` is false so `cdp run` is rejected outright. */
   readonly discovery = new NeighborDiscovery(this, false);
+  /** The one shared local-user database, for the simulated server console. */
+  readonly consoleAccess = new ConsoleAccessState();
 
   constructor(id: string, name: string) {
     super(id, name);

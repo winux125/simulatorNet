@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@sim/cli-engine": "workspace:*",
     "@sim/contracts": "workspace:*",
     "@sim/lab-format": "workspace:*",
     "@sim/sim-core": "workspace:*",

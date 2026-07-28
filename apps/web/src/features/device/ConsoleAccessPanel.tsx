@@ -4,7 +4,12 @@ import {
   type ConsoleAuthenticationMode,
   type LabDocument,
 } from "@sim/contracts";
-import { createPasswordVerifier, emptyConsoleAccess } from "@sim/console-auth";
+import {
+  createPasswordVerifier,
+  emptyConsoleAccess,
+  managementCredentialFingerprint,
+  managementCredentialScope,
+} from "@sim/console-auth";
 import { KeyRound, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { LabUiNode } from "@sim/sim-worker";
@@ -50,11 +55,29 @@ export function ConsoleAccessPanel({ document, node, onConfigurationChanged, onE
   const addUser = () => guard(async () => {
     if (!username.trim() || !userPassword) { onError("Username and password are required"); return; }
     if (access.users.length >= MAX_CONSOLE_USERS) { onError(`A device may have at most ${MAX_CONSOLE_USERS} console users`); return; }
+    const name = username.trim();
     const verifier = await createPasswordVerifier(userPassword);
+    // The same user also authenticates over the management plane, which needs a
+    // value the deterministic engine can compare. Both forms are derived here,
+    // before any packet processing, and the password itself is discarded.
+    const fingerprint = await managementCredentialFingerprint(
+      managementCredentialScope.user(name),
+      userPassword,
+    );
     update({
       ...access,
       mode: access.mode === "none" ? "local-user" : access.mode,
-      users: [...access.users.filter((user) => user.username !== username.trim()), { id: `user-${Date.now()}`, username: username.trim(), passwordVerifier: verifier, privilegeLevel: Math.min(15, Math.max(0, privilege)), enabled: true }],
+      users: [
+        ...access.users.filter((user) => user.username !== name),
+        {
+          id: `user-${Date.now()}`,
+          username: name,
+          passwordVerifier: verifier,
+          credentialFingerprint: fingerprint,
+          privilegeLevel: Math.min(15, Math.max(0, privilege)),
+          enabled: true,
+        },
+      ],
     });
     setUsername(""); setUserPassword(""); setPrivilege(1);
   });
@@ -67,7 +90,16 @@ export function ConsoleAccessPanel({ document, node, onConfigurationChanged, onE
 
   const setEnable = () => guard(async () => {
     if (!enableSecret) { onError("Enter an enable secret"); return; }
-    update({ ...access, enableSecretVerifier: await createPasswordVerifier(enableSecret), credentialResetRequired: false });
+    update({
+      ...access,
+      enableSecretVerifier: await createPasswordVerifier(enableSecret),
+      // Remote `enable` compares this opaque form inside the engine.
+      enableCredentialFingerprint: await managementCredentialFingerprint(
+        managementCredentialScope.enable(),
+        enableSecret,
+      ),
+      credentialResetRequired: false,
+    });
     setEnableSecret("");
   });
 
