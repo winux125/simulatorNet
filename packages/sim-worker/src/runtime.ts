@@ -43,6 +43,7 @@ import {
 } from "@sim/sim-core";
 import { SimulationWorkerError, serializeWorkerError } from "./errors";
 import type {
+  CliExecutionResult,
   EngineUiState,
   DeviceInspection,
   HostNetworkStatus,
@@ -151,9 +152,14 @@ export class SimulationWorkerRuntime {
       case "REBUILD_LAB":
         return this.initialize(request.document, type === "INITIALIZE_LAB");
       case "EXECUTE_CLI":
-        return this.executeCli(requireString(request, "sessionId"), requireString(request, "deviceId"), requireString(request, "input"));
+        return this.executeCli(
+          requireString(request, "sessionId"),
+          requireString(request, "deviceId"),
+          requireString(request, "input"),
+          typeof request.credential === "string" ? request.credential : undefined,
+        );
       case "CLOSE_CLI_SESSION":
-        return { closed: this.sessions.delete(requireString(request, "sessionId")) };
+        return { closed: this.closeCliSession(requireString(request, "sessionId")) };
       case "RUN_UNTIL_IDLE":
         return this.runUntilIdle();
       case "STEP_NEXT_EVENT":
@@ -334,6 +340,10 @@ export class SimulationWorkerRuntime {
   }
 
   private rebuildEngine(document: LabDocument): void {
+    // A rebuild replaces every device instance, so no remote session can
+    // survive it: close them explicitly instead of leaking sockets and lines.
+    this.builtLab?.management.closeAll("cleared-by-administrator");
+    for (const entry of this.sessions.values()) entry.session.closeRemoteSession();
     this.builtLab = buildLabFromDocument(document);
     this.sessions.clear();
     this.traceCursor = 0;
@@ -349,7 +359,7 @@ export class SimulationWorkerRuntime {
     this.builtLab.engine.runUntilIdle();
   }
 
-  private executeCli(sessionId: string, deviceId: string, input: string) {
+  private executeCli(sessionId: string, deviceId: string, input: string, credential?: string) {
     const built = this.requireBuiltLab();
     const existing = this.sessions.get(sessionId);
     if (existing && existing.deviceId !== deviceId) {
@@ -363,22 +373,44 @@ export class SimulationWorkerRuntime {
     if (!device.profile.cliProfile) {
       throw new SimulationWorkerError("cli-not-supported", `${device.profile.displayName} does not provide an interactive CLI`);
     }
-    const entry = existing ?? { deviceId, session: createCliSession(device, built.engine) };
+    let entry = existing;
+    if (!entry) {
+      const session = createCliSession(device, built.engine);
+      // Remote CLI is opened from a host terminal; the opener is owned by the
+      // runtime so the CLI itself never reaches into the management plane.
+      session.useRemoteSessionOpener(built.management);
+      entry = { deviceId, session };
+    }
     entry.session.setExecutionMode(this.executionMode);
     this.sessions.set(sessionId, entry);
-    const output = entry.session.execute(input);
-    const deferred = entry.session.hasPendingOperation();
-    const result = {
+    const output = entry.session.execute(input, credential);
+    this.emitStateChanged();
+    this.flushTrace();
+    return this.cliResult(sessionId, entry, output);
+  }
+
+  private cliResult(sessionId: string, entry: CliSessionEntry, output: string): CliExecutionResult {
+    const remote = entry.session.remoteSession();
+    return {
       sessionId,
-      deviceId,
+      deviceId: entry.deviceId,
       output,
       prompt: entry.session.prompt(),
       mode: entry.session.mode,
-      deferred,
+      deferred: entry.session.hasPendingOperation(),
+      secret: entry.session.expectsSecret(),
+      credentialScope: entry.session.credentialScope(),
+      remote: remote ? { label: remote.label } : undefined,
     };
-    this.emitStateChanged();
-    this.flushTrace();
-    return result;
+  }
+
+  /** Closing a terminal tab also ends whatever remote session it carried. */
+  private closeCliSession(sessionId: string): boolean {
+    const entry = this.sessions.get(sessionId);
+    if (!entry) return false;
+    entry.session.closeRemoteSession();
+    this.sessions.delete(sessionId);
+    return true;
   }
 
   private runUntilIdle(): SimulationRunResult {
@@ -441,6 +473,8 @@ export class SimulationWorkerRuntime {
     const target = built.engine.now() + Math.round(milliseconds * 1_000_000);
     const processedEvents = built.engine.advanceTo(target);
     this.engineState = "idle";
+    // An explicit time advance is when a VTY `exec-timeout` becomes observable.
+    built.management.enforceIdleTimeouts();
     this.emitCompletedCliOperations();
     const snapshot = this.snapshot();
     this.emit({ type: "STATE_CHANGED", snapshot });
@@ -1444,18 +1478,13 @@ export class SimulationWorkerRuntime {
   }
 
   private emitCompletedCliOperations(): void {
+    // Remote devices answer first: a queued Telnet/SSH command produces its
+    // output on the managed device before the originating terminal renders it.
+    this.builtLab?.management.completeDeferredOperations();
     for (const [sessionId, entry] of this.sessions) {
       const output = entry.session.completePendingOperation();
       if (output === undefined) continue;
-      this.emit({
-        type: "CLI_OUTPUT",
-        sessionId,
-        deviceId: entry.deviceId,
-        output,
-        prompt: entry.session.prompt(),
-        mode: entry.session.mode,
-        deferred: false,
-      });
+      this.emit({ type: "CLI_OUTPUT", ...this.cliResult(sessionId, entry, output), deferred: false });
     }
   }
 

@@ -16,11 +16,15 @@ export * from "./wireless/limits";
 export * from "./wireless/messages";
 export * from "./wireless/wireless-medium";
 
+// Management-plane configuration state (behaviour lives in remote-management)
+export * from "./management/remote-access-state";
+
 // Devices
 export * from "./devices/device";
 export * from "./devices/forwarding-database";
 export * from "./devices/hub";
 export * from "./devices/bridge";
+export * from "./devices/management-svi";
 export * from "./devices/switch";
 export * from "./devices/layer3-switch";
 export * from "./devices/pc";

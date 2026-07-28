@@ -2,6 +2,7 @@ import { z } from "zod";
 import { TopologySchema } from "./topology";
 import { LabDiagramSchema } from "./diagram";
 import { ConsoleAccessConfigurationSchema } from "./console";
+import { ManagementSviConfigSchema, RemoteAccessConfigurationSchema } from "./management";
 import {
   Ipv4InterfaceConfigSchema,
   Ipv4Schema,
@@ -218,6 +219,11 @@ export const SwitchDeviceConfigSchema = z.object({
   interfaces: z.array(SwitchInterfaceConfigSchema).default([]),
   ...SwitchControlProtocolShape,
   consoleAccess: ConsoleAccessConfigurationSchema.optional(),
+  /** `interface vlan <id>`: the single management interface of an L2 switch. */
+  managementSvi: ManagementSviConfigSchema.optional(),
+  /** `ip default-gateway`: a host default route for management replies only. */
+  managementDefaultGateway: Ipv4Schema.optional(),
+  remoteAccess: RemoteAccessConfigurationSchema.optional(),
 });
 export type SwitchDeviceConfig = z.infer<typeof SwitchDeviceConfigSchema>;
 
@@ -434,6 +440,7 @@ export const RouterDeviceConfigSchema = z.object({
   ...RoutedControlProtocolShape,
   discovery: NeighborDiscoveryConfigSchema.optional(),
   consoleAccess: ConsoleAccessConfigurationSchema.optional(),
+  remoteAccess: RemoteAccessConfigurationSchema.optional(),
 });
 export type RouterDeviceConfig = z.infer<typeof RouterDeviceConfigSchema>;
 
@@ -544,6 +551,7 @@ export const Layer3SwitchDeviceConfigSchema = z.object({
   ...SwitchControlProtocolShape,
   ...RoutedControlProtocolShape,
   consoleAccess: ConsoleAccessConfigurationSchema.optional(),
+  remoteAccess: RemoteAccessConfigurationSchema.optional(),
 });
 export type Layer3SwitchDeviceConfig = z.infer<typeof Layer3SwitchDeviceConfigSchema>;
 

@@ -105,13 +105,13 @@ export const navigationCommands: CommandSpec[] = [
   },
   {
     pattern: "exit",
-    modes: ["config-if", "config-vlan", "config-acl", "config-router"],
+    modes: ["config-if", "config-vlan", "config-acl", "config-line", "config-router"],
     device: "network",
     run: (s) => s.enter("config"),
   },
   {
     pattern: "end",
-    modes: ["config", "config-if", "config-vlan", "config-acl", "config-router"],
+    modes: ["config", "config-if", "config-vlan", "config-acl", "config-line", "config-router"],
     device: "network",
     run: (s) => s.enter("privileged"),
   },
@@ -127,12 +127,14 @@ export const navigationCommands: CommandSpec[] = [
     pattern: "interface vlan {id}",
     usage: "interface vlan <1-4094>",
     modes: ["config"],
-    device: "l3-switch",
-    capabilities: ["svi"],
+    device: "switch",
     run: (s, p) => {
       const vlanId = parseVlanId(p.id!);
-      if (!isLayer3Switch(s.device)) return;
-      s.device.defineSvi(vlanId);
+      // An L3 switch gets a routed SVI; an L2 switch gets its single
+      // management interface, which terminates traffic but never routes it.
+      if (isLayer3Switch(s.device)) s.device.defineSvi(vlanId);
+      else if (isSwitch(s.device)) s.device.defineManagementSvi(vlanId);
+      else return;
       s.ifaceCtx = {
         physical: `Vlan${vlanId}`,
         isSubinterface: false,

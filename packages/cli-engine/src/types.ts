@@ -13,6 +13,10 @@ export type DeviceFilter =
   | "network"
   | "bridge"
   | "l3-switch"
+  /** A plain L2 switch: excludes the L3 switch, which routes instead. */
+  | "l2-switch"
+  /** Devices with a management plane: Router, L2/L3 Switch and Firewall. */
+  | "managed"
   /** Devices that run an OSPF process: Router and L3 Switch. */
   | "ospf"
   /** Devices that speak the Cisco-like CDP subset. */
@@ -55,6 +59,12 @@ export interface RouterProcessContext {
   family: "ipv4" | "ipv6";
 }
 
+/** The `line vty <first> <last>` configuration context. */
+export interface VtyLineContext {
+  first: number;
+  last: number;
+}
+
 /**
  * The surface a command handler is given. Implemented by `CliSession`; commands
  * depend on this interface (not the class) so there is no import cycle.
@@ -67,6 +77,7 @@ export interface SessionApi {
   vlanId: number | undefined;
   aclCtx: AclContext | undefined;
   routerCtx: RouterProcessContext | undefined;
+  lineCtx: VtyLineContext | undefined;
   /** Transition to another mode (clears context as appropriate). */
   enter(mode: CliMode): void;
   /**

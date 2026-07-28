@@ -1,0 +1,22 @@
+{
+  "name": "@sim/remote-management",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cross-runtime management plane: simulated Telnet/SSH remote CLI over the deterministic TCP transport. Binds sim-core transport, cli-engine and console-auth without owning protocol or parsing logic itself.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@sim/cli-engine": "workspace:*",
+    "@sim/console-auth": "workspace:*",
+    "@sim/contracts": "workspace:*",
+    "@sim/sim-core": "workspace:*"
+  }
+}

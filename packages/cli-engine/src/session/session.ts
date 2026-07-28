@@ -17,8 +17,15 @@ import {
   matchPatternDetailed,
   usageFromPattern,
 } from "../parser/matcher";
-import type { AclContext, InterfaceContext, RouterProcessContext, SessionApi } from "../types";
+import type {
+  AclContext,
+  InterfaceContext,
+  RouterProcessContext,
+  SessionApi,
+  VtyLineContext,
+} from "../types";
 import { type CliMode, promptSuffix } from "./mode";
+import type { RemoteSessionBridge, RemoteSessionOpener, RemoteSessionRequest } from "./remote";
 
 export type NetworkExecutionMode = "auto" | "step";
 
@@ -38,10 +45,13 @@ export class CliSession implements SessionApi {
   vlanId: number | undefined;
   aclCtx: AclContext | undefined;
   routerCtx: RouterProcessContext | undefined;
+  lineCtx: VtyLineContext | undefined;
   private pendingInput: "ping-target" | undefined;
   private executionMode: NetworkExecutionMode = "auto";
   private pendingOperation: (() => string | undefined) | undefined;
   private pendingConfirmation: { prompt: string; onConfirm: () => string } | undefined;
+  private remote: RemoteSessionBridge | undefined;
+  private remoteOpener: RemoteSessionOpener | undefined;
 
   constructor(
     readonly device: Device,
@@ -52,8 +62,67 @@ export class CliSession implements SessionApi {
   prompt(): string {
     if (this.pendingConfirmation) return this.pendingConfirmation.prompt;
     if (this.pendingInput === "ping-target") return "Target IP address:";
+    const remote = this.remote;
+    if (remote && !remote.isClosed()) return remote.prompt();
     if (isPc(this.device)) return "C:\\>";
     return `${this.device.name}${promptSuffix(this.mode)}`;
+  }
+
+  // --- remote sessions -----------------------------------------------------
+
+  /**
+   * Give this session the ability to open Telnet/SSH sessions. Owned by the
+   * runtime (worker or verifier), never by a command handler.
+   */
+  useRemoteSessionOpener(opener: RemoteSessionOpener | undefined): void {
+    this.remoteOpener = opener;
+  }
+
+  /**
+   * Push a remote session onto this terminal. The local host session is kept
+   * intact underneath, so `exit` returns to the host prompt instead of ending
+   * the terminal.
+   */
+  openRemoteSession(request: RemoteSessionRequest): string {
+    if (!this.remoteOpener) {
+      throw new ValidationError("Remote management is unavailable in this runtime.");
+    }
+    if (this.remote && !this.remote.isClosed()) {
+      throw new ValidationError("A remote session is already open on this terminal.");
+    }
+    const bridge = this.remoteOpener.open(this.device.id, request);
+    this.remote = bridge;
+    return this.runNetworkOperation(
+      () => bridge.connect(),
+      () => (bridge.awaitingResponse() ? undefined : this.renderRemote(bridge)),
+    );
+  }
+
+  /** The remote session attached to this terminal, if any. */
+  remoteSession(): RemoteSessionBridge | undefined {
+    return this.remote && !this.remote.isClosed() ? this.remote : undefined;
+  }
+
+  /** True while the *next* submitted line is a credential (remote login). */
+  expectsSecret(): boolean {
+    return this.remoteSession()?.expectsSecret() ?? false;
+  }
+
+  credentialScope(): string | undefined {
+    return this.remoteSession()?.credentialScope();
+  }
+
+  /** Close an attached remote session, e.g. when the terminal tab is closed. */
+  closeRemoteSession(): void {
+    this.remote?.close();
+    this.remote = undefined;
+  }
+
+  private renderRemote(bridge: RemoteSessionBridge): string {
+    const output = bridge.drain();
+    if (!bridge.isClosed()) return output;
+    this.remote = undefined;
+    return output;
   }
 
   enter(mode: CliMode): void {
@@ -61,6 +130,7 @@ export class CliSession implements SessionApi {
     if (mode !== "config-vlan") this.vlanId = undefined;
     if (mode !== "config-acl") this.aclCtx = undefined;
     if (mode !== "config-router") this.routerCtx = undefined;
+    if (mode !== "config-line") this.lineCtx = undefined;
     this.mode = mode;
   }
 
@@ -120,8 +190,23 @@ export class CliSession implements SessionApi {
     }
   }
 
-  /** Execute one command line; returns its textual output ("" if none). */
-  execute(line: string): string {
+  /**
+   * Execute one command line; returns its textual output ("" if none).
+   *
+   * `credential` is an opaque, pre-derived fingerprint answering a remote
+   * credential prompt. A plaintext secret never reaches this method.
+   */
+  execute(line: string, credential?: string): string {
+    // A remote session owns the terminal while it is open: every line travels
+    // over the simulated network to the managed device, and only that device's
+    // CLI interprets it.
+    const remote = this.remoteSession();
+    if (remote) {
+      return this.runNetworkOperation(
+        () => remote.submit(line, credential),
+        () => (remote.awaitingResponse() ? undefined : this.renderRemote(remote)),
+      );
+    }
     const confirmation = this.pendingConfirmation;
     if (confirmation) {
       this.pendingConfirmation = undefined;
@@ -209,7 +294,13 @@ export class CliSession implements SessionApi {
 
     const incompleteCandidates = progress
       .filter((candidate) => candidate.analysis.status === "incomplete")
-      .sort((a, b) => b.analysis.matchedTokens - a.analysis.matchedTokens || a.spec.pattern.length - b.spec.pattern.length);
+      // Most tokens matched wins; then the most *general* form, so a bare
+      // `interface` suggests `interface <interface-name>` rather than one of
+      // the specific `interface vlan|range|loopback` sub-forms.
+      .sort((a, b) =>
+        b.analysis.matchedTokens - a.analysis.matchedTokens
+        || literalTokenCount(a.spec.pattern) - literalTokenCount(b.spec.pattern)
+        || a.spec.pattern.length - b.spec.pattern.length);
     const incomplete = incompleteCandidates[0];
     if (incomplete) return new IncompleteCommandError(incomplete.spec.usage ?? usageFromPattern(incomplete.spec.pattern)).render();
 
@@ -232,6 +323,11 @@ export class CliSession implements SessionApi {
     }
     return out.join("\n");
   }
+}
+
+/** How specific a pattern is: the number of fixed keywords it requires. */
+function literalTokenCount(pattern: string): number {
+  return pattern.split(" ").filter((token) => !token.startsWith("{")).length;
 }
 
 export function createCliSession(device: Device, engine: SimulationEngine): CliSession {

@@ -13,6 +13,8 @@ import {
   type NodeSpec,
   type PhysicalInterfaceConfig,
   type Layer3SwitchDeviceConfig,
+  type RemoteAccessConfiguration,
+  type SwitchDeviceConfig,
   type Topology,
   getDeviceProfile,
   type WirelessRadioSettings,
@@ -21,6 +23,7 @@ import {
   createSimulationEngine,
   ExternalAppliance,
   Firewall,
+  isDefaultRemoteAccess,
   EthernetBridge,
   Hub,
   IspCloud,
@@ -41,6 +44,7 @@ import {
   type SimulationEngine,
   NS_PER_S,
 } from "@sim/sim-core";
+import { ManagementPlane } from "@sim/remote-management";
 import { canonicalizeLabDocument } from "./canonical";
 import { LabSemanticError } from "./errors";
 import {
@@ -63,6 +67,12 @@ export interface BuiltLab {
   readonly devices: ReadonlyMap<DeviceId, Device>;
   readonly topology: Topology;
   readonly seed: number;
+  /**
+   * Telnet/SSH listeners, VTY lines and remote sessions for this lab. Built
+   * identically in the browser worker and the verifier so a management result
+   * is deterministic in both trust domains.
+   */
+  readonly management: ManagementPlane;
   getDevice(id: DeviceId | string): Device | undefined;
   getPc(id: DeviceId | string): Pc | undefined;
   getServer(id: DeviceId | string): Server | undefined;
@@ -87,6 +97,7 @@ class BuiltLabImpl implements BuiltLab {
     readonly devices: ReadonlyMap<DeviceId, Device>,
     readonly topology: Topology,
     readonly seed: number,
+    readonly management: ManagementPlane,
   ) {}
 
   getDevice(id: DeviceId | string): Device | undefined {
@@ -384,6 +395,7 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
     return;
   }
   if (device instanceof L2Switch && config.kind === "l2-switch") {
+    device.remoteAccess.configure(config.remoteAccess);
     for (const vlan of config.vlans) device.setVlanName(vlan.id, vlan.name);
     // Bundles first: spanning tree must see the logical ports, not the members,
     // and a member inherits the Port-channel's switchport configuration.
@@ -396,10 +408,12 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
     }
     applySpanningTreeConfiguration(device, config.spanningTree ?? DEFAULT_SPANNING_TREE_CONFIG);
     applyDiscoveryConfiguration(device, config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG);
+    applyManagementSvi(device, config);
     return;
   }
   if (device instanceof Router
     && (config.kind === "router" || config.kind === "firewall" || config.kind === "cloud")) {
+    if (config.kind !== "cloud") device.remoteAccess.configure(config.remoteAccess);
     for (const iface of config.interfaces) {
       applyPhysical(device, iface);
       if (iface.routed || iface.ipv4) {
@@ -498,7 +512,27 @@ function applyWirelessHostConfiguration(
   applyHostIpv6(device, config);
 }
 
+/**
+ * The L2 management interface: one addressable VLAN plus an optional default
+ * gateway. It never enables routing, so the switch stays a layer-2 device.
+ */
+function applyManagementSvi(device: L2Switch, config: SwitchDeviceConfig): void {
+  const svi = config.managementSvi;
+  if (svi) {
+    device.defineManagementSvi(svi.vlanId);
+    if (svi.ipAddress !== undefined && svi.prefixLength !== undefined) {
+      device.setManagementSviIp(svi.vlanId, svi.ipAddress, svi.prefixLength);
+    }
+    device.setManagementSviAdminState(svi.vlanId, svi.adminUp);
+    if (svi.description) device.setManagementSviDescription(svi.vlanId, svi.description);
+  }
+  if (config.managementDefaultGateway !== undefined) {
+    device.setManagementDefaultGateway(config.managementDefaultGateway);
+  }
+}
+
 function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3SwitchDeviceConfig): void {
+  device.remoteAccess.configure(config.remoteAccess);
   for (const vlan of config.vlans) device.setVlanName(vlan.id, vlan.name);
   applyEtherChannelConfiguration(device, config.etherChannels ?? []);
   for (const iface of config.interfaces) {
@@ -593,7 +627,18 @@ export function buildLabFromDocument(document: LabDocument): BuiltLab {
     engine.connect(link.a.node, link.a.iface, link.b.node, link.b.iface, link.propagationDelayNs);
   }
 
-  return new BuiltLabImpl(engine, devices, canonical.topology, canonical.simulation.seed);
+  // The management plane is armed last: its listeners need addressed interfaces
+  // and the shared local-user database that `applyConfiguration` just applied.
+  const management = new ManagementPlane(devices, engine);
+  for (const node of canonical.topology.nodes) {
+    const config = canonical.configurations[node.id]!;
+    if (!("remoteAccess" in config) && !("consoleAccess" in config)) continue;
+    const remote = "remoteAccess" in config ? config.remoteAccess : undefined;
+    const access = "consoleAccess" in config ? config.consoleAccess : undefined;
+    management.configureDevice(node.id, remote, access);
+  }
+
+  return new BuiltLabImpl(engine, devices, canonical.topology, canonical.simulation.seed, management);
 }
 
 function prefixLength(maskInt: number): number {
@@ -710,6 +755,12 @@ function serializeStaticIpv6Addresses(
     ?.filter((address) => address.source === "static")
     .map((address) => ({ address: address.address, prefixLength: address.prefixLength }));
   return configured && configured.length > 0 ? configured : undefined;
+}
+
+/** Absent when nothing was configured, so an untouched lab round-trips byte-identically. */
+function serializeRemoteAccess(state: { snapshot(): RemoteAccessConfiguration }): RemoteAccessConfiguration | undefined {
+  const snapshot = state.snapshot();
+  return isDefaultRemoteAccess(snapshot) ? undefined : snapshot;
 }
 
 function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
@@ -872,10 +923,12 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       loopbacks: serializeLoopbackConfiguration(device),
       ospf: serializeOspfConfiguration(device),
       ospfv3: serializeOspfv3Configuration(device),
+      remoteAccess: serializeRemoteAccess(device.remoteAccess),
     };
   }
   if (device instanceof L2Switch) {
     const summaries = new Map(device.portSummaries().map((summary) => [summary.name, summary]));
+    const managementSvi = device.managementSviSummary();
     return {
       kind: "l2-switch",
       hostname: device.name,
@@ -893,6 +946,17 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       spanningTree: serializeSpanningTreeConfiguration(device),
       etherChannels: serializeEtherChannelConfiguration(device),
       discovery: serializeDiscoveryConfiguration(device),
+      managementSvi: managementSvi
+        ? {
+            vlanId: managementSvi.vlanId,
+            ipAddress: managementSvi.ip,
+            prefixLength: managementSvi.ip === undefined ? undefined : prefixLength(managementSvi.maskInt),
+            adminUp: managementSvi.adminUp,
+            description: managementSvi.description,
+          }
+        : undefined,
+      managementDefaultGateway: device.managementDefaultGateway,
+      remoteAccess: serializeRemoteAccess(device.remoteAccess),
     };
   }
 
@@ -972,6 +1036,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
     loopbacks: serializeLoopbackConfiguration(device),
     ospf: serializeOspfConfiguration(device),
     ospfv3: serializeOspfv3Configuration(device),
+    remoteAccess: device instanceof IspCloud ? undefined : serializeRemoteAccess(device.remoteAccess),
   };
   if (device instanceof Firewall) {
     return {

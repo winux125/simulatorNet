@@ -36,7 +36,15 @@ import type {
   WirelessStationConfiguration,
   WirelessAccessPointConfiguration,
 } from "@sim/contracts";
-import { ipToInt, macFromIndex, normalizeIpv6, normalizeServiceConfiguration } from "@sim/sim-core";
+import type { ManagementSviConfig, RemoteAccessConfiguration } from "@sim/contracts";
+import {
+  ipToInt,
+  isDefaultRemoteAccess,
+  macFromIndex,
+  normalizeIpv6,
+  normalizeServiceConfiguration,
+  normalizeVtyLines,
+} from "@sim/sim-core";
 import { parseLabDocument } from "./parse";
 import { validateLabSemantics } from "./semantic";
 
@@ -81,6 +89,28 @@ function canonicalConsoleAccess(
     loginBanner: access.loginBanner,
     motdBanner: access.motdBanner,
     credentialResetRequired: access.credentialResetRequired,
+  };
+}
+
+/**
+ * Remote-management configuration in canonical order: VTY blocks by first then
+ * last line, transports in a fixed order. Ordering is observable in the saved
+ * document, so it must never depend on insertion order. Verifiers are copied
+ * verbatim; no secret is ever materialized here.
+ */
+function canonicalRemoteAccess(
+  config: { remoteAccess?: RemoteAccessConfiguration } | undefined,
+): RemoteAccessConfiguration | undefined {
+  const remote = config?.remoteAccess;
+  if (isDefaultRemoteAccess(remote) || !remote) return undefined;
+  return {
+    telnetEnabled: remote.telnetEnabled,
+    ssh: { ...remote.ssh },
+    vtyLines: normalizeVtyLines(remote.vtyLines).map((line) => ({
+      ...line,
+      transports: (["telnet", "ssh"] as const).filter((protocol) => line.transports.includes(protocol)),
+      passwordVerifier: line.passwordVerifier ? { ...line.passwordVerifier } : undefined,
+    })),
   };
 }
 
@@ -183,7 +213,14 @@ function switchConfiguration(node: NodeSpec, config: SwitchDeviceConfig | undefi
     }),
     ...canonicalSwitchProtocols(config),
     consoleAccess: canonicalConsoleAccess(config),
+    managementSvi: canonicalManagementSvi(config?.managementSvi),
+    managementDefaultGateway: config?.managementDefaultGateway,
+    remoteAccess: canonicalRemoteAccess(config),
   };
+}
+
+function canonicalManagementSvi(svi: ManagementSviConfig | undefined): ManagementSviConfig | undefined {
+  return svi ? { ...svi } : undefined;
 }
 
 /**
@@ -414,6 +451,7 @@ function routerConfiguration(node: NodeSpec, config: RouterDeviceConfig | undefi
     ...canonicalRoutedProtocols(config),
     discovery: canonicalDiscovery(config?.discovery),
     consoleAccess: canonicalConsoleAccess(config),
+    remoteAccess: canonicalRemoteAccess(config),
   };
 }
 
@@ -516,6 +554,7 @@ function layer3SwitchConfiguration(
     ...canonicalSwitchProtocols(config),
     ...canonicalRoutedProtocols(config),
     consoleAccess: canonicalConsoleAccess(config),
+    remoteAccess: canonicalRemoteAccess(config),
   };
 }
 

@@ -26,6 +26,7 @@ export const interfaceCommands: CommandSpec[] = [
     run: (s) => {
       const ctx = requireCtx(s);
       if (ctx.sviVlan !== undefined && isLayer3Switch(s.device)) s.device.setSviAdminState(ctx.sviVlan, false);
+      else if (ctx.sviVlan !== undefined && isSwitch(s.device)) s.device.setManagementSviAdminState(ctx.sviVlan, false);
       else s.device.getInterface(ctx.physical)?.shutdown();
     },
   },
@@ -35,6 +36,7 @@ export const interfaceCommands: CommandSpec[] = [
     run: (s) => {
       const ctx = requireCtx(s);
       if (ctx.sviVlan !== undefined && isLayer3Switch(s.device)) s.device.setSviAdminState(ctx.sviVlan, true);
+      else if (ctx.sviVlan !== undefined && isSwitch(s.device)) s.device.setManagementSviAdminState(ctx.sviVlan, true);
       else s.device.getInterface(ctx.physical)?.noShutdown();
     },
   },
@@ -44,7 +46,22 @@ export const interfaceCommands: CommandSpec[] = [
     run: (s, p) => {
       const ctx = requireCtx(s);
       if (ctx.sviVlan !== undefined && isLayer3Switch(s.device)) s.device.setSviDescription(ctx.sviVlan, p.text!);
+      else if (ctx.sviVlan !== undefined && isSwitch(s.device)) s.device.setManagementSviDescription(ctx.sviVlan, p.text!);
       else s.device.getInterface(ctx.physical)?.setDescription(p.text!);
+    },
+  },
+  {
+    /** The L2 management SVI is addressable, but the switch never routes. */
+    pattern: "ip address {ip} {mask}",
+    modes: ["config-if"],
+    device: "l2-switch",
+    run: (s, p) => {
+      const ctx = requireCtx(s);
+      if (!isSwitch(s.device)) return;
+      if (ctx.sviVlan === undefined) {
+        throw new InvalidModeError("An L2 Switch is addressable only through its management VLAN interface");
+      }
+      s.device.setManagementSviIp(ctx.sviVlan, parseIpv4(p.ip!), parseIpv4(p.mask!));
     },
   },
 

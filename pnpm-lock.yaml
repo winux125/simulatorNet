@@ -264,12 +264,30 @@ importers:
       '@sim/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@sim/remote-management':
+        specifier: workspace:*
+        version: link:../remote-management
       '@sim/sim-core':
         specifier: workspace:*
         version: link:../sim-core
       zod:
         specifier: ^3.24.0
         version: 3.25.76
+
+  packages/remote-management:
+    dependencies:
+      '@sim/cli-engine':
+        specifier: workspace:*
+        version: link:../cli-engine
+      '@sim/console-auth':
+        specifier: workspace:*
+        version: link:../console-auth
+      '@sim/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@sim/sim-core':
+        specifier: workspace:*
+        version: link:../sim-core
 
   packages/sim-core:
     dependencies:

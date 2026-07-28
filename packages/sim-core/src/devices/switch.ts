@@ -29,8 +29,13 @@ import {
   PVST_BPDU_MAC,
   SLOW_PROTOCOL_MAC,
 } from "../util/mac";
+import type { HostTransportStack } from "../transport/host-transport";
+import type { IpAddress } from "../util/ip-address";
+import type { Ipv4 } from "../util/ipv4";
+import { RemoteAccessState } from "../management/remote-access-state";
 import { Device } from "./device";
 import { ForwardingDatabase } from "./forwarding-database";
+import { ManagementSviPlane, type ManagementSviRow } from "./management-svi";
 
 export const DEFAULT_VLAN = 1;
 
@@ -125,6 +130,99 @@ export class L2Switch extends Device {
   private readonly portConfig = new Map<string, SwitchPortConfig>();
   /** The VLAN database (`vlan <id>` / `name <name>`); VLAN 1 always exists. */
   private readonly vlans = new Map<number, VlanInfo>([[DEFAULT_VLAN, { id: DEFAULT_VLAN, name: "default" }]]);
+  private managementPlane: ManagementSviPlane | undefined;
+  /** Persistent Telnet/SSH/VTY configuration; behaviour lives in the service. */
+  readonly remoteAccess = new RemoteAccessState(this.id);
+
+  // --- management SVI ------------------------------------------------------
+
+  /**
+   * An L3 switch addresses VLANs through real routed SVIs, so the layer-2
+   * management interface does not apply to it.
+   */
+  protected supportsManagementSvi(): boolean {
+    return true;
+  }
+
+  /** The composed management plane, created on first use. */
+  protected management(): ManagementSviPlane {
+    if (!this.supportsManagementSvi()) {
+      throw new Error(`${this.deviceType} uses routed SVIs instead of a layer-2 management interface`);
+    }
+    const plane = this.managementPlane ?? new ManagementSviPlane(
+      this,
+      (vlanId) => this.hasVlan(vlanId) && [...this.interfaces.values()].some((iface) =>
+        iface.operationalUp && this.portCarriesVlan(iface.name, vlanId)),
+      (frame, vlanId) => this.transmitFromLocal(frame, vlanId),
+    );
+    this.managementPlane = plane;
+    plane.attach(this.engine);
+    return plane;
+  }
+
+  /** `interface vlan <id>` on an L2 switch: the single management interface. */
+  defineManagementSvi(vlanId: number): void {
+    this.defineVlan(vlanId);
+    this.management().define(vlanId);
+  }
+
+  setManagementSviIp(vlanId: number, ip: Ipv4, mask: Ipv4 | number): void {
+    this.defineVlan(vlanId);
+    this.management().setIp(vlanId, ip, mask);
+  }
+
+  setManagementSviAdminState(vlanId: number, adminUp: boolean): void {
+    this.defineManagementSvi(vlanId);
+    this.management().setAdminState(vlanId, adminUp);
+  }
+
+  setManagementSviDescription(vlanId: number, description: string): void {
+    this.defineManagementSvi(vlanId);
+    this.management().setDescription(vlanId, description);
+  }
+
+  removeManagementSvi(): void {
+    this.managementPlane?.remove();
+  }
+
+  /** `ip default-gateway <ip>`: host default route for management replies only. */
+  setManagementDefaultGateway(gateway: Ipv4 | undefined): void {
+    this.management().setDefaultGateway(gateway);
+  }
+
+  get managementDefaultGateway(): Ipv4 | undefined {
+    return this.managementPlane?.defaultGateway;
+  }
+
+  managementSviSummary(): ManagementSviRow | undefined {
+    if (!this.managementPlane) return undefined;
+    this.management();
+    return this.managementPlane.summary();
+  }
+
+  /** Sockets the switch's own management services listen on. */
+  managementTransport(): HostTransportStack {
+    return this.management().transport;
+  }
+
+  managementAddresses(): IpAddress[] {
+    if (!this.managementPlane) return [];
+    this.management();
+    return this.managementPlane.managementAddresses();
+  }
+
+  get managementArpTable(): ReadonlyMap<Ipv4, string> {
+    return this.managementPlane?.arpTable ?? new Map();
+  }
+
+  /** `ping` from the switch itself, sourced by the management SVI. */
+  managementPing(target: Ipv4, sequence = 0): void {
+    this.management().ping(target, sequence);
+  }
+
+  managementPingResults(): ReadonlyArray<{ sequence: number; success: boolean; rttNs?: number }> {
+    return this.managementPlane?.pingResults ?? [];
+  }
 
   // --- spanning tree ------------------------------------------------------
 
@@ -144,6 +242,14 @@ export class L2Switch extends Device {
     this.etherChannel.onPortStateChanged(iface.name);
     this.spanningTree.onPortStateChanged(this.logicalPortOf(iface.name));
     this.discovery.onPortStateChanged(iface.name);
+    // A management SVI follows its VLAN: losing the last active member port
+    // takes it operationally down and closes whatever it was terminating.
+    if (this.managementPlane) this.management().onInterfaceStateChanged();
+  }
+
+  override rename(name: string): void {
+    super.rename(name);
+    this.managementPlane?.rename(name);
   }
 
   // --- neighbour discovery ------------------------------------------------
@@ -763,8 +869,10 @@ export class L2Switch extends Device {
   }
 
   /** Hook for a local control/L3 plane. Broadcasts may be consumed and flooded. */
-  protected receiveLocal(_frame: EthernetFrame, _ingress: EthernetInterface, _vlan: number): boolean {
-    return false;
+  protected receiveLocal(frame: EthernetFrame, _ingress: EthernetInterface, vlan: number): boolean {
+    if (!this.managementPlane) return false;
+    this.management();
+    return this.managementPlane.receive(frame, vlan);
   }
 
   protected transmitFromLocal(frame: EthernetFrame, vlan: number): void {

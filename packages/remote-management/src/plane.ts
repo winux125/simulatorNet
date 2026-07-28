@@ -1,0 +1,223 @@
+import {
+  MANAGEMENT_LIMITS,
+  type ConsoleAccessConfiguration,
+  type RemoteAccessConfiguration,
+} from "@sim/contracts";
+import type { RemoteSessionBridge, RemoteSessionOpener, RemoteSessionRequest } from "@sim/cli-engine";
+import {
+  EndHost,
+  L2Switch,
+  Router,
+  ipFamilyOf,
+  normalizeIpv6,
+  type Device,
+  type IpAddress,
+  type SimulationEngine,
+} from "@sim/sim-core";
+import { KnownHostStore, RemoteCliClient } from "./client";
+import { managedDeviceOf } from "./managed-device";
+import type { RemoteCloseReason } from "./messages";
+import { RemoteCliService, type RemoteSessionSummary } from "./service";
+
+export interface ManagementPlaneDevice {
+  readonly deviceId: string;
+  readonly service: RemoteCliService;
+}
+
+/**
+ * Lab-wide management plane.
+ *
+ * It owns one `RemoteCliService` per manageable device and the client sessions
+ * hosts open against them. Both the browser worker and the verifier build it
+ * the same way from the same `LabDocument`, so a remote-management result is
+ * reproducible in either trust domain.
+ */
+export class ManagementPlane implements RemoteSessionOpener {
+  private readonly services = new Map<string, RemoteCliService>();
+  private readonly clients = new Map<string, RemoteCliClient>();
+  private readonly knownHosts = new Map<string, KnownHostStore>();
+  private sessionCounter = 0;
+
+  constructor(
+    private readonly devices: ReadonlyMap<string, Device>,
+    private readonly engine: SimulationEngine,
+  ) {
+    for (const [deviceId, device] of devices) {
+      const managed = managedDeviceOf(device, engine);
+      if (!managed) continue;
+      const service = new RemoteCliService(managed, () => this.totalSessions() < MANAGEMENT_LIMITS.maximumRemoteSessionsPerLab);
+      this.services.set(deviceId, service);
+    }
+  }
+
+  /** Apply persisted configuration for one device and re-arm its listeners. */
+  configureDevice(
+    deviceId: string,
+    remote: RemoteAccessConfiguration | undefined,
+    access: ConsoleAccessConfiguration | undefined,
+  ): void {
+    this.services.get(deviceId)?.configure(remote, access);
+  }
+
+  serviceOf(deviceId: string): RemoteCliService | undefined {
+    return this.services.get(deviceId);
+  }
+
+  managedDeviceIds(): string[] {
+    return [...this.services.keys()].sort((a, b) => a.localeCompare(b));
+  }
+
+  /** Every session terminated anywhere in the lab, in stable order. */
+  sessions(): Array<RemoteSessionSummary & { readonly deviceId: string }> {
+    return this.managedDeviceIds().flatMap((deviceId) =>
+      (this.services.get(deviceId)?.sessionSummaries() ?? []).map((session) => ({ ...session, deviceId })));
+  }
+
+  totalSessions(): number {
+    return this.sessions().length;
+  }
+
+  /** Push queued output after the shared event queue has been drained. */
+  completeDeferredOperations(): void {
+    for (const service of this.services.values()) service.completeDeferredOperations();
+  }
+
+  /** Apply `exec-timeout` after the learner advanced virtual time explicitly. */
+  enforceIdleTimeouts(): void {
+    for (const service of this.services.values()) service.enforceIdleTimeouts();
+  }
+
+  /** Close everything: Stop Lab, rebuild, or a removed device. */
+  closeAll(reason: RemoteCloseReason = "cleared-by-administrator"): void {
+    for (const service of this.services.values()) service.closeAll(reason);
+    for (const client of this.clients.values()) client.close(reason);
+    this.clients.clear();
+  }
+
+  /** Close only what one device owns or originated. */
+  closeForDevice(deviceId: string, reason: RemoteCloseReason): void {
+    this.services.get(deviceId)?.closeAll(reason);
+    for (const [sessionId, client] of [...this.clients]) {
+      if (!sessionId.startsWith(`${deviceId}:`)) continue;
+      client.close(reason);
+      this.clients.delete(sessionId);
+    }
+  }
+
+  knownHostsOf(deviceId: string): KnownHostStore {
+    const existing = this.knownHosts.get(deviceId);
+    if (existing) return existing;
+    const store = new KnownHostStore();
+    this.knownHosts.set(deviceId, store);
+    return store;
+  }
+
+  clientOf(sessionId: string): RemoteCliClient | undefined {
+    return this.clients.get(sessionId);
+  }
+
+  clientSessions(): RemoteCliClient[] {
+    return [...this.clients.values()];
+  }
+
+  // --- RemoteSessionOpener --------------------------------------------------
+
+  open(deviceId: string, request: RemoteSessionRequest): RemoteSessionBridge {
+    const host = this.devices.get(deviceId);
+    if (!(host instanceof EndHost)) {
+      throw new Error("Only a PC, Laptop or Server can open a remote CLI session");
+    }
+    if (this.totalSessions() >= MANAGEMENT_LIMITS.maximumRemoteSessionsPerLab) {
+      throw new Error("The lab remote-session limit has been reached");
+    }
+    const target = this.resolveTarget(request.target);
+    const sessionId = `${deviceId}:${request.protocol}:${++this.sessionCounter}`;
+    const client = new RemoteCliClient(host, sessionId, {
+      protocol: request.protocol,
+      targetAddress: target.address,
+      port: request.port,
+      username: request.username,
+      knownHosts: this.knownHostsOf(deviceId),
+    });
+    this.clients.set(sessionId, client);
+    return new RemoteClientBridge(client, target.label, () => this.clients.delete(sessionId));
+  }
+
+  /**
+   * Resolve what the learner typed. A literal IPv4/IPv6 address is used as-is;
+   * a name is matched against managed device hostnames so `telnet SW1` works in
+   * a classroom lab without a DNS server. Nothing here reaches a real network.
+   */
+  private resolveTarget(target: string): { address: IpAddress; label: string } {
+    const trimmed = target.trim();
+    const bracketed = /^\[(.+)\]$/u.exec(trimmed);
+    const candidate = bracketed?.[1] ?? trimmed;
+    if (candidate.includes(":")) return { address: normalizeIpv6(candidate), label: candidate };
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(candidate)) return { address: candidate, label: candidate };
+    const wanted = candidate.toLowerCase();
+    for (const device of this.devices.values()) {
+      if (device.name.toLowerCase() !== wanted) continue;
+      const managed = device instanceof L2Switch || device instanceof Router
+        ? managedDeviceOf(device, this.engine)
+        : undefined;
+      const address = managed?.addresses().find((entry) => ipFamilyOf(entry) === "ipv4") ?? managed?.addresses()[0];
+      if (address) return { address, label: device.name };
+      break;
+    }
+    throw new Error(`Unknown host '${trimmed}'`);
+  }
+}
+
+/** Adapts a `RemoteCliClient` to the structural bridge `cli-engine` expects. */
+class RemoteClientBridge implements RemoteSessionBridge {
+  readonly label: string;
+
+  constructor(
+    private readonly client: RemoteCliClient,
+    targetLabel: string,
+    private readonly onFinished: () => void,
+  ) {
+    this.label = `${client.protocol === "ssh" ? "SSH" : "Telnet"} ${targetLabel}`;
+  }
+
+  connect(): void {
+    this.client.connect();
+  }
+
+  submit(line: string, credential?: string): void {
+    this.client.submit(line, credential);
+  }
+
+  drain(): string {
+    const text = this.client.drainOutput();
+    if (this.client.isClosed) this.onFinished();
+    return text;
+  }
+
+  awaitingResponse(): boolean {
+    return this.client.awaitingResponse();
+  }
+
+  prompt(): string {
+    const view = this.client.view();
+    if (view.state === "host-key-confirmation") return "Continue connecting (yes/no)?";
+    return view.prompt;
+  }
+
+  expectsSecret(): boolean {
+    return this.client.view().secret;
+  }
+
+  credentialScope(): string | undefined {
+    return this.client.view().credentialScope;
+  }
+
+  isClosed(): boolean {
+    return this.client.isClosed;
+  }
+
+  close(): void {
+    this.client.close();
+    this.onFinished();
+  }
+}

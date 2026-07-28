@@ -45,6 +45,15 @@ export function isOspfDevice(d: Device): d is Router | Layer3Switch {
   return (isRouter(d) && d.deviceType === "router") || isLayer3Switch(d);
 }
 
+/**
+ * Devices that have a management plane: Router, L2 Switch, L3 Switch and
+ * Firewall. A Hub, Cloud, Access Point or end host deliberately has none.
+ */
+export function isManagedDevice(d: Device): d is Router | L2Switch {
+  if (isSwitch(d)) return true;
+  return isRouter(d) && (d.deviceType === "router" || d.deviceType === "firewall");
+}
+
 /** Devices that speak the Cisco-like CDP subset. */
 export function isCdpDevice(d: Device): boolean {
   return supportsCdp(d.deviceType) && (isRouter(d) || isSwitch(d));
@@ -60,6 +69,8 @@ export function deviceMatches(filter: DeviceFilter | undefined, device: Device):
   if (filter === "switch") return isSwitch(device);
   if (filter === "router") return isRoutingDevice(device);
   if (filter === "l3-switch") return isLayer3Switch(device);
+  if (filter === "l2-switch") return isSwitch(device) && !isLayer3Switch(device);
+  if (filter === "managed") return isManagedDevice(device);
   if (filter === "bridge") return isBridge(device);
   if (filter === "pc") return isPc(device);
   if (filter === "server") return isServer(device);

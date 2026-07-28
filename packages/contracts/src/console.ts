@@ -22,10 +22,22 @@ export type ConsoleAuthenticationMode = z.infer<typeof ConsoleAuthenticationMode
 
 export const MAX_CONSOLE_USERS = 16;
 
+/**
+ * An opaque, scope-bound credential fingerprint (see
+ * `createManagementCredentialVerifier` in `@sim/console-auth`). It exists so a
+ * credential can be compared *synchronously inside the deterministic engine* —
+ * remote CLI, AAA and SNMP all need that — without a plaintext secret ever
+ * reaching sim-core, a trace, a log or a grading result. It is never a password
+ * and is never rendered.
+ */
+export const ManagementCredentialFingerprintSchema = z.string().min(4).max(256);
+
 export const ConsoleUserConfigurationSchema = z.object({
   id: z.string().min(1),
   username: z.string().min(1).max(64),
   passwordVerifier: PasswordVerifierSchema,
+  /** Set when this user may also authenticate over the management plane. */
+  credentialFingerprint: ManagementCredentialFingerprintSchema.optional(),
   privilegeLevel: z.number().int().min(0).max(15).default(1),
   enabled: z.boolean().default(true),
 }).strict();
@@ -36,6 +48,8 @@ export const ConsoleAccessConfigurationSchema = z.object({
   users: z.array(ConsoleUserConfigurationSchema).max(MAX_CONSOLE_USERS).default([]),
   consolePasswordVerifier: PasswordVerifierSchema.optional(),
   enableSecretVerifier: PasswordVerifierSchema.optional(),
+  /** Engine-comparable form of the enable secret, for remote `enable`. */
+  enableCredentialFingerprint: ManagementCredentialFingerprintSchema.optional(),
   maximumAttempts: z.number().int().min(1).max(10).default(3),
   loginBanner: z.string().max(1_024).optional(),
   motdBanner: z.string().max(1_024).optional(),

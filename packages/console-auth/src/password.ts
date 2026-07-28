@@ -12,6 +12,8 @@ const SALT_BYTES = 16;
 const HASH_BYTES = 32;
 const WIRELESS_SALT_SCOPE = "SimulatorNet wireless credential\u0000";
 
+const MANAGEMENT_SALT_SCOPE = "SimulatorNet management credential\u0000";
+
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 function toBase64(bytes: Uint8Array): string {
@@ -102,6 +104,58 @@ export async function createWirelessCredentialVerifier(
     hashBase64: toBase64(hash),
   };
 }
+
+/**
+ * Deterministic, scope-bound credential fingerprint for the *management plane*.
+ *
+ * Remote CLI, AAA and SNMP credentials must be comparable **inside** the
+ * deterministic engine, which is synchronous and must never see a plaintext
+ * secret. So — exactly like the educational WPA2-PSK model — Web Crypto derives
+ * an opaque verifier from a fixed, scope-derived salt *before* any packet or
+ * event processing. The client host derives the same value from what the
+ * learner typed and only the opaque fingerprint crosses the simulated wire.
+ *
+ * The scope binds a fingerprint to one credential slot (a username, a VTY line,
+ * a RADIUS server key) so the same password never produces a value that is
+ * valid somewhere it was not configured. This is authentication material, not
+ * encryption: nothing here claims to implement SSH, RADIUS or SNMP security.
+ */
+export async function createManagementCredentialVerifier(
+  scope: string,
+  secret: string,
+): Promise<PasswordVerifier> {
+  if (scope.length === 0) throw new Error("Management credential scope must not be empty");
+  if (secret.length === 0) throw new Error("Management credential must not be empty");
+  const scoped = new TextEncoder().encode(`${MANAGEMENT_SALT_SCOPE}${scope}`);
+  const digest = await webcrypto().subtle.digest("SHA-256", toArrayBuffer(scoped));
+  const salt = new Uint8Array(digest).slice(0, SALT_BYTES);
+  const hash = await deriveBits(secret, salt, DEFAULT_PBKDF2_ITERATIONS, HASH_BYTES);
+  return {
+    algorithm: "pbkdf2-sha256",
+    iterations: DEFAULT_PBKDF2_ITERATIONS,
+    saltBase64: toBase64(salt),
+    hashBase64: toBase64(hash),
+  };
+}
+
+/** The comparable fingerprint alone, for a client that only sends the token. */
+export async function managementCredentialFingerprint(scope: string, secret: string): Promise<string> {
+  return (await createManagementCredentialVerifier(scope, secret)).hashBase64;
+}
+
+/** Canonical credential scopes. Every management secret belongs to exactly one. */
+export const managementCredentialScope = {
+  /** A local user in the shared device user database. */
+  user: (username: string): string => `user:${username.trim().toLowerCase()}`,
+  /** The `password` configured directly under a `line vty` block. */
+  line: (kind: "vty" | "console"): string => `line:${kind}`,
+  /** The device `enable secret`. */
+  enable: (): string => "enable",
+  /** A RADIUS/TACACS+ shared key, bound to the configured server name. */
+  sharedKey: (serverName: string): string => `key:${serverName.trim().toLowerCase()}`,
+  /** An SNMP community string, bound to the agent's own device id. */
+  community: (deviceId: string): string => `snmp:${deviceId}`,
+} as const;
 
 function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;

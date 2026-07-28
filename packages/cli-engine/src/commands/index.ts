@@ -4,6 +4,7 @@ import { navigationCommands } from "./navigation";
 import { showCommands } from "./show";
 import { vlanCommands } from "./vlan";
 import { applicationCommands } from "./applications";
+import { managementCommands } from "./management";
 import { protocolCommands } from "./protocols";
 import { securityCommands } from "./security";
 
@@ -16,4 +17,5 @@ export const allCommands: CommandSpec[] = [
   ...applicationCommands,
   ...securityCommands,
   ...protocolCommands,
+  ...managementCommands,
 ];

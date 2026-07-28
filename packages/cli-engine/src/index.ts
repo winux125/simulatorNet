@@ -6,6 +6,12 @@ export {
   type NetworkExecutionMode,
 } from "./session/session";
 export { type CliMode, promptSuffix } from "./session/mode";
+export type {
+  RemoteSessionBridge,
+  RemoteSessionOpener,
+  RemoteSessionProtocol,
+  RemoteSessionRequest,
+} from "./session/remote";
 
 // Types
 export type { CommandSpec, DeviceFilter, InterfaceContext, SessionApi } from "./types";

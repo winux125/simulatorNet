@@ -8,4 +8,5 @@ export * from "./protocols";
 export * from "./host-ip";
 export * from "./diagram";
 export * from "./console";
+export * from "./management";
 export * from "./wireless";

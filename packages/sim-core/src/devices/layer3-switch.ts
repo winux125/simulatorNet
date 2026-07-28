@@ -398,6 +398,22 @@ export class Layer3Switch extends L2Switch {
     return lowest;
   }
 
+  /** An L3 switch addresses VLANs with routed SVIs, not a management-only SVI. */
+  protected override supportsManagementSvi(): boolean {
+    return false;
+  }
+
+  /** Management traffic terminates on the routing plane's own SVI addresses. */
+  override managementTransport(): ReturnType<L2Switch["managementTransport"]> {
+    this.syncRoutingPlane();
+    return this.routingPlane.management;
+  }
+
+  override managementAddresses(): ReturnType<L2Switch["managementAddresses"]> {
+    this.syncRoutingPlane();
+    return this.routingPlane.managementAddresses();
+  }
+
   protected override switchingEnabledOnPort(port: string): boolean {
     return !this.routedPorts.has(port) && super.switchingEnabledOnPort(port);
   }

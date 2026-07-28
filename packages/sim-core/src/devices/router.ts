@@ -56,6 +56,10 @@ import {
 } from "../protocols/ospfv3";
 import type { Ipv4Packet } from "../packets/ipv4";
 import type { UdpDatagram } from "../packets/udp";
+import type { TcpSegment } from "../packets/tcp";
+import { HostTransportStack } from "../transport/host-transport";
+import { RemoteAccessState } from "../management/remote-access-state";
+import { ipFamilyOf, type IpAddress, type IpFamily } from "../util/ip-address";
 import {
   type AclBinding,
   type AclCounter,
@@ -280,6 +284,25 @@ export class Router extends Device {
   readonly arpTable = new Map<Ipv4, Mac>();
   /** IPv4 packets awaiting ARP resolution, keyed by next-hop IP. */
   private readonly arpPending = new Map<Ipv4, { packet: Ipv4Packet; egress: L3Interface }[]>();
+
+  /**
+   * Management-plane sockets. A network device is not a general-purpose server:
+   * this stack exists so management services (remote CLI, AAA clients, an SNMP
+   * agent) terminate on the device's own addresses through the same simulated
+   * UDP/TCP path as any other traffic. It never forwards and never turns the
+   * device into a DNS/HTTP/TFTP host.
+   */
+  /** Persistent Telnet/SSH/VTY configuration; behaviour lives in the service. */
+  readonly remoteAccess = new RemoteAccessState(this.id);
+
+  readonly management: HostTransportStack = new HostTransportStack({
+    deviceId: this.id,
+    engine: () => this.engine,
+    localAddress: (family, destination) => this.managementSourceAddress(family, destination),
+    portUnreachable: () => undefined,
+    sendUdpPacket: (destination, datagram, source) => this.sendManagement(destination, datagram, source),
+    sendTcpPacket: (destination, segment, source) => this.sendManagement(destination, segment, source),
+  });
 
   // --- configuration -----------------------------------------------------
 
@@ -621,6 +644,11 @@ export class Router extends Device {
       prefixLen: popcount(maskInt),
       nextHop,
     });
+  }
+
+  /** Drop every configured static route (used when a composed plane is re-armed). */
+  clearStaticRoutes(): void {
+    this.staticRoutes.length = 0;
   }
 
   addDhcpPool(config: DhcpPoolConfig): void {
@@ -1229,6 +1257,14 @@ export class Router extends Device {
   }
 
   private deliverLocalIpv6(packet: Ipv6Packet): void {
+    if (packet.nextHeader === Ipv6NextHeader.UDP && packet.payload.kind === "udp") {
+      this.management.receiveUdp(packet.src, packet.dst, packet.payload, false);
+      return;
+    }
+    if (packet.nextHeader === Ipv6NextHeader.TCP && packet.payload.kind === "tcp") {
+      this.management.receiveTcp(packet.src, packet.dst, packet.payload);
+      return;
+    }
     if (packet.nextHeader !== Ipv6NextHeader.ICMPv6 || packet.payload.kind !== "icmpv6") return;
     const message = packet.payload;
     if (message.type === Icmpv6Type.EchoReply) {
@@ -1414,6 +1450,14 @@ export class Router extends Device {
   }
 
   private deliverLocal(packet: Ipv4Packet): void {
+    if (packet.payload.kind === "udp") {
+      this.management.receiveUdp(packet.src, packet.dst, packet.payload, false);
+      return;
+    }
+    if (packet.payload.kind === "tcp") {
+      this.management.receiveTcp(packet.src, packet.dst, packet.payload);
+      return;
+    }
     if (packet.protocol !== IpProtocol.ICMP || packet.payload.kind !== "icmp") return;
     const icmp = packet.payload;
     if (icmp.type === IcmpType.EchoReply) {
@@ -1516,6 +1560,81 @@ export class Router extends Device {
     _egress: L3Interface,
   ): number {
     return 0;
+  }
+
+  // --- management plane --------------------------------------------------
+
+  /**
+   * The address a management socket sources from. It follows the routing table
+   * so a reply always leaves through the interface that owns the conversation,
+   * and falls back to the numerically lowest configured address (loopbacks
+   * included) when there is no specific destination.
+   */
+  managementSourceAddress(family: IpFamily, destination?: IpAddress): IpAddress | undefined {
+    if (family === "ipv6") {
+      if (destination !== undefined && ipFamilyOf(destination) === "ipv6") {
+        const route = this.resolveIpv6(destination);
+        const preferred = route
+          ? this.sourceIpv6Address(route.egress, destination)
+          : undefined;
+        if (preferred) return preferred;
+      }
+      return this.ipv6InterfaceSummaries()
+        .flatMap((row) => row.addresses)
+        .filter((address) => address.source !== "link-local" && address.state !== "duplicate")
+        .map((address) => address.address)
+        .sort((a, b) => (ipv6ToBigInt(a) < ipv6ToBigInt(b) ? -1 : 1))[0];
+    }
+    if (destination !== undefined && ipFamilyOf(destination) === "ipv4") {
+      const route = this.resolve(destination);
+      if (route?.egress.ip !== undefined) return route.egress.ip;
+    }
+    return [...this.l3.values()]
+      .flatMap((iface) => (iface.ip === undefined ? [] : [iface.ip]))
+      .sort((a, b) => ipToInt(a) - ipToInt(b))[0];
+  }
+
+  /** Every address this device answers management traffic on, lowest first. */
+  managementAddresses(): IpAddress[] {
+    const ipv4 = [...this.l3.values()]
+      .flatMap((iface) => (iface.ip === undefined ? [] : [iface.ip]))
+      .sort((a, b) => ipToInt(a) - ipToInt(b));
+    const ipv6 = this.ipv6InterfaceSummaries()
+      .flatMap((row) => row.addresses)
+      .filter((address) => address.source !== "link-local" && address.state !== "duplicate")
+      .map((address) => address.address)
+      .sort((a, b) => (ipv6ToBigInt(a) < ipv6ToBigInt(b) ? -1 : 1));
+    return [...ipv4, ...ipv6];
+  }
+
+  private sendManagement(
+    destination: IpAddress,
+    payload: UdpDatagram | TcpSegment,
+    source?: IpAddress,
+  ): void {
+    if (ipFamilyOf(destination) === "ipv6") {
+      const src = source ?? this.managementSourceAddress("ipv6", destination);
+      if (src === undefined) return;
+      this.originateIpv6({
+        kind: "ipv6",
+        src,
+        dst: destination,
+        nextHeader: payload.kind === "udp" ? Ipv6NextHeader.UDP : Ipv6NextHeader.TCP,
+        hopLimit: DEFAULT_IPV6_HOP_LIMIT,
+        payload,
+      });
+      return;
+    }
+    const src = source ?? this.managementSourceAddress("ipv4", destination);
+    if (src === undefined) return;
+    this.originate({
+      kind: "ipv4",
+      src,
+      dst: destination,
+      protocol: payload.kind === "udp" ? IpProtocol.UDP : IpProtocol.TCP,
+      ttl: DEFAULT_IP_TTL,
+      payload,
+    });
   }
 
   /** Originate a locally-generated packet (echo reply, ICMP error). */

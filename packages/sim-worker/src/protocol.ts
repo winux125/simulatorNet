@@ -120,6 +120,15 @@ export interface CliExecutionResult {
   mode: CliMode;
   /** True while the terminal is waiting for Step or Run All to finish it. */
   deferred: boolean;
+  /**
+   * The next submitted line is a credential for a remote login. The terminal
+   * must suppress echo, keep it out of history/transcript/Problems, and send
+   * only the fingerprint derived against `credentialScope`.
+   */
+  secret?: boolean;
+  credentialScope?: string;
+  /** Present while a Telnet/SSH session owns this terminal. */
+  remote?: { label: string };
 }
 
 export interface SimulationRunResult {
@@ -402,7 +411,15 @@ export interface Ospfv3View {
 export type SimWorkerRequest =
   | { type: "INITIALIZE_LAB"; requestId: string; document: LabDocument }
   | { type: "REBUILD_LAB"; requestId: string; document: LabDocument }
-  | { type: "EXECUTE_CLI"; requestId: string; sessionId: string; deviceId: string; input: string }
+  | {
+      type: "EXECUTE_CLI";
+      requestId: string;
+      sessionId: string;
+      deviceId: string;
+      input: string;
+      /** Opaque credential fingerprint answering a remote credential prompt. */
+      credential?: string;
+    }
   | { type: "CLOSE_CLI_SESSION"; requestId: string; sessionId: string }
   | { type: "RUN_UNTIL_IDLE"; requestId: string }
   | { type: "STEP_NEXT_EVENT"; requestId: string }

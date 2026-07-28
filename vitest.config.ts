@@ -15,6 +15,7 @@ export default defineConfig({
       "@sim/lab-format": fromRoot("./packages/lab-format/src/index.ts"),
       "@sim/importers": fromRoot("./packages/importers/src/index.ts"),
       "@sim/console-auth": fromRoot("./packages/console-auth/src/index.ts"),
+      "@sim/remote-management": fromRoot("./packages/remote-management/src/index.ts"),
       "@sim/sim-worker": fromRoot("./packages/sim-worker/src/index.ts"),
       "@sim/grading-core": fromRoot("./packages/grading-core/src/index.ts"),
       "@sim/db": fromRoot("./packages/db/src/index.ts"),
