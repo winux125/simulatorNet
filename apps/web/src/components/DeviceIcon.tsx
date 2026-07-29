@@ -70,7 +70,7 @@ export function DeviceIcon({ type, size = 24, state, title, className, profile }
   const resolvedProfile = profile ?? preferredProfile;
   const assetUrl = deviceIconAssetUrl(type, resolvedProfile);
   const assetHref = assetUrl
-    ? resolvedProfile === "classic" ? `${assetUrl}#device-icon` : assetUrl
+    ? resolvedProfile === "minimal" ? assetUrl : `${assetUrl}#device-icon`
     : undefined;
   return (
     <svg

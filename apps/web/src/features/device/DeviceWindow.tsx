@@ -186,7 +186,7 @@ export function DeviceWindow(props: DeviceWindowProps) {
     <div className="device-window-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) props.onClose(); }}>
       <section className="device-window" role="dialog" aria-modal="true" aria-label={`${props.node.hostname} device window`}>
         <header className="device-window__titlebar">
-          <span className="device-window__icon" aria-hidden="true"><DeviceIcon type={props.node.type} size={18} state={props.node.status === "up" ? "running" : "stopped"} /></span>
+          <span className="device-window__icon" aria-hidden="true"><DeviceIcon type={props.node.type} size={24} state={props.node.status === "up" ? "running" : "stopped"} /></span>
           <div><strong>{props.node.hostname}</strong><small>{profile.displayName} · {props.node.id}</small></div>
           <IconButton label="Close device window" icon={<X size={15} />} onClick={props.onClose} />
         </header>

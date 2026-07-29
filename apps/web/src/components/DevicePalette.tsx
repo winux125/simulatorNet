@@ -125,7 +125,7 @@ export function DevicePalette(props: DevicePaletteProps) {
                   onDragEnd={() => props.onOpenChange(false)}
                   onClick={() => selectKind(profile.type)}
                 >
-                  <span className="device-picker-model__icon"><DeviceIcon type={profile.type} size={22} /></span>
+                  <span className="device-picker-model__icon"><DeviceIcon type={profile.type} size={30} /></span>
                   <span>{profile.displayName}</span>
                 </button>
               );

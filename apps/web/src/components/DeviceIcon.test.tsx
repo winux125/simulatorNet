@@ -73,8 +73,10 @@ describe("topology device icon profiles", () => {
       expect(body).toContain("currentColor");
       expect(body).not.toMatch(/#[0-9a-fA-F]{3,8}|rgb\(|hsl\(|gradient/i);
     }
-    for (const name of Object.values(assetNames)) {
-      expect(readFileSync(join(iconsDir, "classic", name), "utf8")).toContain('id="device-icon"');
+    for (const profile of ["classic", "education"] as const) {
+      for (const name of Object.values(assetNames)) {
+        expect(readFileSync(join(iconsDir, profile, name), "utf8")).toContain('id="device-icon"');
+      }
     }
   });
 
@@ -123,5 +125,12 @@ describe("topology device icon profiles", () => {
     for (const body of bodies) {
       expect((body.match(/<(?:path|rect|circle|ellipse)\b/gu) ?? []).length).toBeGreaterThanOrEqual(3);
     }
+  });
+
+  it("keeps every Education Flat silhouette structurally distinct", () => {
+    const bodies = Object.values(assetNames).map((name) =>
+      readFileSync(join(iconsDir, "education", name), "utf8").replace(/\s+/gu, " "));
+    expect(new Set(bodies).size).toBe(DEVICE_TYPES.length);
+    expect(bodies.every((body) => body.includes('fill-opacity="'))).toBe(true);
   });
 });

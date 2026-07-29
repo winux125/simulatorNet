@@ -1,1 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"><rect x="6" y="18" width="52" height="29" rx="6" fill="currentColor" fill-opacity=".1"/><path d="M17 30v7m10-7v7m10-7v7m10-7v7"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <g id="device-icon" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="5" y="18" width="54" height="30" rx="6" fill="currentColor" fill-opacity=".18"/>
+    <path d="M14 27h36M14 39h36"/>
+    <g fill="currentColor" stroke="none">
+      <rect x="13" y="25" width="5" height="16" rx="1"/><rect x="21" y="25" width="5" height="16" rx="1"/>
+      <rect x="29" y="25" width="5" height="16" rx="1"/><rect x="37" y="25" width="5" height="16" rx="1"/>
+      <rect x="45" y="25" width="5" height="16" rx="1"/>
+    </g>
+  </g>
+</svg>

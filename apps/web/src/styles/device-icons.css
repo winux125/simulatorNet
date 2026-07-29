@@ -84,6 +84,50 @@
   color: var(--device-classic-unsupported);
 }
 
+.device-icon[data-profile="education"][data-device-type="router"],
+.device-icon[data-profile="education"][data-device-type="l3-switch"] {
+  color: var(--device-education-routing);
+}
+
+.device-icon[data-profile="education"][data-device-type="hub"],
+.device-icon[data-profile="education"][data-device-type="bridge"],
+.device-icon[data-profile="education"][data-device-type="l2-switch"] {
+  color: var(--device-education-network);
+}
+
+.device-icon[data-profile="education"][data-device-type="firewall"] {
+  color: var(--device-education-security);
+}
+
+.device-icon[data-profile="education"][data-device-type="cloud"] {
+  color: var(--device-education-cloud);
+}
+
+.device-icon[data-profile="education"][data-device-type="access-point"],
+.device-icon[data-profile="education"][data-device-type="wireless-router"] {
+  color: var(--device-education-wireless);
+}
+
+.device-icon[data-profile="education"][data-device-type="pc"],
+.device-icon[data-profile="education"][data-device-type="server"],
+.device-icon[data-profile="education"][data-device-type="laptop"],
+.device-icon[data-profile="education"][data-device-type="smartphone"] {
+  color: var(--device-education-endpoint);
+}
+
+.device-icon[data-profile="education"][data-device-type="traffic-generator"] {
+  color: var(--device-education-instrument);
+}
+
+.device-icon[data-profile="education"][data-device-type="external-appliance"] {
+  color: var(--device-education-unsupported);
+}
+
+.device-picker-model__icon:has(.device-icon[data-profile="education"]) {
+  border-color: color-mix(in srgb, currentColor 22%, var(--color-icon-border));
+  background: color-mix(in srgb, currentColor 7%, var(--color-panel-raised));
+}
+
 .device-node__icon .device-icon[data-profile="classic"] {
   filter: drop-shadow(0 1px 1px color-mix(in srgb, var(--color-shadow) 26%, transparent));
 }

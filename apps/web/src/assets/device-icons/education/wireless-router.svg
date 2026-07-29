@@ -1,1 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><rect x="7" y="35" width="50" height="23" rx="6" fill="currentColor" fill-opacity=".12"/><path d="M16 35V9M48 35V9M22 23a14 14 0 0 1 20 0M27 29a7 7 0 0 1 10 0"/><circle cx="17" cy="47" r="2" fill="currentColor"/><circle cx="27" cy="47" r="2" fill="currentColor"/><circle cx="37" cy="47" r="2" fill="currentColor"/><circle cx="47" cy="47" r="2" fill="currentColor"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <g id="device-icon" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="6" y="35" width="52" height="24" rx="7" fill="currentColor" fill-opacity=".2"/>
+    <path d="M15 35V8m34 27V8M22 22a14 14 0 0 1 20 0M27 29a7 7 0 0 1 10 0"/>
+    <g fill="currentColor" stroke="none">
+      <circle cx="16" cy="47" r="2"/><circle cx="24" cy="47" r="2"/>
+      <rect x="34" y="44" width="5" height="6" rx="1"/><rect x="42" y="44" width="5" height="6" rx="1"/>
+      <rect x="50" y="44" width="4" height="6" rx="1"/>
+    </g>
+  </g>
+</svg>
