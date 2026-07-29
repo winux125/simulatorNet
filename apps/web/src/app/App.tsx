@@ -8,6 +8,7 @@ import {
   Square, SunMoon, Tag, TerminalSquare, Type, Undo2, Wrench, X,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { DeviceIcon } from "../components/DeviceIcon";
 import { DevicePalette } from "../components/DevicePalette";
 import { Toolbar } from "../components/Toolbar";
 import type { MenuDef } from "../components/MenuBar";
@@ -971,10 +972,13 @@ function DemoLabDialog({ onClose, onLoad }: { onClose(): void; onLoad(id: DemoLa
   return <WorkspaceDialog title="Load demo laboratory" eyebrow="Deterministic examples" onClose={onClose}>
     <p>Choose a focused topology. Each demo uses the same browser and server simulation core.</p>
     <div className="demo-lab-list">
-      {DEMO_LABS.map((demo) => <button key={demo.id} type="button" onClick={() => onLoad(demo.id)}>
-        <FlaskConical size={16} aria-hidden="true" />
-        <span><strong>{demo.label}</strong><small>{demo.document.description}</small></span>
-      </button>)}
+      {DEMO_LABS.map((demo) => {
+        const representativeType = demo.document.topology.nodes[0]?.kind ?? "external-appliance";
+        return <button key={demo.id} type="button" onClick={() => onLoad(demo.id)}>
+          <DeviceIcon type={representativeType} size={24} />
+          <span><strong>{demo.label}</strong><small>{demo.document.description}</small></span>
+        </button>;
+      })}
     </div>
   </WorkspaceDialog>;
 }

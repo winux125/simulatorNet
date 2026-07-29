@@ -11,14 +11,23 @@ icon set; other icon libraries and ad-hoc action SVGs are not mixed in.
 
 ## Device icons — original SimulatorNet SVGs
 
-Network device symbols are original artwork created for SimulatorNet. The 45
-source SVGs live under
+All network-device SVGs were drawn specifically for SimulatorNet. They were not
+extracted, copied, traced, converted or bundled from Packet Tracer, PNETLab,
+EVE-NG, GNS3, Containerlab, a network vendor, or another product. The artwork
+uses the broad visual language of professional network tools — compact
+equipment silhouettes, port rows, directional routing marks and separate
+status indicators — while retaining original SimulatorNet geometry.
+
+The 45 source SVGs live under
 [`apps/web/src/assets/device-icons/`](../apps/web/src/assets/device-icons), with
 fifteen device types in each profile:
 
-- **Classic Lab** — compact equipment-style symbols for dense network labs.
-- **Education Flat** — clear flat symbols for teaching diagrams.
-- **Minimal Network** — lightweight monochrome symbols for large topologies.
+- **Classic Lab** — restrained grey equipment-style symbols, shallow chassis
+  depth and small hardware details for professional network labs.
+- **Education Flat** — clear, brighter flat silhouettes with strong
+  device-to-device differentiation for teaching diagrams.
+- **Minimal Network** — strict `currentColor` line symbols for dense
+  infrastructure topologies and low zoom levels.
 
 Each `classic/`, `education/` and `minimal/` directory contains `pc.svg`,
 `server.svg`, `laptop.svg`, `smartphone.svg`, `hub.svg`, `bridge.svg`,
@@ -27,15 +36,20 @@ Each `classic/`, `education/` and `minimal/` directory contains `pc.svg`,
 `traffic-generator.svg` and `external-appliance.svg`
 security/infrastructure/import symbols.
 
-They are rendered through the shared
+The files are the geometry source of truth and are rendered through the shared
 [`DeviceIcon`](../apps/web/src/components/DeviceIcon.tsx) component. The profile
 preference is local UI state stored as `simulatornet.deviceIconProfile`; it is
-not part of `LabDocument`, submissions, simulation or grading.
+not part of `LabDocument`, submissions, simulation or grading. The same
+component and source asset is used by topology nodes, the device palette,
+device windows, the Inspector, terminal tabs and import previews.
 
 Design rules enforced by `DeviceIcon.test.tsx`:
 
 - every provenance asset uses the same `0 0 64 64` viewBox;
-- `currentColor` only — no gradients, embedded shadows or hard-coded palette;
+- each file exposes one `device-icon` fragment used by the renderer;
+- `currentColor` only — profile/device color comes from application design
+  tokens, not hard-coded SVG paint;
+- no gradients, SVG filters or embedded shadows;
 - theme-aware and legible at 20/24/32/48/64 px;
 - no embedded raster images, external URLs or embedded text;
 - runtime status uses a separate indicator and never changes SVG geometry.
@@ -43,6 +57,7 @@ Design rules enforced by `DeviceIcon.test.tsx`:
 ## Explicitly excluded
 
 - No third-party network-vendor or simulator icons, logos or branding.
+- No user-supplied icon-pack manager, manifest, archive or binary import path.
 - No photographs of hardware.
 - No AI-generated raster (PNG/WebP/JPEG) or vector assets.
 - No remotely loaded images.

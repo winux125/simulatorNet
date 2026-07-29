@@ -1,1 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><rect x="13" y="11" width="38" height="42" rx="3"/><path d="M25 28a7.5 7.5 0 0 1 13.2 2.6c0 4.4-6.2 4.8-6.2 8.6"/><circle cx="32" cy="47" r="1.7" fill="currentColor" stroke="none"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <g id="device-icon" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="10" y="8" width="44" height="48" rx="3"/>
+    <path d="m32 17 13 23H19zM32 25v7m0 4v.5"/>
+    <path d="M15 49h10m14 0h10"/>
+  </g>
+</svg>

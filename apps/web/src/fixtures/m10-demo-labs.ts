@@ -5,6 +5,7 @@ import { IPV6_DEMO_LABS } from "./ipv6-demo-labs";
 import { SECURITY_DEMO_LABS } from "./security-demo-labs";
 import { WIRELESS_DEMO_LABS } from "./wireless-demo-labs";
 import { MANAGEMENT_DEMO_LABS } from "./management-demo-labs";
+import { ALL_DEVICES_ICON_DEMO } from "./icon-profile-demo";
 
 function ports(prefix: string, count: number): Array<{ id: string }> {
   return Array.from({ length: count }, (_, index) => ({ id: `${prefix}${index + 1}` }));
@@ -301,6 +302,7 @@ export const LARGE_TOPOLOGY_DEMO: LabDocument = {
 
 export const DEMO_LABS = [
   { id: "router-on-a-stick", label: "Router-on-a-stick + DHCP", document: DEMO_LAB },
+  { id: "all-device-icons", label: ALL_DEVICES_ICON_DEMO.title, document: ALL_DEVICES_ICON_DEMO },
   { id: "large-campus", label: LARGE_TOPOLOGY_DEMO.title, document: LARGE_TOPOLOGY_DEMO },
   { id: "hub-ethernet", label: HUB_ETHERNET_DEMO.title, document: HUB_ETHERNET_DEMO },
   { id: "bridge-mac", label: BRIDGE_MAC_DEMO.title, document: BRIDGE_MAC_DEMO },

@@ -16,6 +16,7 @@
   --device-education-endpoint: #3c7fa7;
   --device-education-instrument: #5577a4;
   --device-education-unsupported: #7b7f85;
+  --device-minimal: #3f5365;
 }
 
 [data-theme="dark"] {
@@ -36,6 +37,7 @@
   --device-education-endpoint: #72b9df;
   --device-education-instrument: #85a8d9;
   --device-education-unsupported: #a8adb3;
+  --device-minimal: #a8b8c7;
 }
 
 .device-icon {
@@ -121,6 +123,19 @@
 
 .device-icon[data-profile="education"][data-device-type="external-appliance"] {
   color: var(--device-education-unsupported);
+}
+
+.device-icon[data-profile="minimal"] {
+  color: var(--device-minimal);
+}
+
+.device-node__icon .device-icon[data-profile="minimal"] {
+  width: 44px;
+  height: 44px;
+}
+
+.device-node__surface:has(.device-icon[data-profile="minimal"]) {
+  border-radius: 2px;
 }
 
 .device-picker-model__icon:has(.device-icon[data-profile="education"]) {

@@ -69,9 +69,7 @@ export function DeviceIcon({ type, size = 24, state, title, className, profile }
   const preferredProfile = useDeviceIconProfile();
   const resolvedProfile = profile ?? preferredProfile;
   const assetUrl = deviceIconAssetUrl(type, resolvedProfile);
-  const assetHref = assetUrl
-    ? resolvedProfile === "minimal" ? assetUrl : `${assetUrl}#device-icon`
-    : undefined;
+  const assetHref = assetUrl ? `${assetUrl}#device-icon` : undefined;
   return (
     <svg
       className={["device-icon", className].filter(Boolean).join(" ")}

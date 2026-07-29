@@ -11,7 +11,7 @@ import {
   setDeviceIconProfile,
   type DeviceIconProfile,
 } from "../hooks/useDeviceIconProfile";
-import { DeviceIcon } from "./DeviceIcon";
+import { DeviceIcon, deviceIconAssetUrl } from "./DeviceIcon";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const iconsDir = resolve(here, "../assets/device-icons");
@@ -73,7 +73,7 @@ describe("topology device icon profiles", () => {
       expect(body).toContain("currentColor");
       expect(body).not.toMatch(/#[0-9a-fA-F]{3,8}|rgb\(|hsl\(|gradient/i);
     }
-    for (const profile of ["classic", "education"] as const) {
+    for (const profile of profiles) {
       for (const name of Object.values(assetNames)) {
         expect(readFileSync(join(iconsDir, profile, name), "utf8")).toContain('id="device-icon"');
       }
@@ -132,5 +132,47 @@ describe("topology device icon profiles", () => {
       readFileSync(join(iconsDir, "education", name), "utf8").replace(/\s+/gu, " "));
     expect(new Set(bodies).size).toBe(DEVICE_TYPES.length);
     expect(bodies.every((body) => body.includes('fill-opacity="'))).toBe(true);
+  });
+
+  it("keeps every Minimal Network silhouette structurally distinct and monochrome", () => {
+    const bodies = Object.values(assetNames).map((name) =>
+      readFileSync(join(iconsDir, "minimal", name), "utf8").replace(/\s+/gu, " "));
+    expect(new Set(bodies).size).toBe(DEVICE_TYPES.length);
+    expect(bodies.every((body) => body.includes("currentColor"))).toBe(true);
+    expect(bodies.every((body) => !body.includes("fill-opacity"))).toBe(true);
+  });
+
+  it("resolves every device/profile pair to a local SVG fragment", () => {
+    for (const profile of profiles) {
+      for (const type of DEVICE_TYPES) {
+        const icon = renderIcon(type, profile);
+        expect(icon.querySelector("use")?.getAttribute("href"))
+          .toMatch(new RegExp(`/${profile}/${assetNames[type].replace(".", "\\.")}.*#device-icon$`, "u"));
+        cleanup();
+      }
+    }
+  });
+
+  it("uses different artwork for the same device across visual profiles", () => {
+    const urls = profiles.map((profile) => deviceIconAssetUrl("router", profile));
+    expect(new Set(urls).size).toBe(profiles.length);
+  });
+
+  it("scales one asset without changing its geometry or viewBox", () => {
+    const small = render(<DeviceIcon type="l2-switch" profile="minimal" size={24} />).container.querySelector("svg")!;
+    const smallHref = small.querySelector("use")?.getAttribute("href");
+    cleanup();
+    const large = render(<DeviceIcon type="l2-switch" profile="minimal" size={64} />).container.querySelector("svg")!;
+    expect([small.getAttribute("width"), large.getAttribute("width")]).toEqual(["24", "64"]);
+    expect(large.getAttribute("viewBox")).toBe("0 0 64 64");
+    expect(large.querySelector("use")?.getAttribute("href")).toBe(smallHref);
+  });
+
+  it("exposes an accessible title only when the caller supplies one", () => {
+    const titled = render(<DeviceIcon type="firewall" title="Firewall appliance" />).container.querySelector("svg")!;
+    expect(titled.getAttribute("aria-label")).toBe("Firewall appliance");
+    expect(titled.querySelector("title")?.textContent).toBe("Firewall appliance");
+    cleanup();
+    expect(renderIcon("firewall").getAttribute("aria-hidden")).toBe("true");
   });
 });
