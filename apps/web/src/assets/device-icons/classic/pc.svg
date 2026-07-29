@@ -1,1 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><path fill="currentColor" fill-opacity=".18" d="M8 10h48v34H8z"/><path d="M8 10h48v34H8zM32 44v10M21 54h22"/><path opacity=".45" d="M12 14h40v24H12z"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <g id="device-icon" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5 10h42v32H5z" fill="currentColor" fill-opacity=".2"/>
+    <path d="M9 14h34v23H9z" fill="currentColor" fill-opacity=".06"/>
+    <path d="M26 42v8m-10 4h20l-4-4H20z" fill="currentColor" fill-opacity=".2"/>
+    <path d="M49 17h10v37H45V21z" fill="currentColor" fill-opacity=".24"/>
+    <g fill="currentColor" stroke="none">
+      <circle cx="52" cy="47.5" r="1.5"/><rect x="49" y="24" width="6" height="2.5" rx=".4"/>
+    </g>
+    <path d="M9 39h34" stroke-opacity=".5"/>
+  </g>
+</svg>

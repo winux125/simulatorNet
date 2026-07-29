@@ -1,1 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><path fill="currentColor" fill-opacity=".18" d="m5 18 7-7h40l7 7v32H5z"/><path d="m5 18 7-7h40l7 7v32H5z"/><path fill="currentColor" fill-opacity=".35" d="m32 20 10 9-10 9-10-9z"/><path d="M16 46v4m8-4v4m8-4v4m8-4v4m8-4v4"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <g id="device-icon" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M7 18 13 12h38l6 6v31l-5 5H12l-5-5z" fill="currentColor" fill-opacity=".24"/>
+    <path d="M8.5 20h47v25h-47z" fill="currentColor" fill-opacity=".08"/>
+    <path d="m32 22 10 8-10 8-10-8z" fill="currentColor" fill-opacity=".2"/>
+    <path d="M32 24v12m-7-6h14M32 24l-3 3m3-3 3 3m4 3-3-3m3 3-3 3"/>
+    <g fill="currentColor" stroke="none">
+      <rect x="13" y="46.5" width="4" height="3" rx=".5"/><rect x="19" y="46.5" width="4" height="3" rx=".5"/>
+      <rect x="25" y="46.5" width="4" height="3" rx=".5"/><rect x="31" y="46.5" width="4" height="3" rx=".5"/>
+      <rect x="37" y="46.5" width="4" height="3" rx=".5"/><rect x="43" y="46.5" width="4" height="3" rx=".5"/>
+      <circle cx="51" cy="28" r="1.5"/>
+    </g>
+    <path d="M13 16h38" stroke-opacity=".45"/>
+  </g>
+</svg>

@@ -73,6 +73,9 @@ describe("topology device icon profiles", () => {
       expect(body).toContain("currentColor");
       expect(body).not.toMatch(/#[0-9a-fA-F]{3,8}|rgb\(|hsl\(|gradient/i);
     }
+    for (const name of Object.values(assetNames)) {
+      expect(readFileSync(join(iconsDir, "classic", name), "utf8")).toContain('id="device-icon"');
+    }
   });
 
   it("contains no proprietary, raster, embedded-text or external assets", () => {
@@ -103,5 +106,22 @@ describe("topology device icon profiles", () => {
 
   it("uses a controlled fallback for an unknown device type", () => {
     expect(renderIcon("satellite" as DeviceType, "minimal").dataset.fallback).toBe("true");
+  });
+
+  it("renders the local profile asset instead of duplicate inline geometry", () => {
+    const icon = renderIcon("router", "classic");
+    const use = icon.querySelector("use");
+    expect(use?.getAttribute("href")).toMatch(/classic\/router\.svg.*#device-icon/u);
+    expect(use?.getAttribute("href")).not.toMatch(/^data:/u);
+    expect(icon.querySelectorAll(":scope > path, :scope > rect, :scope > circle, :scope > ellipse")).toHaveLength(0);
+  });
+
+  it("keeps every Classic Lab silhouette structurally distinct", () => {
+    const bodies = Object.values(assetNames).map((name) =>
+      readFileSync(join(iconsDir, "classic", name), "utf8").replace(/\s+/gu, " "));
+    expect(new Set(bodies).size).toBe(DEVICE_TYPES.length);
+    for (const body of bodies) {
+      expect((body.match(/<(?:path|rect|circle|ellipse)\b/gu) ?? []).length).toBeGreaterThanOrEqual(3);
+    }
   });
 });

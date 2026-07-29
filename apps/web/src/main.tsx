@@ -6,6 +6,7 @@ import { ErrorBoundary } from "./app/ErrorBoundary";
 import "./styles/tokens.css";
 import "./styles/reset.css";
 import "./styles/app.css";
+import "./styles/device-icons.css";
 import { createBrowserSimWorkerClient } from "./worker/create-client";
 import { initializeDeviceIconProfile } from "./hooks/useDeviceIconProfile";
 

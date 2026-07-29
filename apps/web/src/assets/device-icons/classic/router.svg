@@ -1,1 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><ellipse cx="32" cy="32" rx="27" ry="21" fill="currentColor" fill-opacity=".18"/><path d="M32 14v36M8 32h48M32 14l-6 6m6-6 6 6m18 12-6-6m6 6-6 6"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <g id="device-icon" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M7 30v8c0 8.6 11.2 15.5 25 15.5S57 46.6 57 38v-8" fill="currentColor" fill-opacity=".18"/>
+    <ellipse cx="32" cy="29.5" rx="25" ry="15.5" fill="currentColor" fill-opacity=".28"/>
+    <ellipse cx="32" cy="27.5" rx="20.5" ry="11" fill="currentColor" fill-opacity=".08" stroke-opacity=".48"/>
+    <path d="M32 18v20m-10-10h20M32 18l-4.5 4.5M32 18l4.5 4.5M42 28l-4.5-4.5M42 28l-4.5 4.5M32 38l-4.5-4.5M32 38l4.5-4.5M22 28l4.5-4.5M22 28l4.5 4.5"/>
+    <path d="M13 42c4.5 4.4 11.3 7 19 7s14.5-2.6 19-7" stroke-opacity=".55"/>
+  </g>
+</svg>

@@ -1,0 +1,95 @@
+:root {
+  --device-classic-network: #5a6b7c;
+  --device-classic-routing: #455c72;
+  --device-classic-security: #8d4a51;
+  --device-classic-cloud: #718aa0;
+  --device-classic-wireless: #60798b;
+  --device-classic-endpoint: #65717d;
+  --device-classic-instrument: #657485;
+  --device-classic-unsupported: #7b7370;
+
+  --device-education-network: #347da8;
+  --device-education-routing: #236f9f;
+  --device-education-security: #bd553f;
+  --device-education-cloud: #5795bb;
+  --device-education-wireless: #2f829f;
+  --device-education-endpoint: #3c7fa7;
+  --device-education-instrument: #5577a4;
+  --device-education-unsupported: #7b7f85;
+}
+
+[data-theme="dark"] {
+  --device-classic-network: #9aa9b6;
+  --device-classic-routing: #8fa9bf;
+  --device-classic-security: #c9858b;
+  --device-classic-cloud: #9bb4c8;
+  --device-classic-wireless: #96afbd;
+  --device-classic-endpoint: #a4afb9;
+  --device-classic-instrument: #9eabba;
+  --device-classic-unsupported: #aaa09b;
+
+  --device-education-network: #64b0dd;
+  --device-education-routing: #69b7e4;
+  --device-education-security: #ed8b71;
+  --device-education-cloud: #83c3e6;
+  --device-education-wireless: #65bdd7;
+  --device-education-endpoint: #72b9df;
+  --device-education-instrument: #85a8d9;
+  --device-education-unsupported: #a8adb3;
+}
+
+.device-icon {
+  display: block;
+  overflow: visible;
+  color: currentColor;
+  shape-rendering: geometricPrecision;
+}
+
+.device-icon[data-profile="classic"][data-device-type="router"],
+.device-icon[data-profile="classic"][data-device-type="l3-switch"] {
+  color: var(--device-classic-routing);
+}
+
+.device-icon[data-profile="classic"][data-device-type="hub"],
+.device-icon[data-profile="classic"][data-device-type="bridge"],
+.device-icon[data-profile="classic"][data-device-type="l2-switch"] {
+  color: var(--device-classic-network);
+}
+
+.device-icon[data-profile="classic"][data-device-type="firewall"] {
+  color: var(--device-classic-security);
+}
+
+.device-icon[data-profile="classic"][data-device-type="cloud"] {
+  color: var(--device-classic-cloud);
+}
+
+.device-icon[data-profile="classic"][data-device-type="access-point"],
+.device-icon[data-profile="classic"][data-device-type="wireless-router"] {
+  color: var(--device-classic-wireless);
+}
+
+.device-icon[data-profile="classic"][data-device-type="pc"],
+.device-icon[data-profile="classic"][data-device-type="server"],
+.device-icon[data-profile="classic"][data-device-type="laptop"],
+.device-icon[data-profile="classic"][data-device-type="smartphone"] {
+  color: var(--device-classic-endpoint);
+}
+
+.device-icon[data-profile="classic"][data-device-type="traffic-generator"] {
+  color: var(--device-classic-instrument);
+}
+
+.device-icon[data-profile="classic"][data-device-type="external-appliance"] {
+  color: var(--device-classic-unsupported);
+}
+
+.device-node__icon .device-icon[data-profile="classic"] {
+  filter: drop-shadow(0 1px 1px color-mix(in srgb, var(--color-shadow) 26%, transparent));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .device-icon {
+    transition: none;
+  }
+}

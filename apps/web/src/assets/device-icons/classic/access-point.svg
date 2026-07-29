@@ -1,1 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><path d="m9 42 6-6h34l6 6v15H9z" fill="currentColor" fill-opacity=".18"/><path d="M32 36v-6M23 22a13 13 0 0 1 18 0M16 14a23 23 0 0 1 32 0"/><circle cx="32" cy="28" r="2" fill="currentColor"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <g id="device-icon" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M11 40c0-5 9.4-9 21-9s21 4 21 9v9c0 5-9.4 9-21 9s-21-4-21-9z" fill="currentColor" fill-opacity=".2"/>
+    <ellipse cx="32" cy="40" rx="21" ry="9" fill="currentColor" fill-opacity=".1"/>
+    <path d="M32 31v-6M24 20a11.5 11.5 0 0 1 16 0M18 14a20 20 0 0 1 28 0"/>
+    <circle cx="32" cy="24.5" r="1.7" fill="currentColor" stroke="none"/>
+    <rect x="28" y="49" width="8" height="3.5" rx=".7" fill="currentColor" stroke="none"/>
+  </g>
+</svg>
