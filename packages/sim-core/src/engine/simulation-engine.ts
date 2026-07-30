@@ -1,5 +1,6 @@
 import type { Device } from "../devices/device";
 import { Link } from "../net/link";
+import type { LinkPerformanceConfiguration, LinkPerformanceInput } from "../net/link-performance";
 import { AclRuleBudget } from "../policy/packet-policy-engine";
 import { ControlProtocolBudget } from "../protocols/limits";
 import { DEFAULT_LINK_DELAY_NS } from "./constants";
@@ -71,21 +72,83 @@ export class SimulationEngine {
     return this.devices.get(id);
   }
 
-  /** Cable two interfaces together. */
-  connect(aDevice: string, aIface: string, bDevice: string, bIface: string, delayNs?: number): Link {
+  /**
+   * Cable two interfaces together. `performance` may be a plain propagation
+   * delay in nanoseconds (the pre-M10.8 form) or a structured link performance
+   * description with capacity and queue depth.
+   */
+  connect(
+    aDevice: string,
+    aIface: string,
+    bDevice: string,
+    bIface: string,
+    performance?: number | LinkPerformanceInput,
+  ): Link {
     const a = this.requireInterface(aDevice, aIface);
     const b = this.requireInterface(bDevice, bIface);
     if (isWirelessInterface(a) || isWirelessInterface(b)) {
       throw new Error("Wireless interfaces associate through WirelessMedium and cannot be cabled.");
     }
     if (a.link || b.link) throw new Error("Interface already connected");
-    const link = new Link(a, b, delayNs ?? this.defaultLinkDelayNs);
+    const supplied: LinkPerformanceInput = typeof performance === "number"
+      ? { propagationDelayNs: performance }
+      : performance ?? {};
+    const link = new Link(a, b, {
+      ...supplied,
+      propagationDelayNs: supplied.propagationDelayNs ?? this.defaultLinkDelayNs,
+    });
     a.link = link;
     b.link = link;
     this.links.push(link);
     // Cabling changes both ports' operational state, which arms control protocols.
     a.notifyStateChanged();
     return link;
+  }
+
+  /** Find the cable joining two ports, if any. */
+  findLink(deviceId: string, interfaceName: string): Link | undefined {
+    return this.links.find((link) =>
+      (link.a.device.id === deviceId && link.a.name === interfaceName)
+      || (link.b.device.id === deviceId && link.b.name === interfaceName));
+  }
+
+  /**
+   * Change a cable's capacity, propagation delay or queue depth while the lab
+   * runs. Packets already serializing keep their original timing; the next
+   * packet uses the new configuration.
+   */
+  configureLinkPerformance(
+    deviceId: string,
+    interfaceName: string,
+    performance: LinkPerformanceInput,
+  ): LinkPerformanceConfiguration {
+    const link = this.findLink(deviceId, interfaceName);
+    if (!link) throw new Error(`No link is attached to ${deviceId}/${interfaceName}`);
+    return link.configurePerformance(performance);
+  }
+
+  /**
+   * Remove a cable. Both directions release whatever they still hold: queued
+   * packets are dropped with an explicit reason, never delivered afterwards.
+   */
+  disconnect(link: Link): void {
+    const index = this.links.indexOf(link);
+    if (index >= 0) this.links.splice(index, 1);
+    link.a.flushEgress("link-removed");
+    link.b.flushEgress("link-removed");
+    link.a.link = undefined;
+    link.b.link = undefined;
+    link.a.notifyStateChanged();
+    link.b.notifyStateChanged();
+  }
+
+  /** Drop every packet still waiting on any interface, for Stop Lab / rebuild. */
+  clearEgressQueues(): number {
+    let dropped = 0;
+    for (const device of this.devices.values()) {
+      for (const iface of device.interfaces.values()) dropped += iface.flushEgress("runtime-cleared");
+    }
+    return dropped;
   }
 
   scheduleIn(delayNs: number, run: () => void): void {

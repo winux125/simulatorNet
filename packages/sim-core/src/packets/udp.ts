@@ -14,6 +14,8 @@ export interface UdpApplicationPayload {
   readonly kind: "udp-application";
   readonly protocol: string;
   readonly data: unknown;
+  /** Explicit wire size for the deterministic queue model; inferred when unset. */
+  readonly payloadBytes?: number;
 }
 
 /** Application payloads carried in UDP. Service protocols extend this union. */

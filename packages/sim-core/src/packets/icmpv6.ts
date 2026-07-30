@@ -17,6 +17,8 @@ interface Icmpv6Base {
   readonly kind: "icmpv6";
   readonly type: Icmpv6Type;
   readonly code: number;
+  /** Data length used by the deterministic wire-size model; defaults when unset. */
+  readonly payloadBytes?: number;
 }
 
 export interface Icmpv6EchoMessage extends Icmpv6Base {

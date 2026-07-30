@@ -1,6 +1,7 @@
 import {
   Device,
   EthernetBridge,
+  NS_PER_MS,
   createSimulationEngine,
   macFromIndex,
   type EthernetFrame,
@@ -24,7 +25,9 @@ function testFrame(src: string, dst: string): EthernetFrame {
   };
 }
 
-function setup(agingTimeNs = 100) {
+// Aging times are expressed well above the link serialization delay a frame now
+// pays, so these tests still measure MAC aging rather than queue timing.
+function setup(agingTimeNs = 100 * NS_PER_MS) {
   const engine = createSimulationEngine({ seed: 20, linkDelayNs: 1 });
   const bridge = engine.add(new EthernetBridge("br", "Bridge", agingTimeNs));
   const left = engine.add(new Probe("left", "Left"));
@@ -67,11 +70,11 @@ describe("learning bridge", () => {
   });
 
   it("ages learned entries exclusively through virtual time", () => {
-    const { engine, bridge, left } = setup(50);
+    const { engine, bridge, left } = setup(50 * NS_PER_MS);
     left.getInterface("eth0")!.transmit(testFrame(left.getInterface("eth0")!.mac, "ff:ff:ff:ff:ff:ff"));
     engine.runUntilIdle();
     expect(bridge.macAddressTable()).toHaveLength(1);
-    engine.advanceTo(engine.now() + 50);
+    engine.advanceTo(engine.now() + 50 * NS_PER_MS);
     expect(bridge.macAddressTable()).toHaveLength(0);
   });
 

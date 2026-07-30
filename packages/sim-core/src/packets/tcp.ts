@@ -3,6 +3,8 @@ export interface TcpApplicationPayload {
   readonly kind: "tcp-application";
   readonly protocol: string;
   readonly data: unknown;
+  /** Explicit wire size for the deterministic queue model; inferred when unset. */
+  readonly payloadBytes?: number;
 }
 
 export type TcpPayload = TcpApplicationPayload | HttpMessage | TacacsMessage;

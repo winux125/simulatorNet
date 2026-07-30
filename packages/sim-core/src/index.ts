@@ -7,6 +7,9 @@ export * from "./engine/simulation-engine";
 
 // Wiring
 export * from "./net/link";
+export * from "./net/link-performance";
+export * from "./net/packet-size";
+export * from "./net/egress-queue";
 export * from "./net/interface";
 export * from "./net/ipv6-interface";
 export * from "./net/wireless-interface";
