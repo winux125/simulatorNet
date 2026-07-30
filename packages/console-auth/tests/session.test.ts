@@ -37,7 +37,12 @@ describe("console login session", () => {
     const session = new ConsoleAuthSession({ ...emptyConsoleAccess(), mode: "press-return" }, hooks);
     const start = session.begin();
     expect(start.state).toBe("awaiting-return");
-    expect(start.output).toContain("Press RETURN");
+    expect(start.output).toBe("");
+    expect(start.prompt).toMatchObject({
+      text: "Press RETURN to get started!",
+      echo: "plain",
+      history: false,
+    });
     expect(commands).toHaveLength(0);
     expect((await session.submit("")).state).toBe("authenticated-user-exec");
   });
@@ -58,8 +63,8 @@ describe("console login session", () => {
 
   it("logs in a local user and forwards commands only after authentication", async () => {
     const session = new ConsoleAuthSession(await localUser(), hooks);
-    expect(session.begin().output).toContain("Username:");
-    expect((await session.submit("admin")).output).toContain("Password:");
+    expect(session.begin().prompt?.text).toBe("Username: ");
+    expect((await session.submit("admin")).prompt?.text).toBe("Password: ");
     expect(session.expectsSecret()).toBe(true);
     expect(commands).toHaveLength(0);
     const result = await session.submit("cisco123");
@@ -101,7 +106,11 @@ describe("console login session", () => {
     session.begin();
     await session.submit("admin");
     await session.submit("cisco123");
-    expect((await session.submit("enable")).output).toContain("Password:");
+    expect((await session.submit("enable")).prompt).toMatchObject({
+      text: "Password: ",
+      echo: "hidden",
+      history: false,
+    });
     expect(session.expectsSecret()).toBe(true);
     const denied = await session.submit("badenable");
     expect(denied.output).toContain("% Access denied");
@@ -134,5 +143,58 @@ describe("console login session", () => {
     expect(lines).toContain("enable secret 5 <hidden>");
     expect(lines).toContain("login local");
     expect(lines).not.toContain(config.users[0]!.passwordVerifier.hashBase64);
+  });
+
+  it("keeps authentication prompts separate from output with explicit echo policies", async () => {
+    const session = new ConsoleAuthSession(await localUser(1, true), hooks);
+    const username = session.begin();
+    expect(username.output).toBe("");
+    expect(username.prompt).toEqual({
+      text: "Username: ",
+      echo: "plain",
+      history: false,
+      completion: "line",
+    });
+
+    const password = await session.submit("admin");
+    expect(password.output).toBe("");
+    expect(password.prompt).toEqual({
+      text: "Password: ",
+      echo: "hidden",
+      history: false,
+      completion: "line",
+    });
+  });
+
+  it("formats login banners and retries without leading or duplicate blank lines", async () => {
+    const session = new ConsoleAuthSession({
+      ...await localUser(),
+      motdBanner: "SimulatorNet lab",
+      loginBanner: "Authorized access only.",
+    }, hooks);
+    const begin = session.begin();
+    expect(begin.output).toBe("Authorized access only.\n");
+    expect(begin.prompt?.text).toBe("Username: ");
+
+    await session.submit("admin");
+    const failure = await session.submit("wrong-password");
+    expect(failure.output).toBe("% Login invalid\n\n");
+    expect(failure.prompt?.text).toBe("Username: ");
+
+    await session.submit("admin");
+    const success = await session.submit("cisco123");
+    expect(success.output).toBe("SimulatorNet lab\n");
+    expect(success.prompt).toBeUndefined();
+  });
+
+  it("clears failed credentials and never returns plaintext passwords", async () => {
+    const session = new ConsoleAuthSession(await localUser(), hooks);
+    session.begin();
+    await session.submit("admin");
+    const failure = await session.submit("do-not-leak");
+    const serialized = JSON.stringify(failure);
+    expect(serialized).not.toContain("do-not-leak");
+    expect(serialized).not.toContain("admin");
+    expect(failure.state).toBe("awaiting-username");
   });
 });

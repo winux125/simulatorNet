@@ -108,7 +108,7 @@ describe("simulated Telnet and SSH remote CLI", () => {
     pc.run("admin");
     const output = pc.run("", await fingerprintFor(managementCredentialScope.user("admin"), "wrong-password"));
 
-    expect(output).toContain("% Login invalid");
+    expect(output).toBe("% Login invalid\n\n");
     expect(pc.session.prompt()).toBe("Username:");
     const trace = JSON.stringify(lab.engine.traceLog);
     expect(trace).toContain("telnet-login-failed");

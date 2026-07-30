@@ -51,6 +51,26 @@ The session lifecycle is `disconnected → awaiting-return → awaiting-username
 awaiting-password → authenticated-user-exec → privileged-exec`. Commands are
 never passed to the CLI parser until authentication succeeds.
 
+Authentication uses the terminal's ordinary line editor with an explicit input
+policy. `Username: ` uses plain echo without command history; `Password: ` and
+the enable-secret prompt use hidden echo without history. Prompt text is written
+inline without a newline. Submitting the line owns exactly one CRLF, so local
+console, Telnet, and SSH all render the same way:
+
+```text
+Username: admin
+Password:
+% Login invalid
+
+Username:
+```
+
+A password never changes the visible cursor position while it is typed:
+characters, replacement stars, pasted text, and the secure buffer are not
+rendered. Resizing, clearing, docking, floating, or maximizing the shared
+terminal preserves the active prompt and buffer without printing the prompt
+again.
+
 - **Press RETURN**: `Press RETURN to get started!` → prompt.
 - **Password**: `Password:` (input not echoed).
 - **Local user**: `Username:` then `Password:` (not echoed). Success → `Router>`

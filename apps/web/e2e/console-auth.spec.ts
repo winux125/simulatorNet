@@ -14,6 +14,12 @@ async function loadRouterDemo(page: Page) {
   await expect(page.getByTestId("topology-graph")).toBeVisible();
 }
 
+async function terminalLines(page: Page): Promise<string[]> {
+  return page.locator(".terminal-session.is-active .xterm-rows > div")
+    .allTextContents()
+    .then((lines) => lines.map((line) => line.trimEnd()));
+}
+
 test("configures a console login and gates the terminal", async ({ page }) => {
   test.setTimeout(90_000);
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -34,11 +40,16 @@ test("configures a console login and gates the terminal", async ({ page }) => {
   await page.getByTestId("console-mode").selectOption("local-user");
   await page.getByLabel("New username").fill("admin");
   await page.getByLabel("New user password").fill("cisco123");
-  await page.getByLabel("Privilege level").fill("15");
+  await page.getByLabel("Privilege level").fill("1");
   await page.getByRole("button", { name: "Add user" }).click();
   await expect(page.getByTestId("console-users")).toContainText("admin");
+  await page.getByLabel("Enable secret").fill("enablepass");
+  await page.getByRole("group", { name: /^Enable secret/ })
+    .getByRole("button", { name: "Set", exact: true })
+    .click();
   // The plaintext password is never shown back.
   await expect(page.getByTestId("console-access-panel")).not.toContainText("cisco123");
+  await expect(page.getByTestId("console-access-panel")).not.toContainText("enablepass");
 
   // Open the device CLI: the login gate demands a username/password.
   await win.getByRole("tab", { name: "CLI" }).click();
@@ -48,14 +59,61 @@ test("configures a console login and gates the terminal", async ({ page }) => {
 
   await page.locator(".terminal-session.is-active .xterm-screen").click();
   await page.keyboard.type("admin");
+  await page.screenshot({ path: "/tmp/terminal-auth-after-docked-1440x900.png", fullPage: true });
+  await expect.poll(() => terminalLines(page)).toContain("Username: admin");
+  await page.keyboard.press("Enter");
+  await expect(rows).toContainText("Password:");
+  await page.keyboard.type("wrong-password");
+  await page.keyboard.press("Enter");
+  await expect(rows).toContainText("% Login invalid");
+
+  await expect.poll(async () => (await terminalLines(page)).slice(-4)).toEqual([
+    "Password:",
+    "% Login invalid",
+    "",
+    "Username:",
+  ]);
+  await expect(rows).not.toContainText("wrong-password");
+
+  await page.keyboard.type("admin");
+  await expect.poll(() => terminalLines(page)).toContain("Username: admin");
   await page.keyboard.press("Enter");
   await expect(rows).toContainText("Password:");
   await page.keyboard.type("cisco123");
   await page.keyboard.press("Enter");
 
-  // A privilege-15 login reaches the privileged prompt; the password is not echoed.
+  // A privilege-1 login reaches user EXEC. Enable has its own hidden inline prompt.
+  await expect(rows).toContainText("R1>", { timeout: 15_000 });
+  await page.keyboard.type("enable");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => terminalLines(page)).toEqual(expect.arrayContaining(["R1> enable", "Password:"]));
+
+  // Presentation changes keep the same hidden buffer and do not print the prompt again.
+  await page.keyboard.type("enablep");
+  await expect(rows).not.toContainText("enablep");
+  await page.getByRole("button", { name: "Float terminal" }).click();
+  const terminal = page.locator(".terminal-presentation");
+  await expect(terminal).toHaveAttribute("data-presentation-mode", "floating");
+  await expect.poll(async () => (await terminalLines(page)).filter(Boolean).slice(-2)).toEqual([
+    "R1> enable",
+    "Password:",
+  ]);
+  await page.screenshot({ path: "/tmp/terminal-auth-after-floating-1440x900.png", fullPage: true });
+  await page.getByRole("button", { name: "Dock terminal at bottom" }).click();
+  await expect(terminal).toHaveAttribute("data-presentation-mode", "docked");
+  await expect.poll(async () => (await terminalLines(page)).filter(Boolean).slice(-2)).toEqual([
+    "R1> enable",
+    "Password:",
+  ]);
+  await expect(rows).not.toContainText("enablep");
+
+  await page.locator(".terminal-session.is-active .xterm-screen").click();
+  await page.keyboard.type("ass");
+  await page.keyboard.press("Enter");
   await expect(rows).toContainText("R1#", { timeout: 15_000 });
   await expect(rows).not.toContainText("cisco123");
+  await expect(rows).not.toContainText("enablepass");
+  await expect(page.getByTestId("terminal-transcript")).not.toContainText(/wrong-password|cisco123|enablepass/);
 
   // Presentation changes keep the exact authenticated session and partial line.
   await page.keyboard.type("configure terminal");
@@ -63,7 +121,6 @@ test("configures a console login and gates the terminal", async ({ page }) => {
   await expect(rows).toContainText("R1(config)#");
   await page.keyboard.type("interface");
   await page.getByRole("button", { name: "Float terminal" }).click();
-  const terminal = page.locator(".terminal-presentation");
   await expect(terminal).toHaveAttribute("data-presentation-mode", "floating");
   await expect(rows).toContainText("R1(config)# interface");
 

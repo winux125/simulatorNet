@@ -1,6 +1,11 @@
 import type { ConsoleAccessConfiguration } from "@sim/contracts";
 import type { CliExecutionResult, LabUiNode } from "@sim/sim-worker";
-import { ConsoleAuthSession, managementCredentialFingerprint } from "@sim/console-auth";
+import {
+  ConsoleAuthSession,
+  managementCredentialFingerprint,
+  type ConsoleTurnResult,
+  type TerminalInputPrompt,
+} from "@sim/console-auth";
 import { stripControlSequences } from "@sim/importers";
 import { Clipboard, ClipboardPaste, Eraser, Search, TerminalSquare, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -12,6 +17,11 @@ import type { ResolvedTheme } from "../../hooks/useTheme";
 import { DeviceIcon } from "../../components/DeviceIcon";
 import { Button, EmptyState, IconButton } from "../../ui";
 import { TerminalCommandHistory } from "./terminal-history";
+import {
+  cliInputPrompt,
+  renderPromptTransition,
+  terminalText,
+} from "./terminal-input-prompt";
 import { LineBuffer, classifyTerminalKey } from "./terminal-line-editor";
 import {
   getTerminalAppearance,
@@ -52,10 +62,6 @@ interface TerminalWorkspaceProps {
   onCloseOthers?(deviceId: string): void;
   onCloseToRight?(deviceId: string): void;
   onError(message: string): void;
-}
-
-function terminalText(value: string): string {
-  return value.replace(/\r?\n/g, "\r\n");
 }
 
 export function TerminalWorkspace(props: TerminalWorkspaceProps) {
@@ -289,7 +295,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
     let dataDisposable: { dispose(): void } | undefined;
     let eventUnsubscribe: (() => void) | undefined;
     let fitFrame: number | undefined;
-    let prompt = "";
+    let inputPrompt: TerminalInputPrompt = cliInputPrompt("");
     let awaitingDeferredOutput = false;
     let pager: TerminalPager | undefined;
     let pendingPromptResult: CliExecutionResult | undefined;
@@ -334,13 +340,14 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
       const helper = host.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
       helper?.setAttribute("aria-label", `${hostname} command line`);
 
-      const promptText = () => `${prompt} `;
+      const promptText = () => inputPrompt.text;
+      const plainEcho = () => inputPrompt.echo === "plain";
       const scrollToBottom = () => terminal.scrollToBottom();
       // Repaint the current line: clear it, rewrite prompt + buffer, then park the
       // caret at its logical offset. This is what makes mid-line editing visible.
       const redraw = () => {
-        terminal.write(`\x1b[2K\r${promptText()}${buffer.value}`);
-        if (buffer.tail > 0) terminal.write(`\x1b[${buffer.tail}D`);
+        terminal.write(`\x1b[2K\r${promptText()}${plainEcho() ? buffer.value : ""}`);
+        if (plainEcho() && buffer.tail > 0) terminal.write(`\x1b[${buffer.tail}D`);
         scrollToBottom();
       };
       const clearViewport = () => {
@@ -352,7 +359,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
       clearRef.current = clearViewport;
       const finishPrompt = (result: CliExecutionResult) => {
         awaitingDeferredOutput = false;
-        prompt = result.prompt;
+        inputPrompt = cliInputPrompt(result.prompt, result.secret);
         terminal.write(promptText());
         scrollToBottom();
       };
@@ -381,9 +388,17 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
           if (fromDeferredEvent) setTranscript((current) => `${current}${output}\n`);
           return;
         }
-        if (output) terminal.write(`${terminalText(output)}\r\n`);
-        if (result.deferred) { awaitingDeferredOutput = true; scrollToBottom(); }
-        else finishPrompt(result);
+        if (result.deferred) {
+          const rendered = renderPromptTransition(output, undefined);
+          if (rendered) terminal.write(rendered);
+          awaitingDeferredOutput = true;
+          scrollToBottom();
+        } else {
+          inputPrompt = cliInputPrompt(result.prompt, result.secret);
+          const rendered = renderPromptTransition(output, inputPrompt);
+          if (rendered) terminal.write(rendered);
+          scrollToBottom();
+        }
         if (fromDeferredEvent && output) setTranscript((current) => `${current}${output}\n`);
       };
       eventUnsubscribe = client.onEvent((event) => {
@@ -391,7 +406,8 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
         renderResult(event, true);
       });
       const execute = (value: string, alreadyEchoed = false): Promise<CliExecutionResult | undefined> => {
-        const submittedPrompt = prompt;
+        const submittedPrompt = inputPrompt.text.trimEnd();
+        const submittedEcho = inputPrompt.echo;
         if (!alreadyEchoed) terminal.write(`${terminalText(value)}\r\n`);
         // A remote device asked for a credential: derive the opaque, scope-bound
         // fingerprint here, in the main thread, and send only that. The
@@ -409,7 +425,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
           .then((result) => {
             if (disposed) return undefined;
             renderResult(result);
-            const echoed = scope === undefined ? value : "";
+            const echoed = scope === undefined && submittedEcho === "plain" ? value : "";
             if (echoed || result.output) {
               setTranscript((current) => `${current}${submittedPrompt} ${echoed}\n${result.output ? `${result.output}\n` : ""}`);
             }
@@ -428,20 +444,24 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
       const gate = access && access.mode !== "none"
         ? new ConsoleAuthSession(access, { execute: (line) => { forwardAfterGate = line; return ""; } })
         : undefined;
-      const writeGate = (text: string) => { if (text) terminal.write(`${terminalText(text)}\r\n`); };
+      const writeGate = (turn: ConsoleTurnResult) => {
+        inputPrompt = turn.prompt ?? cliInputPrompt("");
+        const rendered = renderPromptTransition(turn.output, turn.prompt);
+        if (rendered) terminal.write(rendered);
+        scrollToBottom();
+      };
       const syncDevicePrompt = (privileged: boolean) => execute(privileged ? "enable" : "", true);
       const isPrivileged = () => (gate!.state as string) === "privileged-exec";
       const submitGate = (line: string): Promise<void> => {
         if (!gate) return Promise.resolve();
         forwardAfterGate = undefined;
-        const wasAuthenticated = gate.isAuthenticated();
-        const wasPrivileged = isPrivileged();
         return gate.submit(line).then(async (outcome) => {
           if (disposed) return;
-          writeGate(outcome.output);
+          writeGate(outcome);
           if (forwardAfterGate !== undefined) { history.record(forwardAfterGate); await execute(forwardAfterGate, true); }
-          else if (!wasAuthenticated && gate.isAuthenticated()) await syncDevicePrompt(isPrivileged());
-          else if (wasAuthenticated && !wasPrivileged && isPrivileged()) await syncDevicePrompt(true);
+          else if (gate.isAuthenticated() && outcome.prompt === undefined) {
+            await syncDevicePrompt(isPrivileged());
+          }
         }).catch((error: unknown) => onError(error instanceof Error ? error.message : "Console login failed"));
       };
 
@@ -462,7 +482,10 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
       let shiftInsertTimer: number | undefined;
 
       /** A credential prompt owns the line: never repaint the hidden buffer. */
-      const secretExpected = () => (gate?.expectsSecret() ?? false) || remoteCredentialScope !== undefined;
+      const secretExpected = () =>
+        inputPrompt.echo === "hidden"
+        || (gate?.expectsSecret() ?? false)
+        || remoteCredentialScope !== undefined;
       const notify = (message: string) => {
         terminal.write(`\r\n${terminalText(message)}\r\n`);
         if (!secretExpected()) redraw();
@@ -505,7 +528,7 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
         if (remoteCredentialScope !== undefined) return "input";
         if (gate && (!gate.isAuthenticated() || secretExpected())) return "input";
         if (awaitingDeferredOutput) return "operation";
-        if (isInteractivePrompt(prompt)) return "input";
+        if (isInteractivePrompt(inputPrompt.text)) return "input";
         return undefined;
       };
       const runPasteQueue = async () => {
@@ -668,7 +691,6 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
         if (awaitingDeferredOutput) return;
         // While the gate is waiting for a password, input is never echoed and is
         // kept out of the line editor's visible state and history.
-        const secret = secretExpected();
         switch (key.kind) {
           case "enter": {
             const submitted = buffer.value;
@@ -677,23 +699,23 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
             if (gate && !remoteCredentialScope) void submitGate(submitted);
             else {
               // A credential never reaches history or the transcript.
-              if (!secret) history.record(submitted);
+              if (inputPrompt.history) history.record(submitted);
               void execute(submitted, true);
             }
             break;
           }
-          case "insert": buffer.insert(key.text); if (!secret) redraw(); break;
-          case "backspace": if (buffer.backspace() && !secret) redraw(); break;
-          case "delete": if (buffer.deleteForward() && !secret) redraw(); break;
-          case "left": if (!secret && buffer.left()) terminal.write("\x1b[D"); break;
-          case "right": if (!secret && buffer.right()) terminal.write("\x1b[C"); break;
-          case "home": if (!secret) { buffer.home(); redraw(); } break;
-          case "end": if (!secret) { buffer.end(); redraw(); } break;
-          case "history-prev": if (!secret) { buffer.replace(history.previous()); redraw(); } break;
-          case "history-next": if (!secret) { buffer.replace(history.next()); redraw(); } break;
+          case "insert": buffer.insert(key.text); if (plainEcho()) redraw(); break;
+          case "backspace": if (buffer.backspace() && plainEcho()) redraw(); break;
+          case "delete": if (buffer.deleteForward() && plainEcho()) redraw(); break;
+          case "left": if (plainEcho() && buffer.left()) terminal.write("\x1b[D"); break;
+          case "right": if (plainEcho() && buffer.right()) terminal.write("\x1b[C"); break;
+          case "home": if (plainEcho()) { buffer.home(); redraw(); } break;
+          case "end": if (plainEcho()) { buffer.end(); redraw(); } break;
+          case "history-prev": if (inputPrompt.history) { buffer.replace(history.previous()); redraw(); } break;
+          case "history-next": if (inputPrompt.history) { buffer.replace(history.next()); redraw(); } break;
         }
       });
-      if (gate) writeGate(gate.begin().output);
+      if (gate) writeGate(gate.begin());
       else void execute("");
       fitTerminal();
     }).catch(() => onError("Terminal component failed to load"));

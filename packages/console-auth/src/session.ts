@@ -18,8 +18,24 @@ export type ConsoleSessionState =
   | "authenticated-user-exec"
   | "privileged-exec";
 
+/**
+ * One line-oriented input request rendered by the terminal adapter.
+ *
+ * The text includes its exact trailing spacing and is written without a line
+ * break. The line editor owns the single CRLF emitted when the learner submits
+ * the value.
+ */
+export interface TerminalInputPrompt {
+  readonly text: string;
+  readonly echo: "plain" | "hidden";
+  readonly history: boolean;
+  readonly completion: "line";
+}
+
 export interface ConsoleTurnResult {
   readonly output: string;
+  /** Prompt for the next line, kept separate from ordinary terminal output. */
+  readonly prompt?: TerminalInputPrompt;
   readonly state: ConsoleSessionState;
   /** The submitted line was a secret: do not echo, log, or add to history. */
   readonly secret: boolean;
@@ -34,6 +50,24 @@ export interface ConsoleSessionHooks {
 }
 
 const PRIVILEGE_LEVEL_ENABLE = 15;
+const USERNAME_PROMPT: TerminalInputPrompt = {
+  text: "Username: ",
+  echo: "plain",
+  history: false,
+  completion: "line",
+};
+const PASSWORD_PROMPT: TerminalInputPrompt = {
+  text: "Password: ",
+  echo: "hidden",
+  history: false,
+  completion: "line",
+};
+const PRESS_RETURN_PROMPT: TerminalInputPrompt = {
+  text: "Press RETURN to get started!",
+  echo: "plain",
+  history: false,
+  completion: "line",
+};
 
 function isPrefix(input: string, command: string): boolean {
   const value = input.trim().toLowerCase();
@@ -67,36 +101,33 @@ export class ConsoleAuthSession {
   begin(): ConsoleTurnResult {
     this.attempts = 0;
     this.pendingUsername = "";
-    const banner = this.config.motdBanner ? `${this.config.motdBanner}\n` : "";
+    const loginOutput = this.config.loginBanner ? `${this.config.loginBanner}\n` : "";
     switch (this.config.mode) {
       case "press-return":
         this.stateValue = "awaiting-return";
-        return this.result(`${banner}\nPress RETURN to get started!`, false);
+        return this.result(loginOutput, false, false, PRESS_RETURN_PROMPT);
       case "password-only":
         this.stateValue = "awaiting-password";
-        return this.result(`${banner}\nPassword:`, false);
-      case "local-user": {
+        return this.result(loginOutput, false, false, PASSWORD_PROMPT);
+      case "local-user":
         this.stateValue = "awaiting-username";
-        const login = this.config.loginBanner ? `${this.config.loginBanner}\n` : "";
-        return this.result(`${banner}${login}\nUsername:`, false);
-      }
+        return this.result(loginOutput, false, false, USERNAME_PROMPT);
       default:
         this.stateValue = "authenticated-user-exec";
-        return this.result(banner.trimEnd(), false, true);
+        return this.result(this.motdOutput().trimEnd(), false, true);
     }
   }
 
   async submit(line: string): Promise<ConsoleTurnResult> {
     switch (this.stateValue) {
       case "awaiting-return":
-        this.stateValue = "authenticated-user-exec";
-        return this.result("", false, true);
+        return this.grantAccess(1, false);
       case "awaiting-password":
         return this.config.mode === "local-user" ? this.checkLocalUser(line) : this.checkConsolePassword(line);
       case "awaiting-username":
         this.pendingUsername = line.trim();
         this.stateValue = "awaiting-password";
-        return this.result("Password:", false);
+        return this.result("", false, false, PASSWORD_PROMPT);
       case "awaiting-enable-password":
         return this.checkEnable(line);
       case "authenticated-user-exec":
@@ -125,7 +156,7 @@ export class ConsoleAuthSession {
     return this.failLogin(true);
   }
 
-  private grantAccess(privilegeLevel: number): ConsoleTurnResult {
+  private grantAccess(privilegeLevel: number, secret = true): ConsoleTurnResult {
     this.attempts = 0;
     if (privilegeLevel >= PRIVILEGE_LEVEL_ENABLE) {
       this.stateValue = "privileged-exec";
@@ -134,21 +165,26 @@ export class ConsoleAuthSession {
       this.stateValue = "authenticated-user-exec";
       this.hooks.setPrivileged?.(false);
     }
-    return this.result("", true, true);
+    return this.result(this.motdOutput(), secret, true);
   }
 
   private failLogin(promptUsername = false): ConsoleTurnResult {
     this.attempts++;
     if (this.attempts >= this.config.maximumAttempts) {
       const restart = this.begin();
-      return { ...restart, output: `% Authentication failed\n${restart.output}`, secret: true };
+      return { ...restart, output: `% Authentication failed\n\n${restart.output}`, secret: true };
     }
     if (this.config.mode === "local-user") {
       this.stateValue = promptUsername ? "awaiting-username" : "awaiting-password";
-      return this.result(`% Login invalid\n\n${promptUsername ? "Username:" : "Password:"}`, true);
+      return this.result(
+        "% Login invalid\n\n",
+        true,
+        false,
+        promptUsername ? USERNAME_PROMPT : PASSWORD_PROMPT,
+      );
     }
     this.stateValue = "awaiting-password";
-    return this.result("% Login invalid\n\nPassword:", true);
+    return this.result("% Login invalid\n\n", true, false, PASSWORD_PROMPT);
   }
 
   private async checkEnable(line: string): Promise<ConsoleTurnResult> {
@@ -168,7 +204,7 @@ export class ConsoleAuthSession {
     if (this.stateValue === "authenticated-user-exec" && isPrefix(trimmed, "enable")) {
       if (this.config.enableSecretVerifier) {
         this.stateValue = "awaiting-enable-password";
-        return this.result("Password:", false, true);
+        return this.result("", false, true, PASSWORD_PROMPT);
       }
       this.stateValue = "privileged-exec";
       this.hooks.setPrivileged?.(true);
@@ -177,7 +213,16 @@ export class ConsoleAuthSession {
     return this.result(output, false, true);
   }
 
-  private result(output: string, secret: boolean, authenticated = this.isAuthenticated()): ConsoleTurnResult {
-    return { output, state: this.stateValue, secret, authenticated };
+  private result(
+    output: string,
+    secret: boolean,
+    authenticated = this.isAuthenticated(),
+    prompt?: TerminalInputPrompt,
+  ): ConsoleTurnResult {
+    return { output, prompt, state: this.stateValue, secret, authenticated };
+  }
+
+  private motdOutput(): string {
+    return this.config.motdBanner ? `${this.config.motdBanner}\n` : "";
   }
 }

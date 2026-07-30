@@ -526,11 +526,11 @@ export class RemoteCliService {
     session.pendingUsername = "";
     if (line?.loginMode === "local") {
       session.stage = "awaiting-username";
-      this.sendPrompt(session, "% Login invalid", "Username:");
+      this.sendPrompt(session, "% Login invalid\n\n", "Username:");
       return;
     }
     session.stage = "awaiting-password";
-    this.sendPrompt(session, "% Login invalid", "Password:", managementCredentialScope.line("vty"));
+    this.sendPrompt(session, "% Login invalid\n\n", "Password:", managementCredentialScope.line("vty"));
   }
 
   private submitEnable(session: RemoteSession, credentialFingerprint: string): void {
