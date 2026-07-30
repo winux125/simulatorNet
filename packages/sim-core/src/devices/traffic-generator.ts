@@ -2,6 +2,7 @@ import {
   DEFAULT_PING_TIMEOUT_NS,
   NS_PER_S,
 } from "../engine/constants";
+import { MAXIMUM_COS, requireCos, requireDscp } from "../qos/markings";
 import type { Ipv4 } from "../util/ipv4";
 import { ipToInt } from "../util/ipv4";
 import { EndHost } from "./pc";
@@ -20,6 +21,10 @@ interface TrafficFlowBase {
   readonly count: number;
   readonly intervalNs: number;
   readonly payloadBytes?: number;
+  /** DSCP stamped on the packets this flow originates. */
+  readonly dscp?: number;
+  /** 802.1p CoS requested for a tagged egress path; ignored when untagged. */
+  readonly cos?: number;
 }
 
 export type TrafficFlow =
@@ -29,6 +34,7 @@ export type TrafficFlow =
       readonly destinationPort: number;
       readonly sourcePort?: number;
     })
+  /** A TCP flow uses the host stack's deterministic ephemeral source port. */
   | (TrafficFlowBase & {
       readonly protocol: "tcp";
       readonly destinationPort: number;
@@ -48,21 +54,32 @@ export interface TrafficFlowResult {
   readonly denied: number;
   readonly translated: number;
   readonly timedOut: number;
+  /** Packets a QoS policy re-marked while they crossed the network. */
+  readonly marked: number;
+  /** Packets a policer dropped or marked down. */
+  readonly policed: number;
+  /** Packets a shaper deliberately held back before transmitting. */
+  readonly shaped: number;
+  /** Packets an egress queue dropped, by tail drop or a resource limit. */
+  readonly queueDropped: number;
+  /**
+   * Mean and maximum virtual delay observed for this flow, in nanoseconds. It
+   * is a deterministic simulated measurement, never a real-hardware benchmark.
+   */
+  readonly averageDelayNs: number;
+  readonly maximumDelayNs: number;
   readonly startedAtNs: number;
   readonly completedAtNs: number | undefined;
 }
 
-interface MutableTrafficFlowResult extends Omit<TrafficFlowResult, "status" | "sent" | "received" | "dropped" | "permitted" | "denied" | "translated" | "timedOut" | "completedAtNs"> {
-  status: TrafficFlowResult["status"];
-  sent: number;
-  received: number;
-  dropped: number;
-  permitted: number;
-  denied: number;
-  translated: number;
-  timedOut: number;
-  completedAtNs: number | undefined;
-}
+type MutableFields =
+  | "status" | "sent" | "received" | "dropped" | "permitted" | "denied" | "translated"
+  | "timedOut" | "marked" | "policed" | "shaped" | "queueDropped"
+  | "averageDelayNs" | "maximumDelayNs" | "completedAtNs";
+
+type MutableTrafficFlowResult = Omit<TrafficFlowResult, MutableFields> & {
+  -readonly [K in MutableFields]: TrafficFlowResult[K];
+};
 
 /** Bounded deterministic traffic source. Auto/Step execution is owned by the worker. */
 export class TrafficGenerator extends EndHost {
@@ -112,12 +129,19 @@ export class TrafficGenerator extends EndHost {
       denied: 0,
       translated: 0,
       timedOut: 0,
+      marked: 0,
+      policed: 0,
+      shaped: 0,
+      queueDropped: 0,
+      averageDelayNs: 0,
+      maximumDelayNs: 0,
       startedAtNs: this.engine.now(),
       completedAtNs: undefined,
     };
     this.results.set(flowId, result);
     const pingStart = this.pingResults.length;
     const httpStart = this.applications.httpResults.length;
+    const traceStart = this.engine.traceLog.length;
 
     for (let index = 0; index < flow.count; index++) {
       this.engine.scheduleIn(index * flow.intervalNs, () => {
@@ -130,13 +154,21 @@ export class TrafficGenerator extends EndHost {
       ? DEFAULT_PING_TIMEOUT_NS
       : TRAFFIC_GENERATOR_LIMITS.completionTimeoutNs;
     this.engine.scheduleIn((flow.count - 1) * flow.intervalNs + networkWait, () => {
-      this.finishFlow(flow, result, pingStart, httpStart);
+      this.finishFlow(flow, result, pingStart, httpStart, traceStart);
     });
     this.engine.trace({
       time: this.engine.now(),
       type: "traffic-flow-queued",
       device: this.id,
-      detail: { flowId, protocol: flow.protocol, count: flow.count, intervalNs: flow.intervalNs },
+      detail: {
+        flowId,
+        protocol: flow.protocol,
+        count: flow.count,
+        intervalNs: flow.intervalNs,
+        dscp: flow.dscp ?? null,
+        cos: flow.cos ?? null,
+        payloadBytes: flow.payloadBytes ?? null,
+      },
     });
     return { ...result };
   }
@@ -153,8 +185,19 @@ export class TrafficGenerator extends EndHost {
   }
 
   private sendFlowUnit(flow: TrafficFlow, result: MutableTrafficFlowResult): void {
+    // The flow's DSCP is stamped by the host origination path, so a policy that
+    // matches `dscp ef` sees exactly what the learner configured.
+    this.originationDscp = flow.dscp;
+    try {
+      this.sendFlowPacket(flow, result);
+    } finally {
+      this.originationDscp = undefined;
+    }
+  }
+
+  private sendFlowPacket(flow: TrafficFlow, result: MutableTrafficFlowResult): void {
     if (flow.protocol === "icmp") {
-      this.ping(flow.destination, ++this.sequence);
+      this.ping(flow.destination, ++this.sequence, { payloadBytes: flow.payloadBytes });
       return;
     }
     if (flow.protocol === "udp") {
@@ -165,7 +208,8 @@ export class TrafficGenerator extends EndHost {
         payload: {
           kind: "udp-application",
           protocol: "traffic-generator",
-          data: "x".repeat(flow.payloadBytes ?? 0),
+          data: flow.id,
+          payloadBytes: flow.payloadBytes,
         },
       });
       return;
@@ -200,6 +244,7 @@ export class TrafficGenerator extends EndHost {
     result: MutableTrafficFlowResult,
     pingStart: number,
     httpStart: number,
+    traceStart: number,
   ): void {
     if (flow.protocol === "icmp") {
       const attempts = this.pingResults.slice(pingStart, pingStart + flow.count);
@@ -207,6 +252,11 @@ export class TrafficGenerator extends EndHost {
       result.timedOut = attempts.filter((attempt) => !attempt.success).length;
       result.permitted = result.received;
       result.dropped = result.timedOut;
+      const delays = attempts.flatMap((attempt) => (attempt.rttNs === undefined ? [] : [attempt.rttNs]));
+      result.averageDelayNs = delays.length === 0
+        ? 0
+        : Math.round(delays.reduce((total, value) => total + value, 0) / delays.length);
+      result.maximumDelayNs = delays.reduce((maximum, value) => Math.max(maximum, value), 0);
     } else if (flow.protocol === "http") {
       const attempts = this.applications.httpResults.slice(httpStart, httpStart + flow.count);
       result.received = attempts.filter((attempt) => attempt.status === "completed").length;
@@ -215,6 +265,7 @@ export class TrafficGenerator extends EndHost {
       result.permitted = result.received;
       result.dropped = result.timedOut + result.denied;
     }
+    this.collectQosOutcomes(result, traceStart);
     result.status = "completed";
     result.completedAtNs = this.engine.now();
     this.engine.trace({
@@ -230,8 +281,55 @@ export class TrafficGenerator extends EndHost {
         denied: result.denied,
         translated: result.translated,
         timedOut: result.timedOut,
+        marked: result.marked,
+        policed: result.policed,
+        shaped: result.shaped,
+        queueDropped: result.queueDropped,
+        averageDelayNs: result.averageDelayNs,
+        maximumDelayNs: result.maximumDelayNs,
       },
     });
+  }
+
+  /**
+   * Summarize what QoS did to this flow's window of the deterministic trace.
+   * The trace is the one shared record of the run, so browser and verifier
+   * report identical marked/policed/shaped counts.
+   */
+  private collectQosOutcomes(result: MutableTrafficFlowResult, traceStart: number): void {
+    let queueWaitTotalNs = 0;
+    let queueWaitSamples = 0;
+    for (let index = traceStart; index < this.engine.traceLog.length; index++) {
+      const entry = this.engine.traceLog[index]!;
+      switch (entry.type) {
+        case "qos-marked":
+          result.marked++;
+          break;
+        case "qos-police-exceed":
+          result.policed++;
+          break;
+        case "qos-shape-delayed":
+          result.shaped++;
+          break;
+        case "packet-tail-dropped":
+          result.queueDropped++;
+          break;
+        case "packet-dequeued": {
+          const waited = entry.detail?.waitedNs;
+          if (typeof waited === "number") {
+            queueWaitTotalNs += waited;
+            queueWaitSamples++;
+            result.maximumDelayNs = Math.max(result.maximumDelayNs, waited);
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    }
+    if (result.averageDelayNs === 0 && queueWaitSamples > 0) {
+      result.averageDelayNs = Math.round(queueWaitTotalNs / queueWaitSamples);
+    }
   }
 }
 
@@ -271,6 +369,23 @@ function validateFlow(flow: TrafficFlow): void {
       || flow.payloadBytes < 0
       || flow.payloadBytes > TRAFFIC_GENERATOR_LIMITS.maximumPayloadBytes)) {
     throw new TrafficGeneratorError("TRAFFIC_INVALID_CONFIGURATION", "Flow payload size is outside the supported range.");
+  }
+  if (flow.dscp !== undefined) {
+    try {
+      requireDscp(flow.dscp);
+    } catch {
+      throw new TrafficGeneratorError("TRAFFIC_INVALID_CONFIGURATION", "Flow DSCP must be between 0 and 63.");
+    }
+  }
+  if (flow.cos !== undefined) {
+    try {
+      requireCos(flow.cos);
+    } catch {
+      throw new TrafficGeneratorError(
+        "TRAFFIC_INVALID_CONFIGURATION",
+        `Flow CoS must be between 0 and ${MAXIMUM_COS}.`,
+      );
+    }
   }
   if (flow.protocol === "tcp" || flow.protocol === "udp") validatePort(flow.destinationPort);
   if (flow.protocol === "udp" && flow.sourcePort !== undefined) validatePort(flow.sourcePort);

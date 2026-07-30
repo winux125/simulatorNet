@@ -2,6 +2,7 @@ import { z } from "zod";
 import { DeviceCapabilitySchema, DeviceTypeSchema } from "./devices";
 import { WirelessSecurityModeSchema } from "./wireless";
 import { IpAddressSchema } from "./primitives";
+import { CosValueSchema, DscpValueSchema } from "./qos";
 import {
   Ipv4Schema,
   Ipv6CidrSchema,
@@ -743,7 +744,125 @@ export const SnmpTrapReceivedGradingCheckSchema = CheckIdentitySchema.extend({
   }).strict(),
 }).strict();
 
+// --- M10.8 quality of service ----------------------------------------------
+
+export const QosClassMapGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("qos-class-map"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    classMapId: z.string().min(1),
+    expectedMatchType: z.enum(["match-all", "match-any"]).optional(),
+    minimumMatches: z.number().int().nonnegative().default(1),
+  }).strict(),
+}).strict();
+
+export const QosPolicyMapGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("qos-policy-map"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    policyMapId: z.string().min(1),
+    className: z.string().min(1),
+    expectedAction: z.enum(["priority", "bandwidth", "police", "shape", "set-dscp", "set-cos"]),
+    /** Percent, bits per second, DSCP or CoS, depending on `expectedAction`. */
+    expectedValue: z.number().int().nonnegative().optional(),
+  }).strict(),
+}).strict();
+
+export const QosPolicyAttachedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("qos-policy-attached"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    interfaceId: z.string().min(1),
+    direction: z.enum(["input", "output"]),
+    policyMapId: z.string().min(1),
+  }).strict(),
+}).strict();
+
+const MarkedPacketSchema = z.object({
+  sourceDeviceId: z.string().min(1),
+  destinationIp: Ipv4Schema,
+  /** The QoS device whose marking is being graded. */
+  deviceId: z.string().min(1),
+});
+
+export const PacketDscpGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("packet-dscp"),
+  configuration: MarkedPacketSchema.extend({ expectedDscp: DscpValueSchema }).strict(),
+}).strict();
+
+export const PacketCosGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("packet-cos"),
+  configuration: MarkedPacketSchema.extend({ expectedCos: CosValueSchema }).strict(),
+}).strict();
+
+export const TrafficClassifiedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("traffic-classified"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    className: z.string().min(1),
+    sourceDeviceId: z.string().min(1).optional(),
+    destinationIp: Ipv4Schema.optional(),
+    minimumPackets: z.number().int().positive().default(1),
+  }).strict(),
+}).strict();
+
+export const PolicerResultGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("policer-result"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    className: z.string().min(1),
+    trafficDeviceId: z.string().min(1).optional(),
+    flowId: z.string().min(1).optional(),
+    minimumDropped: z.number().int().nonnegative().default(1),
+    maximumDropped: z.number().int().nonnegative().optional(),
+  }).strict(),
+}).strict();
+
+export const ShaperResultGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("shaper-result"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    interfaceId: z.string().min(1),
+    trafficDeviceId: z.string().min(1).optional(),
+    flowId: z.string().min(1).optional(),
+    minimumDelayedPackets: z.number().int().positive().default(1),
+    /** A shaper delays; it must not drop while the queue still has room. */
+    maximumDroppedPackets: z.number().int().nonnegative().optional(),
+  }).strict(),
+}).strict();
+
+export const QueueDropCountGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("queue-drop-count"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    interfaceId: z.string().min(1),
+    trafficDeviceId: z.string().min(1).optional(),
+    flowId: z.string().min(1).optional(),
+    minimumDrops: z.number().int().nonnegative().default(0),
+    maximumDrops: z.number().int().nonnegative().optional(),
+  }).strict(),
+}).strict();
+
+export const TrafficPriorityOrderGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("traffic-priority-order"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    priorityFlowId: z.string().min(1),
+    bulkFlowId: z.string().min(1),
+  }).strict(),
+}).strict();
+
 export const GradingCheckSchema = z.discriminatedUnion("type", [
+  QosClassMapGradingCheckSchema,
+  QosPolicyMapGradingCheckSchema,
+  QosPolicyAttachedGradingCheckSchema,
+  PacketDscpGradingCheckSchema,
+  PacketCosGradingCheckSchema,
+  TrafficClassifiedGradingCheckSchema,
+  PolicerResultGradingCheckSchema,
+  ShaperResultGradingCheckSchema,
+  QueueDropCountGradingCheckSchema,
+  TrafficPriorityOrderGradingCheckSchema,
   RemoteServiceEnabledGradingCheckSchema,
   VtyTransportGradingCheckSchema,
   SshSessionEstablishedGradingCheckSchema,

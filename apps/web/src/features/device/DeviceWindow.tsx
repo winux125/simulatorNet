@@ -22,6 +22,10 @@ import {
   SecurityConfigurationPanel,
   type SecuritySection,
 } from "./SecurityConfigurationPanel";
+import { isQosSection, QOS_SECTIONS, QosPanel, type QosSection } from "./QosPanel";
+
+/** Devices whose routed data plane owns a QoS policy engine. */
+const QOS_KINDS = new Set(["router", "l3-switch", "firewall"]);
 
 type DeviceWindowTab =
   | "overview" | "desktop" | "config" | "console" | "services" | "terminal" | "interfaces" | "attributes"
@@ -29,7 +33,8 @@ type DeviceWindowTab =
   | "zones" | "policies" | "connections" | "impairments" | "flows" | "run" | "results"
   | "ipv6"
   | "wireless" | "clients" | "apps" | "setup" | "lan" | "wan" | "dhcp" | "firewall"
-  | ManagementSection;
+  | ManagementSection
+  | QosSection;
 type DesktopTool = "ip" | "command" | "web" | "tftp" | "ntp" | "syslog" | "transport";
 
 interface DeviceWindowProps {
@@ -163,7 +168,11 @@ export function DeviceWindow(props: DeviceWindowProps) {
     const withConsole = CONSOLE_CAPABLE_KINDS.has(props.node.type)
       ? [...base, { id: "console" as const, label: "Console Access" }]
       : base;
-    return [...withConsole, ...management];
+    // QoS is grouped after the device's own sections, like the management ones.
+    const qos: Array<{ id: DeviceWindowTab; label: string }> = QOS_KINDS.has(props.node.type)
+      ? QOS_SECTIONS.map((entry) => ({ id: entry.id, label: `QoS ${entry.label}` }))
+      : [];
+    return [...withConsole, ...qos, ...management];
   }, [
     isAccessPoint,
     isLaptop,
@@ -231,6 +240,15 @@ export function DeviceWindow(props: DeviceWindowProps) {
           {(["setup", "lan", "wan", "dhcp", "firewall"] as DeviceWindowTab[]).includes(tab) && (
             <StructuredConfiguration document={props.document} node={props.node} section={tab} />
           )}
+          {isQosSection(tab) && (props.runtimeAvailable
+            ? <QosPanel
+                client={props.client}
+                deviceId={props.node.id}
+                section={tab}
+                onConfigurationChanged={props.onConfigurationChanged}
+                onError={props.onError}
+              />
+            : <DraftRuntimeNotice />)}
           {isManagementSection(tab) && <ManagementPanel
             client={props.client}
             node={props.node}

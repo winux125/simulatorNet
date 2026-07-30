@@ -105,13 +105,26 @@ export const navigationCommands: CommandSpec[] = [
   },
   {
     pattern: "exit",
-    modes: ["config-if", "config-vlan", "config-acl", "config-line", "config-aaa-server", "config-router"],
+    modes: [
+      "config-if", "config-vlan", "config-acl", "config-line", "config-aaa-server",
+      "config-cmap", "config-pmap", "config-router",
+    ],
     device: "network",
     run: (s) => s.enter("config"),
   },
+  // A policy-map class exits back into its policy map, not to global config.
+  {
+    pattern: "exit",
+    modes: ["config-pmap-c"],
+    device: "network",
+    run: (s) => s.enter("config-pmap"),
+  },
   {
     pattern: "end",
-    modes: ["config", "config-if", "config-vlan", "config-acl", "config-line", "config-aaa-server", "config-router"],
+    modes: [
+      "config", "config-if", "config-vlan", "config-acl", "config-line", "config-aaa-server",
+      "config-cmap", "config-pmap", "config-pmap-c", "config-router",
+    ],
     device: "network",
     run: (s) => s.enter("privileged"),
   },

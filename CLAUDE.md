@@ -153,6 +153,34 @@ SSID-scoped opaque verifier before packet/event processing; no plaintext key,
 real 802.11 encryption, or async cryptography belongs in `sim-core`. Never log,
 render, grade, or import raw credentials. See `docs/wireless-simulation.md`.
 
+### Quality of service
+
+A link has finite capacity. A frame is queued on the transmitting interface,
+clocked onto the wire at that capacity (virtual serialization delay), then
+propagated — all through `VirtualClock` and the bounded event queue. Each
+direction owns its own egress queue. `estimatePacketWireSizeBytes` is the single
+wire-size API; no protocol computes its own.
+
+One reusable `QosPolicyEngine` serves Router, L3 Switch, Firewall and the
+Wireless Router's composed routed plane. Do not add a second classifier, and do
+not apply QoS to a Hub or Bridge. The output pipeline order is fixed:
+route/policy decision → classification → marking → policing → shaping/queueing →
+serialization → transmit; input is receive → classification/marking/policing →
+ACL/NAT/routing.
+
+Scheduling is strict priority followed by deficit round robin, ordered by the
+policy map and never by packet insertion order. A priority class carries a
+built-in policer so it cannot starve other queues. A policer never delays; a
+shaper delays and only drops when its bounded queue is full. Both use one
+deterministic token bucket driven by virtual time.
+
+`LabDocument` stores link capacity, propagation delay, queue limit, class maps,
+policy maps, marking, priority/bandwidth classes, policers, shapers and
+service-policy bindings. It must never store queued packets, token counts, the
+scheduler cursor, counters, drops or measured waiting times. Capacity is an
+educational serialization model, never a hardware throughput claim. See
+`docs/qos-simulation.md`.
+
 ### Management plane
 
 Remote management is a real path through the simulated network. A Telnet or SSH

@@ -1,5 +1,12 @@
-import { getDeviceProfile, type DeviceCapability, type LabDocument } from "@sim/contracts";
-import type { DeviceInspection, LabUiNode, LabUiSnapshot } from "@sim/sim-worker";
+import {
+  DEFAULT_LINK_CAPACITY_BPS,
+  DEFAULT_LINK_PROPAGATION_DELAY_NS,
+  DEFAULT_LINK_QUEUE_LIMIT_PACKETS,
+  getDeviceProfile,
+  type DeviceCapability,
+  type LabDocument,
+} from "@sim/contracts";
+import type { DeviceInspection, LabUiLink, LabUiNode, LabUiSnapshot } from "@sim/sim-worker";
 import { Braces, CircleX, Cpu, ListTree, Network, TerminalSquare, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { DeviceIcon } from "../../components/DeviceIcon";
@@ -97,6 +104,18 @@ export function InspectorPanel(props: InspectorPanelProps) {
               <div><dt>Endpoint B</dt><dd>{link.b.node} / <code>{link.b.iface}</code></dd></div>
               <div><dt>State</dt><dd><StatusIndicator status="up" label="Connected" /></dd></div>
             </dl>
+            <LinkPerformanceForm
+              client={props.client}
+              linkId={link.id}
+              live={props.snapshot?.links.find((candidate) => candidate.id === link.id)?.performance}
+              stored={{
+                capacityBps: link.capacityBps,
+                propagationDelayNs: link.propagationDelayNs,
+                queueLimitPackets: link.queueLimitPackets,
+              }}
+              runtimeAvailable={Boolean(props.snapshot)}
+              onError={props.onError}
+            />
           </div>
         )}
         {node && props.tab === "overview" && (
@@ -190,6 +209,87 @@ export function InspectorPanel(props: InspectorPanelProps) {
         )}
       </div>
     </Panel>
+  );
+}
+
+/**
+ * Deterministic link performance. This is simulation configuration, not
+ * presentation: it changes serialization delay, queue depth and therefore
+ * grading. It may be applied while the lab runs — a packet that is already
+ * serializing keeps its timing and the next packet uses the new value.
+ */
+function LinkPerformanceForm({
+  client,
+  linkId,
+  live,
+  stored,
+  runtimeAvailable,
+  onError,
+}: {
+  client: SimulatorClient;
+  linkId: string;
+  live: LabUiLink["performance"] | undefined;
+  stored: { capacityBps?: number; propagationDelayNs?: number; queueLimitPackets?: number };
+  runtimeAvailable: boolean;
+  onError(message: string): void;
+}) {
+  const current = live ?? {
+    capacityBps: stored.capacityBps ?? DEFAULT_LINK_CAPACITY_BPS,
+    propagationDelayNs: stored.propagationDelayNs ?? DEFAULT_LINK_PROPAGATION_DELAY_NS,
+    queueLimitPackets: stored.queueLimitPackets ?? DEFAULT_LINK_QUEUE_LIMIT_PACKETS,
+  };
+  const [capacityMbps, setCapacityMbps] = useState(() => String(current.capacityBps / 1_000_000));
+  const [delayUs, setDelayUs] = useState(() => String(current.propagationDelayNs / 1_000));
+  const [queueLimit, setQueueLimit] = useState(() => String(current.queueLimitPackets));
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setCapacityMbps(String(current.capacityBps / 1_000_000));
+    setDelayUs(String(current.propagationDelayNs / 1_000));
+    setQueueLimit(String(current.queueLimitPackets));
+  }, [current.capacityBps, current.propagationDelayNs, current.queueLimitPackets]);
+
+  const apply = async () => {
+    setBusy(true);
+    try {
+      await client.request({
+        type: "SET_LINK_PERFORMANCE",
+        linkId,
+        performance: {
+          capacityBps: Math.round(Number(capacityMbps) * 1_000_000),
+          propagationDelayNs: Math.round(Number(delayUs) * 1_000),
+          queueLimitPackets: Math.round(Number(queueLimit)),
+        },
+      });
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Unable to apply link performance");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form
+      className="link-performance"
+      aria-label="Link performance"
+      onSubmit={(event) => { event.preventDefault(); void apply(); }}
+    >
+      <p className="section-eyebrow">Deterministic performance</p>
+      <label>Capacity (Mbps)
+        <input aria-label="Link capacity Mbps" value={capacityMbps} onChange={(event) => setCapacityMbps(event.target.value)} />
+      </label>
+      <label>Propagation delay (µs)
+        <input aria-label="Link propagation delay microseconds" value={delayUs} onChange={(event) => setDelayUs(event.target.value)} />
+      </label>
+      <label>Queue limit (packets)
+        <input aria-label="Link queue limit packets" value={queueLimit} onChange={(event) => setQueueLimit(event.target.value)} />
+      </label>
+      <Button type="submit" variant="primary" disabled={busy || !runtimeAvailable}>Apply link performance</Button>
+      <p className="section-note">
+        Capacity drives a deterministic virtual serialization delay for teaching. It is not a
+        hardware throughput measurement.
+      </p>
+    </form>
   );
 }
 

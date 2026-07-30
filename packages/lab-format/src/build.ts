@@ -19,6 +19,8 @@ import {
   type SwitchDeviceConfig,
   type Topology,
   getDeviceProfile,
+  isDefaultQosConfiguration,
+  type QosConfiguration,
   type WirelessRadioSettings,
 } from "@sim/contracts";
 import {
@@ -247,6 +249,48 @@ function applyAclConfiguration(
   for (const binding of config.aclBindings) {
     device.applyAcl(binding.interfaceName, binding.direction, binding.aclId);
   }
+}
+
+/**
+ * QoS configuration is persistent: class maps, policy maps, marking, policers,
+ * shapers and service-policy bindings. Queues, tokens, counters and drops are
+ * runtime and never rebuilt from a document.
+ */
+function applyQosConfiguration(
+  device: Pick<Router, "defineQosClassMap" | "defineQosPolicyMap" | "applyServicePolicy">,
+  configuration: QosConfiguration | undefined,
+): void {
+  if (!configuration) return;
+  for (const classMap of configuration.classMaps) device.defineQosClassMap(classMap);
+  for (const policyMap of configuration.policyMaps) device.defineQosPolicyMap(policyMap);
+  for (const binding of configuration.servicePolicies) {
+    device.applyServicePolicy(binding.interfaceName, binding.direction, binding.policyMapId);
+  }
+}
+
+function serializeQos(
+  device: Pick<Router, "qosClassMapConfigurations" | "qosPolicyMapConfigurations" | "qosServicePolicies">,
+): QosConfiguration | undefined {
+  const configuration: QosConfiguration = {
+    classMaps: device.qosClassMapConfigurations().map((map) => ({
+      id: map.id,
+      matchType: map.matchType,
+      matches: map.matches.map((rule) =>
+        "values" in rule ? { ...rule, values: [...rule.values] } : { ...rule }),
+    })) as QosConfiguration["classMaps"],
+    policyMaps: device.qosPolicyMapConfigurations().map((map) => ({
+      id: map.id,
+      classes: map.classes.map((entry) => ({
+        ...entry,
+        marking: entry.marking ? { ...entry.marking } : undefined,
+        priority: entry.priority ? { ...entry.priority } : undefined,
+        police: entry.police ? { ...entry.police } : undefined,
+        shape: entry.shape ? { ...entry.shape } : undefined,
+      })),
+    })) as QosConfiguration["policyMaps"],
+    servicePolicies: device.qosServicePolicies().map((binding) => ({ ...binding })),
+  };
+  return isDefaultQosConfiguration(configuration) ? undefined : configuration;
 }
 
 function applyIpv6AclConfiguration(
@@ -491,6 +535,7 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
     }
     applyAclConfiguration(device, config);
     applyIpv6AclConfiguration(device, config);
+    applyQosConfiguration(device, config.qos);
     for (const pool of config.natPools) device.defineNatPool(pool);
     for (const role of config.natInterfaceRoles) device.setNatRole(role.interfaceName, role.role);
     for (const rule of config.natRules) device.defineNatRule(rule);
@@ -609,6 +654,7 @@ function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3Swit
   }
   applyAclConfiguration(device, config);
   applyIpv6AclConfiguration(device, config);
+  applyQosConfiguration(device, config.qos);
   applySpanningTreeConfiguration(device, config.spanningTree ?? DEFAULT_SPANNING_TREE_CONFIG);
   applyDiscoveryConfiguration(device, config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG);
   applyLoopbackConfiguration(device, config.loopbacks ?? []);
@@ -643,7 +689,17 @@ export function buildLabFromDocument(document: LabDocument): BuiltLab {
     );
   }
   for (const link of canonical.topology.links) {
-    engine.connect(link.a.node, link.a.iface, link.b.node, link.b.iface, link.propagationDelayNs);
+    engine.connect(link.a.node, link.a.iface, link.b.node, link.b.iface, {
+      propagationDelayNs: link.propagationDelayNs,
+      capacityBps: link.capacityBps,
+      queueLimitPackets: link.queueLimitPackets,
+    });
+  }
+  // Queue structure needs the cabled capacity, so output policies are installed
+  // once the links exist rather than while configuration is still being applied.
+  for (const device of devices.values()) {
+    if (device instanceof Router) device.refreshEgressQueues();
+    else if (device instanceof Layer3Switch) device.refreshEgressQueues();
   }
 
   // The management plane is armed last: its listeners need addressed interfaces
@@ -948,6 +1004,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       aclBindings: device.aclBindings(),
       ipv6Acls: serializeIpv6Acls(device),
       ipv6AclBindings: device.ipv6AclBindings(),
+      qos: serializeQos(device),
       spanningTree: serializeSpanningTreeConfiguration(device),
       etherChannels: serializeEtherChannelConfiguration(device),
       discovery: serializeDiscoveryConfiguration(device),
@@ -1062,6 +1119,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
     aclBindings: device.aclBindings(),
     ipv6Acls: serializeIpv6Acls(device),
     ipv6AclBindings: device.ipv6AclBindings(),
+    qos: serializeQos(device),
     natPools: device.natPoolConfigurations(),
     natRules: device.natRuleConfigurations(),
     natInterfaceRoles: device.interfaceSummaries()

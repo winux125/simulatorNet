@@ -14,9 +14,11 @@ import type {
   NeighborDiscoveryConfig,
   OspfProcessConfig,
   Ospfv3ProcessConfig,
+  QosConfiguration,
   SpanningTreeConfig,
 } from "@sim/contracts";
 import {
+  isDefaultQosConfiguration,
   DEFAULT_CDP_HOLD_SECONDS,
   DEFAULT_CDP_INTERVAL_SECONDS,
   DEFAULT_LLDP_HOLD_SECONDS,
@@ -177,6 +179,31 @@ export interface BuiltConfig {
   readonly droppedRoutes: number;
 }
 
+/**
+ * The imported MQC subset, kept only when it is internally consistent: a
+ * service policy that names a policy map the file never defined, or a policy
+ * class that names a missing class map, is dropped rather than imported broken.
+ */
+function qosFrom(
+  applied: ImportedDeviceConfiguration,
+  interfaceIds: readonly string[],
+): QosConfiguration | undefined {
+  const classMapIds = new Set(applied.qos.classMaps.map((map) => map.id));
+  const policyMaps = applied.qos.policyMaps.map((map) => ({
+    id: map.id,
+    classes: map.classes.filter((entry) =>
+      entry.className === "class-default" || classMapIds.has(entry.className)),
+  }));
+  const policyMapIds = new Set(policyMaps.map((map) => map.id));
+  const configuration: QosConfiguration = {
+    classMaps: applied.qos.classMaps,
+    policyMaps,
+    servicePolicies: applied.qos.servicePolicies.filter((binding) =>
+      policyMapIds.has(binding.policyMapId) && interfaceIds.includes(binding.interfaceName)),
+  };
+  return isDefaultQosConfiguration(configuration) ? undefined : configuration;
+}
+
 export function buildDeviceConfigFromIos(
   deviceType: DeviceType,
   applied: ImportedDeviceConfiguration,
@@ -273,6 +300,7 @@ export function buildDeviceConfigFromIos(
       ipv6StaticRoutes: applied.ipv6StaticRoutes,
       ipv6Acls: applied.ipv6Acls,
       ipv6AclBindings: ipv6BindingsFrom(applied),
+      qos: qosFrom(applied, interfaceIds),
       natPools: [],
       natRules: [],
       natInterfaceRoles: [],
@@ -336,6 +364,7 @@ export function buildDeviceConfigFromIos(
         ipv6StaticRoutes: applied.ipv6StaticRoutes,
         ipv6Acls: applied.ipv6Acls,
         ipv6AclBindings: ipv6BindingsFrom(applied),
+        qos: qosFrom(applied, interfaceIds),
         spanningTree: spanningTreeFrom(applied, knownVlans),
         etherChannels: etherChannelsFrom(applied),
         discovery: discoveryFrom(applied),

@@ -38,6 +38,17 @@ const ROOT_DESCRIPTIONS: Record<string, string> = {
   "passive-interface": "Advertise the interface but send no hellos",
   clear: "Reset protocol runtime state",
   errdisable: "Recover an error-disabled interface",
+  "class-map": "Define a QoS traffic class",
+  "policy-map": "Define a QoS policy",
+  class: "Select a class inside a policy map",
+  match: "Add a class-map match rule",
+  set: "Mark a packet field",
+  priority: "Reserve strict-priority bandwidth",
+  bandwidth: "Reserve a weighted bandwidth share",
+  police: "Rate-limit a class with a token bucket",
+  shape: "Delay a class to an average rate",
+  "queue-limit": "Set the class tail-drop depth",
+  "service-policy": "Attach a policy map to this interface",
 };
 
 const ARGUMENT_HELP: Record<string, string> = {

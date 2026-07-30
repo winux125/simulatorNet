@@ -9,6 +9,7 @@ import type {
   LabDocument,
   DeviceConfig,
   PasswordVerifier,
+  QosConfiguration,
   ServerServiceConfig,
   WirelessAccessPointConfiguration,
   WirelessAssociationStatus,
@@ -45,6 +46,8 @@ import type {
   NmsRuntimeSnapshot,
   SnmpVarBind,
   TrafficFlowResult,
+  QosClassCounter,
+  QosProblem,
 } from "@sim/sim-core";
 export type { ServerServiceRuntimeSnapshot } from "@sim/sim-core";
 
@@ -75,6 +78,12 @@ export interface LabUiLink {
   sourceInterface: string;
   targetNode: string;
   targetInterface: string;
+  /** Deterministic link performance; simulation configuration, not presentation. */
+  performance: {
+    capacityBps: number;
+    propagationDelayNs: number;
+    queueLimitPackets: number;
+  };
 }
 
 /** Runtime-only WLAN association overlay. It is never a structural LabDocument link. */
@@ -263,7 +272,10 @@ export interface HostNetworkWarning {
     | "wireless-interface-disabled"
     | "wireless-no-dhcp"
     | "access-point-no-uplink"
-    | "management-plane";
+    | "management-plane"
+    | "qos-policy"
+    | "qos-queue-overflow"
+    | "qos-policer-drop";
   message: string;
   address?: string;
   deviceIds: readonly string[];
@@ -359,6 +371,49 @@ export interface SecurityConfigurationView {
     firewallConnections: FirewallConnection[];
     trafficResults: TrafficFlowResult[];
   };
+}
+
+/** One interface's live egress queue state. Runtime only; never persisted. */
+export interface QosInterfaceQueueView {
+  interfaceName: string;
+  policyMapId?: string;
+  depthPackets: number;
+  depthBytes: number;
+  droppedPackets: number;
+  dropsByReason: Readonly<Record<string, number>>;
+  maximumWaitingTimeNs: number;
+  capacityBps: number;
+  classes: Array<{
+    className: string;
+    depthPackets: number;
+    limitPackets: number;
+    dequeuedPackets: number;
+    dequeuedBytes: number;
+    droppedPackets: number;
+  }>;
+}
+
+export interface QosConfigurationView {
+  deviceId: string;
+  configuration: QosConfiguration;
+  document: LabDocument;
+  runtime: {
+    counters: QosClassCounter[];
+    queues: QosInterfaceQueueView[];
+    problems: QosProblem[];
+  };
+}
+
+/** The result of changing one cable's deterministic performance. */
+export interface LinkPerformanceView {
+  linkId: string;
+  performance: {
+    capacityBps: number;
+    propagationDelayNs: number;
+    queueLimitPackets: number;
+  };
+  document: LabDocument;
+  snapshot: LabUiSnapshot;
 }
 
 /**
@@ -538,6 +593,20 @@ export type SimWorkerRequest =
   | { type: "SET_SECURITY_CONFIGURATION"; requestId: string; deviceId: string; configuration: SecurityDeviceConfiguration }
   | { type: "RUN_TRAFFIC_FLOW"; requestId: string; deviceId: string; flowId: string }
   | { type: "CLEAR_SECURITY_RUNTIME"; requestId: string; deviceId: string }
+  // --- M10.8 quality of service ---
+  | { type: "GET_QOS_CONFIGURATION"; requestId: string; deviceId: string }
+  | { type: "SET_QOS_CONFIGURATION"; requestId: string; deviceId: string; configuration: QosConfiguration }
+  | { type: "CLEAR_QOS_RUNTIME"; requestId: string; deviceId: string }
+  | {
+      type: "SET_LINK_PERFORMANCE";
+      requestId: string;
+      linkId: string;
+      performance: {
+        capacityBps?: number;
+        propagationDelayNs?: number;
+        queueLimitPackets?: number;
+      };
+    }
   // --- M10.4 control protocols (inspection + bounded runtime actions) ---
   | { type: "GET_SPANNING_TREE_STATE"; requestId: string; deviceId: string }
   | { type: "RESET_BPDU_GUARD_PORT"; requestId: string; deviceId: string; interfaceId: string }
@@ -577,6 +646,8 @@ export type SimWorkerPayload =
   | ServerServicesView
   | ServerServiceRuntimeSnapshot
   | SecurityConfigurationView
+  | QosConfigurationView
+  | LinkPerformanceView
   | SpanningTreeView
   | EtherChannelView
   | DiscoveryNeighborsView
@@ -657,6 +728,10 @@ export interface SimWorkerPayloadByType {
   SET_SECURITY_CONFIGURATION: SecurityConfigurationView;
   RUN_TRAFFIC_FLOW: SecurityConfigurationView;
   CLEAR_SECURITY_RUNTIME: SecurityConfigurationView;
+  GET_QOS_CONFIGURATION: QosConfigurationView;
+  SET_QOS_CONFIGURATION: QosConfigurationView;
+  CLEAR_QOS_RUNTIME: QosConfigurationView;
+  SET_LINK_PERFORMANCE: LinkPerformanceView;
   GET_SPANNING_TREE_STATE: SpanningTreeView;
   RESET_BPDU_GUARD_PORT: SpanningTreeView;
   GET_ETHERCHANNEL_STATE: EtherChannelView;

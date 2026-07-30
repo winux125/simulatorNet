@@ -1114,3 +1114,45 @@ Centralized AAA, and SNMP Network Management. See
 [`docs/remote-management.md`](docs/remote-management.md),
 [`docs/aaa-simulation.md`](docs/aaa-simulation.md) and
 [`docs/snmp-management.md`](docs/snmp-management.md).
+
+## Milestone 10.8 — deterministic quality of service
+
+M10.8 gives a link a finite capacity. A frame is no longer handed to the far end
+as an instant event: it is queued on the transmitting interface, clocked onto the
+wire at the link's capacity (a virtual serialization delay), and only then
+propagated. Every direction owns its own queue, so a full-duplex link never lets
+one direction block the other. Capacity, propagation delay and queue depth are
+structured link configuration with documented defaults — 100 Mbps, 0.5 ms and
+256 packets — and a schema-v1 lab written earlier opens unchanged.
+
+One reusable QoS engine serves the Router, L3 Switch, Firewall and the Wireless
+Router's composed routed plane. Class maps match IPv4/IPv6 ACLs, protocol,
+ports, DSCP, IP precedence, 802.1p CoS and prefixes; policy classes mark DSCP,
+precedence and CoS; and the fixed pipeline is route/policy decision →
+classification → marking → policing → shaping/queueing → serialization.
+
+Scheduling is strict priority followed by deficit round robin. A priority class
+carries a built-in policer sized from its configured share, so real-time traffic
+is served first but can never starve the rest. A reusable virtual-clock token
+bucket backs both policing, which drops or marks down and never delays, and
+shape average, which delays without dropping while the queue has room.
+
+The Traffic Generator gains DSCP, CoS, packet size, interval and port controls
+and reports sent, delivered, dropped, marked, policed, shaped and average and
+maximum *virtual* delay — a deterministic simulated measurement, never a
+hardware benchmark. Packet Trace adds QoS, Classification, Marking, Queue,
+Policing and Shaping filters showing class, policy, DSCP/CoS before and after,
+queue, action, drop reason and virtual waiting time.
+
+Ten grading checks cover class maps, policy maps, policy attachment, packet
+DSCP and CoS, classification, policer and shaper results, queue drops and
+priority ordering. Queues, tokens, scheduler cursors, counters and measured
+delays are runtime only and never reach a LabDocument, a submission or a
+result.
+
+Three explicit, non-auto-loaded demos cover DSCP Classification, Voice vs Bulk,
+and Guest Policing with WAN Shaping. See
+[docs/qos-simulation.md](docs/qos-simulation.md).
+
+SimulatorNet models deterministic educational QoS behaviour. It does not
+benchmark real network hardware or reproduce vendor ASIC queues.

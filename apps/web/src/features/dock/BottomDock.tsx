@@ -60,7 +60,32 @@ const packetTypes = new Set([
   "ospf-adjacency-rejected", "ospf-routing-table-changed",
   // M10.7 management plane: remote CLI, AAA and SNMP.
   "tcp-connection", "remote-session-refused", "aaa-accounting",
+  // M10.8 deterministic QoS: link queues, classification, marking, scheduling.
+  "packet-enqueued", "packet-dequeued", "packet-serialization-started",
+  "packet-serialization-completed", "packet-tail-dropped", "queue-cleared",
 ]);
+
+/** Every QoS and egress-queue trace prefix, in the order the table groups them. */
+const QOS_TRACE_FAMILIES = {
+  Classification: ["qos-classified", "qos-class-default", "qos-policy-applied"],
+  Marking: ["qos-marked"],
+  Policing: ["qos-police-conform", "qos-police-exceed", "qos-police-dropped"],
+  Shaping: ["qos-shape-delayed", "qos-shape-released"],
+  Queue: [
+    "qos-queue-selected", "qos-priority-served", "qos-weighted-served", "qos-queue-dropped",
+    "packet-enqueued", "packet-dequeued", "packet-serialization-started",
+    "packet-serialization-completed", "packet-tail-dropped", "queue-cleared",
+  ],
+} as const satisfies Record<string, readonly string[]>;
+
+type QosTraceFamily = keyof typeof QOS_TRACE_FAMILIES;
+
+function qosFamilyOf(type: string): QosTraceFamily | undefined {
+  for (const [family, types] of Object.entries(QOS_TRACE_FAMILIES) as Array<[QosTraceFamily, readonly string[]]>) {
+    if (types.includes(type)) return family;
+  }
+  return undefined;
+}
 
 /** Management-plane trace prefixes; all of them are packet-trace events. */
 const managementPacketPrefixes = [
@@ -74,6 +99,7 @@ const ipv6PacketPrefixes = [
 function isPacketTraceEvent(event: SimulationTraceEvent): boolean {
   const type = event.type.toLowerCase();
   return packetTypes.has(event.type)
+    || type.startsWith("qos-")
     || ipv6PacketPrefixes.some((prefix) => type.startsWith(prefix))
     || managementPacketPrefixes.some((prefix) => type.startsWith(prefix))
     || type.startsWith("wireless-");
@@ -83,6 +109,7 @@ function isPacketTraceEvent(event: SimulationTraceEvent): boolean {
 export const TRACE_PROTOCOL_FILTERS = [
   "ALL", "ARP", "ICMP", "UDP", "TCP", "DNS", "HTTP", "TFTP", "NTP", "SYSLOG",
   "ACL", "NAT", "FIREWALL", "CLOUD", "TRAFFIC",
+  "QoS", "Classification", "Marking", "Queue", "Policing", "Shaping",
   "STP", "RSTP", "LACP", "PAGP", "CDP", "LLDP", "OSPF",
   "IPv6", "ICMPv6", "NDP", "SLAAC", "DHCPv6", "OSPFv3", "IPv6 ACL",
   "Wireless", "Beacon", "Probe", "Authentication", "Association", "Roaming",
@@ -256,11 +283,39 @@ function EventTable({ events }: { events: SimulationTraceEvent[] }) {
   return <div className="dock-table-wrap"><table className="data-table event-table"><thead><tr><th>Time</th><th>Device</th><th>Interface</th><th>Event</th><th>Details</th></tr></thead><tbody>{events.slice(-300).reverse().map((event, index) => <tr key={`${event.sequence}-${index}`} data-event-type={event.type}><td><code>{timeLabel(event.virtualTime)}</code></td><td>{event.deviceId}</td><td><code>{event.interfaceId ?? "—"}</code></td><td><span className="event-type">{event.type}</span></td><td><code>{event.description}</code></td></tr>)}</tbody></table></div>;
 }
 
+/**
+ * A compact QoS summary for one trace row: class, policy, DSCP/CoS before and
+ * after, queue, drop reason and virtual waiting time — whatever the event
+ * actually carries. Nothing is invented when the engine did not report it.
+ */
+function qosSummary(detail: Readonly<Record<string, unknown>>): string {
+  const parts: string[] = [];
+  if (typeof detail.class === "string") parts.push(`class ${detail.class}`);
+  if (typeof detail.policy === "string") parts.push(`policy ${detail.policy}`);
+  if (typeof detail.queue === "string") parts.push(`queue ${detail.queue}`);
+  if (typeof detail.dscpBefore === "number" && typeof detail.dscpAfter === "number") {
+    parts.push(`dscp ${detail.dscpBefore}→${detail.dscpAfter}`);
+  } else if (typeof detail.dscp === "number") parts.push(`dscp ${detail.dscp}`);
+  if (typeof detail.cosBefore === "number" || typeof detail.cosAfter === "number") {
+    parts.push(`cos ${String(detail.cosBefore ?? "—")}→${String(detail.cosAfter ?? "—")}`);
+  }
+  if (typeof detail.reason === "string") parts.push(detail.reason);
+  if (typeof detail.waitedNs === "number") parts.push(`wait ${timeLabel(detail.waitedNs)}`);
+  if (typeof detail.delayNs === "number") parts.push(`delay ${timeLabel(detail.delayNs)}`);
+  return parts.join(" · ");
+}
+
 function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
   const [filter, setFilter] = useState("ALL");
   if (events.length === 0) return <EmptyState icon={<Network size={26} />} title="No packet trace" description="ARP, ICMP and forwarding events will appear here without inventing protocol data the engine does not expose." />;
-  const visible = events.filter((event) => filter === "ALL" || traceProtocol(event) === filter);
-  return <div className="dock-table-wrap"><div className="trace-filter"><label>Protocol filter <select aria-label="Packet trace protocol filter" value={filter} onChange={(event) => setFilter(event.target.value)}>{TRACE_PROTOCOL_FILTERS.map((protocol) => <option key={protocol}>{protocol}</option>)}</select></label><span>{visible.length} records</span></div><table className="data-table packet-table"><thead><tr><th>Time</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Ports</th><th>Event</th><th>Result</th></tr></thead><tbody>{visible.slice(-300).reverse().map((event, index) => {
+  const visible = events.filter((event) => {
+    if (filter === "ALL") return true;
+    const protocol = traceProtocol(event);
+    // "QoS" is the whole family; the narrower filters select one stage.
+    if (filter === "QoS") return protocol === "QoS" || qosFamilyOf(event.type) !== undefined;
+    return protocol === filter;
+  });
+  return <div className="dock-table-wrap"><div className="trace-filter"><label>Protocol filter <select aria-label="Packet trace protocol filter" value={filter} onChange={(event) => setFilter(event.target.value)}>{TRACE_PROTOCOL_FILTERS.map((protocol) => <option key={protocol}>{protocol}</option>)}</select></label><span>{visible.length} records</span></div><table className="data-table packet-table"><thead><tr><th>Time</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Ports</th><th>Event</th><th>QoS</th><th>Result</th></tr></thead><tbody>{visible.slice(-300).reverse().map((event, index) => {
     const detail = event.detail ?? {};
     const source = String(detail.src ?? detail.sourceAddress ?? detail.localAddress ?? event.deviceId);
     const destination = String(detail.dst ?? detail.destinationAddress ?? detail.remoteAddress ?? detail.targetIp ?? "—");
@@ -268,14 +323,20 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
     const sourcePort = detail.sourcePort ?? detail.localPort;
     const destinationPort = detail.destinationPort ?? detail.remotePort;
     const ports = sourcePort === undefined && destinationPort === undefined ? "—" : `${String(sourcePort ?? "*")} → ${String(destinationPort ?? "*")}`;
-    const result = event.type.includes("success") || event.type.includes("response") || event.type.includes("received") || event.type.includes("established") || event.type.includes("permitted") || event.type.includes("completed") ? "success" : event.type.includes("error") || event.type.includes("timeout") || event.type.includes("reset") || event.type.includes("unreachable") || event.type.includes("denied") || event.type.includes("dropped") || event.type.includes("no-translation") ? "error" : "observed";
-    return <tr key={`${event.sequence}-${index}`} data-event-type={event.type}><td><code>{timeLabel(event.virtualTime)}</code></td><td><code>{source}</code></td><td><code>{destination}</code></td><td>{protocol}</td><td><code>{ports}</code></td><td>{event.type}</td><td><span className={`trace-result trace-result--${result}`}>{result}</span></td></tr>;
+    const result = event.type.includes("success") || event.type.includes("response") || event.type.includes("received") || event.type.includes("established") || event.type.includes("permitted") || event.type.includes("completed") || event.type.includes("conform") ? "success" : event.type.includes("error") || event.type.includes("timeout") || event.type.includes("reset") || event.type.includes("unreachable") || event.type.includes("denied") || event.type.includes("dropped") || event.type.includes("exceed") || event.type.includes("no-translation") ? "error" : "observed";
+    const qos = qosSummary(detail);
+    return <tr key={`${event.sequence}-${index}`} data-event-type={event.type}><td><code>{timeLabel(event.virtualTime)}</code></td><td><code>{source}</code></td><td><code>{destination}</code></td><td>{protocol}</td><td><code>{ports}</code></td><td>{event.type}</td><td><code>{qos || "—"}</code></td><td><span className={`trace-result trace-result--${result}`}>{result}</span></td></tr>;
   })}</tbody></table></div>;
 }
 
 function traceProtocol(event: SimulationTraceEvent): string {
   const type = event.type.toLowerCase();
-  // Management plane first: its event names are unambiguous prefixes.
+  // QoS first: classification, marking, queueing, policing and shaping each get
+  // their own filter, and "QoS" selects the whole family.
+  const qosFamily = qosFamilyOf(type);
+  if (qosFamily) return qosFamily;
+  if (type.startsWith("qos-")) return "QoS";
+  // Management plane next: its event names are unambiguous prefixes.
   if (type.startsWith("telnet-")) return "Telnet";
   if (type.startsWith("ssh-")) return "SSH";
   if (type.startsWith("radius-")) return "RADIUS";

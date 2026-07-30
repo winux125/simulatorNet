@@ -6,7 +6,9 @@ import {
   DEFAULT_STP_FORWARD_DELAY_SECONDS,
   DEFAULT_STP_HELLO_SECONDS,
   DEFAULT_STP_MAX_AGE_SECONDS,
+  isDefaultQosConfiguration,
   type NeighborDiscoveryConfig,
+  type QosConfiguration,
 } from "@sim/contracts";
 import type {
   ConsoleAccessConfiguration,
@@ -396,6 +398,39 @@ function canonicalAcls(
   };
 }
 
+/**
+ * Canonical QoS ordering: class maps and policy maps by id, matches and classes
+ * in their configured order (that order is semantic), bindings by interface and
+ * direction. Absent when nothing is configured, so an untouched lab round-trips
+ * byte-identically and a schema-v1 lab keeps opening without a `qos` block.
+ */
+function canonicalQos(configuration: QosConfiguration | undefined): QosConfiguration | undefined {
+  if (isDefaultQosConfiguration(configuration)) return undefined;
+  return {
+    classMaps: [...configuration!.classMaps].sort(byId).map((map) => ({
+      id: map.id,
+      matchType: map.matchType,
+      matches: map.matches.map((rule) => ({ ...rule })),
+    })),
+    policyMaps: [...configuration!.policyMaps].sort(byId).map((map) => ({
+      id: map.id,
+      classes: map.classes.map((entry) => ({
+        ...entry,
+        marking: entry.marking ? { ...entry.marking } : undefined,
+        priority: entry.priority ? { ...entry.priority } : undefined,
+        police: entry.police ? { ...entry.police } : undefined,
+        shape: entry.shape ? { ...entry.shape } : undefined,
+      })),
+    })),
+    servicePolicies: [...configuration!.servicePolicies]
+      .sort((a, b) =>
+        a.interfaceName.localeCompare(b.interfaceName)
+        || a.direction.localeCompare(b.direction)
+        || a.policyMapId.localeCompare(b.policyMapId))
+      .map((binding) => ({ ...binding })),
+  };
+}
+
 function canonicalRoutedIpv6(
   config: Partial<Pick<
     RouterDeviceConfig,
@@ -473,6 +508,7 @@ function routerConfiguration(node: NodeSpec, config: RouterDeviceConfig | undefi
     dhcpPools: [...(config?.dhcpPools ?? [])].sort(byId).map((pool) => ({ ...pool })),
     ...canonicalRoutedIpv6(config),
     ...canonicalAcls(config),
+    qos: canonicalQos(config?.qos),
     ...canonicalNat(config),
     ...canonicalRoutedProtocols(config),
     discovery: canonicalDiscovery(config?.discovery),
@@ -579,6 +615,7 @@ function layer3SwitchConfiguration(
     ipRoutingEnabled: config?.ipRoutingEnabled ?? false,
     ...canonicalRoutedIpv6(config),
     ...canonicalAcls(config),
+    qos: canonicalQos(config?.qos),
     ...canonicalSwitchProtocols(config),
     ...canonicalRoutedProtocols(config),
     consoleAccess: canonicalConsoleAccess(config),
@@ -858,6 +895,8 @@ export function canonicalizeLabDocument(document: LabDocument | LabDocumentDraft
         a: { ...link.a },
         b: { ...link.b },
         propagationDelayNs: link.propagationDelayNs,
+        capacityBps: link.capacityBps,
+        queueLimitPackets: link.queueLimitPackets,
       })),
     },
     configurations,

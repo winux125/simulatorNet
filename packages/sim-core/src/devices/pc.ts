@@ -454,7 +454,7 @@ export abstract class EndHost extends Device {
   }
 
   /** Initiate one ICMP echo request. Result is recorded in `pingResults`. */
-  ping(target: Ipv4, sequence = 0): void {
+  ping(target: Ipv4, sequence = 0, options: { payloadBytes?: number } = {}): void {
     if (this.ip === undefined) throw new Error(`PC ${this.id} has no IP configured`);
     const icmp: IcmpMessage = {
       kind: "icmp",
@@ -462,6 +462,7 @@ export abstract class EndHost extends Device {
       code: 0,
       identifier: this.icmpIdentifier,
       sequence,
+      payloadBytes: options.payloadBytes,
     };
     const packet: Ipv4Packet = {
       kind: "ipv4",
@@ -528,7 +529,10 @@ export abstract class EndHost extends Device {
     return this.ipv6NeighborRuntime;
   }
 
-  protected sendIpv6(packet: Ipv6Packet): void {
+  protected sendIpv6(rawPacket: Ipv6Packet): void {
+    const packet = this.originationDscp !== undefined && rawPacket.trafficClass === undefined
+      ? { ...rawPacket, trafficClass: this.originationDscp }
+      : rawPacket;
     this.refreshIpv6Runtime();
     if (isIpv6Multicast(packet.dst)) {
       this.ipv6Discovery().send(packet, packet.dst);
@@ -861,7 +865,16 @@ export abstract class EndHost extends Device {
     return this.gateway; // may be undefined -> unreachable
   }
 
-  private sendIpv4(packet: Ipv4Packet): void {
+  /**
+   * DSCP this host stamps on the packets it originates, so a Traffic Generator
+   * flow can emit pre-marked traffic. Undefined leaves the packet unmarked.
+   */
+  protected originationDscp: number | undefined;
+
+  private sendIpv4(rawPacket: Ipv4Packet): void {
+    const packet = this.originationDscp !== undefined && rawPacket.dscp === undefined
+      ? { ...rawPacket, dscp: this.originationDscp }
+      : rawPacket;
     const hop = this.nextHop(packet.dst);
     if (hop === undefined) return; // no route: the ping simply times out
     const mac = this.arpTable.get(hop);

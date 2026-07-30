@@ -21,6 +21,8 @@ import type {
   AaaServerContext,
   AclContext,
   InterfaceContext,
+  QosClassMapContext,
+  QosPolicyMapContext,
   RouterProcessContext,
   SessionApi,
   VtyLineContext,
@@ -48,6 +50,8 @@ export class CliSession implements SessionApi {
   routerCtx: RouterProcessContext | undefined;
   lineCtx: VtyLineContext | undefined;
   aaaServerCtx: AaaServerContext | undefined;
+  classMapCtx: QosClassMapContext | undefined;
+  policyMapCtx: QosPolicyMapContext | undefined;
   private pendingInput: "ping-target" | undefined;
   private executionMode: NetworkExecutionMode = "auto";
   private pendingOperation: (() => string | undefined) | undefined;
@@ -139,6 +143,10 @@ export class CliSession implements SessionApi {
     if (mode !== "config-router") this.routerCtx = undefined;
     if (mode !== "config-line") this.lineCtx = undefined;
     if (mode !== "config-aaa-server") this.aaaServerCtx = undefined;
+    if (mode !== "config-cmap") this.classMapCtx = undefined;
+    // The policy-map context survives `class <name>`, which nests inside it.
+    if (mode !== "config-pmap" && mode !== "config-pmap-c") this.policyMapCtx = undefined;
+    if (mode === "config-pmap" && this.policyMapCtx) this.policyMapCtx.className = undefined;
     this.mode = mode;
   }
 

@@ -1,3 +1,7 @@
+import {
+  DEFAULT_LINK_CAPACITY_BPS,
+  DEFAULT_LINK_QUEUE_LIMIT_PACKETS,
+} from "@sim/contracts";
 import { DEFAULT_LINK_DELAY_NS, NS_PER_S } from "../engine/constants";
 
 /**
@@ -20,10 +24,8 @@ export const LINK_PERFORMANCE_LIMITS = Object.freeze({
   minimumSerializationNs: 1,
 });
 
-/** 100 Mbps FastEthernet-class default; explicit, documented and overridable. */
-export const DEFAULT_LINK_CAPACITY_BPS = 100_000_000;
-/** Default tail-drop depth of one egress direction. */
-export const DEFAULT_LINK_QUEUE_LIMIT_PACKETS = 256;
+/** Re-exported so engine code has one import for every link-performance value. */
+export { DEFAULT_LINK_CAPACITY_BPS, DEFAULT_LINK_QUEUE_LIMIT_PACKETS };
 
 /**
  * The structured, serializable performance description of one physical link.

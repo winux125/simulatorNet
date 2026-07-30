@@ -12,3 +12,4 @@ export * from "./management";
 export * from "./aaa";
 export * from "./snmp";
 export * from "./wireless";
+export * from "./qos";

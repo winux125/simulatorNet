@@ -10,6 +10,12 @@ import {
   Ipv6Schema,
   type Ipv6AclConfig,
   type Ospfv3ProcessConfig,
+  type QosClassMapConfig,
+  type QosConfiguration,
+  type QosMatchRuleConfig,
+  type QosPolicyClassConfig,
+  type QosPolicyMapConfig,
+  parseDscpToken,
 } from "@sim/contracts";
 
 export interface ImportedInterfaceConfig {
@@ -45,6 +51,8 @@ export interface ImportedInterfaceConfig {
     cost?: number;
   };
   ipv6TrafficFilters?: Array<{ aclId: string; direction: "in" | "out" }>;
+  /** `service-policy input|output <policy-map>`. */
+  servicePolicies?: Array<{ direction: "input" | "output"; policyMapId: string }>;
 }
 
 /** `interface Loopback<n>` recognised from an imported startup-config. */
@@ -80,6 +88,12 @@ export interface ImportedDeviceConfiguration {
   lldpEnabled?: boolean;
   ospf?: ImportedOspfConfig;
   ospfv3?: Ospfv3ProcessConfig;
+  /**
+   * The recognised MQC subset: class-map, match, policy-map, class, set dscp,
+   * priority/bandwidth percent, police, shape average. Anything else stays in
+   * `unparsedLines` and is reported honestly by the import report.
+   */
+  qos: QosConfiguration;
   appliedLines: string[];
   unparsedLines: string[];
 }
@@ -149,6 +163,87 @@ export function normalizeInterfaceName(name: string): string {
   return compact;
 }
 
+/** The `match` forms the importer understands; everything else stays unparsed. */
+function parseQosMatch(tokens: string[]): QosMatchRuleConfig | undefined {
+  const keyword = tokens[1]?.toLowerCase();
+  if (keyword === "any") return { kind: "any" };
+  if (keyword === "dscp" && tokens[2]) {
+    const dscp = parseDscpToken(tokens[2]);
+    return dscp === undefined ? undefined : { kind: "dscp", values: [dscp] };
+  }
+  if (keyword === "precedence" && /^[0-7]$/u.test(tokens[2] ?? "")) {
+    return { kind: "precedence", values: [Number(tokens[2])] };
+  }
+  if (keyword === "cos" && /^[0-7]$/u.test(tokens[2] ?? "")) {
+    return { kind: "cos", values: [Number(tokens[2])] };
+  }
+  if (keyword === "protocol") {
+    const protocol = tokens[2]?.toLowerCase();
+    if (protocol === "icmp" || protocol === "tcp" || protocol === "udp") return { kind: "protocol", protocol };
+    return undefined;
+  }
+  if (keyword === "access-group") {
+    const aclId = tokens[2]?.toLowerCase() === "name" ? tokens[3] : tokens[2];
+    return aclId ? { kind: "access-group", aclId } : undefined;
+  }
+  return undefined;
+}
+
+/** The policy-map class actions the importer understands. */
+function applyQosClassLine(entry: QosPolicyClassConfig, tokens: string[]): boolean {
+  const head = tokens[0]?.toLowerCase();
+  if (head === "set" && tokens[1]?.toLowerCase() === "dscp" && tokens[2]) {
+    const dscp = parseDscpToken(tokens[2]);
+    if (dscp === undefined) return false;
+    entry.marking = { ...entry.marking, dscp };
+    return true;
+  }
+  if (head === "set" && tokens[1]?.toLowerCase() === "precedence" && /^[0-7]$/u.test(tokens[2] ?? "")) {
+    entry.marking = { ...entry.marking, precedence: Number(tokens[2]) };
+    return true;
+  }
+  if (head === "set" && tokens[1]?.toLowerCase() === "cos" && /^[0-7]$/u.test(tokens[2] ?? "")) {
+    entry.marking = { ...entry.marking, cos: Number(tokens[2]) };
+    return true;
+  }
+  if (head === "priority" && tokens[1]?.toLowerCase() === "percent" && isPercent(tokens[2])) {
+    entry.priority = { percent: Number(tokens[2]) };
+    return true;
+  }
+  if (head === "bandwidth" && tokens[1]?.toLowerCase() === "percent" && isPercent(tokens[2])) {
+    entry.bandwidthPercent = Number(tokens[2]);
+    return true;
+  }
+  if (head === "shape" && tokens[1]?.toLowerCase() === "average" && /^\d+$/u.test(tokens[2] ?? "")) {
+    entry.shape = { averageRateBps: Number(tokens[2]) };
+    return true;
+  }
+  if (head === "police" && /^\d+$/u.test(tokens[1] ?? "") && /^\d+$/u.test(tokens[2] ?? "")) {
+    // `police <bps> <burst> [conform-action transmit] [exceed-action drop]`.
+    const exceedIndex = tokens.findIndex((token) => token.toLowerCase() === "exceed-action");
+    const exceed = exceedIndex >= 0 ? tokens[exceedIndex + 1]?.toLowerCase() : "drop";
+    if (exceed !== undefined && exceed !== "drop" && exceed !== "set-dscp-transmit") return false;
+    if (exceed === "set-dscp-transmit") {
+      const exceedDscp = parseDscpToken(tokens[exceedIndex + 2] ?? "");
+      if (exceedDscp === undefined) return false;
+      entry.police = {
+        rateBps: Number(tokens[1]),
+        burstBytes: Number(tokens[2]),
+        exceedAction: "set-dscp-transmit",
+        exceedDscp,
+      };
+      return true;
+    }
+    entry.police = { rateBps: Number(tokens[1]), burstBytes: Number(tokens[2]), exceedAction: "drop" };
+    return true;
+  }
+  return false;
+}
+
+function isPercent(token: string | undefined): boolean {
+  return /^\d{1,3}$/u.test(token ?? "") && Number(token) >= 1 && Number(token) <= 100;
+}
+
 export function parseIosConfig(text: string, interfaceNames: readonly string[]): ImportedDeviceConfiguration {
   const resolve = new Map<string, string>();
   for (const name of interfaceNames) resolve.set(normalizeInterfaceName(name), name);
@@ -170,6 +265,7 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     ipv6AclBindings: [],
     vlans: [],
     spanningTreeVlanPriorities: [],
+    qos: { classMaps: [], policyMaps: [], servicePolicies: [] },
     appliedLines: [],
     unparsedLines: [],
   };
@@ -181,8 +277,16 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
   let inOspf = false;
   let inOspfv3 = false;
   let currentIpv6Acl: Ipv6AclConfig | undefined;
+  let currentClassMap: QosClassMapConfig | undefined;
+  let currentPolicyMap: QosPolicyMapConfig | undefined;
+  let currentPolicyClass: QosPolicyClassConfig | undefined;
   const applied = (line: string): void => { result.appliedLines.push(line.trim()); };
   const unparsed = (line: string): void => { result.unparsedLines.push(line.trim()); };
+  const clearQosContext = (): void => {
+    currentClassMap = undefined;
+    currentPolicyMap = undefined;
+    currentPolicyClass = undefined;
+  };
 
   for (const raw of text.split(/\r\n|\r|\n/u)) {
     const line = raw.replace(/\s+$/u, "");
@@ -195,6 +299,7 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       inOspf = false;
       inOspfv3 = false;
       currentIpv6Acl = undefined;
+      clearQosContext();
       continue;
     }
     const tokens = trimmed.split(/\s+/u);
@@ -208,6 +313,7 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       inOspf = false;
       inOspfv3 = false;
       currentIpv6Acl = undefined;
+      clearQosContext();
       const loopbackMatch = /^lo(?:opback)?(\d+)$/u.exec(normalizeInterfaceName(spec));
       if (loopbackMatch) {
         const id = Number(loopbackMatch[1]);
@@ -220,6 +326,60 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       currentLoopback = undefined;
       const actual = resolve.get(normalizeInterfaceName(spec));
       if (actual) { current = ensureInterface(actual); applied(line); } else { current = undefined; unparsed(line); }
+      continue;
+    }
+
+    // --- MQC quality of service -------------------------------------------
+    if (head === "class-map" && tokens.length >= 2) {
+      const matchType = tokens[1]?.toLowerCase() === "match-all"
+        ? "match-all" as const
+        : tokens[1]?.toLowerCase() === "match-any" ? "match-any" as const : undefined;
+      const name = matchType ? tokens[2] : tokens[1];
+      if (!name) { unparsed(line); continue; }
+      current = undefined;
+      currentLoopback = undefined;
+      currentIpv6Acl = undefined;
+      inOspf = false;
+      inOspfv3 = false;
+      currentPolicyMap = undefined;
+      currentPolicyClass = undefined;
+      currentClassMap = result.qos.classMaps.find((map) => map.id === name)
+        // IOS defaults an unqualified class-map to match-all.
+        ?? { id: name, matchType: matchType ?? "match-all", matches: [] };
+      if (!result.qos.classMaps.includes(currentClassMap)) result.qos.classMaps.push(currentClassMap);
+      applied(line);
+      continue;
+    }
+    if (head === "policy-map" && tokens[1]) {
+      current = undefined;
+      currentLoopback = undefined;
+      currentIpv6Acl = undefined;
+      inOspf = false;
+      inOspfv3 = false;
+      currentClassMap = undefined;
+      currentPolicyClass = undefined;
+      currentPolicyMap = result.qos.policyMaps.find((map) => map.id === tokens[1])
+        ?? { id: tokens[1]!, classes: [] };
+      if (!result.qos.policyMaps.includes(currentPolicyMap)) result.qos.policyMaps.push(currentPolicyMap);
+      applied(line);
+      continue;
+    }
+    if (currentClassMap && isIndented && head === "match") {
+      const rule = parseQosMatch(tokens);
+      if (rule) { currentClassMap.matches.push(rule); applied(line); } else unparsed(line);
+      continue;
+    }
+    if (currentPolicyMap && isIndented && head === "class" && tokens[1]) {
+      currentPolicyClass = currentPolicyMap.classes.find((entry) => entry.className === tokens[1])
+        ?? { className: tokens[1]! };
+      if (!currentPolicyMap.classes.includes(currentPolicyClass)) {
+        currentPolicyMap.classes.push(currentPolicyClass);
+      }
+      applied(line);
+      continue;
+    }
+    if (currentPolicyClass && isIndented) {
+      if (applyQosClassLine(currentPolicyClass, tokens)) { applied(line); } else unparsed(line);
       continue;
     }
 
@@ -488,6 +648,19 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
         applied(line);
         continue;
       }
+      if (head === "service-policy" && tokens[2]) {
+        const direction = tokens[1]?.toLowerCase();
+        if (direction === "input" || direction === "output") {
+          current.servicePolicies = [
+            ...(current.servicePolicies ?? []),
+            { direction, policyMapId: tokens[2] },
+          ];
+          applied(line);
+          continue;
+        }
+        unparsed(line);
+        continue;
+      }
       if (head === "ip" && tokens[1]?.toLowerCase() === "ospf") {
         const ospf = current.ospf ?? {};
         const keyword = tokens[2]?.toLowerCase();
@@ -520,5 +693,16 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
   result.interfaces = [...interfaces.values()];
   result.loopbacks = [...loopbacks.values()].sort((a, b) => a.id - b.id);
   result.vlans = [...vlanNames.entries()].map(([id, name]) => ({ id, name }));
+  // Bindings are collected per interface and lifted into the device's QoS
+  // configuration; a binding to a policy map the file never defined is dropped
+  // rather than silently inventing one.
+  result.qos.servicePolicies = result.interfaces.flatMap((iface) =>
+    (iface.servicePolicies ?? [])
+      .filter((binding) => result.qos.policyMaps.some((map) => map.id === binding.policyMapId))
+      .map((binding) => ({
+        interfaceName: iface.id,
+        direction: binding.direction,
+        policyMapId: binding.policyMapId,
+      })));
   return result;
 }

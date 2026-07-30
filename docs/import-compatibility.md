@@ -205,3 +205,25 @@ for example `aaa server radius dynamic-author`, a read-write SNMP community, or
 an SNMP version other than 2c — is reported in the import report rather than
 silently dropped. Read-write communities and SNMP SET are out of scope, so
 importing one would imply a capability the simulator does not have.
+
+## Quality-of-service configuration (M10.8)
+
+The IOS-like MQC subset the importer recognises:
+
+- \class-map [match-all|match-any] <name>\ with \match any\, \match dscp\,
+  \match precedence\, \match cos\, \match protocol icmp|tcp|udp\ and
+  \match access-group [name] <acl>\;
+- \policy-map <name>\ with \class <name>\ and the actions \set dscp\,
+  \set precedence\, \set cos\, \priority percent\, \andwidth percent\,
+  \police <bps> <burst> [conform-action transmit] [exceed-action drop|set-dscp-transmit <dscp>]  and \shape average <bps>\;
+- \service-policy input|output <policy-map>\ on a recognised interface.
+
+Consistency is enforced rather than guessed: a policy class that names a class
+map the file never defined is dropped, and a \service-policy\ that names a
+missing policy map or an unmapped interface is not imported. Both cases stay in
+the import report.
+
+Unsupported advanced QoS lines — \andom-detect\, \air-queue\, \mls qos\,
+hierarchical \service-policy\ inside a policy class, NBAR \match protocolapplication names, MPLS EXP and platform queue commands — are preserved in the
+import report as unparsed rather than silently dropped, because applying them
+would imply a capability SimulatorNet does not have.

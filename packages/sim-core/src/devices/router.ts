@@ -408,6 +408,11 @@ export class Router extends Device {
     return this.qos.problems();
   }
 
+  /** Re-install queue structure once the topology's cables (and capacity) exist. */
+  refreshEgressQueues(): void {
+    this.refreshEgressQueueProfiles();
+  }
+
   /**
    * Re-derive per-interface queue structure after a policy change.
    *

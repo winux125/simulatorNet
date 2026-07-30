@@ -36,6 +36,7 @@ import type { ZodIssue } from "zod";
 import { VerificationError, VerificationResourceLimitError } from "./errors";
 import { DEFAULT_VERIFICATION_LIMITS, type VerificationLimits } from "./limits";
 import { isManagementCheck, runManagementCheck } from "./management-checks";
+import { isQosCheck, runQosCheck } from "./qos-checks";
 import { stableHash, stableStringify, utf8ByteLength } from "./stable";
 
 interface InternalCheckResult extends VerificationCheckResult {
@@ -275,6 +276,16 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
   // The management plane drives real simulated sessions, so it gets the
   // rebuilt document too: the verifier replays the credential the learner
   // stored instead of a grading spec ever carrying one.
+  if (isQosCheck(check)) {
+    const outcome = runQosCheck(check, built, () => runtime.runUntil(() => built.engine.pendingEventCount() === 0));
+    return result(
+      check,
+      outcome.passed,
+      outcome.message,
+      outcome.error ? { ...outcome.diagnostics, failure: outcome.error } : outcome.diagnostics,
+      outcome.error && !outcome.passed ? "error" : outcome.passed ? "passed" : "failed",
+    );
+  }
   if (isManagementCheck(check)) {
     const outcome = runManagementCheck(check, built, runtime.document, () => runtime.runUntil(() => built.engine.pendingEventCount() === 0));
     return result(

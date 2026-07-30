@@ -301,6 +301,39 @@ Commands that *set* a secret — `username … secret`, `enable secret`, a line
 configured through the credential UI panels and the importer, which derive a
 verifier asynchronously. The interactive CLI never handles a plaintext secret.
 
+## Quality of service (M10.8)
+
+An educational MQC subset. It is not full MQC and not Cisco hardware parity.
+
+| Command | Mode | Notes |
+| --- | --- | --- |
+| `class-map match-any\|match-all <name>` | config | Enters `config-cmap` |
+| `match any` | config-cmap | |
+| `match dscp <0-63\|default\|cs0-cs7\|af11-af43\|ef>` | config-cmap | |
+| `match precedence <0-7>` / `match cos <0-7>` | config-cmap | |
+| `match protocol <icmp\|tcp\|udp>` | config-cmap | |
+| `match access-group [name] <acl>` | config-cmap | IPv4 or IPv6 ACL as a selector |
+| `match source-port <port>` / `match destination-port <port>` | config-cmap | |
+| `no class-map <name>` | config | |
+| `policy-map <name>` | config | Enters `config-pmap` |
+| `class <class-map\|class-default>` | config-pmap | Enters `config-pmap-c` |
+| `set dscp <value>` / `set precedence <0-7>` / `set cos <0-7>` | config-pmap-c | |
+| `priority percent <1-100>` | config-pmap-c | Strict priority with a built-in policer |
+| `bandwidth percent <1-100>` | config-pmap-c | Deficit round robin weight |
+| `police <bps> <burst> [conform-action transmit exceed-action drop]` | config-pmap-c | Never delays |
+| `police <bps> <burst> conform-action transmit exceed-action set-dscp-transmit <dscp>` | config-pmap-c | Marks down |
+| `shape average <bps>` | config-pmap-c | Delays; drops only when the queue fills |
+| `queue-limit <1-4096> packets` | config-pmap-c | Per-class tail-drop depth |
+| `service-policy input\|output <policy-map>` | config-if | |
+| `no service-policy input\|output` | config-if | |
+| `show class-map` / `show policy-map` | exec/privileged | |
+| `show policy-map interface` | exec/privileged | Per-class matched/marked/dropped counters |
+| `show queueing interface <name>` | exec/privileged | Depth, drops, virtual wait |
+| `show interfaces counters` | exec/privileged | Per-port queue counters |
+| `clear qos counters` | privileged | Clears runtime counters only |
+
+See [`qos-simulation.md`](qos-simulation.md).
+
 ## Deliberate omissions
 
 The following familiar IOS operations are not implemented and are omitted from
@@ -309,7 +342,10 @@ contextual help: startup configuration, `copy`, `write`, `erase`, `reload`,
 authentication and redistribution, MSTP and MST regions, Loop Guard, Root Guard,
 UDLD, UplinkFast/BackboneFast/Flex Links, multi-chassis EtherChannel, LACP fast
 rate, PAgP silent modes, LLDP-MED, port security, reflexive/time-based ACLs, NAT
-hairpinning, WPA3, 802.1X, wireless controllers, mesh, or real RF. There
+hairpinning, WPA3, 802.1X, wireless controllers, mesh, or real RF. QoS omits
+WRED/RED (`random-detect`), per-flow WFQ (`fair-queue`), hierarchical policies,
+`mls qos`, NBAR (`match protocol http`), MPLS EXP and any platform queue
+model. There
 is no Tab completion, fuzzy matching, network-device
 `traceroute`, arbitrary command scripting, real DNS/network access or full Cisco
 contextual-help parity.

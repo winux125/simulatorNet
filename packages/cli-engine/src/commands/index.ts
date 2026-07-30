@@ -6,6 +6,7 @@ import { vlanCommands } from "./vlan";
 import { applicationCommands } from "./applications";
 import { managementCommands } from "./management";
 import { protocolCommands } from "./protocols";
+import { qosCommands } from "./qos";
 import { securityCommands } from "./security";
 
 /** Every command the CLI understands, across all modes. */
@@ -16,6 +17,7 @@ export const allCommands: CommandSpec[] = [
   ...showCommands,
   ...applicationCommands,
   ...securityCommands,
+  ...qosCommands,
   ...protocolCommands,
   ...managementCommands,
 ];

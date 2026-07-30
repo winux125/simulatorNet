@@ -367,6 +367,10 @@ export class Layer3Switch extends L2Switch {
     return this.routingPlane.qosProblems();
   }
 
+  refreshEgressQueues(): void {
+    this.routingPlane.refreshEgressQueues();
+  }
+
   staticRouteConfigurations(): ReturnType<Router["staticRouteConfigurations"]> {
     return this.routingPlane.staticRouteConfigurations();
   }

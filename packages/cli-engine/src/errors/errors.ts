@@ -72,7 +72,13 @@ export class UnsupportedCapabilityError extends CliError {
 export function renderProtocolError(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null) return undefined;
   const code = (error as { code?: unknown }).code;
-  if (typeof code !== "string" || !code.startsWith("control-protocol")) return undefined;
+  if (typeof code !== "string") return undefined;
+  // QoS marking, policy and link-performance errors are typed the same way and
+  // belong on the terminal as a `% ...` line, not as a worker exception.
+  const structured = code.startsWith("control-protocol")
+    || code.startsWith("QOS_")
+    || code.startsWith("LINK_PERFORMANCE_");
+  if (!structured) return undefined;
   const message = (error as { message?: unknown }).message;
   return `% ${typeof message === "string" ? message : "Control protocol error"}`;
 }

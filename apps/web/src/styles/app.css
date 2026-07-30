@@ -488,3 +488,16 @@ label.ui-icon-button { display: inline-grid; }
   .terminal-search { display: none; }
   .wireless-connect-form, .wireless-ap-form { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* M10.8 quality of service: the device QoS sections and the link inspector's
+   deterministic performance form. */
+.qos-panel { display: grid; align-content: start; gap: 10px; }
+.qos-panel h3 { margin: 12px 0 4px; color: var(--color-text-muted); font-size: var(--font-size-10); text-transform: uppercase; letter-spacing: 0.04em; }
+.qos-panel__actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.qos-panel__problems { display: grid; gap: 5px; }
+.link-performance { display: grid; gap: 8px; margin-top: 14px; padding: 12px 14px 14px; border: var(--border); border-radius: var(--radius-md); background: var(--color-panel-raised); }
+.link-performance label { display: grid; gap: 4px; color: var(--color-text-muted); font-size: var(--font-size-10); font-weight: 650; }
+.link-performance input { min-height: 30px; padding: 0 8px; border: var(--border); border-radius: var(--radius-md); outline: 0; background: var(--color-input); color: var(--color-text); font: var(--font-size-11) var(--font-mono); }
+.link-performance input:focus { border-color: var(--color-accent); }
+.link-performance .ui-button { justify-self: start; }
+.link-performance .section-note { margin: 0; color: var(--color-text-faint); font-size: 9px; line-height: 1.5; }

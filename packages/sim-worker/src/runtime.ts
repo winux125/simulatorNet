@@ -6,6 +6,7 @@ import {
   WirelessAccessPointConfigurationSchema,
   WirelessSecurityConfigurationSchema,
   DeviceConfigSchema,
+  QosConfigurationSchema,
   ServerServiceConfigSchema,
   type DeviceConfig,
   type HostIpConfiguration,
@@ -39,6 +40,7 @@ import {
   IspCloud,
   deviceMibSource,
   mibVarBinds,
+  normalizeLinkPerformance,
   type Device,
   type Mac,
   type SnmpOperation,
@@ -66,6 +68,8 @@ import type {
   ServerServicesView,
   SecurityConfigurationView,
   SecurityDeviceConfiguration,
+  QosConfigurationView,
+  LinkPerformanceView,
   Ospfv3View,
   RemoteSessionsView,
   SnmpOperationView,
@@ -87,6 +91,10 @@ function recordOf(value: unknown): Record<string, unknown> | undefined {
 function requestIdOf(value: unknown): string {
   const requestId = recordOf(value)?.requestId;
   return typeof requestId === "string" && requestId.length > 0 ? requestId : "uncorrelated";
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function requireString(record: Record<string, unknown>, key: string): string {
@@ -252,6 +260,18 @@ export class SimulationWorkerRuntime {
         return this.runTrafficFlow(requireString(request, "deviceId"), requireString(request, "flowId"));
       case "CLEAR_SECURITY_RUNTIME":
         return this.clearSecurityRuntime(requireString(request, "deviceId"));
+      case "GET_QOS_CONFIGURATION":
+        return this.qosConfiguration(requireString(request, "deviceId"));
+      case "SET_QOS_CONFIGURATION":
+        return this.setQosConfiguration(requireString(request, "deviceId"), request.configuration);
+      case "CLEAR_QOS_RUNTIME": {
+        const deviceId = requireString(request, "deviceId");
+        this.requireQosDevice(deviceId).resetQosRuntime();
+        this.emitStateChanged();
+        return this.qosConfiguration(deviceId);
+      }
+      case "SET_LINK_PERFORMANCE":
+        return this.setLinkPerformance(requireString(request, "linkId"), request.performance);
       case "GET_SPANNING_TREE_STATE":
         return this.spanningTreeState(requireString(request, "deviceId"));
       case "RESET_BPDU_GUARD_PORT": {
@@ -629,6 +649,134 @@ export class SimulationWorkerRuntime {
     return this.securityConfiguration(deviceId);
   }
 
+  // --- quality of service -------------------------------------------------
+
+  private requireQosDevice(deviceId: string): Router | Layer3Switch {
+    const device = this.requireBuiltLab().getDevice(deviceId);
+    if (!(device instanceof Router) && !(device instanceof Layer3Switch)) {
+      throw new SimulationWorkerError("qos-not-supported", `Device '${deviceId}' has no QoS policy engine`);
+    }
+    return device;
+  }
+
+  private qosConfiguration(deviceId: string): QosConfigurationView {
+    const device = this.requireQosDevice(deviceId);
+    const document = this.serialize();
+    const stored = document.configurations[deviceId];
+    const configuration = stored && "qos" in stored && stored.qos
+      ? stored.qos
+      : { classMaps: [], policyMaps: [], servicePolicies: [] };
+    const bindings = new Map(
+      device.qosServicePolicies()
+        .filter((binding) => binding.direction === "output")
+        .map((binding) => [binding.interfaceName, binding.policyMapId]),
+    );
+    const built = this.requireBuiltLab();
+    return {
+      deviceId,
+      configuration,
+      document,
+      runtime: {
+        counters: device.qosCounters(),
+        problems: device.qosProblems(),
+        queues: [...device.interfaces.values()]
+          .sort((left, right) => left.name.localeCompare(right.name))
+          .map((iface) => {
+            const snapshot = iface.egress.snapshot();
+            return {
+              interfaceName: iface.name,
+              policyMapId: bindings.get(iface.name),
+              depthPackets: snapshot.depthPackets,
+              depthBytes: snapshot.depthBytes,
+              droppedPackets: snapshot.droppedPackets,
+              dropsByReason: snapshot.dropsByReason,
+              maximumWaitingTimeNs: snapshot.maximumWaitingTimeNs,
+              capacityBps: built.engine.findLink(deviceId, iface.name)?.capacityBps ?? 0,
+              classes: snapshot.classes.map((entry) => ({
+                className: entry.className,
+                depthPackets: entry.depthPackets,
+                limitPackets: entry.limitPackets,
+                dequeuedPackets: entry.dequeuedPackets,
+                dequeuedBytes: entry.dequeuedBytes,
+                droppedPackets: entry.droppedPackets,
+              })),
+            };
+          }),
+      },
+    };
+  }
+
+  private setQosConfiguration(deviceId: string, input: unknown): QosConfigurationView {
+    const parsed = QosConfigurationSchema.safeParse(input);
+    if (!parsed.success) {
+      throw new SimulationWorkerError("invalid-qos-configuration", "QoS configuration validation failed");
+    }
+    const device = this.requireQosDevice(deviceId);
+    for (const policy of device.qosPolicyMapConfigurations()) device.removeQosPolicyMap(policy.id);
+    for (const map of device.qosClassMapConfigurations()) device.removeQosClassMap(map.id);
+    for (const map of parsed.data.classMaps) device.defineQosClassMap(map);
+    for (const map of parsed.data.policyMaps) device.defineQosPolicyMap(map);
+    for (const binding of parsed.data.servicePolicies) {
+      device.applyServicePolicy(binding.interfaceName, binding.direction, binding.policyMapId);
+    }
+    device.refreshEgressQueues();
+    this.emitStateChanged();
+    this.flushTrace();
+    return this.qosConfiguration(deviceId);
+  }
+
+  /**
+   * Link performance is simulation configuration, so it may change while the lab
+   * runs: a packet that is already serializing keeps its timing and the next
+   * packet uses the new value. Nothing is rebuilt and no queue is discarded.
+   */
+  private setLinkPerformance(linkId: string, input: unknown): LinkPerformanceView {
+    const built = this.requireBuiltLab();
+    const document = this.document;
+    if (!document) throw new SimulationWorkerError("lab-not-initialized", "Lab document is unavailable");
+    const spec = document.topology.links.find((link) => link.id === linkId);
+    if (!spec) throw new SimulationWorkerError("unknown-link", `Unknown link '${linkId}'`);
+    const record = recordOf(input) ?? {};
+    const requested = {
+      capacityBps: numberOrUndefined(record.capacityBps),
+      propagationDelayNs: numberOrUndefined(record.propagationDelayNs),
+      queueLimitPackets: numberOrUndefined(record.queueLimitPackets),
+    };
+    let performance;
+    try {
+      performance = built.engine.configureLinkPerformance(spec.a.node, spec.a.iface, requested);
+    } catch (error) {
+      throw new SimulationWorkerError(
+        "invalid-link-performance",
+        error instanceof Error ? error.message : "Link performance validation failed",
+      );
+    }
+    // The interface queue structure depends on capacity, so re-derive it.
+    for (const node of [spec.a.node, spec.b.node]) {
+      const device = built.getDevice(node);
+      if (device instanceof Router || device instanceof Layer3Switch) device.refreshEgressQueues();
+    }
+    const nextDocument: LabDocument = {
+      ...document,
+      topology: {
+        ...document.topology,
+        links: document.topology.links.map((link) => (link.id === linkId
+          ? {
+              ...link,
+              capacityBps: performance.capacityBps,
+              propagationDelayNs: performance.propagationDelayNs,
+              queueLimitPackets: performance.queueLimitPackets,
+            }
+          : link)),
+      },
+    };
+    this.document = nextDocument;
+    const snapshot = this.snapshot();
+    this.emit({ type: "STATE_CHANGED", snapshot });
+    this.flushTrace();
+    return { linkId, performance: { ...performance }, document: nextDocument, snapshot };
+  }
+
   private clearSecurityRuntime(deviceId: string): SecurityConfigurationView {
     const device = this.requireBuiltLab().getDevice(deviceId);
     if (!device) throw new SimulationWorkerError("unknown-device", `Unknown device '${deviceId}'`);
@@ -653,13 +801,23 @@ export class SimulationWorkerRuntime {
       virtualTime: built.engine.now(),
       queuedEvents: built.engine.pendingEventCount(),
       nodes: document.topology.nodes.map((node, index) => this.nodeSnapshot(node, index)),
-      links: document.topology.links.map((link) => ({
-        id: link.id,
-        sourceNode: link.a.node,
-        sourceInterface: link.a.iface,
-        targetNode: link.b.node,
-        targetInterface: link.b.iface,
-      })),
+      links: document.topology.links.map((link) => {
+        const live = built.engine.findLink(link.a.node, link.a.iface);
+        return {
+          id: link.id,
+          sourceNode: link.a.node,
+          sourceInterface: link.a.iface,
+          targetNode: link.b.node,
+          targetInterface: link.b.iface,
+          performance: live
+            ? { ...live.performance }
+            : normalizeLinkPerformance({
+                capacityBps: link.capacityBps,
+                propagationDelayNs: link.propagationDelayNs,
+                queueLimitPackets: link.queueLimitPackets,
+              }),
+        };
+      }),
       wirelessAssociations: document.topology.nodes.flatMap((node) => {
         const device = built.getDevice(node.id);
         if (!(device instanceof WirelessEndHost)) return [];
@@ -1152,6 +1310,33 @@ export class SimulationWorkerRuntime {
       .map((device) => ({ deviceId: device.id, address: device.ip! }));
     const warnings: HostNetworkWarning[] = findDuplicateHostAddresses(document, records);
     for (const device of this.requireBuiltLab().devices.values()) {
+      // Structural QoS problems and resource pressure are surfaced in Problems
+      // rather than thrown mid-packet, so a lab keeps running while it explains
+      // what is wrong.
+      if (device instanceof Router || device instanceof Layer3Switch) {
+        for (const problem of device.qosProblems()) {
+          warnings.push({ code: "qos-policy", message: problem.message, deviceIds: [device.id] });
+        }
+        for (const iface of device.interfaces.values()) {
+          const snapshot = iface.egress.snapshot();
+          const tailDrops = snapshot.dropsByReason["tail-drop"] ?? 0;
+          const policerDrops = snapshot.dropsByReason["policer-exceed"] ?? 0;
+          if (tailDrops > 0) {
+            warnings.push({
+              code: "qos-queue-overflow",
+              message: `${device.name} ${iface.name} tail-dropped ${tailDrops} packet(s): the egress queue overflowed.`,
+              deviceIds: [device.id],
+            });
+          }
+          if (policerDrops > 0) {
+            warnings.push({
+              code: "qos-policer-drop",
+              message: `${device.name} ${iface.name} dropped ${policerDrops} packet(s) above the configured priority allowance.`,
+              deviceIds: [device.id],
+            });
+          }
+        }
+      }
       if (device instanceof WirelessEndHost) {
         const status = device.wirelessStatus();
         const message = wirelessFailureMessage(status.failureReason);

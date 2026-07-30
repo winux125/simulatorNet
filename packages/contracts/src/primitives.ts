@@ -30,6 +30,40 @@ export const Ipv6InterfaceAddressSchema = z.object({
 }).strict();
 export type Ipv6InterfaceAddress = z.infer<typeof Ipv6InterfaceAddressSchema>;
 
+/**
+ * Address and port matchers shared by ACLs, NAT, firewall policies and QoS
+ * class maps. They live in primitives so `qos.ts` and `lab.ts` stay acyclic.
+ */
+export const Ipv4AddressMatcherSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("any") }).strict(),
+  z.object({ kind: z.literal("host"), address: Ipv4Schema }).strict(),
+  z.object({
+    kind: z.literal("network"),
+    address: Ipv4Schema,
+    wildcard: Ipv4Schema,
+  }).strict(),
+]);
+
+export const Ipv6AddressMatcherSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("any") }).strict(),
+  z.object({ kind: z.literal("host"), address: Ipv6Schema }).strict(),
+  z.object({
+    kind: z.literal("prefix"),
+    address: Ipv6Schema,
+    prefixLength: Ipv6PrefixLengthSchema,
+  }).strict(),
+]);
+
+export const PortMatcherSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("any") }).strict(),
+  z.object({ kind: z.literal("eq"), port: z.number().int().min(1).max(65_535) }).strict(),
+  z.object({
+    kind: z.literal("range"),
+    start: z.number().int().min(1).max(65_535),
+    end: z.number().int().min(1).max(65_535),
+  }).strict(),
+]);
+
 export const Ipv6CidrSchema = z.string().refine((value) => {
   const separator = value.lastIndexOf("/");
   if (separator <= 0) return false;

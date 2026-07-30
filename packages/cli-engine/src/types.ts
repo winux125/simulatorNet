@@ -65,6 +65,17 @@ export interface VtyLineContext {
   last: number;
 }
 
+/** The `class-map <name>` configuration context. */
+export interface QosClassMapContext {
+  id: string;
+}
+
+/** The `policy-map <name>` context, plus the class selected inside it. */
+export interface QosPolicyMapContext {
+  id: string;
+  className: string | undefined;
+}
+
 /** The `radius server <name>` / `tacacs server <name>` context. */
 export interface AaaServerContext {
   name: string;
@@ -85,6 +96,8 @@ export interface SessionApi {
   routerCtx: RouterProcessContext | undefined;
   lineCtx: VtyLineContext | undefined;
   aaaServerCtx: AaaServerContext | undefined;
+  classMapCtx: QosClassMapContext | undefined;
+  policyMapCtx: QosPolicyMapContext | undefined;
   /** Transition to another mode (clears context as appropriate). */
   enter(mode: CliMode): void;
   /**

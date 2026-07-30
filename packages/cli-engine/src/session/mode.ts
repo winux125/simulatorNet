@@ -8,6 +8,9 @@ export type CliMode =
   | "config-acl" // named IPv4 ACL config
   | "config-line" // VTY line config: Router(config-line)#
   | "config-aaa-server" // radius/tacacs server config: Router(config-radius-server)#
+  | "config-cmap" // QoS class map: Router(config-cmap)#
+  | "config-pmap" // QoS policy map: Router(config-pmap)#
+  | "config-pmap-c" // QoS policy-map class: Router(config-pmap-c)#
   | "config-router"; // routing process config: Router(config-router)#
 
 /** The prompt suffix for a mode, appended after the device hostname. */
@@ -29,6 +32,12 @@ export function promptSuffix(mode: CliMode): string {
       return "(config-line)#";
     case "config-aaa-server":
       return "(config-aaa-server)#";
+    case "config-cmap":
+      return "(config-cmap)#";
+    case "config-pmap":
+      return "(config-pmap)#";
+    case "config-pmap-c":
+      return "(config-pmap-c)#";
     case "config-router":
       return "(config-router)#";
   }

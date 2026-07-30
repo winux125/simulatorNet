@@ -6,12 +6,15 @@ import { ManagementSviConfigSchema, RemoteAccessConfigurationSchema } from "./ma
 import { AaaConfigurationSchema, RadiusServiceConfigSchema, TacacsServiceConfigSchema } from "./aaa";
 import { NetworkManagementServiceConfigSchema, SnmpAgentConfigurationSchema } from "./snmp";
 import {
+  Ipv4AddressMatcherSchema,
   Ipv4InterfaceConfigSchema,
   Ipv4Schema,
   IpAddressSchema,
+  Ipv6AddressMatcherSchema,
   Ipv6InterfaceAddressSchema,
   Ipv6PrefixLengthSchema,
   Ipv6Schema,
+  PortMatcherSchema,
   PrefixLengthSchema,
   VlanIdSchema,
 } from "./primitives";
@@ -25,16 +28,20 @@ import {
   WirelessRadioSettingsSchema,
   WirelessStationConfigurationSchema,
 } from "./wireless";
+import { CosValueSchema, DscpValueSchema, QosConfigurationSchema } from "./qos";
 
 /** The only lab JSON schema understood by this release. */
 export const CURRENT_LAB_SCHEMA_VERSION = 1 as const;
 
 export {
+  Ipv4AddressMatcherSchema,
   Ipv4InterfaceConfigSchema,
   Ipv4Schema,
+  Ipv6AddressMatcherSchema,
   Ipv6CidrSchema,
   Ipv6PrefixLengthSchema,
   Ipv6Schema,
+  PortMatcherSchema,
   PrefixLengthSchema,
   VlanIdSchema,
   type Ipv4InterfaceConfig,
@@ -296,24 +303,6 @@ export type DhcpPoolConfigDocument = z.infer<typeof DhcpPoolConfigSchema>;
 
 export const AclActionSchema = z.enum(["permit", "deny"]);
 export const AclDirectionSchema = z.enum(["in", "out"]);
-export const Ipv4AddressMatcherSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("any") }).strict(),
-  z.object({ kind: z.literal("host"), address: Ipv4Schema }).strict(),
-  z.object({
-    kind: z.literal("network"),
-    address: Ipv4Schema,
-    wildcard: Ipv4Schema,
-  }).strict(),
-]);
-export const PortMatcherSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("any") }).strict(),
-  z.object({ kind: z.literal("eq"), port: z.number().int().min(1).max(65_535) }).strict(),
-  z.object({
-    kind: z.literal("range"),
-    start: z.number().int().min(1).max(65_535),
-    end: z.number().int().min(1).max(65_535),
-  }).strict(),
-]);
 const StandardAclRuleSchema = z.object({
   sequence: z.number().int().nonnegative(),
   action: AclActionSchema,
@@ -341,16 +330,6 @@ export const Ipv4AclConfigSchema = z.discriminatedUnion("type", [
   }).strict(),
 ]);
 export type Ipv4AclConfig = z.infer<typeof Ipv4AclConfigSchema>;
-
-export const Ipv6AddressMatcherSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("any") }).strict(),
-  z.object({ kind: z.literal("host"), address: Ipv6Schema }).strict(),
-  z.object({
-    kind: z.literal("prefix"),
-    address: Ipv6Schema,
-    prefixLength: Ipv6PrefixLengthSchema,
-  }).strict(),
-]);
 
 export const Ipv6AclConfigSchema = z.object({
   id: z.string().min(1),
@@ -425,6 +404,14 @@ const RoutedSecurityConfigShape = {
   ipv6AclBindings: z.array(AclBindingConfigSchema).max(128).optional(),
 };
 
+/**
+ * Quality of Service configuration. Optional so a schema-v1 lab written before
+ * M10.8 still opens, with defaults and no policies.
+ */
+const RoutedQosConfigShape = {
+  qos: QosConfigurationSchema.optional(),
+};
+
 const RoutedIpv6ConfigShape = {
   ipv6UnicastRoutingEnabled: z.boolean().optional(),
   ipv6StaticRoutes: z.array(Ipv6StaticRouteConfigSchema).max(256).optional(),
@@ -441,6 +428,7 @@ export const RouterDeviceConfigSchema = z.object({
   dhcpPools: z.array(DhcpPoolConfigSchema).default([]),
   ...RoutedIpv6ConfigShape,
   ...RoutedSecurityConfigShape,
+  ...RoutedQosConfigShape,
   natPools: z.array(NatPoolConfigSchema).max(32).default([]),
   natRules: z.array(NatRuleConfigSchema).max(128).default([]),
   natInterfaceRoles: z.array(NatInterfaceRoleConfigSchema).max(64).default([]),
@@ -502,6 +490,10 @@ const TrafficFlowBaseSchema = z.object({
   count: z.number().int().min(1).max(1_024),
   intervalNs: z.number().int().min(0).max(60_000_000_000),
   payloadBytes: z.number().int().min(0).max(65_536).optional(),
+  /** DSCP the generator stamps on the packets it originates. */
+  dscp: DscpValueSchema.optional(),
+  /** 802.1p CoS requested for a tagged egress path; ignored when untagged. */
+  cos: CosValueSchema.optional(),
 });
 export const TrafficFlowConfigSchema = z.discriminatedUnion("protocol", [
   TrafficFlowBaseSchema.extend({ protocol: z.literal("icmp") }).strict(),
@@ -510,6 +502,8 @@ export const TrafficFlowConfigSchema = z.discriminatedUnion("protocol", [
     destinationPort: z.number().int().min(1).max(65_535),
     sourcePort: z.number().int().min(1).max(65_535).optional(),
   }).strict(),
+  // A TCP flow uses a deterministic ephemeral source port, exactly like the
+  // host stack does; only the destination port is configurable.
   TrafficFlowBaseSchema.extend({
     protocol: z.literal("tcp"),
     destinationPort: z.number().int().min(1).max(65_535),
@@ -557,6 +551,7 @@ export const Layer3SwitchDeviceConfigSchema = z.object({
   ipRoutingEnabled: z.boolean().default(false),
   ...RoutedIpv6ConfigShape,
   ...RoutedSecurityConfigShape,
+  ...RoutedQosConfigShape,
   ...SwitchControlProtocolShape,
   ...RoutedControlProtocolShape,
   consoleAccess: ConsoleAccessConfigurationSchema.optional(),
