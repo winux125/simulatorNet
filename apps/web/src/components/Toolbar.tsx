@@ -100,9 +100,9 @@ export function Toolbar(props: ToolbarProps) {
           <IconButton label="Delete selected" icon={<Trash2 size={15} />} disabled={props.mode !== "edit" || !props.canDelete} onClick={props.onDelete} />
         </ToolbarGroup>
         <ToolbarGroup label="Canvas actions">
-          <IconButton label="Zoom in" icon={<ZoomIn size={15} />} disabled={!props.ready || !canZoomIn(props.zoomScale)} onClick={props.onZoomIn} />
-          <span className="toolbar-zoom-level" aria-label={`Canvas zoom ${formatZoomPercent(props.zoomScale)}`}>{formatZoomPercent(props.zoomScale)}</span>
           <IconButton label="Zoom out" icon={<ZoomOut size={15} />} disabled={!props.ready || !canZoomOut(props.zoomScale)} onClick={props.onZoomOut} />
+          <span className="toolbar-zoom-level" aria-label={`Canvas zoom ${formatZoomPercent(props.zoomScale)}`}>{formatZoomPercent(props.zoomScale)}</span>
+          <IconButton label="Zoom in" icon={<ZoomIn size={15} />} disabled={!props.ready || !canZoomIn(props.zoomScale)} onClick={props.onZoomIn} />
           <IconButton label="Fit topology" icon={<Maximize2 size={15} />} disabled={!props.ready} onClick={props.onFit} />
         </ToolbarGroup>
 

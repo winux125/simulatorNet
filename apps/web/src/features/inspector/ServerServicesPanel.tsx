@@ -71,7 +71,7 @@ export function ServerServicesPanel({ client, deviceId, refreshKey, onError }: S
     <section className="server-services" aria-label="Server services">
       <header className="server-services__header">
         <div><p className="section-eyebrow">Application services</p><h3>Services</h3></div>
-        <Button size="sm" variant="ghost" icon={<RefreshCw size={13} />} onClick={refresh}>Refresh</Button>
+        <Button size="sm" icon={<RefreshCw size={13} />} onClick={refresh}>Refresh</Button>
       </header>
       <p className="section-note">Configuration is persistent. Requests, connections, downloaded files, and logs are runtime-only.</p>
       <div className="service-config-list">

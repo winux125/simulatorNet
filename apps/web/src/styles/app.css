@@ -404,7 +404,11 @@ label.ui-icon-button { display: inline-grid; }
 .device-window__titlebar > div { display: grid; min-width: 0; }.device-window__titlebar strong { overflow: hidden; font-size: var(--font-size-12); text-overflow: ellipsis; }.device-window__titlebar small { overflow: hidden; color: var(--color-text-muted); font: 9px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .device-window__icon { display: grid; width: 26px; height: 26px; place-items: center; border: var(--border); border-radius: var(--radius-md); background: var(--color-panel-raised); color: var(--color-accent); }
 .device-window__tabs { display: flex; overflow-x: auto; align-items: stretch; gap: 1px; padding: 0 8px; border-bottom: var(--border); background: var(--color-toolbar); }.device-window__tabs button { flex: none; padding: 0 13px; border-bottom: 2px solid transparent; background: transparent; color: var(--color-text-muted); cursor: pointer; font-size: var(--font-size-10); font-weight: 650; }.device-window__tabs button:hover { background: var(--color-panel-hover); color: var(--color-text); }.device-window__tabs button.is-active { border-bottom-color: var(--color-accent); color: var(--color-accent); }
-.device-window__content { min-width: 0; min-height: 0; overflow: hidden; }.device-window__content > .terminal-workspace { height: 100%; }.device-window__content > .device-window-section, .device-window__content > .device-window-table, .device-window__content > .server-services { height: 100%; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.device-window__content { min-width: 0; min-height: 0; overflow: hidden; }.device-window__content > .terminal-workspace { height: 100%; }.device-window__content > .device-window-section, .device-window__content > .device-window-table, .device-window__content > .server-services { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+/* The services list is also rendered in the inspector, where it is one section
+   among several. Inside a device window it owns the whole scroll region, so it
+   drops the section separator and gets the window's own padding. */
+.device-window__content > .server-services { margin-bottom: 0; padding: 16px; border-bottom: 0; align-content: start; }
 .device-window-section { max-width: 720px; padding: 22px; }.device-window-section h2 { margin: 4px 0 8px; }.device-window-section > p:not(.section-eyebrow) { color: var(--color-text-soft); line-height: 1.55; }
 .terminal-workspace-launcher { display: grid; height: 100%; place-content: center; justify-items: center; text-align: center; }
 .terminal-workspace-launcher__icon { display: grid; width: 56px; height: 56px; margin-bottom: 9px; place-items: center; border: 1px solid var(--color-accent-strong); border-radius: var(--radius-lg); background: var(--color-accent-muted); color: var(--color-accent); }
@@ -412,6 +416,36 @@ label.ui-icon-button { display: inline-grid; }
 .configuration-view { max-height: 430px; overflow: auto; padding: 12px; border: var(--border); border-radius: var(--radius-md); background: var(--color-code-bg); color: var(--color-code); font: var(--font-size-11)/1.55 var(--font-mono); }
 .security-config-panel { display: grid; gap: 8px; }.configuration-editor { width: 100%; min-height: 300px; resize: vertical; padding: 12px; border: var(--border); border-radius: var(--radius-md); outline: 0; background: var(--color-code-bg); color: var(--color-code); font: var(--font-size-11)/1.55 var(--font-mono); tab-size: 2; }.configuration-editor:focus { border-color: var(--color-accent-strong); }.security-config-panel__actions { display: flex; flex-wrap: wrap; gap: 6px; }.security-flow-list { display: grid; gap: 7px; }.security-flow-list > div { display: grid; grid-template-columns: minmax(90px, auto) 1fr auto; align-items: center; gap: 10px; padding: 8px 10px; border: var(--border); border-radius: var(--radius-md); background: var(--color-panel-raised); }.security-flow-list span { color: var(--color-text-muted); font-size: var(--font-size-10); }
 .device-window-table { padding: 16px; }.data-table { width: 100%; border-collapse: collapse; font-size: var(--font-size-10); }.data-table th, .data-table td { padding: 7px 8px; border-bottom: var(--border); text-align: left; }.data-table th { color: var(--color-text-muted); font-size: 9px; text-transform: uppercase; }
+
+/* Shared device-window form controls: console access and management sections */
+.device-window-section > .field, .device-window-section > form > .field { display: grid; max-width: 360px; gap: 4px; margin-top: 12px; color: var(--color-text-muted); font-size: var(--font-size-10); font-weight: 650; }
+.device-window-section .field > input, .device-window-section .field > select, .device-window-section .field > textarea { width: 100%; min-height: 30px; padding: 0 8px; border: var(--border); border-radius: var(--radius-md); outline: 0; background: var(--color-input); color: var(--color-text); font: var(--font-size-11) var(--font-mono); font-weight: 400; }
+.device-window-section .field > textarea { min-height: 54px; padding: 7px 8px; resize: vertical; line-height: 1.45; }
+.device-window-section .field > input:focus, .device-window-section .field > select:focus, .device-window-section .field > textarea:focus { border-color: var(--color-accent); }
+.field-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 8px; }
+.field-row input { flex: 1 1 150px; min-width: 0; min-height: 30px; padding: 0 8px; border: var(--border); border-radius: var(--radius-md); outline: 0; background: var(--color-input); color: var(--color-text); font: var(--font-size-11) var(--font-mono); }
+.field-row input[type="number"] { flex: 0 0 82px; }
+.field-row input:focus { border-color: var(--color-accent); }
+.field-row .ui-button { flex: none; }
+
+.console-access { display: grid; align-content: start; gap: 2px; }
+.console-access__warning { margin: 10px 0 0; padding: 8px 10px; border: 1px solid var(--color-error); border-radius: var(--radius-md); background: var(--color-error-muted); color: var(--color-error-text); font-size: var(--font-size-11); }
+.console-access__group { margin: 16px 0 0; padding: 12px 14px 14px; border: var(--border); border-radius: var(--radius-md); background: var(--color-panel-raised); }
+.console-access__group > legend { padding: 0 6px; color: var(--color-accent); font-size: 9px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.04em; }
+.console-access__users { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.console-access__users > li { display: grid; grid-template-columns: 16px minmax(80px, auto) 1fr 28px; align-items: center; gap: 8px; padding: 7px 9px; border: var(--border); border-radius: var(--radius-md); background: var(--color-runtime-card); }
+.console-access__users > li > span { font: var(--font-size-11) var(--font-mono); }
+.console-access__users > li > small { color: var(--color-text-faint); font-size: 9px; }
+.console-access__users > li.is-empty { display: block; padding: 9px; border-style: dashed; color: var(--color-text-faint); font-size: var(--font-size-10); text-align: center; }
+
+/* Management sections: read-only fact pairs above the runtime tables. */
+.device-window-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(184px, 1fr)); gap: 7px; margin: 12px 0 14px; }
+.device-window-facts > div { display: grid; gap: 2px; padding: 8px 10px; border: var(--border); border-radius: var(--radius-md); background: var(--color-runtime-card); }
+.device-window-facts dt { color: var(--color-text-faint); font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; }
+.device-window-facts dd { margin: 0; overflow-wrap: anywhere; color: var(--color-text); font-size: var(--font-size-11); }
+.device-window-facts dd code { font-size: var(--font-size-10); }
+.device-window-section > .data-table { margin-bottom: 14px; }
+.device-window-section > .ui-button { margin-top: 4px; }
 .desktop-tools { display: grid; height: 100%; min-height: 0; grid-template-columns: 132px minmax(0, 1fr); }.desktop-tools__launcher { display: grid; align-content: start; gap: 3px; padding: 10px 7px; overflow-y: auto; border-right: var(--border); background: var(--color-toolbar); }.desktop-tools__launcher button { display: grid; grid-template-columns: 28px 1fr; align-items: center; gap: 7px; min-height: 42px; padding: 5px 8px; border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; color: var(--color-text-muted); cursor: pointer; font-size: 9px; text-align: left; }.desktop-tools__launcher button:hover { background: var(--color-panel-hover); color: var(--color-text); }.desktop-tools__launcher button.is-active { border-color: var(--color-accent-strong); background: var(--color-accent-muted); color: var(--color-accent); }
 .desktop-tool-surface { min-width: 0; min-height: 0; overflow: auto; padding: 18px; background: var(--color-panel); }.desktop-tool-output { height: 100%; min-height: 240px; margin: 0; padding: 13px; overflow: auto; border: var(--border); border-radius: var(--radius-md); background: var(--color-code-bg); color: var(--color-code); font: var(--font-size-11)/1.55 var(--font-mono); white-space: pre-wrap; }
 .desktop-form { display: grid; max-width: 640px; gap: 10px; }.desktop-form h3 { margin: 0 0 5px; }.desktop-form label { display: grid; gap: 4px; color: var(--color-text-muted); font-size: var(--font-size-10); }.desktop-form input, .desktop-form select { height: 32px; padding: 0 8px; border: var(--border); border-radius: var(--radius-md); outline: 0; background: var(--color-input); color: var(--color-text); }.desktop-form pre { min-height: 130px; padding: 10px; border: var(--border); border-radius: var(--radius-md); background: var(--color-code-bg); color: var(--color-code); white-space: pre-wrap; }

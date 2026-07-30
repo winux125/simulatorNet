@@ -2,7 +2,7 @@ import type { LabUiNode, RemoteSessionsView, AaaStatusResponse, SnmpAgentStatusV
 import { useCallback, useEffect, useState } from "react";
 import type { SimulatorClient } from "../../app/simulator-client";
 import { Button, EmptyState } from "../../ui";
-import { KeyRound, ShieldCheck, Radio, Users } from "lucide-react";
+import { KeyRound, Radio, RefreshCw, ShieldCheck, Users } from "lucide-react";
 
 export type ManagementSection = "remote-access" | "aaa" | "snmp" | "sessions";
 
@@ -76,7 +76,7 @@ export function ManagementPanel(props: ManagementPanelProps) {
       {section === "aaa" && <Aaa view={aaa} />}
       {section === "snmp" && <Snmp view={snmp} />}
 
-      <Button size="sm" variant="ghost" disabled={busy} onClick={refresh}>Refresh</Button>
+      <Button size="sm" icon={<RefreshCw size={13} />} disabled={busy} onClick={refresh}>Refresh</Button>
     </section>
   );
 }
@@ -143,7 +143,7 @@ function Sessions({
             <td>{session.username ?? "—"}</td>
             <td><code>{session.clientHostname} ({session.peerAddress})</code></td>
             <td>{Math.floor(session.idleForNs / 1_000_000_000)}s</td>
-            <td><Button size="sm" variant="ghost" onClick={() => onClear(session.line)}>Clear line</Button></td>
+            <td><Button size="sm" onClick={() => onClear(session.line)}>Clear line</Button></td>
           </tr>
         ))}
       </tbody>
