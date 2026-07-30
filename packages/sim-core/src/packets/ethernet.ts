@@ -29,6 +29,11 @@ export interface EthernetFrame {
   readonly etherType: EtherType;
   /** 802.1Q VLAN id carried on the wire; undefined = untagged. */
   readonly vlan?: number;
+  /**
+   * 802.1p priority code point, 0-7. It only exists inside an 802.1Q tag, so it
+   * is meaningful only when `vlan` is set; an untagged frame never carries one.
+   */
+  readonly pcp?: number;
   readonly payload: L2Payload;
 }
 

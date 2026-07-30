@@ -13,6 +13,11 @@ export interface Ipv4Packet {
   readonly src: Ipv4;
   readonly dst: Ipv4;
   readonly protocol: IpProtocol;
+  /**
+   * Differentiated Services Code Point, 0-63. Absent means the packet has never
+   * been marked and is treated as `default` (0).
+   */
+  readonly dscp?: number;
   /** Time-to-live; decremented on each router hop, dropped (TimeExceeded) at 0. */
   ttl: number;
   readonly payload: Ipv4Payload;

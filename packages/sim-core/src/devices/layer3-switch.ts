@@ -13,6 +13,14 @@ import type {
   Ipv4Acl,
   Ipv6Acl,
 } from "../policy/packet-policy-engine";
+import type {
+  QosClassCounter,
+  QosClassMap,
+  QosDirection,
+  QosPolicyMap,
+  QosProblem,
+  QosServicePolicyBinding,
+} from "../qos";
 import {
   Router,
   type Ipv6RouteRow,
@@ -301,6 +309,64 @@ export class Layer3Switch extends L2Switch {
     return this.routingPlane.ipv6AclBindings();
   }
 
+  // --- quality of service (delegated to the composed routing plane) --------
+
+  get qos(): Router["qos"] {
+    this.syncRoutingPlane();
+    return this.routingPlane.qos;
+  }
+
+  defineQosClassMap(map: QosClassMap): void {
+    this.syncRoutingPlane();
+    this.routingPlane.defineQosClassMap(map);
+  }
+
+  removeQosClassMap(id: string): void {
+    this.routingPlane.removeQosClassMap(id);
+  }
+
+  qosClassMapConfigurations(): QosClassMap[] {
+    return this.routingPlane.qosClassMapConfigurations();
+  }
+
+  defineQosPolicyMap(map: QosPolicyMap): void {
+    this.syncRoutingPlane();
+    this.routingPlane.defineQosPolicyMap(map);
+  }
+
+  removeQosPolicyMap(id: string): void {
+    this.routingPlane.removeQosPolicyMap(id);
+  }
+
+  qosPolicyMapConfigurations(): QosPolicyMap[] {
+    return this.routingPlane.qosPolicyMapConfigurations();
+  }
+
+  applyServicePolicy(interfaceName: string, direction: QosDirection, policyMapId: string): void {
+    this.syncRoutingPlane();
+    this.routingPlane.applyServicePolicy(interfaceName, direction, policyMapId);
+  }
+
+  removeServicePolicy(interfaceName: string, direction: QosDirection): void {
+    this.routingPlane.removeServicePolicy(interfaceName, direction);
+  }
+
+  qosServicePolicies(): QosServicePolicyBinding[] {
+    return this.routingPlane.qosServicePolicies();
+  }
+
+  qosCounters(): QosClassCounter[] {
+    return this.routingPlane.qosCounters();
+  }
+
+  resetQosRuntime(): void {
+    this.routingPlane.resetQosRuntime();
+  }
+
+  qosProblems(): QosProblem[] {
+    return this.routingPlane.qosProblems();
+  }
+
   staticRouteConfigurations(): ReturnType<Router["staticRouteConfigurations"]> {
     return this.routingPlane.staticRouteConfigurations();
   }
@@ -443,6 +509,7 @@ export class Layer3Switch extends L2Switch {
   private syncRoutingPlane(): void {
     this.routingPlane.engine = this.engine;
     this.routingPlane.useAclRuleBudget(this.engine.aclRuleBudget);
+    this.routingPlane.qos.useOperationBudget(this.engine.qosBudget);
   }
 
   private sviMac(vlanId: number): Mac {

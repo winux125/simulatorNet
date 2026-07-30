@@ -343,6 +343,24 @@ export class PacketPolicyEngine {
     return this.evaluateDefinition(acl, "policy-selector", "in", packet).action === "permit";
   }
 
+  /**
+   * Evaluate a named IPv6 ACL as a selector (for example, a QoS class match).
+   * Selectors are read-only: they never count as an interface match.
+   */
+  ipv6AclPermits(aclId: string, packet: Ipv6Packet): boolean {
+    const acl = this.ipv6Acls.get(aclId);
+    if (!acl) throw new PacketPolicyError("ACL_NOT_FOUND", `IPv6 ACL '${aclId}' is not defined.`);
+    return acl.rules.find((rule) => matchesIpv6Rule(rule, packet))?.action === "permit";
+  }
+
+  hasAcl(aclId: string): boolean {
+    return this.acls.has(aclId);
+  }
+
+  hasIpv6Acl(aclId: string): boolean {
+    return this.ipv6Acls.has(aclId);
+  }
+
   private evaluateDefinition(
     acl: Ipv4Acl,
     interfaceName: string,

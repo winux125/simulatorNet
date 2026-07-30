@@ -70,6 +70,9 @@ export * from "./packets/dhcpv6";
 export * from "./policy/packet-policy-engine";
 export * from "./policy/nat-engine";
 
+// Reusable deterministic quality of service
+export * from "./qos";
+
 // Deterministic control protocols
 export * from "./protocols/limits";
 export * from "./protocols/protocol-activity";

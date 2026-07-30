@@ -18,6 +18,7 @@ import {
   DHCP_SERVER_PORT,
 } from "../engine/constants";
 import { EthernetInterface } from "../net/interface";
+import { estimatePacketWireSizeBytes } from "../net/packet-size";
 import { Ipv6InterfaceState, type Ipv6AddressAssignment } from "../net/ipv6-interface";
 import type { ArpPacket } from "../packets/arp";
 import type { DhcpMessage } from "../packets/dhcp";
@@ -75,6 +76,19 @@ import {
   PacketPolicyEngine,
   PacketPolicyError,
 } from "../policy/packet-policy-engine";
+import {
+  QOS_CLASS_DEFAULT,
+  QosPolicyEngine,
+  dscpOf,
+  type QosClassCounter,
+  type QosClassMap,
+  type QosClassificationResult,
+  type QosDirection,
+  type QosEvaluationContext,
+  type QosPolicyMap,
+  type QosProblem,
+  type QosServicePolicyBinding,
+} from "../qos";
 import {
   NatEngine,
   NatError,
@@ -263,6 +277,11 @@ export class Router extends Device {
   readonly deviceType: DeviceType = "router";
   readonly packetPolicy = new PacketPolicyEngine();
   readonly nat = new NatEngine();
+  /**
+   * The one reusable QoS engine. Router, Firewall, L3 Switch and Wireless Router
+   * all classify and mark through it; there is no second classifier.
+   */
+  readonly qos = new QosPolicyEngine();
   /** CDP/LLDP neighbour discovery; both start disabled until configured. */
   readonly discovery = new NeighborDiscovery(this, supportsCdp(this.deviceType));
   /** Deterministic OSPFv2 area-0 process; inert until `router ospf` runs. */
@@ -324,7 +343,71 @@ export class Router extends Device {
 
   override onAddedToEngine(): void {
     this.packetPolicy.useRuleBudget(this.engine.aclRuleBudget);
+    this.qos.useOperationBudget(this.engine.qosBudget);
   }
+
+  // --- quality of service ------------------------------------------------
+
+  defineQosClassMap(map: QosClassMap): void {
+    this.qos.defineClassMap(map);
+  }
+
+  removeQosClassMap(id: string): void {
+    this.qos.removeClassMap(id);
+  }
+
+  qosClassMapConfigurations(): QosClassMap[] {
+    return this.qos.classMapConfigurations();
+  }
+
+  defineQosPolicyMap(map: QosPolicyMap): void {
+    this.qos.definePolicyMap(map);
+  }
+
+  removeQosPolicyMap(id: string): void {
+    this.qos.removePolicyMap(id);
+    this.refreshEgressQueueProfiles();
+  }
+
+  qosPolicyMapConfigurations(): QosPolicyMap[] {
+    return this.qos.policyMapConfigurations();
+  }
+
+  /** `service-policy input|output <policy-map>` on a routed interface or SVI. */
+  applyServicePolicy(interfaceName: string, direction: QosDirection, policyMapId: string): void {
+    if (!this.l3.has(interfaceName)) {
+      throw new PacketPolicyError(
+        "ACL_INVALID_CONFIGURATION",
+        `Router ${this.id} has no L3 interface ${interfaceName}.`,
+      );
+    }
+    this.qos.attach({ interfaceName, direction, policyMapId });
+    this.refreshEgressQueueProfiles();
+  }
+
+  removeServicePolicy(interfaceName: string, direction: QosDirection): void {
+    this.qos.detach(interfaceName, direction);
+    this.refreshEgressQueueProfiles();
+  }
+
+  qosServicePolicies(): QosServicePolicyBinding[] {
+    return this.qos.bindingConfigurations();
+  }
+
+  qosCounters(): QosClassCounter[] {
+    return this.qos.counterSummaries();
+  }
+
+  resetQosRuntime(): void {
+    this.qos.resetCounters();
+  }
+
+  qosProblems(): QosProblem[] {
+    return this.qos.problems();
+  }
+
+  /** Re-derive per-interface queue structure after a policy change. */
+  protected refreshEgressQueueProfiles(): void {}
 
   /** Used by composed routing planes, such as an L3 switch SVI data plane. */
   useAclRuleBudget(budget: AclRuleBudget): void {
@@ -1238,7 +1321,9 @@ export class Router extends Device {
     return discovery;
   }
 
-  private handleIpv6(packet: Ipv6Packet, frame: EthernetFrame, ingress: L3Interface): void {
+  private handleIpv6(received: Ipv6Packet, frame: EthernetFrame, ingress: L3Interface): void {
+    const packet = this.applyInputQos(ingress, frame, received);
+    if (!packet) return;
     if (!this.permitByIpv6Acl(packet, ingress, "in")) return;
     if (packet.nextHeader === Ipv6NextHeader.OSPF && packet.payload.kind === "ospfv3") {
       this.ospfv3.onPacket(packet.payload, ingress.name, packet.src);
@@ -1433,7 +1518,11 @@ export class Router extends Device {
       this.ospf.onPacket(packet.payload, ingress.name, packet.src);
       return;
     }
-    let acceptedPacket = packet;
+    // Input QoS classifies, marks and polices before ACL, NAT and routing, so
+    // the rest of the pipeline sees the packet the policy produced.
+    const admitted = this.applyInputQos(ingress, frame, packet);
+    if (!admitted) return;
+    let acceptedPacket = admitted;
     if (this.nat.hasRules() && this.natRoles.get(ingress.name) === "outside") {
       this.validateNatRoles();
       try {
@@ -2173,7 +2262,149 @@ export class Router extends Device {
       vlan: iface.native ? undefined : iface.vlan,
       payload,
     };
-    iface.physical.transmit(frame);
+    this.emit(iface, frame);
+  }
+
+  // --- QoS pipeline ------------------------------------------------------
+  //
+  // Output order is fixed and covered by tests:
+  //   route/policy decision -> QoS classification -> marking -> transmit
+  // Input order is:
+  //   receive -> input QoS classification/marking -> ACL/NAT/routing pipeline
+
+  /** Everything a QoS match rule may need beyond the packet itself. */
+  protected qosContext(flowId?: string): QosEvaluationContext {
+    return {
+      nowNs: this.engine.now(),
+      flowId,
+      aclPermits: (aclId, packet) =>
+        this.packetPolicy.hasAcl(aclId) && this.packetPolicy.aclPermits(aclId, packet),
+      ipv6AclPermits: (aclId, packet) =>
+        this.packetPolicy.hasIpv6Acl(aclId) && this.packetPolicy.ipv6AclPermits(aclId, packet),
+    };
+  }
+
+  /**
+   * The single egress point of the routed data plane. Classification and marking
+   * happen here, after the routing and ACL/NAT decision and before the frame
+   * reaches the interface's deterministic egress queue.
+   */
+  protected emit(iface: L3Interface, frame: EthernetFrame): void {
+    const outcome = this.applyOutputQos(iface, frame);
+    iface.physical.transmit(outcome.frame);
+  }
+
+  protected applyOutputQos(
+    iface: L3Interface,
+    frame: EthernetFrame,
+  ): { frame: EthernetFrame; classification: QosClassificationResult | undefined } {
+    const payload = frame.payload;
+    if (payload.kind !== "ipv4" && payload.kind !== "ipv6") return { frame, classification: undefined };
+    if (!this.qos.policyFor(iface.name, "output")) return { frame, classification: undefined };
+    const subject = {
+      packet: payload,
+      wireSizeBytes: estimatePacketWireSizeBytes(frame),
+      cos: frame.pcp,
+    };
+    const classification = this.qos.classify(iface.name, "output", subject, this.qosContext());
+    if (!classification) return { frame, classification: undefined };
+    this.traceQos(classification, subject.packet, iface.name, subject.wireSizeBytes);
+    const marking = this.qos.applyMarking(subject, classification.policyClass.marking, frame.pcp);
+    if (!marking.changed) return { frame, classification };
+    this.qos.recordMarked(classification);
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "qos-marked",
+      device: this.id,
+      detail: {
+        interface: iface.name,
+        direction: "output",
+        class: classification.className,
+        policy: classification.policyMapId,
+        dscpBefore: marking.dscpBefore,
+        dscpAfter: marking.dscpAfter,
+        cosBefore: marking.cosBefore ?? null,
+        cosAfter: marking.cosAfter ?? null,
+      },
+    });
+    return {
+      // A CoS only exists inside an 802.1Q tag: an untagged egress frame never
+      // gains a priority code point, however the policy was written.
+      frame: {
+        ...frame,
+        payload: marking.packet,
+        pcp: frame.vlan === undefined ? undefined : marking.cosAfter,
+      },
+      classification,
+    };
+  }
+
+  /**
+   * Input QoS runs before ACL, NAT and routing so a re-marked packet is what the
+   * rest of the pipeline sees. Returns `undefined` when the policy dropped it.
+   */
+  protected applyInputQos<T extends Ipv4Packet | Ipv6Packet>(
+    ingress: L3Interface,
+    frame: EthernetFrame,
+    packet: T,
+  ): T | undefined {
+    if (!this.qos.policyFor(ingress.name, "input")) return packet;
+    const subject = {
+      packet,
+      wireSizeBytes: estimatePacketWireSizeBytes(frame),
+      cos: frame.pcp,
+    };
+    const classification = this.qos.classify(ingress.name, "input", subject, this.qosContext());
+    if (!classification) return packet;
+    this.traceQos(classification, packet, ingress.name, subject.wireSizeBytes, "input");
+    const marking = this.qos.applyMarking(subject, classification.policyClass.marking, frame.pcp);
+    if (!marking.changed) return packet;
+    this.qos.recordMarked(classification);
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "qos-marked",
+      device: this.id,
+      detail: {
+        interface: ingress.name,
+        direction: "input",
+        class: classification.className,
+        policy: classification.policyMapId,
+        dscpBefore: marking.dscpBefore,
+        dscpAfter: marking.dscpAfter,
+      },
+    });
+    return marking.packet as T;
+  }
+
+  private traceQos(
+    classification: QosClassificationResult,
+    packet: Ipv4Packet | Ipv6Packet,
+    interfaceName: string,
+    bytes: number,
+    direction: QosDirection = "output",
+  ): void {
+    const detail = {
+      interface: interfaceName,
+      direction,
+      policy: classification.policyMapId,
+      class: classification.className,
+      dscp: dscpOf(packet),
+      bytes,
+    };
+    this.engine.trace({
+      time: this.engine.now(),
+      type: classification.className === QOS_CLASS_DEFAULT && !classification.matched
+        ? "qos-class-default"
+        : "qos-classified",
+      device: this.id,
+      detail,
+    });
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "qos-policy-applied",
+      device: this.id,
+      detail,
+    });
   }
 
   private requirePhysical(name: string): EthernetInterface {

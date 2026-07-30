@@ -20,6 +20,11 @@ export interface Ipv6Packet {
   readonly src: Ipv6;
   readonly dst: Ipv6;
   readonly nextHeader: Ipv6NextHeader;
+  /**
+   * Traffic Class DSCP bits, 0-63. Absent means unmarked; the low ECN bits are
+   * deliberately not modelled.
+   */
+  readonly trafficClass?: number;
   /** Decremented at each routed hop; hosts never decrement it. */
   readonly hopLimit: number;
   readonly payload: Ipv6Payload;

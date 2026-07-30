@@ -942,7 +942,11 @@ export class L2Switch extends Device {
     if (tagged) {
       return frame.vlan === vlan ? frame : { ...frame, vlan };
     }
-    return frame.vlan === undefined ? frame : { ...frame, vlan: undefined };
+    // Untagged egress removes the whole 802.1Q tag, so the 802.1p priority code
+    // point goes with it: an untagged frame must never appear to carry a CoS.
+    return frame.vlan === undefined && frame.pcp === undefined
+      ? frame
+      : { ...frame, vlan: undefined, pcp: undefined };
   }
 
   /** A suspended EtherChannel member carries no user data at all. */

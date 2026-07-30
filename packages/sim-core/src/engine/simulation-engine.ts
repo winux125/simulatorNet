@@ -3,6 +3,7 @@ import { Link } from "../net/link";
 import type { LinkPerformanceConfiguration, LinkPerformanceInput } from "../net/link-performance";
 import { AclRuleBudget } from "../policy/packet-policy-engine";
 import { ControlProtocolBudget } from "../protocols/limits";
+import { QosOperationBudget } from "../qos/limits";
 import { DEFAULT_LINK_DELAY_NS } from "./constants";
 import { EventQueue } from "./event-queue";
 import { SeededRandom } from "./seeded-random";
@@ -40,6 +41,8 @@ export class SimulationEngine {
   readonly aclRuleBudget = new AclRuleBudget();
   /** Shared per-operation event budget for STP, EtherChannel, discovery, OSPF. */
   readonly controlProtocolBudget = new ControlProtocolBudget();
+  /** Shared per-operation QoS classification/marking/queue-event budget. */
+  readonly qosBudget = new QosOperationBudget();
   /** Lab-scoped radio medium; it never derives reachability from canvas coordinates. */
   readonly wireless: WirelessMedium;
 
