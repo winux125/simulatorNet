@@ -1,7 +1,14 @@
 import { getDeviceProfile, type LabDocument } from "@sim/contracts";
 import { canonicalizeLabDocument, stringifyLabDocument } from "@sim/lab-format";
 import type { LabUiNode, SimWorkerEvent } from "@sim/sim-worker";
-import { Group as PanelGroup, Panel as ResizablePanel, Separator } from "react-resizable-panels";
+import {
+  Group as PanelGroup,
+  Panel as ResizablePanel,
+  Separator,
+  usePanelRef,
+  type Layout,
+  type LayoutChangedMeta,
+} from "react-resizable-panels";
 import {
   AlertTriangle, Cable, CheckCircle2, ClipboardPaste, Command, Download, Eraser, FilePlus2, FlaskConical, FolderOpen, FolderX,
   Grid3X3, Info, Keyboard, Maximize2, Move, PanelBottom, PanelRight, Play, Redo2, RotateCcw, SkipForward,
@@ -40,6 +47,18 @@ import {
   MIN_BOTTOM_PANEL_HEIGHT,
   type BottomPanelState,
 } from "../features/dock/bottom-panel-state";
+import {
+  createDefaultWorkspacePanelLayout,
+  LEGACY_WORKSPACE_LAYOUT_STORAGE_KEY,
+  persistWorkspacePanelLayout,
+  readWorkspacePanelLayout,
+  WORKSPACE_BOTTOM_PANEL_ID,
+  WORKSPACE_BOTTOM_SEPARATOR_ID,
+  WORKSPACE_MAIN_PANEL_ID,
+  WORKSPACE_PANEL_CONSTRAINTS,
+  WORKSPACE_PANEL_GROUP_ID,
+  WORKSPACE_PANEL_IDS,
+} from "../features/layout/workspace-panel-layout";
 import { applyTerminalAppearance, getTerminalAppearance, type TerminalAppearance } from "../features/terminal/terminal-appearance";
 import { persistConfirmMultilinePaste, readConfirmMultilinePaste, TERMINAL_PASTE_LIMITS } from "../features/terminal/terminal-paste";
 import { TerminalPresentation } from "../features/terminal/TerminalPresentation";
@@ -54,6 +73,10 @@ const STEP_EXPLANATION_KEY = "simulatornet.stepModeExplained";
 const WIRELESS_ASSOCIATIONS_KEY = "simulatornet.wirelessAssociations";
 
 interface AppProps { client: SimulatorClient }
+
+function warnInvalidWorkspaceLayout(reason: string): void {
+  if (import.meta.env.DEV) console.warn(`[workspace-layout] ${reason}`);
+}
 
 export const EMPTY_LAB: LabDocument = {
   schemaVersion: 1,
@@ -126,6 +149,37 @@ function draftDeviceNode(document: LabDocument, deviceId: string): LabUiNode | u
 
 export function App({ client }: AppProps) {
   const workspace = useWorkspaceStore();
+  const bottomPanelRef = usePanelRef();
+  const [workspacePanelLayout, setWorkspacePanelLayout] = useState(() => {
+    const defaultLayout = createDefaultWorkspacePanelLayout(
+      workspace.bottomPanelExpandedHeight,
+      window.innerHeight,
+    );
+    return readWorkspacePanelLayout({
+      storage: window.localStorage,
+      groupId: WORKSPACE_PANEL_GROUP_ID,
+      orderedPanelIds: WORKSPACE_PANEL_IDS,
+      defaultLayout,
+      constraints: WORKSPACE_PANEL_CONSTRAINTS,
+      legacyStorageKeys: [LEGACY_WORKSPACE_LAYOUT_STORAGE_KEY],
+      onInvalid: warnInvalidWorkspaceLayout,
+    });
+  });
+  const recordWorkspacePanelLayout = useCallback((layout: Layout, meta: LayoutChangedMeta) => {
+    if (!meta.isUserInteraction) return;
+    const persisted = persistWorkspacePanelLayout({
+      storage: window.localStorage,
+      groupId: WORKSPACE_PANEL_GROUP_ID,
+      orderedPanelIds: WORKSPACE_PANEL_IDS,
+      candidateLayout: layout,
+      constraints: WORKSPACE_PANEL_CONSTRAINTS,
+    });
+    if (!persisted) {
+      warnInvalidWorkspaceLayout(`Ignored invalid ${WORKSPACE_PANEL_GROUP_ID} resize result.`);
+      return;
+    }
+    setWorkspacePanelLayout(persisted);
+  }, []);
   const compact = useMediaQuery("(max-width: 999px)");
   const theme = useTheme();
   const deviceIconProfile = useDeviceIconProfile();
@@ -511,6 +565,7 @@ export function App({ client }: AppProps) {
 
   const labOpen = workspace.snapshot !== undefined;
   const bottomPanelExpanded = workspace.bottomPanelState === "expanded";
+  const bottomPanelExpandedInLayout = labOpen && bottomPanelExpanded;
   const ready = workspace.workerStatus === "ready" && labOpen;
   const simulationEnabled = ready && workspace.mode === "simulate";
   const editMode = workspace.mode === "edit";
@@ -519,6 +574,24 @@ export function App({ client }: AppProps) {
   const labRunning = powerState === "running";
   const labStopped = powerState === "stopped";
   const powerBusy = powerState === "starting" || powerState === "stopping";
+
+  useEffect(() => {
+    let active = true;
+    const panel = bottomPanelRef.current;
+    if (!panel) return;
+    const animationFrame = window.requestAnimationFrame(() => {
+      if (!active || bottomPanelRef.current !== panel) return;
+      if (bottomPanelExpandedInLayout) {
+        if (panel.isCollapsed()) panel.expand();
+      } else if (!panel.isCollapsed()) {
+        panel.collapse();
+      }
+    });
+    return () => {
+      active = false;
+      window.cancelAnimationFrame(animationFrame);
+    };
+  }, [bottomPanelExpandedInLayout, bottomPanelRef]);
 
   const menus: MenuDef[] = [
     { id: "file", label: "File", items: [
@@ -731,23 +804,41 @@ export function App({ client }: AppProps) {
         </div>
       )}
       <div className="workspace-body">
-        <PanelGroup orientation="vertical" className="workspace-resizable" id="workspace-layout">
-          <ResizablePanel id="workspace-main" minSize="300px" defaultSize="76%">
+        <PanelGroup
+          orientation="vertical"
+          className="workspace-resizable"
+          id={WORKSPACE_PANEL_GROUP_ID}
+          defaultLayout={workspacePanelLayout}
+          onLayoutChanged={recordWorkspacePanelLayout}
+          data-bottom-panel-state={bottomPanelExpandedInLayout ? "expanded" : "collapsed"}
+        >
+          <ResizablePanel
+            id={WORKSPACE_MAIN_PANEL_ID}
+            minSize="300px"
+            defaultSize={`${workspacePanelLayout[WORKSPACE_MAIN_PANEL_ID]}%`}
+          >
             <div className="main-workspace">
               <Suspense fallback={<CanvasLoading />}><TopologyCanvas {...topologyProps()} /></Suspense>
               {inspector}
             </div>
           </ResizablePanel>
-          {/* Minimized and hidden render no panel row at all: no invisible
-              resizer, no stale border and no reserved height. */}
-          {labOpen && bottomPanelExpanded && <>
-            <Separator className="resize-handle resize-handle--horizontal" />
-            <ResizablePanel
-              id="bottom-dock"
-              minSize={`${MIN_BOTTOM_PANEL_HEIGHT}px`}
-              maxSize="48%"
-              defaultSize={`${workspace.bottomPanelExpandedHeight}px`}
-            >
+          {bottomPanelExpandedInLayout && (
+            <Separator
+              id={WORKSPACE_BOTTOM_SEPARATOR_ID}
+              className="resize-handle resize-handle--horizontal"
+            />
+          )}
+          <ResizablePanel
+            id={WORKSPACE_BOTTOM_PANEL_ID}
+            panelRef={bottomPanelRef}
+            collapsible
+            collapsedSize="0%"
+            minSize={`${MIN_BOTTOM_PANEL_HEIGHT}px`}
+            maxSize="48%"
+            defaultSize={`${workspacePanelLayout[WORKSPACE_BOTTOM_PANEL_ID]}%`}
+            groupResizeBehavior="preserve-pixel-size"
+          >
+            {bottomPanelExpandedInLayout && (
               <Suspense fallback={<DockLoading />}>
                 <BottomDock
                   tab={workspace.dockTab}
@@ -769,8 +860,8 @@ export function App({ client }: AppProps) {
                   onHeight={recordBottomPanelHeight}
                 />
               </Suspense>
-            </ResizablePanel>
-          </>}
+            )}
+          </ResizablePanel>
         </PanelGroup>
         {labOpen && workspace.bottomPanelState === "minimized" && (
           <Suspense fallback={null}>

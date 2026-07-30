@@ -23,6 +23,11 @@ import {
   TFTP_BACKUP_DEMO,
 } from "../fixtures/m10-demo-labs";
 import { THEME_STORAGE_KEY } from "../hooks/useTheme";
+import {
+  WORKSPACE_BOTTOM_PANEL_ID,
+  WORKSPACE_BOTTOM_SEPARATOR_ID,
+  WORKSPACE_PANEL_GROUP_ID,
+} from "../features/layout/workspace-panel-layout";
 import { App } from "./App";
 import type { SimulatorClient } from "./simulator-client";
 
@@ -88,9 +93,27 @@ vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() { fitHarness.calls 
 vi.mock("react-resizable-panels", async () => {
   const React = await import("react");
   return {
-    Group: ({ children, className }: { children: React.ReactNode; className?: string }) => React.createElement("div", { className }, children),
-    Panel: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
-    Separator: ({ className }: { className?: string }) => React.createElement("div", { className }),
+    Group: ({
+      children,
+      className,
+      defaultLayout,
+      id,
+    }: {
+      children: React.ReactNode;
+      className?: string;
+      defaultLayout?: Record<string, number>;
+      id?: string;
+    }) => React.createElement("div", {
+      className,
+      "data-group": id,
+      "data-testid": id,
+      "data-layout": JSON.stringify(defaultLayout),
+    }, children),
+    Panel: ({ children, id }: { children: React.ReactNode; id?: string }) =>
+      React.createElement("div", { id, "data-panel": id }, children),
+    Separator: ({ className, id }: { className?: string; id?: string }) =>
+      React.createElement("div", { className, id, "data-separator": id }),
+    usePanelRef: () => React.useRef(null),
   };
 });
 // The real X6 graph needs DOM measurement that jsdom does not provide, so — as
@@ -2577,8 +2600,31 @@ describe("M10.4.1b collapsible bottom panel", () => {
     expect(queryStrip()).toBeNull();
     // 9/10. Nothing is left behind: no resizer, no stale row.
     expect(document.querySelector(".resize-handle--horizontal")).toBeNull();
-    // 5/6. The canvas keeps the whole workspace body.
-    expect(document.querySelector(".workspace-resizable")?.childElementCount).toBe(1);
+    // The registered panel set stays stable, but the collapsed panel has no
+    // content or separator and therefore reserves no visible row.
+    expect(document.querySelector(`[data-panel="${WORKSPACE_BOTTOM_PANEL_ID}"]`)).not.toBeNull();
+    expect(document.querySelector(`[data-panel="${WORKSPACE_BOTTOM_PANEL_ID}"]`)?.textContent).toBe("");
+    expect(document.querySelector(".workspace-resizable")?.childElementCount).toBe(2);
+  });
+
+  it("keeps the registered panel set stable across Inspector and rapid dock transitions", async () => {
+    await loadDemo(new RuntimeClient());
+    const group = screen.getByTestId(WORKSPACE_PANEL_GROUP_ID);
+    const panelIds = () => [...group.querySelectorAll("[data-panel]")]
+      .map((panel) => panel.getAttribute("data-panel"));
+
+    expect(panelIds()).toEqual(["workspace-main", WORKSPACE_BOTTOM_PANEL_ID]);
+    expect(group.querySelector(`[data-separator="${WORKSPACE_BOTTOM_SEPARATOR_ID}"]`)).not.toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Select PC1" }));
+    await userEvent.click(screen.getByRole("button", { name: "Close inspector" }));
+    expect(panelIds()).toEqual(["workspace-main", WORKSPACE_BOTTOM_PANEL_ID]);
+
+    await chooseBottomPanel("Minimize");
+    await chooseBottomPanel("Hide");
+    await chooseBottomPanel("Show");
+    expect(panelIds()).toEqual(["workspace-main", WORKSPACE_BOTTOM_PANEL_ID]);
+    expect(screen.queryByText("The workspace could not be rendered")).toBeNull();
   });
 
   it("11/12/13/14/15/16/17. Hide and Minimize never close a terminal session", async () => {

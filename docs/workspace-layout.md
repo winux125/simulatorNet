@@ -150,6 +150,33 @@ The bottom dock is always the bottom region of the application workspace. Its
 horizontal separator changes dock height while preserving a usable topology
 minimum. Events, Packet Trace, and Problems render inside that bounded region.
 
+### Resizable panel registry
+
+The application has one `react-resizable-panels` group. Its registry is stable:
+
+| Group ID | Orientation | Ordered Panel IDs | Conditional content |
+| --- | --- | --- | --- |
+| `workspace-layout-v2` | vertical | `workspace-main`, `workspace-bottom-dock` | Bottom Dock content and `workspace-bottom-separator` |
+
+Both `Panel` elements remain direct children of the group. Minimized, hidden,
+and welcome states collapse `workspace-bottom-dock` to zero after registration;
+they do not remove its panel identity or apply a one-panel layout. The
+separator and dock content are absent while collapsed, so no visible row,
+resize target, border, or reserved height remains.
+
+The Inspector is an overlay inside `workspace-main`, not a resizable panel.
+Opening or closing it therefore never changes the registered panel set.
+Device windows, management/service sections, and QoS sections use their own
+bounded content regions and do not create nested `PanelGroup` instances.
+
+The ordered layout is stored under `simulatornet.workspaceLayout.v2`. Every
+entry records its exact panel IDs and rejects missing, unknown, non-finite,
+zero, out-of-constraint, or stale values before they reach the library. The
+legacy `react-resizable-panels:workspace-layout` value is migrated only when it
+matches the current ordered panel set; otherwise only that layout preference is
+discarded. Theme, terminal, Bottom Panel, and other SimulatorNet preferences
+are preserved.
+
 ### Bottom panel states
 
 The panel has three presentations:
