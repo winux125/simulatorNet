@@ -9,6 +9,7 @@ import type {
 import { ipToInt } from "../util/ipv4";
 import { ipv6InPrefix, normalizeIpv6 } from "../util/ipv6";
 import { QOS_RESOURCE_LIMITS, QosOperationBudget } from "./limits";
+import { TokenBucket } from "./token-bucket";
 import {
   MAXIMUM_COS,
   precedenceOfDscp,
@@ -69,6 +70,12 @@ export interface QosPacketSubject {
   readonly cos?: number;
 }
 
+/** What a policer decided. A policer transmits, drops or marks down — never delays. */
+export type QosPolicerVerdict =
+  | { readonly action: "conform" }
+  | { readonly action: "exceed-drop" }
+  | { readonly action: "exceed-mark"; readonly dscp: number };
+
 export interface QosMarkingOutcome {
   readonly packet: Ipv4Packet | Ipv6Packet;
   readonly cos: number | undefined;
@@ -100,6 +107,8 @@ export class QosPolicyEngine {
   private readonly policyMaps = new Map<string, QosPolicyMap>();
   private readonly bindings = new Map<string, QosServicePolicyBinding>();
   private readonly counters = new Map<string, CounterRow>();
+  /** One token bucket per policed class binding. Runtime only, never serialized. */
+  private readonly policers = new Map<string, TokenBucket>();
   private budget: QosOperationBudget;
 
   constructor(budget = new QosOperationBudget()) {
@@ -346,6 +355,37 @@ export class QosPolicyEngine {
     };
   }
 
+  // --- policing -----------------------------------------------------------
+
+  /**
+   * Run a class's `police` action. A policer never delays a packet: it either
+   * lets it through, drops it, or re-marks it down and transmits it.
+   */
+  police(
+    result: QosClassificationResult,
+    wireSizeBytes: number,
+    nowNs: number,
+  ): QosPolicerVerdict {
+    const configuration = result.policyClass.police;
+    if (!configuration) return { action: "conform" };
+    const key = counterKey(result);
+    let bucket = this.policers.get(key);
+    if (!bucket) {
+      bucket = new TokenBucket(
+        { rateBps: configuration.rateBps, burstBytes: configuration.burstBytes },
+        nowNs,
+      );
+      this.policers.set(key, bucket);
+    } else if (bucket.rateBps !== configuration.rateBps || bucket.burstBytes !== configuration.burstBytes) {
+      bucket.configure({ rateBps: configuration.rateBps, burstBytes: configuration.burstBytes }, nowNs);
+    }
+    if (bucket.consume(wireSizeBytes, nowNs)) return { action: "conform" };
+    if (configuration.exceedAction === "set-dscp-transmit" && configuration.exceedDscp !== undefined) {
+      return { action: "exceed-mark", dscp: configuration.exceedDscp };
+    }
+    return { action: "exceed-drop" };
+  }
+
   // --- counters -----------------------------------------------------------
 
   private recordMatch(result: QosClassificationResult, bytes: number, nowNs: number): void {
@@ -388,6 +428,7 @@ export class QosPolicyEngine {
 
   resetCounters(): void {
     this.counters.clear();
+    this.policers.clear();
   }
 
   private counterRow(result: QosClassificationResult): CounterRow {

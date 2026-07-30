@@ -80,6 +80,8 @@ import {
   QOS_CLASS_DEFAULT,
   QosPolicyEngine,
   dscpOf,
+  type EgressClassProfile,
+  type EgressQueueProfile,
   type QosClassCounter,
   type QosClassMap,
   type QosClassificationResult,
@@ -406,8 +408,26 @@ export class Router extends Device {
     return this.qos.problems();
   }
 
-  /** Re-derive per-interface queue structure after a policy change. */
-  protected refreshEgressQueueProfiles(): void {}
+  /**
+   * Re-derive per-interface queue structure after a policy change.
+   *
+   * Queueing is a property of the physical port, so a policy map attached to a
+   * routed port installs its queues there. A policy on a dot1Q subinterface
+   * still classifies, marks and polices, but the port keeps one shared queue
+   * set — an educational simplification documented in `docs/qos-simulation.md`.
+   */
+  protected refreshEgressQueueProfiles(): void {
+    const byPhysical = new Map<string, EgressQueueProfile>();
+    for (const iface of [...this.l3.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+      const policy = this.qos.policyFor(iface.name, "output");
+      if (!policy) continue;
+      if (byPhysical.has(iface.physical.name)) continue;
+      byPhysical.set(iface.physical.name, egressProfileOf(policy, iface.name, iface.physical.link?.capacityBps ?? 0));
+    }
+    for (const physical of this.interfaces.values()) {
+      physical.configureEgressProfile(byPhysical.get(physical.name));
+    }
+  }
 
   /** Used by composed routing planes, such as an L3 switch SVI data plane. */
   useAclRuleBudget(budget: AclRuleBudget): void {
@@ -2291,26 +2311,42 @@ export class Router extends Device {
    */
   protected emit(iface: L3Interface, frame: EthernetFrame): void {
     const outcome = this.applyOutputQos(iface, frame);
-    iface.physical.transmit(outcome.frame);
+    if (!outcome.frame) return; // policed away before it reached the queue
+    iface.physical.transmit(outcome.frame, outcome.className);
   }
 
   protected applyOutputQos(
     iface: L3Interface,
     frame: EthernetFrame,
-  ): { frame: EthernetFrame; classification: QosClassificationResult | undefined } {
+  ): {
+    frame: EthernetFrame | undefined;
+    className: string;
+    classification: QosClassificationResult | undefined;
+  } {
     const payload = frame.payload;
-    if (payload.kind !== "ipv4" && payload.kind !== "ipv6") return { frame, classification: undefined };
-    if (!this.qos.policyFor(iface.name, "output")) return { frame, classification: undefined };
+    const untouched = { frame, className: QOS_CLASS_DEFAULT, classification: undefined };
+    if (payload.kind !== "ipv4" && payload.kind !== "ipv6") return untouched;
+    if (!this.qos.policyFor(iface.name, "output")) return untouched;
     const subject = {
       packet: payload,
       wireSizeBytes: estimatePacketWireSizeBytes(frame),
       cos: frame.pcp,
     };
     const classification = this.qos.classify(iface.name, "output", subject, this.qosContext());
-    if (!classification) return { frame, classification: undefined };
+    if (!classification) return untouched;
     this.traceQos(classification, subject.packet, iface.name, subject.wireSizeBytes);
-    const marking = this.qos.applyMarking(subject, classification.policyClass.marking, frame.pcp);
-    if (!marking.changed) return { frame, classification };
+
+    const policed = this.applyPolicer(classification, subject.wireSizeBytes, iface.name, "output");
+    if (policed.dropped) return { frame: undefined, className: classification.className, classification };
+
+    const marking = this.qos.applyMarking(
+      subject,
+      policed.dscp === undefined
+        ? classification.policyClass.marking
+        : { ...classification.policyClass.marking, dscp: policed.dscp },
+      frame.pcp,
+    );
+    if (!marking.changed) return { frame, className: classification.className, classification };
     this.qos.recordMarked(classification);
     this.engine.trace({
       time: this.engine.now(),
@@ -2335,8 +2371,40 @@ export class Router extends Device {
         payload: marking.packet,
         pcp: frame.vlan === undefined ? undefined : marking.cosAfter,
       },
+      className: classification.className,
       classification,
     };
+  }
+
+  /**
+   * Token-bucket policing. Conforming traffic is transmitted, exceeding traffic
+   * is dropped or marked down — and either way the packet is never delayed.
+   */
+  private applyPolicer(
+    classification: QosClassificationResult,
+    wireSizeBytes: number,
+    interfaceName: string,
+    direction: QosDirection,
+  ): { dropped: boolean; dscp: number | undefined } {
+    if (!classification.policyClass.police) return { dropped: false, dscp: undefined };
+    const verdict = this.qos.police(classification, wireSizeBytes, this.engine.now());
+    const detail = {
+      interface: interfaceName,
+      direction,
+      policy: classification.policyMapId,
+      class: classification.className,
+      bytes: wireSizeBytes,
+      rateBps: classification.policyClass.police.rateBps,
+    };
+    if (verdict.action === "conform") {
+      this.engine.trace({ time: this.engine.now(), type: "qos-police-conform", device: this.id, detail });
+      return { dropped: false, dscp: undefined };
+    }
+    this.engine.trace({ time: this.engine.now(), type: "qos-police-exceed", device: this.id, detail });
+    if (verdict.action === "exceed-mark") return { dropped: false, dscp: verdict.dscp };
+    this.qos.recordDropped(classification);
+    this.engine.trace({ time: this.engine.now(), type: "qos-police-dropped", device: this.id, detail });
+    return { dropped: true, dscp: undefined };
   }
 
   /**
@@ -2357,7 +2425,15 @@ export class Router extends Device {
     const classification = this.qos.classify(ingress.name, "input", subject, this.qosContext());
     if (!classification) return packet;
     this.traceQos(classification, packet, ingress.name, subject.wireSizeBytes, "input");
-    const marking = this.qos.applyMarking(subject, classification.policyClass.marking, frame.pcp);
+    const policed = this.applyPolicer(classification, subject.wireSizeBytes, ingress.name, "input");
+    if (policed.dropped) return undefined;
+    const marking = this.qos.applyMarking(
+      subject,
+      policed.dscp === undefined
+        ? classification.policyClass.marking
+        : { ...classification.policyClass.marking, dscp: policed.dscp },
+      frame.pcp,
+    );
     if (!marking.changed) return packet;
     this.qos.recordMarked(classification);
     this.engine.trace({
@@ -2434,6 +2510,41 @@ function popcount(maskInt: number): number {
     count++;
   }
   return count;
+}
+
+/**
+ * Translate a policy map into the queue structure an interface can schedule.
+ * `priority percent` becomes an explicit bits-per-second allowance against the
+ * link capacity, so the built-in LLQ policer is a real bound and not a guess.
+ */
+function egressProfileOf(
+  policy: QosPolicyMap,
+  interfaceName: string,
+  capacityBps: number,
+): EgressQueueProfile {
+  const classes: EgressClassProfile[] = policy.classes.map((entry) => {
+    const priorityRateBps = entry.priority?.rateBps
+      ?? (entry.priority?.percent !== undefined && capacityBps > 0
+        ? Math.max(1, Math.round((capacityBps * entry.priority.percent) / 100))
+        : undefined);
+    return {
+      className: entry.className,
+      kind: entry.priority
+        ? "priority"
+        : entry.className === QOS_CLASS_DEFAULT
+          ? "default"
+          : "bandwidth",
+      priorityRateBps,
+      bandwidthPercent: entry.bandwidthPercent,
+      shapeRateBps: entry.shape?.averageRateBps,
+      shapeBurstBytes: entry.shape?.burstBytes,
+      queueLimitPackets: entry.queueLimitPackets,
+    };
+  });
+  if (!classes.some((entry) => entry.className === QOS_CLASS_DEFAULT)) {
+    classes.push({ className: QOS_CLASS_DEFAULT, kind: "default" });
+  }
+  return { policyMapId: policy.id, interfaceName, classes };
 }
 
 function packetTransportToken(
