@@ -49,6 +49,10 @@ export function classifyLabChange(before: LabDocument, after: LabDocument): Clas
     || before.instructions !== after.instructions
     || before.expectedOutcome !== after.expectedOutcome
     || before.diagram !== after.diagram
+    // Physical placement is presentation, exactly like diagram annotations: it
+    // never changes topology, device configuration or protocol behavior, so it
+    // stays editable while the lab runs and never triggers a rebuild.
+    || before.physical !== after.physical
     || differs(positionProjection(before), positionProjection(after))
   ) return "presentation";
   // A new object containing an unknown/unclassified mutation must never be

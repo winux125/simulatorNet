@@ -7,6 +7,7 @@ export * from "./lab";
 export * from "./protocols";
 export * from "./host-ip";
 export * from "./diagram";
+export * from "./physical";
 export * from "./console";
 export * from "./management";
 export * from "./aaa";

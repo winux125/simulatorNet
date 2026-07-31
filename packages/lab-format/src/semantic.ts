@@ -14,6 +14,7 @@ import {
   MAX_DIAGRAM_ASSET_BYTES,
   MAX_DIAGRAM_ASSET_TOTAL_BYTES,
   MAX_DIAGRAM_ASSETS,
+  placementLastRackUnit,
 } from "@sim/contracts";
 import {
   DEFAULT_NEIGHBOR_DISCOVERY_CONFIG,
@@ -181,6 +182,90 @@ function validateDiagram(document: LabDocument): void {
     if (annotation.type === "image" && !assetIds.has(annotation.assetId)) {
       fail("unknown-diagram-asset", `diagram.annotations[${index}].assetId`, `Unknown diagram asset '${annotation.assetId}'`);
     }
+  });
+}
+
+/**
+ * Physical placement is presentation-only, but it must still be *coherent*:
+ * every reference resolves, one device is drawn once, and two devices never
+ * claim the same rack unit. A background image reuses the diagram asset pool,
+ * so it inherits the validated PNG/JPEG/WebP rules rather than adding a second
+ * image path.
+ */
+function validatePhysical(document: LabDocument): void {
+  const physical = document.physical;
+  if (!physical) return;
+  requireUnique(physical.sites.map((site) => site.id), "physical.sites", "site id");
+  const assetIds = new Set((document.diagram?.assets ?? []).map((asset) => asset.id));
+  const rooms = new Map<string, { siteId: string; racks: Map<string, number> }>();
+  physical.sites.forEach((site, siteIndex) => {
+    const sitePath = `physical.sites[${siteIndex}]`;
+    requireUnique(site.rooms.map((room) => room.id), `${sitePath}.rooms`, "room id");
+    site.rooms.forEach((room, roomIndex) => {
+      const roomPath = `${sitePath}.rooms[${roomIndex}]`;
+      if (rooms.has(room.id)) {
+        fail("duplicate-id", `${roomPath}.id`, `Duplicate room id '${room.id}'`, { value: room.id });
+      }
+      if (room.backgroundAssetId !== undefined && !assetIds.has(room.backgroundAssetId)) {
+        fail("unknown-diagram-asset", `${roomPath}.backgroundAssetId`,
+          `Unknown diagram asset '${room.backgroundAssetId}'`);
+      }
+      requireUnique(room.racks.map((rack) => rack.id), `${roomPath}.racks`, "rack id");
+      rooms.set(room.id, {
+        siteId: site.id,
+        racks: new Map(room.racks.map((rack) => [rack.id, rack.rackUnits])),
+      });
+    });
+  });
+
+  const deviceIds = new Set(document.topology.nodes.map((node) => node.id));
+  requireUnique(
+    physical.devicePlacements.map((placement) => placement.deviceId),
+    "physical.devicePlacements",
+    "device placement",
+  );
+  const claimedUnits = new Map<string, Map<number, string>>();
+  physical.devicePlacements.forEach((placement, index) => {
+    const path = `physical.devicePlacements[${index}]`;
+    if (!deviceIds.has(placement.deviceId)) {
+      fail("unknown-placement-device", `${path}.deviceId`, `Unknown device '${placement.deviceId}'`);
+    }
+    const room = rooms.get(placement.roomId);
+    if (!room) fail("unknown-physical-room", `${path}.roomId`, `Unknown room '${placement.roomId}'`);
+    if (room.siteId !== placement.siteId) {
+      fail("physical-room-site-mismatch", `${path}.siteId`,
+        `Room '${placement.roomId}' belongs to site '${room.siteId}'`);
+    }
+    if (placement.rackId === undefined) {
+      if (placement.rackUnit !== undefined) {
+        fail("physical-rack-unit-without-rack", `${path}.rackUnit`,
+          "A rack unit requires a rack; a free-placed device uses x/y instead");
+      }
+      return;
+    }
+    const rackUnits = room.racks.get(placement.rackId);
+    if (rackUnits === undefined) {
+      fail("unknown-physical-rack", `${path}.rackId`,
+        `Unknown rack '${placement.rackId}' in room '${placement.roomId}'`);
+    }
+    if (placement.rackUnit === undefined) {
+      fail("physical-rack-unit-required", `${path}.rackUnit`, "A rack-mounted device requires a rack unit");
+    }
+    const last = placementLastRackUnit(placement);
+    if (last > rackUnits) {
+      fail("physical-rack-unit-overflow", `${path}.rackUnit`,
+        `Rack '${placement.rackId}' has ${rackUnits} units; this device would end at U${last}`);
+    }
+    const claimed = claimedUnits.get(placement.rackId) ?? new Map<number, string>();
+    for (let unit = placement.rackUnit; unit <= last; unit++) {
+      const owner = claimed.get(unit);
+      if (owner !== undefined) {
+        fail("physical-rack-unit-occupied", `${path}.rackUnit`,
+          `Rack unit U${unit} of '${placement.rackId}' is already occupied by '${owner}'`);
+      }
+      claimed.set(unit, placement.deviceId);
+    }
+    claimedUnits.set(placement.rackId, claimed);
   });
 }
 
@@ -744,6 +829,7 @@ export function validateLabSemantics(document: LabDocument): void {
   requireUnique(document.topology.nodes.map((node) => node.id), "topology.nodes", "node id");
   requireUnique(document.topology.links.map((link) => link.id), "topology.links", "link id");
   validateDiagram(document);
+  validatePhysical(document);
 
   const nodes = new Map<string, NodeSpec>();
   for (const [index, node] of document.topology.nodes.entries()) {

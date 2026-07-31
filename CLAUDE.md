@@ -114,7 +114,8 @@ labels, and diagram annotations. It must not contain:
 - X6 internal JSON;
 - active selection or tool state;
 - terminal tabs, history, or scrollback;
-- browser theme, icon profile, execution mode, or layout preferences;
+- browser theme, icon profile, execution mode, workspace view, or layout
+  preferences;
 - ARP/MAC caches, DHCP leases, sockets, pending operations, or event queues;
 - computed scores or hidden grading definitions.
 
@@ -337,6 +338,29 @@ Deleting a stopped device must close only its own terminal tab and device
 window, clear matching selection, remove its links and stale session IDs, and
 never send a later worker request to the deleted ID. Other device sessions stay
 open.
+
+### Physical workspace
+
+One lab has two representations. **Logical** is the topology canvas; **Physical**
+is where the equipment sits: Sites → Rooms → Racks. The switch is its own
+control and is never mixed with Edit/Operate or Auto/Step. Which view is open is
+local workspace state.
+
+`LabDocument.physical` is optional presentation metadata beside `diagram`. A
+placement never changes DeviceType, interfaces, links, routing, wireless signal,
+latency, QoS, grading or the runtime, so it shows no Apply Topology, triggers no
+rebuild, clears no ARP/TCP/trace, and stays editable while the lab runs. Room
+coordinates never reach `WirelessMedium`.
+
+A rack unit holds exactly one device and a collision is rejected, never
+displaced. `rackUnitSpan` (1-4 U) is drawing height only: no power, cooling,
+weight, real dimension, cable length, patch panel, PDU or cable capacity is
+modelled, and no invented value is shown. Being Unplaced is normal and never
+blocks Start Lab. Room background images reference `diagram.assets`, so they
+reuse the validated PNG/JPEG/WebP rules rather than adding a second image path.
+Show Connections is an overlay over existing `topology.links`; no physical
+connection object exists. Importers never derive rack placement from logical
+coordinates. See `docs/physical-workspace.md`.
 
 ### Diagram editor
 

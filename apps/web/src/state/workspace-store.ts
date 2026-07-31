@@ -32,6 +32,12 @@ import {
 
 export type WorkspaceMode = "edit" | "simulate";
 export type ExecutionMode = "auto" | "step";
+/**
+ * Which representation of the lab is on screen. Local workspace state only: it
+ * is independent of Edit/Operate and of Auto/Step, and never enters
+ * LabDocument, a submission, grading or the database.
+ */
+export type WorkspaceView = "logical" | "physical";
 export type WorkspaceTool =
   | "select"
   | "pan"
@@ -98,6 +104,7 @@ interface WorkspaceState {
   workerStatus: "empty" | "loading" | "ready" | "error";
   powerState: LabPowerState;
   mode: WorkspaceMode;
+  view: WorkspaceView;
   executionMode: ExecutionMode;
   activeTool: WorkspaceTool;
   pendingDeviceKind: NodeSpec["kind"] | undefined;
@@ -158,6 +165,7 @@ interface WorkspaceState {
   setWorkerStatus(status: WorkspaceState["workerStatus"]): void;
   setPowerState(state: LabPowerState): void;
   setMode(mode: WorkspaceMode): void;
+  setView(view: WorkspaceView): void;
   setExecutionMode(mode: ExecutionMode): void;
   setActiveTool(tool: WorkspaceTool): void;
   setPendingDeviceKind(kind: NodeSpec["kind"] | undefined): void;
@@ -201,6 +209,7 @@ const initialState = {
   workerStatus: "empty" as const,
   powerState: "stopped" as LabPowerState,
   mode: "simulate" as const,
+  view: "logical" as WorkspaceView,
   executionMode: "auto" as const,
   activeTool: "select" as const,
   pendingDeviceKind: undefined,
@@ -416,6 +425,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   setWorkerStatus: (workerStatus) => set({ workerStatus }),
   setPowerState: (powerState) => set({ powerState }),
   setMode: (mode) => set({ mode, activeTool: "select", pendingDeviceKind: undefined, paletteOpen: false }),
+  // Switching representation is a display change: it keeps the draft, the
+  // runtime, terminal sessions, traces and selection exactly as they were.
+  setView: (view) => set({ view }),
   setExecutionMode: (executionMode) => set({ executionMode }),
   setActiveTool: (activeTool) => set({ activeTool, pendingDeviceKind: undefined, paletteOpen: false }),
   setPendingDeviceKind: (pendingDeviceKind) => set({

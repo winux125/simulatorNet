@@ -535,3 +535,82 @@ label.ui-icon-button { display: inline-grid; }
 .link-performance input:focus { border-color: var(--color-accent); }
 .link-performance .ui-button { justify-self: start; }
 .link-performance .section-note { margin: 0; color: var(--color-text-faint); font-size: 9px; line-height: 1.5; }
+
+/* M10.8.1 physical workspace: the Logical/Physical switch and the site, room,
+   rack and Unplaced surfaces. Everything here draws LabDocument.physical, which
+   is presentation metadata — no value shown is derived from hardware. */
+.workspace-view-switch { display: flex; min-height: 30px; flex: none; align-items: center; gap: 2px; padding: 0 12px; border-bottom: var(--border); background: var(--color-toolbar); }
+.workspace-view-switch button { padding: 0 14px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--color-text-muted); cursor: pointer; font-size: var(--font-size-10); font-weight: 700; line-height: 28px; }
+.workspace-view-switch button:hover { color: var(--color-text); }
+.workspace-view-switch button.is-active { border-bottom-color: var(--color-accent); color: var(--color-accent); }
+.workspace-view-switch__hint { overflow: hidden; margin-left: 10px; color: var(--color-text-faint); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+
+.physical-workspace { display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; grid-template-areas: "tree stage properties" "tray tray tray"; grid-template-columns: 210px minmax(0, 1fr) 260px; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; background: var(--color-canvas); }
+.physical-tree { display: grid; min-height: 0; grid-area: tree; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; border-right: var(--border); background: var(--color-panel); }
+.physical-tree__actions { display: flex; gap: 6px; padding: 8px; border-bottom: var(--border); }
+.physical-tree__list { min-height: 0; margin: 0; padding: 6px; overflow: auto; overscroll-behavior: contain; list-style: none; }
+.physical-tree ul { margin: 0; padding: 0 0 0 12px; list-style: none; }
+.physical-tree button { display: flex; width: 100%; align-items: center; gap: 6px; padding: 4px 6px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-soft); cursor: pointer; font-size: var(--font-size-10); text-align: left; }
+.physical-tree button:hover { background: var(--color-panel-hover); color: var(--color-text); }
+.physical-tree button.is-active { background: var(--color-accent-muted); color: var(--color-accent); font-weight: 700; }
+.physical-tree__add { color: var(--color-text-faint); font-size: 9px; }
+
+.physical-stage-shell { display: grid; min-width: 0; min-height: 0; grid-area: stage; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
+.physical-stage-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 12px; border-bottom: var(--border); background: var(--color-panel); font-size: var(--font-size-10); }
+.physical-toggle { display: flex; align-items: center; gap: 6px; color: var(--color-text-muted); font-size: var(--font-size-10); }
+.physical-stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--color-canvas); }
+.physical-stage__scene { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+.physical-stage__background { position: absolute; top: 0; left: 0; max-width: none; opacity: 0.5; pointer-events: none; }
+.physical-note { display: flex; align-items: center; gap: 6px; margin: 0; padding: 5px 12px; border-top: var(--border); background: var(--color-panel); color: var(--color-text-faint); font-size: 9px; }
+
+.physical-rack { position: absolute; display: grid; grid-template-rows: 26px minmax(0, 1fr); overflow: hidden; border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); background: var(--color-panel); }
+.physical-rack > header { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 8px; border-bottom: var(--border); background: var(--color-toolbar); }
+.physical-rack > header button { border: 0; background: transparent; color: var(--color-text); cursor: pointer; font-size: var(--font-size-10); font-weight: 700; }
+.physical-rack > header small { color: var(--color-text-faint); font: 9px var(--font-mono); }
+.physical-rack__units { display: grid; margin: 0; padding: 0; grid-auto-rows: 22px; list-style: none; }
+.physical-rack__units > li { position: relative; display: flex; align-items: center; gap: 4px; padding-left: 4px; border-bottom: 1px solid var(--color-border-subtle); }
+.physical-rack__units > li.is-occupied { background: var(--color-panel-raised); }
+.physical-rack__u { width: 24px; color: var(--color-text-faint); font: 8px var(--font-mono); }
+.physical-rack__device { position: absolute; z-index: 1; top: 2px; right: 3px; left: 30px; display: flex; align-items: center; gap: 6px; overflow: hidden; padding: 0 6px; border: 1px solid var(--color-node-border); border-radius: var(--radius-sm); background: var(--color-node); color: var(--color-text); cursor: grab; font-size: 9px; font-weight: 650; text-align: left; }
+.physical-rack__device:hover { border-color: var(--color-node-border-hover); background: var(--color-node-hover); }
+.physical-rack__device.is-selected { border-color: var(--color-accent-strong); box-shadow: 0 0 0 1px var(--color-accent-strong); }
+.physical-rack__device > span { overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
+.physical-rack__status { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--color-text-faint); }
+.physical-rack__status[data-status="up"] { background: var(--color-success); }
+.physical-rack__status[data-status="error"] { background: var(--color-error); }
+
+.physical-free-device { position: absolute; display: grid; width: 78px; justify-items: center; gap: 3px; padding: 6px 4px; border: 1px solid var(--color-node-border); border-radius: var(--radius-md); background: var(--color-node); color: var(--color-text); cursor: grab; font-size: 9px; }
+.physical-free-device:hover { border-color: var(--color-node-border-hover); background: var(--color-node-hover); }
+.physical-free-device > span { max-width: 70px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.physical-connections { position: absolute; right: 10px; bottom: 10px; display: grid; max-width: 280px; max-height: 45%; gap: 3px; overflow: auto; overscroll-behavior: contain; padding: 8px 10px; border: var(--border); border-radius: var(--radius-md); background: var(--color-overlay-panel); color: var(--color-text-soft); font-size: 9px; }
+.physical-connections strong { color: var(--color-text-muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; }
+.physical-connections .is-off-room { color: var(--color-text-faint); }
+
+.physical-properties { display: grid; min-height: 0; align-content: start; gap: 8px; grid-area: properties; overflow: auto; overscroll-behavior: contain; padding: 12px; border-left: var(--border); background: var(--color-panel); }
+.physical-properties h3 { margin: 0; font-size: var(--font-size-12); }
+.physical-properties label { display: grid; gap: 4px; color: var(--color-text-muted); font-size: var(--font-size-10); font-weight: 650; }
+.physical-properties input, .physical-properties select { min-height: 29px; padding: 0 7px; border: var(--border); border-radius: var(--radius-md); outline: 0; background: var(--color-input); color: var(--color-text); font-size: var(--font-size-10); }
+.physical-properties input:focus, .physical-properties select:focus { border-color: var(--color-accent); }
+.physical-properties__actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.physical-properties .section-note { margin: 0; color: var(--color-text-faint); font-size: 9px; line-height: 1.5; }
+
+.physical-tray { display: grid; max-height: 132px; grid-area: tray; grid-template-rows: auto minmax(0, 1fr); gap: 6px; padding: 8px 12px; border-top: var(--border); background: var(--color-panel); }
+.physical-tray > strong { color: var(--color-text-muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; }
+.physical-tray > strong small { display: inline-grid; min-width: 18px; height: 16px; padding: 0 5px; place-items: center; border-radius: 8px; background: var(--color-panel-raised); color: var(--color-text-faint); font: 9px var(--font-mono); }
+.physical-tray__items { display: flex; min-height: 0; flex-wrap: wrap; align-content: start; gap: 6px; overflow: auto; overscroll-behavior: contain; }
+.physical-tray__device { display: flex; align-items: center; gap: 6px; padding: 5px 9px; border: var(--border); border-radius: var(--radius-md); background: var(--color-panel-raised); color: var(--color-text); cursor: grab; font-size: 9px; font-weight: 650; }
+.physical-tray__device:hover { border-color: var(--color-node-border-hover); background: var(--color-node-hover); }
+
+/* Narrow widths drop the optional side surfaces so the room stays usable; the
+   stage keeps its own single scroll region and never nests a second one. */
+@media (max-width: 1279px) {
+  .physical-workspace { grid-template-areas: "tree stage" "tray tray"; grid-template-columns: 190px minmax(0, 1fr); }
+  .physical-properties { display: none; }
+}
+
+@media (max-width: 999px) {
+  .physical-workspace { grid-template-areas: "stage" "tray"; grid-template-columns: minmax(0, 1fr); }
+  .physical-tree { display: none; }
+}
+

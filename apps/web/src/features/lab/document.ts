@@ -14,6 +14,7 @@ import {
   type NodeSpec,
 } from "@sim/contracts";
 import { canonicalizeLabDocument, parseLabDocument } from "@sim/lab-format";
+import { withoutDevicePlacements } from "../physical/physical-layout";
 
 /** Device kinds that expose a simulated login console. */
 export const CONSOLE_CAPABLE_KINDS = new Set<DeviceType>([
@@ -276,7 +277,8 @@ export function removeDraftDevice(document: LabDocument, nodeId: string): LabDoc
   const removedLinkIds = new Set(document.topology.links
     .filter((link) => link.a.node === nodeId || link.b.node === nodeId)
     .map((link) => link.id));
-  return {
+  // A deleted device must not leave a dangling physical placement behind.
+  return withoutDevicePlacements({
     ...document,
     topology: {
       ...document.topology,
@@ -291,7 +293,7 @@ export function removeDraftDevice(document: LabDocument, nodeId: string): LabDoc
           linkLabels: document.diagram.linkLabels.filter((label) => !removedLinkIds.has(label.linkId)),
           linkStyles: document.diagram.linkStyles.filter((style) => !removedLinkIds.has(style.linkId)),
         },
-  };
+  }, nodeId);
 }
 
 export function mergeRunningConfiguration(running: LabDocument, draft: LabDocument): LabDocument {

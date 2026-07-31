@@ -62,11 +62,12 @@ import {
 import { applyTerminalAppearance, getTerminalAppearance, type TerminalAppearance } from "../features/terminal/terminal-appearance";
 import { persistConfirmMultilinePaste, readConfirmMultilinePaste, TERMINAL_PASTE_LIMITS } from "../features/terminal/terminal-paste";
 import { TerminalPresentation } from "../features/terminal/TerminalPresentation";
-import { isTopologyEditable, useWorkspaceStore, type DockTab, type ExecutionMode, type WorkspaceMode } from "../state/workspace-store";
+import { isTopologyEditable, useWorkspaceStore, type DockTab, type ExecutionMode, type WorkspaceMode, type WorkspaceView } from "../state/workspace-store";
 import { Button, IconButton, Kbd } from "../ui";
 import type { SimulatorClient } from "./simulator-client";
 
 const TopologyCanvas = lazy(() => import("../features/topology/TopologyCanvas"));
+const PhysicalWorkspace = lazy(() => import("../features/physical/PhysicalWorkspace"));
 const BottomDock = lazy(() => import("../features/dock/BottomDock"));
 const BottomPanelStrip = lazy(() => import("../features/dock/BottomDock").then((module) => ({ default: module.BottomPanelStrip })));
 const STEP_EXPLANATION_KEY = "simulatornet.stepModeExplained";
@@ -803,6 +804,31 @@ export function App({ client }: AppProps) {
           </Button>
         </div>
       )}
+      {labOpen && (
+        <nav className="workspace-view-switch" role="tablist" aria-label="Workspace view">
+          {([
+            { id: "logical", label: "Logical", hint: "Topology canvas: devices, cables and diagram." },
+            { id: "physical", label: "Physical", hint: "Where the equipment is: sites, rooms and racks." },
+          ] as const).map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              role="tab"
+              aria-selected={workspace.view === entry.id}
+              className={workspace.view === entry.id ? "is-active" : ""}
+              title={entry.hint}
+              onClick={() => workspace.setView(entry.id as WorkspaceView)}
+            >
+              {entry.label}
+            </button>
+          ))}
+          <span className="workspace-view-switch__hint">
+            {workspace.view === "physical"
+              ? "Placement is presentation only — it never rebuilds the running lab."
+              : "Devices, cables and diagram annotations."}
+          </span>
+        </nav>
+      )}
       <div className="workspace-body">
         <PanelGroup
           orientation="vertical"
@@ -818,8 +844,22 @@ export function App({ client }: AppProps) {
             defaultSize={`${workspacePanelLayout[WORKSPACE_MAIN_PANEL_ID]}%`}
           >
             <div className="main-workspace">
-              <Suspense fallback={<CanvasLoading />}><TopologyCanvas {...topologyProps()} /></Suspense>
-              {inspector}
+              {workspace.view === "physical" && workspace.draft ? (
+                <Suspense fallback={<CanvasLoading />}>
+                  <PhysicalWorkspace
+                    document={workspace.draft}
+                    nodes={workspace.snapshot?.nodes ?? []}
+                    onChange={updateDraft}
+                    onOpenDevice={setDeviceWindowId}
+                    onError={(message) => reportError(message, "validation")}
+                  />
+                </Suspense>
+              ) : (
+                <>
+                  <Suspense fallback={<CanvasLoading />}><TopologyCanvas {...topologyProps()} /></Suspense>
+                  {inspector}
+                </>
+              )}
             </div>
           </ResizablePanel>
           {bottomPanelExpandedInLayout && (

@@ -6,7 +6,9 @@ import {
   DEFAULT_STP_FORWARD_DELAY_SECONDS,
   DEFAULT_STP_HELLO_SECONDS,
   DEFAULT_STP_MAX_AGE_SECONDS,
+  isDefaultPhysicalLayout,
   isDefaultQosConfiguration,
+  type LabPhysicalLayout,
   type NeighborDiscoveryConfig,
   type QosConfiguration,
 } from "@sim/contracts";
@@ -428,6 +430,34 @@ function canonicalQos(configuration: QosConfiguration | undefined): QosConfigura
         || a.direction.localeCompare(b.direction)
         || a.policyMapId.localeCompare(b.policyMapId))
       .map((binding) => ({ ...binding })),
+  };
+}
+
+/**
+ * Canonical physical placement: sites, rooms and racks by id, placements by
+ * device id. Ordering is observable in the saved document, so it must never
+ * depend on insertion order. Absent when nothing is placed, so a lab written
+ * before M10.8.1 round-trips byte-identically without a `physical` block.
+ */
+function canonicalPhysical(layout: LabPhysicalLayout | undefined): LabPhysicalLayout | undefined {
+  if (isDefaultPhysicalLayout(layout) || !layout) return undefined;
+  return {
+    sites: [...layout.sites].sort(byId).map((site) => ({
+      id: site.id,
+      name: site.name,
+      rooms: [...site.rooms].sort(byId).map((room) => ({
+        id: room.id,
+        name: room.name,
+        backgroundAssetId: room.backgroundAssetId,
+        racks: [...room.racks].sort(byId).map((rack) => ({
+          ...rack,
+          position: { ...rack.position },
+        })),
+      })),
+    })),
+    devicePlacements: [...layout.devicePlacements]
+      .sort((a, b) => a.deviceId.localeCompare(b.deviceId))
+      .map((placement) => ({ ...placement })),
   };
 }
 
@@ -886,6 +916,7 @@ export function canonicalizeLabDocument(document: LabDocument | LabDocumentDraft
               vertices: style.vertices.map((vertex) => ({ ...vertex })),
             })),
         },
+    physical: canonicalPhysical(parsed.physical),
     simulation: { seed: parsed.simulation.seed },
     topology: {
       schemaVersion: 1,

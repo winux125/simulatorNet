@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { TopologySchema } from "./topology";
 import { LabDiagramSchema } from "./diagram";
+import { LabPhysicalLayoutSchema } from "./physical";
 import { ConsoleAccessConfigurationSchema } from "./console";
 import { ManagementSviConfigSchema, RemoteAccessConfigurationSchema } from "./management";
 import { AaaConfigurationSchema, RadiusServiceConfigSchema, TacacsServiceConfigSchema } from "./aaa";
@@ -689,6 +690,12 @@ export const LabMetadataSchema = z.object({
   instructions: z.string().optional(),
   expectedOutcome: z.string().optional(),
   diagram: LabDiagramSchema.optional(),
+  /**
+   * Optional physical placement (sites, rooms, racks). Presentation only, like
+   * `diagram`: it never affects topology, protocol behavior or grading, and a
+   * lab written before M10.8.1 simply omits it.
+   */
+  physical: LabPhysicalLayoutSchema.optional(),
   sourceImport: LabSourceImportSchema.optional(),
 });
 export type LabMetadata = z.infer<typeof LabMetadataSchema>;

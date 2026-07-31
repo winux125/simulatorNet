@@ -431,6 +431,7 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   await expect(page.getByRole("dialog", { name: "Add topology item" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Close bottom panel" })).toHaveCount(0);
   const chromeBounds = await page.locator(".desktop-chrome").boundingBox();
+  const viewSwitchBounds = await page.getByRole("tablist", { name: "Workspace view" }).boundingBox();
   const workspaceBounds = await page.locator(".workspace-resizable").boundingBox();
   const topologyPanelBounds = await page.locator(".topology-panel").boundingBox();
   const topologyBounds = await page.getByTestId("topology-graph").boundingBox();
@@ -438,6 +439,7 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   const dockBounds = await page.getByLabel("Workspace bottom panel").boundingBox();
   const footerBounds = await page.locator(".workspace-footer").boundingBox();
   expect(chromeBounds).not.toBeNull();
+  expect(viewSwitchBounds).not.toBeNull();
   expect(workspaceBounds).not.toBeNull();
   expect(topologyPanelBounds).not.toBeNull();
   expect(topologyBounds).not.toBeNull();
@@ -446,7 +448,11 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   expect(footerBounds).not.toBeNull();
   expect(chromeBounds!.height).toBe(78);
   expect(chromeBounds!.width).toBe(1440);
-  expect(topologyPanelBounds!.y).toBeLessThan(100);
+  // The topology starts directly under the chrome and the Logical/Physical
+  // switch — nothing else may claim vertical space above it.
+  expect(viewSwitchBounds!.y).toBeGreaterThanOrEqual(chromeBounds!.height);
+  expect(topologyPanelBounds!.y)
+    .toBeLessThanOrEqual(viewSwitchBounds!.y + viewSwitchBounds!.height + 1);
   expect(topologyBounds!.y).toBeGreaterThanOrEqual(diagramToolbarBounds!.y + diagramToolbarBounds!.height);
   expect(dockBounds!.width).toBe(1440);
   expect(dockBounds!.y).toBeGreaterThan(topologyPanelBounds!.y);
