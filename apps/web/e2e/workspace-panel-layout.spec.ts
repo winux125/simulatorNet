@@ -127,8 +127,10 @@ test("recovers stale workspace layout across Inspector, dock, reload and QoS tra
   // QoS device content is not a nested PanelGroup and remains usable.
   await page.getByRole("button", { name: "Select R1" }).dblclick();
   const deviceWindow = page.getByRole("dialog", { name: /R1 device window/ });
-  await deviceWindow.getByRole("tab", { name: "QoS Class Maps" }).click();
-  await expect(deviceWindow).toContainText(/Class Maps|classMaps/);
+  await deviceWindow.getByRole("tab", { name: "QoS", exact: true }).click();
+  await deviceWindow.getByRole("tablist", { name: "QoS sections" })
+    .getByRole("tab", { name: "Classification" }).click();
+  await expect(deviceWindow.getByLabel("Class maps JSON")).toBeVisible();
   await expectWorkspaceHealthy(page);
 
   await page.setViewportSize({ width: 1440, height: 900 });

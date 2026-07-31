@@ -71,6 +71,13 @@ async function openDeviceTab(page: Page, hostname: string, tab: RegExp) {
   return window;
 }
 
+/** Open the single top-level QoS tab and one of its secondary sections. */
+async function openQosSection(page: Page, hostname: string, name: string) {
+  const window = await openDeviceTab(page, hostname, /^QoS$/);
+  await window.getByRole("tablist", { name: "QoS sections" }).getByRole("tab", { name }).click();
+  return { window, panel: window.getByRole("tabpanel", { name: `QoS ${name}` }) };
+}
+
 async function runTrafficFlow(page: Page, hostname: string, flowId: string) {
   const window = await openDeviceTab(page, hostname, /^Run$/);
   await window.getByText(flowId, { exact: true }).waitFor();
@@ -161,7 +168,91 @@ test.describe("QoS", () => {
     await expectTerminal(page, /Service-policy input: GUEST-POLICE/);
     await expectTerminal(page, /Service-policy output: WAN-SHAPE/);
 
-    const counters = await openDeviceTab(page, "R1", /QoS Counters/);
-    await expect(counters).toContainText("GUEST");
+    const { panel } = await openQosSection(page, "R1", "Queues & Counters");
+    await expect(panel).toContainText("GUEST");
   });
+
+  test("one consolidated QoS tab exposes every section on Router, L3 Switch and Firewall", async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto("/");
+    await loadDemo(page, /QoS: Guest Policing and WAN Shaping/);
+
+    // 1-2. Exactly one top-level QoS tab.
+    const router = await openDeviceTab(page, "R1", /^QoS$/);
+    const tabs = await router.getByRole("tablist", { name: /R1 sections/ }).getByRole("tab").allInnerTexts();
+    expect(tabs.filter((label) => label.includes("QoS"))).toEqual(["QoS"]);
+    const sections = router.getByRole("tablist", { name: "QoS sections" });
+    await expect(sections.getByRole("tab")).toHaveText([
+      "Overview", "Classification", "Policies", "Interfaces", "Queues & Counters",
+    ]);
+    // The secondary navigation is fully reachable at 1280x720.
+    for (const name of ["Overview", "Classification", "Policies", "Interfaces", "Queues & Counters"]) {
+      await expect(sections.getByRole("tab", { name })).toBeVisible();
+    }
+
+    // 3-4. Classification holds the class maps; a new one round-trips through
+    // the worker rather than only living in the textarea.
+    await sections.getByRole("tab", { name: "Classification" }).click();
+    const classMaps = router.getByLabel("Class maps JSON");
+    await expect(classMaps).toHaveValue(/GUEST/);
+    await router.getByRole("button", { name: "Add class map" }).click();
+    await router.getByRole("button", { name: "Apply", exact: true }).click();
+    await router.getByRole("button", { name: "Refresh" }).click();
+    await expect(classMaps).toHaveValue(/NEW-CLASS/);
+    await expect(classMaps).toHaveValue(/GUEST/);
+
+    // 5-6. Policies show the policer and the shaper.
+    await sections.getByRole("tab", { name: "Policies" }).click();
+    const policyMaps = router.getByLabel("Policy maps JSON");
+    await expect(policyMaps).toHaveValue(/police/);
+    await expect(policyMaps).toHaveValue(/shape/);
+
+    // 7. Interfaces list the bound policies and open their detail in place.
+    await sections.getByRole("tab", { name: "Interfaces" }).click();
+    const interfaces = router.getByRole("tabpanel", { name: "QoS Interfaces" });
+    await expect(interfaces).toContainText("WAN-SHAPE");
+    const row = interfaces.locator(".qos-interface-table__pick").first();
+    const interfaceName = (await row.innerText()).trim();
+    await row.click();
+    await expect(interfaces.getByLabel(`${interfaceName} QoS detail`)).toBeVisible();
+    // The detail opens inside the QoS tab: still exactly one device window.
+    await expect(page.getByRole("dialog")).toHaveCount(1);
+
+    // 8-10. Clearing counters never removes configuration.
+    await sections.getByRole("tab", { name: "Queues & Counters" }).click();
+    await router.getByRole("button", { name: "Clear Runtime Counters" }).click();
+    await sections.getByRole("tab", { name: "Classification" }).click();
+    await expect(router.getByLabel("Class maps JSON")).toHaveValue(/NEW-CLASS/);
+    await sections.getByRole("tab", { name: "Policies" }).click();
+    await expect(router.getByLabel("Policy maps JSON")).toHaveValue(/GUEST-POLICE/);
+    // Nothing in this flow raised a Problem.
+    await expect(page.locator(".workspace-error")).toHaveCount(0);
+    await router.getByRole("button", { name: "Close device window" }).click();
+  });
+
+  // 11. The same component serves the L3 Switch and the Firewall.
+  for (const [demo, hostname, unsupported] of [
+    [/Inter-VLAN Routing/, "DSW1", /802\.1Q subinterfaces/],
+    [/DMZ Stateful Firewall/, "FW1", /switched virtual interfaces/],
+  ] as const) {
+    test(`the shared QoS panel serves ${hostname}`, async ({ page }) => {
+      test.setTimeout(120_000);
+      await page.setViewportSize({ width: 1280, height: 720 });
+      await page.goto("/");
+      await loadDemo(page, demo);
+
+      const window = await openDeviceTab(page, hostname, /^QoS$/);
+      const tabs = await window.getByRole("tablist", { name: new RegExp(`${hostname} sections`) })
+        .getByRole("tab").allInnerTexts();
+      expect(tabs.filter((label) => label.includes("QoS"))).toEqual(["QoS"]);
+      const sections = window.getByRole("tablist", { name: "QoS sections" });
+      await expect(sections.getByRole("tab")).toHaveText([
+        "Overview", "Classification", "Policies", "Interfaces", "Queues & Counters",
+      ]);
+      await sections.getByRole("tab", { name: "Interfaces" }).click();
+      // Capabilities keep the unsupported attachment point off this device.
+      await expect(window.getByRole("tabpanel", { name: "QoS Interfaces" })).not.toContainText(unsupported);
+    });
+  }
 });

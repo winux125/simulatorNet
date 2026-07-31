@@ -179,8 +179,16 @@ deterministic token bucket driven by virtual time.
 policy maps, marking, priority/bandwidth classes, policers, shapers and
 service-policy bindings. It must never store queued packets, token counts, the
 scheduler cursor, counters, drops or measured waiting times. Capacity is an
-educational serialization model, never a hardware throughput claim. See
-`docs/qos-simulation.md`.
+educational serialization model, never a hardware throughput claim.
+
+A device window carries exactly one top-level `QoS` tab. Overview,
+Classification, Policies, Interfaces and Queues & Counters are secondary
+navigation inside it, an interface row opens its detail in the same tab, and no
+nested modal window is created. One reusable `QosPanel` serves Router, L3 Switch
+and Firewall; differences are declared as capabilities rather than forked into
+near-identical components, and a device with no policy engine gets no QoS tab.
+The selected section is UI state and never reaches `LabDocument`, a submission,
+grading or the database. See `docs/qos-simulation.md`.
 
 ### Management plane
 

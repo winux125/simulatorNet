@@ -22,19 +22,15 @@ import {
   SecurityConfigurationPanel,
   type SecuritySection,
 } from "./SecurityConfigurationPanel";
-import { isQosSection, QOS_SECTIONS, QosPanel, type QosSection } from "./QosPanel";
-
-/** Devices whose routed data plane owns a QoS policy engine. */
-const QOS_KINDS = new Set(["router", "l3-switch", "firewall"]);
+import { QosPanel, qosCapabilitiesFor } from "./QosPanel";
 
 type DeviceWindowTab =
   | "overview" | "desktop" | "config" | "console" | "services" | "terminal" | "interfaces" | "attributes"
   | "routing" | "routes" | "vlans" | "svis" | "acl" | "nat" | "runtime"
   | "zones" | "policies" | "connections" | "impairments" | "flows" | "run" | "results"
-  | "ipv6"
+  | "ipv6" | "qos"
   | "wireless" | "clients" | "apps" | "setup" | "lan" | "wan" | "dhcp" | "firewall"
-  | ManagementSection
-  | QosSection;
+  | ManagementSection;
 type DesktopTool = "ip" | "command" | "web" | "tftp" | "ntp" | "syslog" | "transport";
 
 interface DeviceWindowProps {
@@ -168,9 +164,11 @@ export function DeviceWindow(props: DeviceWindowProps) {
     const withConsole = CONSOLE_CAPABLE_KINDS.has(props.node.type)
       ? [...base, { id: "console" as const, label: "Console Access" }]
       : base;
-    // QoS is grouped after the device's own sections, like the management ones.
-    const qos: Array<{ id: DeviceWindowTab; label: string }> = QOS_KINDS.has(props.node.type)
-      ? QOS_SECTIONS.map((entry) => ({ id: entry.id, label: `QoS ${entry.label}` }))
+    // Exactly one top-level QoS tab. Overview, Classification, Policies,
+    // Interfaces and Queues & Counters are secondary navigation inside it, so
+    // the window keeps a readable tab row.
+    const qos: Array<{ id: DeviceWindowTab; label: string }> = qosCapabilitiesFor(props.node.type)
+      ? [{ id: "qos", label: "QoS" }]
       : [];
     return [...withConsole, ...qos, ...management];
   }, [
@@ -240,11 +238,12 @@ export function DeviceWindow(props: DeviceWindowProps) {
           {(["setup", "lan", "wan", "dhcp", "firewall"] as DeviceWindowTab[]).includes(tab) && (
             <StructuredConfiguration document={props.document} node={props.node} section={tab} />
           )}
-          {isQosSection(tab) && (props.runtimeAvailable
+          {tab === "qos" && (props.runtimeAvailable
             ? <QosPanel
                 client={props.client}
                 deviceId={props.node.id}
-                section={tab}
+                deviceType={props.node.type}
+                interfaces={props.node.interfaces}
                 onConfigurationChanged={props.onConfigurationChanged}
                 onError={props.onError}
               />

@@ -253,6 +253,40 @@ It never stores queued packets, token counts, the scheduler cursor, counters,
 drops or measured waiting times. A schema-v1 lab written before M10.8 opens
 unchanged and uses the documented defaults.
 
+## Device window surface
+
+A Router, L3 Switch or Firewall window carries exactly **one** top-level `QoS`
+tab. Everything lives inside it as secondary navigation, so the window keeps a
+readable tab row:
+
+| Section | Shows |
+| --- | --- |
+| Overview | Class-map and policy-map counts, interfaces with a policy, queue / policer / shaper drops, active warnings, and quick links into the other sections |
+| Classification | Class maps, match-all / match-any, ACL / protocol / port / prefix / DSCP / precedence / CoS matches, and the runtime class counters |
+| Policies | Policy maps and their classes: marking, priority, bandwidth, policing and shaping |
+| Interfaces | Interface, input policy, output policy, capacity, queue limit and status; selecting a row opens its detail *inside the same tab* |
+| Queues & Counters | Queue depth, transmitted packets/bytes, drops, virtual waiting time, class counters, policer and shaper drops, and **Clear Runtime Counters** |
+
+One reusable `QosPanel` serves all three device kinds. Differences are declared
+as capabilities, not forked into near-identical components:
+
+| Capability | Router | L3 Switch | Firewall |
+| --- | --- | --- | --- |
+| 802.1Q subinterfaces carry a service policy | yes | no | yes |
+| Switched virtual interfaces carry a service policy | no | yes | no |
+| Zone policy runs on the same routed path | no | no | yes |
+
+A device with no QoS policy engine — Hub, Bridge, L2 Switch, Wireless Router —
+has no capabilities and therefore no QoS tab at all.
+
+Which section is open is UI state. It is never written to `LabDocument`, a
+submission, grading or the database, and switching sections changes no
+configuration. **Clear Runtime Counters** resets transient counters only: class
+maps, policy maps and service-policy bindings survive it untouched. The
+secondary navigation scrolls horizontally at narrow widths rather than
+truncating a section name, and only the panel body scrolls, so the device
+window never grows a second scrollbar.
+
 ## Known limitations
 
 - Queueing is a property of the physical port. A policy attached to a dot1Q
@@ -263,3 +297,7 @@ unchanged and uses the documented defaults.
 - A TCP traffic flow uses the host stack's deterministic ephemeral source port;
   only the destination port is configurable.
 - The L2 Switch preserves 802.1p priority but cannot host a policy map.
+- Queues & Counters reports policer and shaper *drops*, which the queue exposes.
+  Individual shaped packets are observed in the Packet Trace as
+  `qos-shape-delayed` and `qos-shape-released`; the engine keeps no aggregate
+  delayed/released counter.
