@@ -32,6 +32,13 @@ export const DEFAULT_VPN_LIMITS = Object.freeze({
   rekeyOverlapNs: 2_000_000_000,
   /** Virtual delay before an armed peer starts negotiating, in ns. */
   negotiationStartDelayNs: 1_000_000,
+  /**
+   * How long an attempt waits for its peer before failing, in virtual ns. It is
+   * deliberately a small fixed window rather than a fraction of the lifetime: a
+   * one-hour lifetime must not drag the virtual clock forward by six minutes
+   * every time the event queue drains.
+   */
+  negotiationTimeoutNs: 5_000_000_000,
   /** Bounded work one Auto run or grading check may spend on VPN events. */
   maximumVpnEventsPerOperation: 20_000,
 });

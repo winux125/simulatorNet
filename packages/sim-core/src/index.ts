@@ -59,6 +59,8 @@ export * from "./packets/ospf";
 export * from "./packets/ospfv3";
 export * from "./packets/ipv4";
 export * from "./packets/gre";
+export * from "./packets/esp";
+export * from "./packets/ike";
 export * from "./packets/icmp";
 export * from "./packets/icmpv6";
 export * from "./packets/ipv6";
@@ -77,6 +79,7 @@ export * from "./qos";
 // Deterministic educational site-to-site VPN: GRE tunnels (see docs/vpn-tunnels.md)
 export * from "./vpn/limits";
 export * from "./vpn/gre-tunnel";
+export * from "./vpn/ipsec";
 
 // Deterministic control protocols
 export * from "./protocols/limits";

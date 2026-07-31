@@ -1,4 +1,5 @@
 import type { EthernetFrame, L2Payload } from "../packets/ethernet";
+import { ESP_OVERHEAD_BYTES, type SimulatedEspPacket } from "../packets/esp";
 import { GRE_HEADER_BYTES, type GrePacket } from "../packets/gre";
 import type { Ipv4Packet } from "../packets/ipv4";
 import type { Ipv6Packet } from "../packets/ipv6";
@@ -37,6 +38,8 @@ export const WIRE_SIZE_MODEL = Object.freeze({
   defaultApplicationBytes: 64,
   /** GRE flags plus inner protocol type; key/sequence/checksum are not modelled. */
   greHeaderBytes: GRE_HEADER_BYTES,
+  /** Simulated ESP header, trailer and integrity value; never real protection. */
+  espOverheadBytes: ESP_OVERHEAD_BYTES,
 });
 
 /** Fixed educational sizes for the structured payloads the engine models. */
@@ -59,6 +62,8 @@ const FIXED_PAYLOAD_BYTES: Readonly<Record<string, number>> = Object.freeze({
   radius: 96,
   tacacs: 96,
   snmp: 96,
+  /** One simulated IKEv2-like negotiation message. */
+  ike: 220,
   "wireless-management": 64,
 });
 
@@ -106,11 +111,17 @@ function greBytes(packet: GrePacket): number {
     + (inner.kind === "ipv4" ? ipv4Bytes(inner) : ipv6Bytes(inner));
 }
 
+/** The simulated ESP envelope around a protected GRE payload. */
+function espBytes(packet: SimulatedEspPacket): number {
+  return WIRE_SIZE_MODEL.espOverheadBytes + greBytes(packet.protectedPayload);
+}
+
 function ipv4Bytes(packet: Ipv4Packet): number {
   const payload = packet.payload;
   if (payload.kind === "udp") return WIRE_SIZE_MODEL.ipv4HeaderBytes + udpBytes(payload);
   if (payload.kind === "tcp") return WIRE_SIZE_MODEL.ipv4HeaderBytes + tcpBytes(payload);
   if (payload.kind === "gre") return WIRE_SIZE_MODEL.ipv4HeaderBytes + greBytes(payload);
+  if (payload.kind === "esp") return WIRE_SIZE_MODEL.ipv4HeaderBytes + espBytes(payload);
   if (payload.kind === "icmp") {
     const data = payload.payloadBytes ?? WIRE_SIZE_MODEL.defaultIcmpDataBytes;
     return WIRE_SIZE_MODEL.ipv4HeaderBytes

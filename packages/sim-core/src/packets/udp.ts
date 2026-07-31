@@ -8,6 +8,7 @@ import type {
   TftpMessage,
 } from "../services/messages";
 import type { SnmpMessage } from "../management/snmp-messages";
+import type { IkeMessage } from "./ike";
 
 /** Generic structured payload used by transport tests and simple applications. */
 export interface UdpApplicationPayload {
@@ -28,6 +29,7 @@ export type UdpPayload =
   | SyslogMessage
   | RadiusMessage
   | SnmpMessage
+  | IkeMessage
   | UdpApplicationPayload;
 
 export interface UdpDatagram {

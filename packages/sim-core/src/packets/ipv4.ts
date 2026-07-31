@@ -1,5 +1,6 @@
 import type { IpProtocol } from "@sim/contracts";
 import type { Ipv4 } from "../util/ipv4";
+import type { SimulatedEspPacket } from "./esp";
 import type { GrePacket } from "./gre";
 import type { IcmpMessage } from "./icmp";
 import type { OspfPacket } from "./ospf";
@@ -11,9 +12,18 @@ import type { TcpSegment } from "./tcp";
  *
  * `GrePacket` makes the union recursive: a tunnelled packet is an ordinary IPv4
  * packet nested inside another one, which is exactly what an intermediate
- * router sees — outer addresses and protocol only.
+ * router sees — outer addresses and protocol only. `SimulatedEspPacket` goes
+ * further: its protected payload is reachable only after a security-association
+ * lookup, so an intermediate policy genuinely cannot classify the inner
+ * transport.
  */
-export type Ipv4Payload = IcmpMessage | UdpDatagram | TcpSegment | OspfPacket | GrePacket;
+export type Ipv4Payload =
+  | IcmpMessage
+  | UdpDatagram
+  | TcpSegment
+  | OspfPacket
+  | GrePacket
+  | SimulatedEspPacket;
 
 export interface Ipv4Packet {
   readonly kind: "ipv4";

@@ -143,6 +143,72 @@ export async function managementCredentialFingerprint(scope: string, secret: str
   return (await createManagementCredentialVerifier(scope, secret)).hashBase64;
 }
 
+/**
+ * Deterministic verifier for a site-to-site VPN pre-shared key.
+ *
+ * Two independently configured peers must derive the *same* opaque value from
+ * the same key — exactly like the educational WPA2-PSK model — so the salt is a
+ * fixed constant rather than a per-device random value. That also makes the
+ * verifier reconstructible from its fingerprint alone, which is what lets the
+ * CLI accept a key at a no-echo prompt without a plaintext secret ever reaching
+ * the worker, the engine, a trace, `show running-config` or a grading result.
+ *
+ * This is authentication material only. It is not encryption, and nothing here
+ * claims to implement IKEv2 or ESP cryptography.
+ */
+export const VPN_PRE_SHARED_KEY_SCOPE = "vpn:pre-shared-key";
+const VPN_PRE_SHARED_KEY_SALT_BYTES = Uint8Array.from(
+  "SimulatorNetVPNv1",
+  (character) => character.charCodeAt(0),
+).subarray(0, SALT_BYTES);
+export const VPN_PRE_SHARED_KEY_SALT_BASE64 = toBase64(VPN_PRE_SHARED_KEY_SALT_BYTES);
+
+export const MINIMUM_PRE_SHARED_KEY_LENGTH = 8;
+export const MAXIMUM_PRE_SHARED_KEY_LENGTH = 128;
+
+export async function createVpnPreSharedKeyVerifier(preSharedKey: string): Promise<PasswordVerifier> {
+  if (
+    preSharedKey.length < MINIMUM_PRE_SHARED_KEY_LENGTH
+    || preSharedKey.length > MAXIMUM_PRE_SHARED_KEY_LENGTH
+  ) {
+    throw new Error(
+      `Pre-shared key must contain between ${MINIMUM_PRE_SHARED_KEY_LENGTH} and ${MAXIMUM_PRE_SHARED_KEY_LENGTH} characters`,
+    );
+  }
+  const hash = await deriveBits(
+    preSharedKey,
+    VPN_PRE_SHARED_KEY_SALT_BYTES,
+    DEFAULT_PBKDF2_ITERATIONS,
+    HASH_BYTES,
+  );
+  return {
+    algorithm: "pbkdf2-sha256",
+    iterations: DEFAULT_PBKDF2_ITERATIONS,
+    saltBase64: VPN_PRE_SHARED_KEY_SALT_BASE64,
+    hashBase64: toBase64(hash),
+  };
+}
+
+/** The comparable fingerprint alone, for the terminal's no-echo credential path. */
+export async function vpnPreSharedKeyFingerprint(preSharedKey: string): Promise<string> {
+  return (await createVpnPreSharedKeyVerifier(preSharedKey)).hashBase64;
+}
+
+/**
+ * Rebuild the stored verifier from a fingerprint the terminal already derived.
+ * The salt and iteration count are fixed for this scope, so no plaintext key is
+ * needed to persist an equivalent verifier.
+ */
+export function vpnPreSharedKeyVerifierFromFingerprint(fingerprint: string): PasswordVerifier {
+  if (fingerprint.length < 4) throw new Error("Pre-shared key fingerprint is malformed");
+  return {
+    algorithm: "pbkdf2-sha256",
+    iterations: DEFAULT_PBKDF2_ITERATIONS,
+    saltBase64: VPN_PRE_SHARED_KEY_SALT_BASE64,
+    hashBase64: fingerprint,
+  };
+}
+
 /** Canonical credential scopes. Every management secret belongs to exactly one. */
 export const managementCredentialScope = {
   /** A local user in the shared device user database. */

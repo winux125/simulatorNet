@@ -56,10 +56,20 @@ import {
   type Ospfv3InterfaceDescriptor,
 } from "../protocols/ospfv3";
 import type { Ipv4Packet } from "../packets/ipv4";
+import { ESP_OVERHEAD_BYTES } from "../packets/esp";
 import type { GrePacket } from "../packets/gre";
+import { IKE_PORT, type IkeMessage } from "../packets/ike";
 import type { UdpDatagram } from "../packets/udp";
 import type { TcpSegment } from "../packets/tcp";
 import { HostTransportStack } from "../transport/host-transport";
+import {
+  IpsecEngine,
+  type IkePeerConfiguration,
+  type IkeSessionSummary,
+  type IpsecProfileConfiguration,
+  type IpsecProposalConfiguration,
+  type IpsecSecurityAssociation,
+} from "../vpn/ipsec";
 import {
   GreTunnelEngine,
   TunnelInterface,
@@ -331,6 +341,12 @@ export class Router extends Device {
    * operational status is derived from the underlay routing table on demand.
    */
   readonly tunnels = new GreTunnelEngine();
+  /**
+   * IKEv2-like negotiation and the resulting security associations. This is a
+   * deterministic educational model: it provides no real cryptographic
+   * protection. See `docs/vpn-tunnels.md`.
+   */
+  readonly ipsec = new IpsecEngine();
   private readonly l3 = new Map<string, L3Interface>();
   private readonly loopbacks = new Map<number, LoopbackInterface>();
   private readonly tunnelInterfaces = new Map<string, TunnelInterface>();
@@ -404,6 +420,100 @@ export class Router extends Device {
       isTunnelInterface: (name) => isTunnelInterface(this.l3.get(name)?.physical),
       protectionReady: (tunnel) => this.tunnelProtectionReady(tunnel),
     });
+    this.ipsec.useHooks({
+      nowNs: () => this.engine.now(),
+      scheduleIn: (delayNs, run) => this.engine.scheduleIn(delayNs, run),
+      trace: (type, detail) => this.traceTunnel(type, detail),
+      localAddressFor: (peerId) => this.tunnelSourceForPeer(peerId),
+      // IKE travels the ordinary underlay path, so an ACL or a firewall policy
+      // can block it exactly like real UDP 500 traffic.
+      sendIke: (localAddress, remoteAddress, message) =>
+        this.sendIke(localAddress, remoteAddress, message),
+      peerReachable: (remoteAddress) => this.resolve(remoteAddress, true) !== undefined,
+      tunnelForPeer: (peerId) => this.tunnelIdForPeer(peerId),
+    });
+  }
+
+  // --- site-to-site IPsec -------------------------------------------------
+
+  /**
+   * The tunnel whose IPsec profile binds this IKE peer. Exactly one profile per
+   * tunnel, so this is unambiguous.
+   */
+  private tunnelIdForPeer(peerId: string): string | undefined {
+    for (const tunnel of this.tunnelConfigurations()) {
+      if (tunnel.ipsecProfileId === undefined) continue;
+      if (this.ipsec.profile(tunnel.ipsecProfileId)?.ikePeerId === peerId) return tunnel.id;
+    }
+    return undefined;
+  }
+
+  /** The outer source address the protected tunnel negotiates and sends from. */
+  private tunnelSourceForPeer(peerId: string): Ipv4 | undefined {
+    const tunnelId = this.tunnelIdForPeer(peerId);
+    return tunnelId === undefined ? undefined : this.tunnels.sourceAddress(tunnelId);
+  }
+
+  /** Originate one IKE message over UDP 500 through the ordinary routed path. */
+  private sendIke(localAddress: Ipv4, remoteAddress: Ipv4, message: IkeMessage): void {
+    this.originate({
+      kind: "ipv4",
+      src: localAddress,
+      dst: remoteAddress,
+      protocol: IpProtocol.UDP,
+      ttl: DEFAULT_IP_TTL,
+      payload: { kind: "udp", srcPort: IKE_PORT, dstPort: IKE_PORT, payload: message },
+    });
+  }
+
+  /** `show crypto ikev2 sa` / `show crypto session`: runtime only, never persisted. */
+  ikeSessionSummaries(): IkeSessionSummary[] {
+    return this.ipsec.sessionSummaries();
+  }
+
+  /** `show crypto ipsec sa`: runtime only, never persisted. */
+  ipsecSecurityAssociations(): IpsecSecurityAssociation[] {
+    return this.ipsec.securityAssociations();
+  }
+
+  defineIkePeer(peer: IkePeerConfiguration): void {
+    this.ipsec.definePeer(peer);
+  }
+
+  defineIpsecProposal(proposal: IpsecProposalConfiguration): void {
+    this.ipsec.defineProposal(proposal);
+  }
+
+  defineIpsecProfile(profile: IpsecProfileConfiguration): void {
+    this.ipsec.defineProfile(profile);
+  }
+
+  ikePeerConfigurations(): IkePeerConfiguration[] {
+    return this.ipsec.peerConfigurations();
+  }
+
+  ipsecProposalConfigurations(): IpsecProposalConfiguration[] {
+    return this.ipsec.proposalConfigurations();
+  }
+
+  ipsecProfileConfigurations(): IpsecProfileConfiguration[] {
+    return this.ipsec.profileConfigurations();
+  }
+
+  /**
+   * Apply everything virtual time has made due — a rekey that has come round,
+   * an SA that has outlived its lifetime. IPsec keeps no periodic timer, so the
+   * runtime calls this after advancing the clock; every protected packet and
+   * every VPN inspection calls it implicitly.
+   */
+  checkVpnLifetimes(): void {
+    this.ipsec.checkLifetimes();
+  }
+
+  /** Discard every negotiated session and SA; configuration is untouched. */
+  resetVpnRuntime(): void {
+    this.ipsec.resetRuntime();
+    this.ipsec.arm();
   }
 
   // --- GRE tunnel interfaces ---------------------------------------------
@@ -536,11 +646,18 @@ export class Router extends Device {
   }
 
   /**
-   * Whether a protected tunnel currently has usable protection. Plain GRE never
-   * asks; the IPsec model overrides this in the security layer.
+   * A protected tunnel only carries traffic while its peer has an active
+   * outbound SA. Negotiation is re-armed here, so the first packet after a
+   * failure deterministically triggers a fresh attempt.
    */
-  protected tunnelProtectionReady(_tunnel: GreTunnelConfiguration): boolean {
-    return true;
+  protected tunnelProtectionReady(tunnel: GreTunnelConfiguration): boolean {
+    const profileId = tunnel.ipsecProfileId;
+    if (profileId === undefined) return true;
+    const profile = this.ipsec.profile(profileId);
+    if (!profile) return false;
+    if (this.ipsec.hasActiveProtection(profile.ikePeerId)) return true;
+    this.ipsec.arm();
+    return false;
   }
 
   /**
@@ -617,29 +734,51 @@ export class Router extends Device {
   }
 
   /**
-   * The outer underlay packet a tunnel emits. Plain GRE builds it directly; the
-   * IPsec layer overrides this to wrap the GRE payload in a simulated ESP
-   * envelope first, which is why the pipeline order is fixed as
-   * GRE encapsulation → IPsec protection → underlay routing.
+   * The outer underlay packet a tunnel emits. Plain GRE is sent as protocol 47;
+   * a protected tunnel wraps the same GRE payload in a simulated ESP envelope
+   * first, which is why the outbound pipeline order is fixed as
+   * GRE encapsulation → IPsec protection → outer underlay routing.
    */
   protected buildTunnelOuterPacket(
     tunnel: GreTunnelConfiguration,
     sourceAddress: Ipv4,
     gre: GrePacket,
   ): Ipv4Packet | undefined {
+    const profileId = tunnel.ipsecProfileId;
+    if (profileId === undefined) {
+      return {
+        kind: "ipv4",
+        src: sourceAddress,
+        dst: tunnel.destinationAddress,
+        protocol: IpProtocol.GRE,
+        ttl: tunnel.ttl,
+        payload: gre,
+      };
+    }
+    const profile = this.ipsec.profile(profileId);
+    const esp = profile
+      ? this.ipsec.protect(profile.ikePeerId, gre, estimateIpPacketSizeBytes(gre.innerPacket))
+      : undefined;
+    if (!esp) {
+      // A tunnel that requires protection never falls back to sending in the
+      // clear; it drops and re-arms the negotiation instead.
+      this.traceTunnel("gre-tunnel-down", { tunnel: tunnel.id, reason: "protection-unavailable" });
+      this.ipsec.arm();
+      return undefined;
+    }
     return {
       kind: "ipv4",
       src: sourceAddress,
       dst: tunnel.destinationAddress,
-      protocol: IpProtocol.GRE,
+      protocol: IpProtocol.ESP,
       ttl: tunnel.ttl,
-      payload: gre,
+      payload: esp,
     };
   }
 
-  /** Extra per-packet overhead a protected tunnel adds. Plain GRE adds none. */
-  protected tunnelOverheadBytes(_tunnel: GreTunnelConfiguration): number {
-    return 0;
+  /** Every protected packet also carries the simulated ESP envelope overhead. */
+  protected tunnelOverheadBytes(tunnel: GreTunnelConfiguration): number {
+    return tunnel.ipsecProfileId === undefined ? 0 : ESP_OVERHEAD_BYTES;
   }
 
   /**
@@ -2133,12 +2272,23 @@ export class Router extends Device {
   }
 
   /**
-   * Extension point for locally-terminated protected payloads. Plain GRE has
-   * none; the IPsec layer overrides it to unprotect a simulated ESP envelope
-   * before the ordinary local-delivery path runs.
+   * The inbound protected path. Outer ACL, firewall policy and NAT have already
+   * run, so what remains is: ESP SA lookup → replay validation → unprotect →
+   * GRE decapsulation. IKE negotiation messages terminate here too, which is
+   * why an ACL that denies UDP 500 stops a tunnel from ever establishing.
    */
-  protected deliverProtectedLocal(_packet: Ipv4Packet): boolean {
-    return false;
+  protected deliverProtectedLocal(packet: Ipv4Packet): boolean {
+    const payload = packet.payload;
+    if (payload.kind === "udp" && payload.dstPort === IKE_PORT && payload.payload.kind === "ike") {
+      this.ipsec.onIkeMessage(payload.payload, packet.src, packet.dst);
+      return true;
+    }
+    if (payload.kind !== "esp") return false;
+    const result = this.ipsec.unprotect(payload, packet.src, estimateIpPacketSizeBytes(packet));
+    // A rejection is already traced with its typed reason; the packet is gone.
+    if (!("payload" in result)) return true;
+    this.receiveGre(packet, result.payload);
+    return true;
   }
 
   /** Extension point for stateful firewalls and deterministic ISP impairment. */
