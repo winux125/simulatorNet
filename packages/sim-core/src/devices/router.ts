@@ -18,7 +18,7 @@ import {
   DHCP_SERVER_PORT,
 } from "../engine/constants";
 import { EthernetInterface } from "../net/interface";
-import { estimatePacketWireSizeBytes } from "../net/packet-size";
+import { estimateIpPacketSizeBytes, estimatePacketWireSizeBytes } from "../net/packet-size";
 import { Ipv6InterfaceState, type Ipv6AddressAssignment } from "../net/ipv6-interface";
 import type { ArpPacket } from "../packets/arp";
 import type { DhcpMessage } from "../packets/dhcp";
@@ -56,9 +56,22 @@ import {
   type Ospfv3InterfaceDescriptor,
 } from "../protocols/ospfv3";
 import type { Ipv4Packet } from "../packets/ipv4";
+import type { GrePacket } from "../packets/gre";
 import type { UdpDatagram } from "../packets/udp";
 import type { TcpSegment } from "../packets/tcp";
 import { HostTransportStack } from "../transport/host-transport";
+import {
+  GreTunnelEngine,
+  TunnelInterface,
+  compareTunnelNames,
+  defaultTunnel,
+  isTunnelInterface,
+  parseTunnelName,
+  tunnelName,
+  type GreTunnelConfiguration,
+  type TunnelOperationalState,
+} from "../vpn/gre-tunnel";
+import { VpnConfigurationError } from "../vpn/limits";
 import { RemoteAccessState } from "../management/remote-access-state";
 import { AaaState } from "../management/aaa-state";
 import { ConsoleAccessState } from "../management/console-access-state";
@@ -176,6 +189,29 @@ export interface RouterInterfaceRow {
   description: string | undefined;
 }
 
+/** One row of `show interfaces tunnel`: configuration plus the derived verdict. */
+export interface TunnelSummary {
+  readonly name: string;
+  readonly source: GreTunnelConfiguration["source"];
+  /** Resolved outer source address; undefined when the source is unusable. */
+  readonly sourceAddress: Ipv4 | undefined;
+  readonly destinationAddress: Ipv4;
+  readonly mode: "gre-ipv4";
+  readonly mtu: number;
+  readonly ttl: number;
+  readonly adminUp: boolean;
+  readonly operUp: boolean;
+  /** Why the tunnel is down; undefined while it is operational. */
+  readonly reason: TunnelOperationalState["reason"];
+  readonly ipv4: { address: Ipv4; prefixLength: number } | undefined;
+  readonly ipv6: ReadonlyArray<{ address: Ipv6; prefixLength: number }>;
+  readonly ipsecProfileId: string | undefined;
+  readonly protected: boolean;
+}
+
+/** Outer IPv4 header plus the GRE header a tunnel adds to every packet. */
+const WIRE_SIZE_GRE_OVERHEAD_BYTES = 24;
+
 export type RouteSource = "connected" | "static" | "ospf";
 
 /** Cisco-like administrative distances for the sources this release models. */
@@ -290,8 +326,14 @@ export class Router extends Device {
   readonly ospf = new OspfProcess(this);
   /** OSPFv3 is independent from the OSPFv2 process and advertises IPv6 prefixes only. */
   readonly ospfv3 = new Ospfv3Process(this);
+  /**
+   * Logical GRE tunnel configuration. It holds no packets and no peer state:
+   * operational status is derived from the underlay routing table on demand.
+   */
+  readonly tunnels = new GreTunnelEngine();
   private readonly l3 = new Map<string, L3Interface>();
   private readonly loopbacks = new Map<number, LoopbackInterface>();
+  private readonly tunnelInterfaces = new Map<string, TunnelInterface>();
   private readonly natRoles = new Map<string, NatInterfaceRole>();
   private readonly staticRoutes: StaticRoute[] = [];
   private readonly ipv6StaticRoutes: Ipv6StaticRoute[] = [];
@@ -346,6 +388,382 @@ export class Router extends Device {
   override onAddedToEngine(): void {
     this.packetPolicy.useRuleBudget(this.engine.aclRuleBudget);
     this.qos.useOperationBudget(this.engine.qosBudget);
+    this.tunnels.useTunnelBudget(this.engine.vpnTunnelBudget);
+    // The tunnel engine never reaches into the router: it asks these four
+    // questions and decides operational state from the answers alone.
+    this.tunnels.useHooks({
+      interfaceAddress: (name) => {
+        const iface = this.l3.get(name);
+        return iface?.ip !== undefined && iface.physical.operationalUp ? iface.ip : undefined;
+      },
+      ownsAddress: (address) => [...this.l3.values()].some((iface) =>
+        iface.ip === address && iface.physical.operationalUp),
+      // Deliberately state-blind: a route that egresses a tunnel must stay
+      // *visible* here so recursion is reported rather than silently ignored.
+      underlayEgress: (destination) => this.resolve(destination, true)?.egress.name,
+      isTunnelInterface: (name) => isTunnelInterface(this.l3.get(name)?.physical),
+      protectionReady: (tunnel) => this.tunnelProtectionReady(tunnel),
+    });
+  }
+
+  // --- GRE tunnel interfaces ---------------------------------------------
+
+  /**
+   * `interface Tunnel<n>`: a logical interface with no cable. It has an
+   * administrative state and overlay addresses, produces connected overlay
+   * routes and can run OSPF — but it never appears in the connection modal and
+   * never anchors a canvas edge.
+   */
+  getOrCreateTunnel(index: number): L3Interface {
+    if (!this.supportsTunnels()) {
+      throw new VpnConfigurationError(
+        "VPN_UNSUPPORTED_DEVICE",
+        `Device type '${this.deviceType}' does not support GRE tunnel interfaces.`,
+      );
+    }
+    if (!Number.isInteger(index) || index < 0 || index > 2_147_483_647) {
+      throw new VpnConfigurationError("VPN_INVALID_CONFIGURATION", `Invalid tunnel number ${index}.`);
+    }
+    const name = tunnelName(index);
+    const existing = this.l3.get(name);
+    if (existing) return existing;
+    if (!this.tunnels.has(name)) this.tunnels.define(defaultTunnel(name));
+    const physical = new TunnelInterface(
+      this,
+      name,
+      this.logicalMac(name),
+      () => this.tunnels.evaluate(name),
+    );
+    this.tunnelInterfaces.set(name, physical);
+    const iface: L3Interface = {
+      name,
+      physical,
+      vlan: undefined,
+      native: false,
+      ip: undefined,
+      maskInt: maskToInt(30),
+      ipv6: new Ipv6InterfaceState(),
+    };
+    this.l3.set(name, iface);
+    this.ospf.arm();
+    return iface;
+  }
+
+  /** True for the device kinds whose routing plane can terminate a GRE tunnel. */
+  supportsTunnels(): boolean {
+    return this.hasCapability("vpn-tunnel");
+  }
+
+  isTunnel(name: string): boolean {
+    return isTunnelInterface(this.l3.get(name)?.physical);
+  }
+
+  tunnelNumbers(): number[] {
+    return [...this.tunnelInterfaces.keys()]
+      .map((name) => parseTunnelName(name) ?? 0)
+      .sort((a, b) => a - b);
+  }
+
+  removeTunnel(index: number): void {
+    const name = tunnelName(index);
+    this.l3.delete(name);
+    this.tunnelInterfaces.delete(name);
+    this.ipv6DiscoveryByInterface.delete(name);
+    this.tunnels.remove(name);
+    this.packetPolicy.unbind(name, "in");
+    this.packetPolicy.unbind(name, "out");
+    this.ospf.arm();
+  }
+
+  /**
+   * Apply one tunnel configuration change. Overlay addressing is mirrored onto
+   * the L3 interface so connected routes, OSPF and ACLs treat a tunnel exactly
+   * like any other routed interface.
+   */
+  configureTunnel(
+    index: number,
+    patch: Partial<Omit<GreTunnelConfiguration, "id">>,
+  ): GreTunnelConfiguration {
+    const iface = this.getOrCreateTunnel(index);
+    const updated = this.tunnels.update(iface.name, patch);
+    const primary = updated.ipv4Addresses[0];
+    if (primary) {
+      iface.ip = primary.address;
+      iface.maskInt = maskToInt(primary.prefixLength);
+    } else if (patch.ipv4Addresses !== undefined) {
+      iface.ip = undefined;
+    }
+    for (const address of updated.ipv6Addresses) {
+      this.setInterfaceIpv6(iface.name, address.address, address.prefixLength);
+    }
+    if (updated.adminUp) iface.physical.noShutdown();
+    else iface.physical.shutdown();
+    this.ospf.arm();
+    return updated;
+  }
+
+  /** Tunnel configuration in canonical order, without any runtime state. */
+  tunnelConfigurations(): GreTunnelConfiguration[] {
+    return this.tunnels.configurations().filter((tunnel) => this.l3.has(tunnel.id));
+  }
+
+  /** `show interfaces tunnel`: configuration plus the derived operational verdict. */
+  tunnelSummaries(): TunnelSummary[] {
+    return this.tunnelConfigurations()
+      .sort((left, right) => compareTunnelNames(left.id, right.id))
+      .map((tunnel) => {
+        const iface = this.l3.get(tunnel.id)!;
+        const state = this.tunnels.evaluate(tunnel.id);
+        return {
+          name: tunnel.id,
+          source: tunnel.source,
+          sourceAddress: state.sourceAddress,
+          destinationAddress: tunnel.destinationAddress,
+          mode: tunnel.mode,
+          mtu: tunnel.mtu,
+          ttl: tunnel.ttl,
+          adminUp: iface.physical.adminUp,
+          operUp: iface.physical.operationalUp,
+          reason: iface.physical.adminUp ? state.reason : "administratively-down",
+          ipv4: iface.ip === undefined ? undefined : { address: iface.ip, prefixLength: popcount(iface.maskInt) },
+          ipv6: iface.ipv6.summaries()
+            .filter((entry) => entry.source === "static")
+            .map((entry) => ({ address: entry.address, prefixLength: entry.prefixLength })),
+          ipsecProfileId: tunnel.ipsecProfileId,
+          protected: tunnel.ipsecProfileId !== undefined,
+        };
+      });
+  }
+
+  /**
+   * Whether a protected tunnel currently has usable protection. Plain GRE never
+   * asks; the IPsec model overrides this in the security layer.
+   */
+  protected tunnelProtectionReady(_tunnel: GreTunnelConfiguration): boolean {
+    return true;
+  }
+
+  /**
+   * Hand a routed packet to a tunnel: encapsulate it in GRE, then send the outer
+   * packet through the ordinary underlay path so it is filtered, translated,
+   * classified and queued exactly like any other IPv4 packet.
+   */
+  private sendThroughTunnel(egress: L3Interface, packet: Ipv4Packet | Ipv6Packet): void {
+    const tunnel = this.tunnels.get(egress.name);
+    if (!tunnel) return;
+    const state: TunnelOperationalState = (egress.physical as TunnelInterface).state;
+    if (!state.up || state.sourceAddress === undefined) {
+      this.traceTunnel("gre-tunnel-down", {
+        tunnel: egress.name,
+        reason: state.reason ?? "administratively-down",
+        destination: packet.dst,
+      });
+      return;
+    }
+    this.traceTunnel("gre-encapsulation-started", {
+      tunnel: egress.name,
+      source: state.sourceAddress,
+      destination: tunnel.destinationAddress,
+      innerProtocol: packet.kind,
+      innerSource: packet.src,
+      innerDestination: packet.dst,
+    });
+    const inner = estimateIpPacketSizeBytes(packet);
+    const encapsulated = inner + WIRE_SIZE_GRE_OVERHEAD_BYTES + this.tunnelOverheadBytes(tunnel);
+    if (encapsulated > tunnel.mtu) {
+      this.traceTunnel("gre-mtu-exceeded", {
+        tunnel: egress.name,
+        mtu: tunnel.mtu,
+        bytes: encapsulated,
+        innerBytes: inner,
+      });
+      this.reportTunnelTooBig(packet, tunnel.mtu - WIRE_SIZE_GRE_OVERHEAD_BYTES - this.tunnelOverheadBytes(tunnel));
+      return;
+    }
+    const gre: GrePacket = {
+      kind: "gre",
+      protocol: packet.kind === "ipv4" ? "ipv4" : "ipv6",
+      innerPacket: packet,
+      tunnelId: tunnel.id,
+    };
+    const outer = this.buildTunnelOuterPacket(tunnel, state.sourceAddress, gre);
+    if (!outer) return;
+    const route = this.resolve(outer.dst);
+    if (!route) {
+      this.traceTunnel("gre-tunnel-down", {
+        tunnel: egress.name,
+        reason: "destination-unreachable",
+        destination: outer.dst,
+      });
+      return;
+    }
+    if (this.isTunnel(route.egress.name)) {
+      this.traceTunnel("gre-recursive-route-rejected", {
+        tunnel: egress.name,
+        via: route.egress.name,
+        destination: outer.dst,
+      });
+      return;
+    }
+    this.traceTunnel("gre-packet-sent", {
+      tunnel: egress.name,
+      source: outer.src,
+      destination: outer.dst,
+      protocol: outer.protocol,
+      bytes: encapsulated,
+      egress: route.egress.name,
+    });
+    this.egressSend(outer, route.egress, route.nextHopIp);
+  }
+
+  /**
+   * The outer underlay packet a tunnel emits. Plain GRE builds it directly; the
+   * IPsec layer overrides this to wrap the GRE payload in a simulated ESP
+   * envelope first, which is why the pipeline order is fixed as
+   * GRE encapsulation → IPsec protection → underlay routing.
+   */
+  protected buildTunnelOuterPacket(
+    tunnel: GreTunnelConfiguration,
+    sourceAddress: Ipv4,
+    gre: GrePacket,
+  ): Ipv4Packet | undefined {
+    return {
+      kind: "ipv4",
+      src: sourceAddress,
+      dst: tunnel.destinationAddress,
+      protocol: IpProtocol.GRE,
+      ttl: tunnel.ttl,
+      payload: gre,
+    };
+  }
+
+  /** Extra per-packet overhead a protected tunnel adds. Plain GRE adds none. */
+  protected tunnelOverheadBytes(_tunnel: GreTunnelConfiguration): number {
+    return 0;
+  }
+
+  /**
+   * A GRE packet arrived for one of our tunnel source addresses. Validate the
+   * peer, then hand the inner packet to the overlay routing path with the
+   * tunnel as its ingress interface, so overlay ACLs see it.
+   */
+  protected receiveGre(outer: Ipv4Packet, gre: GrePacket): void {
+    const tunnel = this.tunnels.matchArrival(outer.src, outer.dst);
+    if (!tunnel) {
+      this.traceTunnel("gre-tunnel-down", {
+        reason: "no-matching-tunnel",
+        source: outer.src,
+        destination: outer.dst,
+      });
+      return;
+    }
+    const iface = this.l3.get(tunnel.id);
+    if (!iface || !iface.physical.operationalUp) {
+      this.traceTunnel("gre-tunnel-down", {
+        tunnel: tunnel.id,
+        reason: iface ? (iface.physical as TunnelInterface).state.reason ?? "administratively-down" : "administratively-down",
+        source: outer.src,
+      });
+      return;
+    }
+    this.traceTunnel("gre-packet-received", {
+      tunnel: tunnel.id,
+      source: outer.src,
+      destination: outer.dst,
+      innerProtocol: gre.protocol,
+    });
+    const inner = gre.innerPacket;
+    if (gre.protocol === "ipv4" && inner.kind === "ipv4") {
+      this.traceTunnel("gre-decapsulated", {
+        tunnel: tunnel.id,
+        innerProtocol: "ipv4",
+        innerSource: inner.src,
+        innerDestination: inner.dst,
+      });
+      this.receiveOverlayIpv4(inner, iface);
+      return;
+    }
+    if (gre.protocol === "ipv6" && inner.kind === "ipv6") {
+      this.traceTunnel("gre-decapsulated", {
+        tunnel: tunnel.id,
+        innerProtocol: "ipv6",
+        innerSource: inner.src,
+        innerDestination: inner.dst,
+      });
+      this.receiveOverlayIpv6(inner, iface);
+      return;
+    }
+    this.traceTunnel("gre-tunnel-down", { tunnel: tunnel.id, reason: "unsupported-payload" });
+  }
+
+  /** A decapsulated IPv4 packet re-enters the ordinary routed path. */
+  private receiveOverlayIpv4(packet: Ipv4Packet, ingress: L3Interface): void {
+    // Overlay OSPF is this router's own control traffic, exactly as on a cabled
+    // interface: it reaches the local process before the ACL pipeline.
+    if (packet.protocol === OSPF_PROTOCOL && packet.payload.kind === "ospf") {
+      this.ospf.onPacket(packet.payload, ingress.name, packet.src);
+      return;
+    }
+    if (!this.permitByAcl(packet, ingress, "in")) return;
+    if (this.isOwnIp(packet.dst)) {
+      this.deliverLocal(packet);
+      return;
+    }
+    this.forward(packet, ingress);
+  }
+
+  /** A decapsulated IPv6 packet re-enters the ordinary routed path. */
+  private receiveOverlayIpv6(packet: Ipv6Packet, ingress: L3Interface): void {
+    if (packet.nextHeader === Ipv6NextHeader.OSPF && packet.payload.kind === "ospfv3") {
+      this.ospfv3.onPacket(packet.payload, ingress.name, packet.src);
+      return;
+    }
+    if (!this.permitByIpv6Acl(packet, ingress, "in")) return;
+    if (this.isOwnIpv6(packet.dst)) {
+      this.deliverLocalIpv6(packet);
+      return;
+    }
+    if (isIpv6Multicast(packet.dst)) return;
+    this.forwardIpv6(packet, ingress);
+  }
+
+  /**
+   * Tell the sender the packet was too big. Fragmentation is deliberately not
+   * modelled, so the tunnel drops and reports rather than splitting the packet.
+   */
+  private reportTunnelTooBig(packet: Ipv4Packet | Ipv6Packet, mtu: number): void {
+    if (packet.kind === "ipv6") {
+      this.originateIpv6({
+        kind: "ipv6",
+        src: this.managementSourceAddress("ipv6", packet.src) ?? packet.dst,
+        dst: packet.src,
+        nextHeader: Ipv6NextHeader.ICMPv6,
+        hopLimit: DEFAULT_IPV6_HOP_LIMIT,
+        payload: { kind: "icmpv6", type: Icmpv6Type.PacketTooBig, code: 0, mtu, reason: "packet-too-big" },
+      });
+      return;
+    }
+    const source = this.managementSourceAddress("ipv4", packet.src);
+    if (source === undefined) return;
+    this.originate({
+      kind: "ipv4",
+      src: source,
+      dst: packet.src,
+      protocol: IpProtocol.ICMP,
+      ttl: DEFAULT_IP_TTL,
+      payload: {
+        kind: "icmp",
+        type: IcmpType.DestinationUnreachable,
+        code: IcmpCode.FragmentationNeeded,
+        identifier: 0,
+        sequence: 0,
+        nextHopMtu: mtu,
+      },
+    });
+  }
+
+  protected traceTunnel(type: string, detail: Record<string, unknown>): void {
+    this.engine.trace({ time: this.engine.now(), type, device: this.id, detail });
   }
 
   // --- quality of service ------------------------------------------------
@@ -885,6 +1303,7 @@ export class Router extends Device {
   ipv6RoutingTable(): Ipv6RouteRow[] {
     const rows: Ipv6RouteRow[] = [];
     for (const iface of this.l3.values()) {
+      if (isTunnelInterface(iface.physical) && !iface.physical.operationalUp) continue;
       for (const assignment of iface.ipv6.summaries()) {
         if (assignment.state === "duplicate" || assignment.state === "tentative") continue;
         if (assignment.source === "link-local") continue;
@@ -935,6 +1354,9 @@ export class Router extends Device {
     const rows: RouteRow[] = [];
     for (const iface of this.l3.values()) {
       if (iface.ip === undefined) continue;
+      // `show ip route` shows what the router would actually use, so a down
+      // tunnel contributes no connected overlay route here either.
+      if (isTunnelInterface(iface.physical) && !iface.physical.operationalUp) continue;
       rows.push({
         kind: "connected",
         network: intToIp((ipToInt(iface.ip) & iface.maskInt) >>> 0),
@@ -1121,14 +1543,21 @@ export class Router extends Device {
     const source = iface?.ipv6.summaries().find((address) =>
       address.source === "link-local" && address.state === "preferred")?.address;
     if (!iface || !source || !iface.physical.operationalUp) return;
-    this.ipv6Discovery(iface).send({
+    const ipv6: Ipv6Packet = {
       kind: "ipv6",
       src: source,
       dst: destination,
       nextHeader: Ipv6NextHeader.OSPF,
       hopLimit: 1,
       payload: packet,
-    }, destination);
+    };
+    // A GRE tunnel is point-to-point and has no link layer, so OSPFv3 control
+    // traffic is encapsulated instead of being resolved through NDP.
+    if (isTunnelInterface(iface.physical)) {
+      this.sendThroughTunnel(iface, ipv6);
+      return;
+    }
+    this.ipv6Discovery(iface).send(ipv6, destination);
   }
 
   ospfv3RoutesChanged(): void {
@@ -1166,6 +1595,12 @@ export class Router extends Device {
       ttl: 1,
       payload: packet,
     };
+    // A GRE tunnel is point-to-point and has no link layer: both the multicast
+    // hello and a unicast reply are encapsulated and routed over the underlay.
+    if (isTunnelInterface(iface.physical)) {
+      this.sendThroughTunnel(iface, ipv4);
+      return;
+    }
     // Multicast OSPF resolves its own MAC; a unicast reply uses the ARP cache.
     const mac = destination === "224.0.0.5"
       ? OSPF_ALL_ROUTERS_MAC
@@ -1442,7 +1877,7 @@ export class Router extends Device {
       device: this.id,
       detail: { destination: packet.dst, egress: route.egress.name, nextHop: route.nextHopIp },
     });
-    this.ipv6Discovery(route.egress).send({ ...packet, hopLimit: packet.hopLimit - 1 }, route.nextHopIp);
+    this.sendIpv6ThroughEgress({ ...packet, hopLimit: packet.hopLimit - 1 }, route.egress, route.nextHopIp);
   }
 
   private originateIpv6(packet: Ipv6Packet): void {
@@ -1453,7 +1888,21 @@ export class Router extends Device {
     }
     const route = this.resolveIpv6(packet.dst);
     if (!route) return;
-    this.ipv6Discovery(route.egress).send(packet, route.nextHopIp);
+    this.sendIpv6ThroughEgress(packet, route.egress, route.nextHopIp);
+  }
+
+  /**
+   * The single IPv6 egress point. A cabled interface resolves the next hop with
+   * NDP; a tunnel has no link layer at all, so its packet is encapsulated in
+   * GRE and re-routed over the IPv4 underlay instead.
+   */
+  private sendIpv6ThroughEgress(packet: Ipv6Packet, egress: L3Interface, nextHopIp: Ipv6): void {
+    if (isTunnelInterface(egress.physical)) {
+      if (!this.permitByIpv6Acl(packet, egress, "out")) return;
+      this.sendThroughTunnel(egress, packet);
+      return;
+    }
+    this.ipv6Discovery(egress).send(packet, nextHopIp);
   }
 
   private sendIcmpv6Error(
@@ -1581,6 +2030,14 @@ export class Router extends Device {
   }
 
   private deliverLocal(packet: Ipv4Packet): void {
+    // Tunnel encapsulations terminate here: the outer packet was addressed to
+    // one of our own tunnel source addresses, so it is unwrapped rather than
+    // handed to a management socket.
+    if (packet.payload.kind === "gre") {
+      this.receiveGre(packet, packet.payload);
+      return;
+    }
+    if (this.deliverProtectedLocal(packet)) return;
     if (packet.payload.kind === "udp") {
       this.management.receiveUdp(packet.src, packet.dst, packet.payload, false);
       return;
@@ -1673,6 +2130,15 @@ export class Router extends Device {
     } else {
       this.egressSend(outbound, route.egress, route.nextHopIp);
     }
+  }
+
+  /**
+   * Extension point for locally-terminated protected payloads. Plain GRE has
+   * none; the IPsec layer overrides it to unprotect a simulated ESP envelope
+   * before the ordinary local-delivery path runs.
+   */
+  protected deliverProtectedLocal(_packet: Ipv4Packet): boolean {
+    return false;
   }
 
   /** Extension point for stateful firewalls and deterministic ISP impairment. */
@@ -1844,6 +2310,12 @@ export class Router extends Device {
   private egressSend(packet: Ipv4Packet, egress: L3Interface, nextHopIp: Ipv4): void {
     if (egress.ip === undefined) return;
     if (!this.permitByAcl(packet, egress, "out")) return;
+    // A tunnel has no cable and no next hop of its own: the packet is
+    // encapsulated and handed back to the underlay instead of being ARPed for.
+    if (isTunnelInterface(egress.physical)) {
+      this.sendThroughTunnel(egress, packet);
+      return;
+    }
     const mac = this.arpTable.get(nextHopIp);
     if (mac !== undefined) {
       this.transmit(egress, mac, EtherType.IPv4, packet);
@@ -1865,7 +2337,7 @@ export class Router extends Device {
    * distance, then the lowest metric, then a stable tie-break on the next hop
    * and egress name so two engines always choose the same path.
    */
-  private resolve(dst: Ipv4): ResolvedRoute | undefined {
+  private resolve(dst: Ipv4, ignoreTunnelState = false): ResolvedRoute | undefined {
     const dstInt = ipToInt(dst);
     interface Candidate {
       prefixLen: number;
@@ -1893,6 +2365,9 @@ export class Router extends Device {
     // Connected routes: directly reachable, next hop is the destination itself.
     for (const iface of this.l3.values()) {
       if (iface.ip === undefined) continue;
+      // A tunnel's connected overlay route only exists while the tunnel is up,
+      // so a down tunnel never black-holes traffic a physical path could carry.
+      if (!ignoreTunnelState && isTunnelInterface(iface.physical) && !iface.physical.operationalUp) continue;
       const network = (ipToInt(iface.ip) & iface.maskInt) >>> 0;
       if (((dstInt & iface.maskInt) >>> 0) !== network) continue;
       consider({
@@ -1907,7 +2382,7 @@ export class Router extends Device {
     // Static routes: resolve the configured next hop against a connected subnet.
     for (const route of this.staticRoutes) {
       if (((dstInt & route.maskInt) >>> 0) !== route.network) continue;
-      const egress = this.connectedInterfaceFor(route.nextHop);
+      const egress = this.connectedInterfaceFor(route.nextHop, ignoreTunnelState);
       if (!egress) continue; // next hop not directly connected: unusable
       consider({
         prefixLen: route.prefixLen,
@@ -2025,10 +2500,11 @@ export class Router extends Device {
     return false;
   }
 
-  private connectedInterfaceFor(ip: Ipv4): L3Interface | undefined {
+  private connectedInterfaceFor(ip: Ipv4, ignoreTunnelState = false): L3Interface | undefined {
     const ipInt = ipToInt(ip);
     for (const iface of this.l3.values()) {
       if (iface.ip === undefined) continue;
+      if (!ignoreTunnelState && isTunnelInterface(iface.physical) && !iface.physical.operationalUp) continue;
       const network = (ipToInt(iface.ip) & iface.maskInt) >>> 0;
       if (((ipInt & iface.maskInt) >>> 0) === network) return iface;
     }

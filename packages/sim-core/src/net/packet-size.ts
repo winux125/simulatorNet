@@ -1,4 +1,5 @@
 import type { EthernetFrame, L2Payload } from "../packets/ethernet";
+import { GRE_HEADER_BYTES, type GrePacket } from "../packets/gre";
 import type { Ipv4Packet } from "../packets/ipv4";
 import type { Ipv6Packet } from "../packets/ipv6";
 import type { TcpSegment } from "../packets/tcp";
@@ -34,6 +35,8 @@ export const WIRE_SIZE_MODEL = Object.freeze({
   defaultIcmpDataBytes: 56,
   /** Bounded stand-in for a structured application message with no explicit size. */
   defaultApplicationBytes: 64,
+  /** GRE flags plus inner protocol type; key/sequence/checksum are not modelled. */
+  greHeaderBytes: GRE_HEADER_BYTES,
 });
 
 /** Fixed educational sizes for the structured payloads the engine models. */
@@ -96,10 +99,18 @@ function tcpBytes(segment: TcpSegment): number {
   return WIRE_SIZE_MODEL.tcpHeaderBytes + inner;
 }
 
+/** GRE header plus whatever the tunnel is transporting. */
+function greBytes(packet: GrePacket): number {
+  const inner = packet.innerPacket;
+  return WIRE_SIZE_MODEL.greHeaderBytes
+    + (inner.kind === "ipv4" ? ipv4Bytes(inner) : ipv6Bytes(inner));
+}
+
 function ipv4Bytes(packet: Ipv4Packet): number {
   const payload = packet.payload;
   if (payload.kind === "udp") return WIRE_SIZE_MODEL.ipv4HeaderBytes + udpBytes(payload);
   if (payload.kind === "tcp") return WIRE_SIZE_MODEL.ipv4HeaderBytes + tcpBytes(payload);
+  if (payload.kind === "gre") return WIRE_SIZE_MODEL.ipv4HeaderBytes + greBytes(payload);
   if (payload.kind === "icmp") {
     const data = payload.payloadBytes ?? WIRE_SIZE_MODEL.defaultIcmpDataBytes;
     return WIRE_SIZE_MODEL.ipv4HeaderBytes
@@ -126,6 +137,16 @@ function l2PayloadBytes(payload: L2Payload): number {
   if (payload.kind === "ipv4") return ipv4Bytes(payload);
   if (payload.kind === "ipv6") return ipv6Bytes(payload);
   return FIXED_PAYLOAD_BYTES[payload.kind] ?? WIRE_SIZE_MODEL.defaultApplicationBytes;
+}
+
+/**
+ * The IP-layer sibling of `estimatePacketWireSizeBytes`, for the one decision
+ * that is made *before* a frame exists: whether an encapsulated packet still
+ * fits inside a tunnel MTU. It reuses the exact same header model, so a tunnel
+ * and a queue can never disagree about how big a packet is.
+ */
+export function estimateIpPacketSizeBytes(packet: Ipv4Packet | Ipv6Packet): number {
+  return packet.kind === "ipv4" ? ipv4Bytes(packet) : ipv6Bytes(packet);
 }
 
 /**

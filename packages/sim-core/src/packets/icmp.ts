@@ -8,4 +8,10 @@ export interface IcmpMessage {
   readonly sequence: number;
   /** Data length used by the deterministic wire-size model; defaults when unset. */
   readonly payloadBytes?: number;
+  /**
+   * Largest payload the next hop accepts, reported with
+   * `DestinationUnreachable / FragmentationNeeded`. SimulatorNet does not model
+   * fragmentation, so a tunnel reports this instead of splitting the packet.
+   */
+  readonly nextHopMtu?: number;
 }

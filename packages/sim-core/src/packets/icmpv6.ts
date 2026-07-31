@@ -3,6 +3,8 @@ import type { Mac } from "../util/mac";
 
 export const Icmpv6Type = {
   DestinationUnreachable: 1,
+  /** Reported when a packet exceeds a tunnel MTU; fragmentation is not modelled. */
+  PacketTooBig: 2,
   TimeExceeded: 3,
   EchoRequest: 128,
   EchoReply: 129,
@@ -35,6 +37,13 @@ export interface Icmpv6DestinationUnreachable extends Icmpv6Base {
 export interface Icmpv6TimeExceeded extends Icmpv6Base {
   readonly type: typeof Icmpv6Type.TimeExceeded;
   readonly reason: "hop-limit-exceeded";
+}
+
+export interface Icmpv6PacketTooBig extends Icmpv6Base {
+  readonly type: typeof Icmpv6Type.PacketTooBig;
+  readonly reason: "packet-too-big";
+  /** Largest packet the reporting hop accepts, in bytes. */
+  readonly mtu: number;
 }
 
 export interface NeighborSolicitation extends Icmpv6Base {
@@ -81,6 +90,7 @@ export interface RouterAdvertisement extends Icmpv6Base {
 export type Icmpv6Message =
   | Icmpv6EchoMessage
   | Icmpv6DestinationUnreachable
+  | Icmpv6PacketTooBig
   | Icmpv6TimeExceeded
   | NeighborSolicitation
   | NeighborAdvertisement

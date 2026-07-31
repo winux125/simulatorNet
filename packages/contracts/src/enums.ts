@@ -45,6 +45,13 @@ export const IpProtocol = {
   ICMP: 1,
   TCP: 6,
   UDP: 17,
+  /** Generic Routing Encapsulation: the outer protocol of a GRE tunnel. */
+  GRE: 47,
+  /**
+   * Encapsulating Security Payload. SimulatorNet carries a *structured*
+   * educational ESP envelope; it performs no cryptographic protection.
+   */
+  ESP: 50,
   /** OSPFv2 control traffic; carried directly over IPv4, never over a port. */
   OSPF: 89,
 } as const;
@@ -66,6 +73,11 @@ export const IcmpCode = {
   HostUnreachable: 1,
   /** DestinationUnreachable: no application is listening on the UDP port. */
   PortUnreachable: 3,
+  /**
+   * DestinationUnreachable: the packet exceeded a tunnel MTU. SimulatorNet does
+   * not model fragmentation, so a tunnel reports this and drops the packet.
+   */
+  FragmentationNeeded: 4,
   /** TimeExceeded: TTL hit zero in transit. */
   TtlExceeded: 0,
 } as const;

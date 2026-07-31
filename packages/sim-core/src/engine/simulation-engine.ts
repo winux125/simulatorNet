@@ -4,6 +4,7 @@ import type { LinkPerformanceConfiguration, LinkPerformanceInput } from "../net/
 import { AclRuleBudget } from "../policy/packet-policy-engine";
 import { ControlProtocolBudget } from "../protocols/limits";
 import { QosOperationBudget } from "../qos/limits";
+import { VpnTunnelBudget } from "../vpn/limits";
 import { DEFAULT_LINK_DELAY_NS } from "./constants";
 import { EventQueue } from "./event-queue";
 import { SeededRandom } from "./seeded-random";
@@ -43,6 +44,8 @@ export class SimulationEngine {
   readonly controlProtocolBudget = new ControlProtocolBudget();
   /** Shared per-operation QoS classification/marking/queue-event budget. */
   readonly qosBudget = new QosOperationBudget();
+  /** Shared bound on how many logical tunnel interfaces one lab may describe. */
+  readonly vpnTunnelBudget = new VpnTunnelBudget();
   /** Lab-scoped radio medium; it never derives reachability from canvas coordinates. */
   readonly wireless: WirelessMedium;
 
