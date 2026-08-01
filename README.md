@@ -1156,3 +1156,58 @@ and Guest Policing with WAN Shaping. See
 
 SimulatorNet models deterministic educational QoS behaviour. It does not
 benchmark real network hardware or reproduce vendor ASIC queues.
+
+### M10.9 — GRE tunnels and deterministic site-to-site IPsec
+
+M10.9 joins two sites across an untrusted provider. `interface Tunnel<n>` is a
+logical interface with no cable: it has an administrative state, IPv4 and IPv6
+overlay addresses, an MTU and a TTL, and it produces connected overlay routes —
+but it never appears in the connection dialog and never becomes a topology link.
+Router and Firewall terminate tunnels; an L3 Switch does not.
+
+GRE is a structured encapsulation, not a byte buffer: the inner packet is a
+typed object inside an ordinary outer IPv4 packet with protocol 47, so the
+provider routes, filters, classifies and queues it exactly like any other
+traffic while seeing nothing of the overlay. A tunnel is up only when it is
+admin up, its source resolves to a usable local address, its destination has an
+underlay route, and that route does not egress a tunnel — a recursive route is
+rejected and named. `show interfaces tunnel` reports the reason rather than
+guessing. An oversized packet is dropped with an ICMP Fragmentation Needed;
+fragmentation is deliberately not modelled.
+
+Static routes, OSPFv2 and OSPFv3 all run over the overlay, carrying both IPv4
+and IPv6 payloads through the same IPv4 underlay tunnel.
+
+An IPsec profile then protects the tunnel. IKEv2-like negotiation travels over
+ordinary simulated UDP 500 — through routing, ACLs, NAT and firewall policy — so
+denying UDP 500 genuinely stops a tunnel establishing, and denying ESP stops
+protected traffic while leaving the session up. Negotiation checks reachability,
+the peer address, a compatible proposal and a matching pre-shared-key proof,
+then installs deterministic inbound and outbound security associations whose
+SPIs both peers derive independently. A bounded replay window rejects duplicates
+and stale sequence numbers, and lifetimes drive a deterministic rekey in virtual
+time with a bounded overlap so no traffic is lost.
+
+A pre-shared key is never stored or sent in the clear. Web Crypto derives an
+opaque, fixed-scope verifier before any packet processing, and only that
+fingerprint crosses the simulated wire — so no key reaches sim-core, a trace,
+`show running-config`, Problems, a log, browser state or a grading result. The
+CLI collects it at a no-echo prompt; the VPN panel derives the same verifier.
+
+The device window gains exactly one top-level **VPN** tab — Tunnels, IKE Peers,
+IPsec Profiles, Sessions and Counters are secondary navigation inside it, as
+with QoS. View → Protocol Overlays → VPN Tunnels draws a derived, dashed overlay
+between tunnel peers; like a wireless association it is presentation only and
+never a link. Packet Trace adds VPN, GRE, IKE, IPsec and ESP filters.
+
+Ten grading checks cover tunnel configuration and operational state, overlay
+connectivity and routing, IKE peer configuration and state, the IPsec profile
+binding, the SA pair, protected delivery and replay rejection. Three explicit,
+non-auto-loaded demos cover GRE Site-to-Site, GRE over IPsec, and VPN Failure
+and Rekey.
+
+**SimulatorNet models deterministic educational GRE and site-to-site IPsec
+behaviour. Its simulated ESP/IKE implementation does not provide real
+cryptographic protection.** There is no encryption, no key exchange, no
+certificate handling, no IKEv1, no remote-access VPN and no NAT traversal. See
+[docs/vpn-tunnels.md](docs/vpn-tunnels.md).

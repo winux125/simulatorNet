@@ -41,6 +41,8 @@ export interface InterfaceContext {
   sviVlan: number | undefined;
   /** Present when `interface loopback <id>` selected a logical loopback. */
   loopback: number | undefined;
+  /** Present when `interface Tunnel<id>` selected a logical GRE tunnel. */
+  tunnel: number | undefined;
   /**
    * Every port selected by `interface range`. A range command validates all of
    * them before it changes any, so a range is never half-applied.
@@ -83,6 +85,15 @@ export interface AaaServerContext {
 }
 
 /**
+ * The `crypto ikev2 proposal|peer <name>` / `crypto ipsec profile <name>`
+ * context. It carries only the object being edited, never a secret.
+ */
+export interface CryptoContext {
+  kind: "ikev2-proposal" | "ikev2-peer" | "ipsec-profile";
+  id: string;
+}
+
+/**
  * The surface a command handler is given. Implemented by `CliSession`; commands
  * depend on this interface (not the class) so there is no import cycle.
  */
@@ -98,6 +109,7 @@ export interface SessionApi {
   aaaServerCtx: AaaServerContext | undefined;
   classMapCtx: QosClassMapContext | undefined;
   policyMapCtx: QosPolicyMapContext | undefined;
+  cryptoCtx: CryptoContext | undefined;
   /** Transition to another mode (clears context as appropriate). */
   enter(mode: CliMode): void;
   /**
@@ -112,6 +124,12 @@ export interface SessionApi {
    * consumed as the answer; anything other than an explicit yes cancels.
    */
   requestConfirmation(prompt: string, onConfirm: () => string): string;
+  /**
+   * Ask for a secret at a no-echo prompt. The next line arrives already derived
+   * into an opaque, scope-bound fingerprint: a plaintext key never reaches the
+   * session, sim-core, a trace, a log or `show running-config`.
+   */
+  requestCredential(prompt: string, scope: string, apply: (fingerprint: string) => string): string;
 }
 
 export interface CommandSpec {

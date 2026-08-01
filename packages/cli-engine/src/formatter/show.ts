@@ -8,6 +8,7 @@ import {
   Router,
   Server,
 } from "@sim/sim-core";
+import { runningConfigVpnLines } from "../commands/vpn";
 import { dashes, row } from "./tables";
 
 function maskLen(maskInt: number): number {
@@ -244,7 +245,11 @@ export function showRunningConfig(device: Device): string {
       out.push("!");
     }
   } else if (device instanceof Router) {
+    const tunnels = new Set(device.tunnelConfigurations().map((tunnel) => tunnel.id));
     for (const i of device.interfaceSummaries()) {
+      // Tunnels are rendered by the VPN section, with their source, destination
+      // and protection, so they are not repeated as plain interfaces here.
+      if (tunnels.has(i.name)) continue;
       out.push(`interface ${i.name}`);
       if (i.description !== undefined) out.push(` description ${i.description}`);
       if (i.vlan !== undefined) out.push(` encapsulation dot1Q ${i.vlan}${i.native ? " native" : ""}`);
@@ -253,6 +258,9 @@ export function showRunningConfig(device: Device): string {
       if (!i.adminUp) out.push(" shutdown");
       out.push("!");
     }
+    // Crypto and tunnel configuration. The pre-shared key is a shared secret
+    // and is rendered as `<configured>`, never as a key or as its verifier.
+    out.push(...runningConfigVpnLines(device));
     for (const rt of device.routingTable()) {
       if (rt.kind === "static") out.push(`ip route ${rt.network} ${intToIp(rt.maskInt)} ${rt.viaIp}`);
     }

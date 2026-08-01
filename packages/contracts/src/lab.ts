@@ -30,6 +30,7 @@ import {
   WirelessStationConfigurationSchema,
 } from "./wireless";
 import { CosValueSchema, DscpValueSchema, QosConfigurationSchema } from "./qos";
+import { VpnConfigurationSchema } from "./vpn";
 
 /** The only lab JSON schema understood by this release. */
 export const CURRENT_LAB_SCHEMA_VERSION = 1 as const;
@@ -309,10 +310,24 @@ const StandardAclRuleSchema = z.object({
   action: AclActionSchema,
   source: Ipv4AddressMatcherSchema,
 }).strict();
+/**
+ * `ip`, `icmp`, `tcp`, `udp`, plus the two tunnel protocols a site-to-site VPN
+ * puts on the underlay: `gre` (47) and `esp` (50). Matching those is what lets
+ * a lab deliberately block a VPN and observe the failure.
+ */
+const AclProtocolSchema = z.union([
+  z.literal("ip"),
+  z.literal(1),
+  z.literal(6),
+  z.literal(17),
+  z.literal(47),
+  z.literal(50),
+]);
+
 const ExtendedAclRuleSchema = z.object({
   sequence: z.number().int().nonnegative(),
   action: AclActionSchema,
-  protocol: z.union([z.literal("ip"), z.literal(1), z.literal(6), z.literal(17)]),
+  protocol: AclProtocolSchema,
   source: Ipv4AddressMatcherSchema,
   destination: Ipv4AddressMatcherSchema,
   sourcePort: PortMatcherSchema.optional(),
@@ -413,6 +428,14 @@ const RoutedQosConfigShape = {
   qos: QosConfigurationSchema.optional(),
 };
 
+/**
+ * Site-to-site VPN configuration. Optional so a schema-v1 lab written before
+ * M10.9 still opens with no tunnels and no crypto configuration.
+ */
+const RoutedVpnConfigShape = {
+  vpn: VpnConfigurationSchema.optional(),
+};
+
 const RoutedIpv6ConfigShape = {
   ipv6UnicastRoutingEnabled: z.boolean().optional(),
   ipv6StaticRoutes: z.array(Ipv6StaticRouteConfigSchema).max(256).optional(),
@@ -430,6 +453,7 @@ export const RouterDeviceConfigSchema = z.object({
   ...RoutedIpv6ConfigShape,
   ...RoutedSecurityConfigShape,
   ...RoutedQosConfigShape,
+  ...RoutedVpnConfigShape,
   natPools: z.array(NatPoolConfigSchema).max(32).default([]),
   natRules: z.array(NatRuleConfigSchema).max(128).default([]),
   natInterfaceRoles: z.array(NatInterfaceRoleConfigSchema).max(64).default([]),
@@ -454,7 +478,7 @@ export const FirewallPolicyConfigSchema = z.object({
   sourceZone: z.string().min(1).max(64),
   destinationZone: z.string().min(1).max(64),
   action: AclActionSchema,
-  protocol: z.union([z.literal("ip"), z.literal(1), z.literal(6), z.literal(17)]),
+  protocol: AclProtocolSchema,
   source: Ipv4AddressMatcherSchema.optional(),
   destination: Ipv4AddressMatcherSchema.optional(),
   sourcePort: PortMatcherSchema.optional(),

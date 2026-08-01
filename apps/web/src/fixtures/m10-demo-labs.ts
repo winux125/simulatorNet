@@ -6,6 +6,7 @@ import { SECURITY_DEMO_LABS } from "./security-demo-labs";
 import { WIRELESS_DEMO_LABS } from "./wireless-demo-labs";
 import { MANAGEMENT_DEMO_LABS } from "./management-demo-labs";
 import { QOS_DEMO_LABS } from "./qos-demo-labs";
+import { VPN_DEMO_LABS } from "./vpn-demo-labs";
 import { ALL_DEVICES_ICON_DEMO } from "./icon-profile-demo";
 
 function ports(prefix: string, count: number): Array<{ id: string }> {
@@ -322,6 +323,8 @@ export const DEMO_LABS = [
   ...MANAGEMENT_DEMO_LABS.map((entry) => ({ id: entry.id, label: entry.title, document: entry.document })),
   // M10.8 deterministic quality of service.
   ...QOS_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
+  // M10.9 GRE tunnels and deterministic site-to-site IPsec.
+  ...VPN_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
 ] as const;
 
 export type DemoLabId = (typeof DEMO_LABS)[number]["id"];

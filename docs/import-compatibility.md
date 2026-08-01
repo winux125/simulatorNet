@@ -227,3 +227,40 @@ Unsupported advanced QoS lines — \andom-detect\, \air-queue\, \mls qos\,
 hierarchical \service-policy\ inside a policy class, NBAR \match protocolapplication names, MPLS EXP and platform queue commands — are preserved in the
 import report as unparsed rather than silently dropped, because applying them
 would imply a capability SimulatorNet does not have.
+
+## Site-to-site VPN configuration (M10.9)
+
+The IOS-like subset the importer recognises:
+
+- `interface Tunnel<n>` with `ip address`, `ipv6 address`, `description`,
+  `shutdown` / `no shutdown`;
+- `tunnel source <interface|address>` (an abbreviation is resolved against the
+  interfaces the device actually has), `tunnel destination <address>`,
+  `tunnel mode gre ip`, `tunnel mtu`, `tunnel ttl`;
+- `tunnel protection ipsec profile <name>`;
+- `crypto ikev2 proposal <name>` with `encryption` and `integrity` — a real
+  vendor transform name is mapped to the nearest **simulated** one
+  (`sim-aes128` / `sim-aes256`, `sim-sha256`), never accepted as if SimulatorNet
+  implemented it;
+- `crypto ikev2 peer <name>` with `address`, `proposal`, `lifetime` and
+  `identity local|remote`;
+- `crypto ipsec profile <name>` with `set ikev2-peer`, `set proposal` and
+  `lifetime`.
+
+**A vendor pre-shared key is never imported.** A plaintext key, a `key 6`
+encrypted key and a password hash are all treated the same way: the
+`pre-shared-key` line is recognised so it is not reported as unparsed, the key
+itself is discarded, and the peer is flagged as needing a credential reset. The
+learner sets a key explicitly before the tunnel can protect anything.
+
+Consistency is enforced rather than guessed: a tunnel that names a profile the
+file never defined loses the binding but keeps its other settings; a tunnel with
+no destination, or whose source interface does not exist on the mapped device,
+is dropped; and a peer or profile with an unresolvable proposal is not imported.
+Every one of those stays in the import report.
+
+Unsupported crypto — `crypto isakmp` policies and keys, `crypto map`, transform
+sets, `crypto pki` trustpoints and certificates, IKEv1, `tunnel mode ipsec ipv4`
+and any other tunnel mode, DMVPN/NHRP, GETVPN and NAT traversal — is preserved
+as unparsed warnings rather than approximated, because applying it would imply a
+capability SimulatorNet does not have. See [`vpn-tunnels.md`](vpn-tunnels.md).

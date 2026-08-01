@@ -41,6 +41,7 @@ import {
   deviceMibSource,
   mibVarBinds,
   normalizeLinkPerformance,
+  NS_PER_S,
   type Device,
   type Mac,
   type SnmpOperation,
@@ -57,6 +58,7 @@ import type {
   LabUiInterface,
   LabUiNode,
   LabUiSnapshot,
+  LabUiVpnTunnel,
   PacketExecutionMode,
   SimWorkerEvent,
   SimWorkerOutboundMessage,
@@ -69,6 +71,10 @@ import type {
   SecurityConfigurationView,
   SecurityDeviceConfiguration,
   QosConfigurationView,
+  VpnConfigurationView,
+  VpnIkePeerView,
+  VpnSecurityAssociationView,
+  VpnTunnelView,
   LinkPerformanceView,
   Ospfv3View,
   RemoteSessionsView,
@@ -86,6 +92,46 @@ type EmitMessage = (message: SimWorkerEvent) => void;
 
 function recordOf(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? value as Record<string, unknown> : undefined;
+}
+
+/** Learner-facing text for a tunnel that is down. Never invents a cause. */
+function vpnProblemMessage(tunnelName: string, reason: string): string {
+  switch (reason) {
+    case "administratively-down":
+      return `${tunnelName} is shut down.`;
+    case "source-unavailable":
+      return `${tunnelName} has no usable tunnel source address; check the source interface and its addressing.`;
+    case "destination-unreachable":
+      return `${tunnelName} has no underlay route to its tunnel destination.`;
+    case "recursive-route":
+      return `${tunnelName} would route its own outer packet back through itself; fix the underlay route to the destination.`;
+    case "protection-unavailable":
+      return `${tunnelName} requires IPsec protection but has no active security association.`;
+    default:
+      return `${tunnelName} is down.`;
+  }
+}
+
+/** Learner-facing text for an IKE failure. Never carries key material. */
+function vpnPeerProblemMessage(peerId: string, reason: string): string {
+  switch (reason) {
+    case "authentication-failed":
+      return `IKEv2 peer ${peerId} rejected authentication; the pre-shared keys do not match.`;
+    case "proposal-mismatch":
+      return `IKEv2 peer ${peerId} found no common proposal; check encryption and integrity on both ends.`;
+    case "peer-unreachable":
+      return `IKEv2 peer ${peerId} did not answer; check the underlay route and any ACL blocking UDP 500 or ESP.`;
+    case "no-pre-shared-key":
+      return `IKEv2 peer ${peerId} has no pre-shared key configured.`;
+    case "identity-mismatch":
+      return `IKEv2 peer ${peerId} presented an identity that does not match the configured remote identity.`;
+    case "rekey-failed":
+      return `IKEv2 peer ${peerId} could not rekey before its lifetime expired; protection is unavailable.`;
+    case "profile-removed":
+      return `IKEv2 peer ${peerId} lost its IPsec profile binding.`;
+    default:
+      return `IKEv2 peer ${peerId} is not established.`;
+  }
 }
 
 function requestIdOf(value: unknown): string {
@@ -269,6 +315,43 @@ export class SimulationWorkerRuntime {
         this.requireQosDevice(deviceId).resetQosRuntime();
         this.emitStateChanged();
         return this.qosConfiguration(deviceId);
+      }
+      // The three VPN inspections return the same consolidated view: the panel
+      // has one top-level tab, so one round trip serves every section.
+      case "GET_TUNNEL_INTERFACES":
+      case "GET_IKE_STATUS":
+      case "GET_IPSEC_SAS":
+        return this.vpnConfiguration(requireString(request, "deviceId"));
+      case "RESTART_IKE_PEER": {
+        const deviceId = requireString(request, "deviceId");
+        const device = this.requireVpnDevice(deviceId);
+        const peerId = typeof request.peerId === "string" ? request.peerId : undefined;
+        device.ipsec.clearPeer(peerId);
+        this.runProtocolConvergence();
+        return this.vpnConfiguration(deviceId);
+      }
+      case "CLEAR_IPSEC_SAS": {
+        const deviceId = requireString(request, "deviceId");
+        this.requireVpnDevice(deviceId).resetVpnRuntime();
+        this.runProtocolConvergence();
+        return this.vpnConfiguration(deviceId);
+      }
+      case "SET_IKE_PRE_SHARED_KEY": {
+        const deviceId = requireString(request, "deviceId");
+        const peerId = requireString(request, "peerId");
+        const device = this.requireVpnDevice(deviceId);
+        const parsed = PasswordVerifierSchema.safeParse(request.verifier);
+        if (!parsed.success) {
+          throw new SimulationWorkerError("invalid-credential", "Pre-shared key verifier validation failed");
+        }
+        if (!device.ipsec.peer(peerId)) {
+          throw new SimulationWorkerError("unknown-ike-peer", `Unknown IKEv2 peer '${peerId}'`);
+        }
+        device.ipsec.updatePeer(peerId, { preSharedKeyVerifier: parsed.data });
+        // A changed key invalidates whatever was negotiated with the old one.
+        device.ipsec.clearPeer(peerId);
+        this.runProtocolConvergence();
+        return this.vpnConfiguration(deviceId);
       }
       case "SET_LINK_PERFORMANCE":
         return this.setLinkPerformance(requireString(request, "linkId"), request.performance);
@@ -561,6 +644,13 @@ export class SimulationWorkerRuntime {
     this.engineState = "idle";
     // An explicit time advance is when a VTY `exec-timeout` becomes observable.
     built.management.enforceIdleTimeouts();
+    // …and when an IPsec lifetime becomes due. IPsec keeps no periodic timer,
+    // so advancing the clock is what makes a deterministic rekey or expiry
+    // happen; the exchange it starts is then drained like any other operation.
+    for (const device of built.devices.values()) {
+      if (device instanceof Router && device.supportsTunnels()) device.checkVpnLifetimes();
+    }
+    if (this.executionMode === "auto") built.engine.runUntilIdle();
     this.emitCompletedCliOperations();
     const snapshot = this.snapshot();
     this.emit({ type: "STATE_CHANGED", snapshot });
@@ -706,6 +796,108 @@ export class SimulationWorkerRuntime {
     };
   }
 
+  private requireVpnDevice(deviceId: string): Router {
+    const device = this.requireBuiltLab().getDevice(deviceId);
+    if (!(device instanceof Router) || !device.supportsTunnels()) {
+      throw new SimulationWorkerError(
+        "vpn-not-supported",
+        `Device '${deviceId}' does not terminate GRE tunnels or IPsec profiles`,
+      );
+    }
+    return device;
+  }
+
+  /**
+   * The consolidated VPN view: persisted configuration plus recomputed runtime.
+   *
+   * Nothing here carries a pre-shared key or its verifier — the panel only ever
+   * learns *that* a key is configured. SPIs, sequence numbers, counters and
+   * lifetimes are runtime and are never written back to the document.
+   */
+  private vpnConfiguration(deviceId: string): VpnConfigurationView {
+    const device = this.requireVpnDevice(deviceId);
+    // Lifetimes have no periodic timer, so anything virtual time has made due
+    // is applied here before the panel reads the state.
+    device.checkVpnLifetimes();
+    const document = this.serialize();
+    const stored = document.configurations[deviceId];
+    const configuration = stored && "vpn" in stored && stored.vpn
+      ? stored.vpn
+      : { tunnels: [], proposals: [], ikePeers: [], ipsecProfiles: [] };
+    const nowNs = this.requireBuiltLab().engine.now();
+    const peers = new Map(device.ikePeerConfigurations().map((peer) => [peer.id, peer]));
+    const problems: VpnConfigurationView["runtime"]["problems"] = [];
+
+    const tunnels: VpnTunnelView[] = device.tunnelSummaries().map((row) => {
+      if (!row.operUp && row.reason) {
+        problems.push({
+          code: `tunnel-${row.reason}`,
+          message: vpnProblemMessage(row.name, row.reason),
+          tunnelId: row.name,
+        });
+      }
+      return {
+        name: row.name,
+        tunnelId: Number(row.name.replace(/^Tunnel/u, "")) || 0,
+        source: row.source,
+        sourceAddress: row.sourceAddress,
+        destinationAddress: row.destinationAddress,
+        mode: row.mode,
+        mtu: row.mtu,
+        ttl: row.ttl,
+        adminUp: row.adminUp,
+        operationalUp: row.operUp,
+        reason: row.reason,
+        ipv4: row.ipv4,
+        ipv6: row.ipv6.map((entry) => ({ ...entry })),
+        ipsecProfileId: row.ipsecProfileId,
+        protected: row.protected,
+      };
+    });
+
+    const peerViews: VpnIkePeerView[] = device.ikeSessionSummaries().map((session) => {
+      const peer = peers.get(session.peerId);
+      if (session.failureReason) {
+        problems.push({
+          code: `ike-${session.failureReason}`,
+          message: vpnPeerProblemMessage(session.peerId, session.failureReason),
+          peerId: session.peerId,
+        });
+      }
+      return {
+        peerId: session.peerId,
+        remoteAddress: session.remoteAddress,
+        localAddress: session.localAddress,
+        state: session.state,
+        role: session.role,
+        proposalId: session.proposalId,
+        lifetimeSeconds: Math.round((peer?.lifetimeNs ?? 0) / NS_PER_S),
+        establishedAtNs: session.establishedAtNs,
+        expiresAtNs: session.expiresAtNs,
+        failureReason: session.failureReason,
+        tunnelId: session.tunnelId,
+        preSharedKeyConfigured: peer?.preSharedKeyVerifier !== undefined,
+      };
+    });
+
+    const associations: VpnSecurityAssociationView[] = device.ipsecSecurityAssociations().map((entry) => ({
+      id: entry.id,
+      direction: entry.direction,
+      peerAddress: entry.peerAddress,
+      spi: entry.spi,
+      proposalId: entry.proposalId,
+      sequenceNumber: entry.sequenceNumber,
+      state: entry.state,
+      generation: entry.generation,
+      ageNs: Math.max(0, nowNs - entry.createdAtNs),
+      expiresInNs: Math.max(0, entry.expiresAtNs - nowNs),
+      packetCount: entry.packetCount,
+      byteCount: entry.byteCount,
+    }));
+
+    return { deviceId, configuration, document, runtime: { tunnels, peers: peerViews, associations, problems } };
+  }
+
   private setQosConfiguration(deviceId: string, input: unknown): QosConfigurationView {
     const parsed = QosConfigurationSchema.safeParse(input);
     if (!parsed.success) {
@@ -837,7 +1029,59 @@ export class SimulationWorkerRuntime {
           state: status.state,
         }];
       }),
+      vpnTunnels: this.vpnTunnelOverlays(),
     };
+  }
+
+  /**
+   * Derived VPN overlays for the canvas. A tunnel is paired with the peer whose
+   * underlay address matches its destination, so the overlay always joins two
+   * real devices — and it stays a presentation projection, never a link.
+   */
+  private vpnTunnelOverlays(): LabUiVpnTunnel[] {
+    const built = this.requireBuiltLab();
+    // Which device owns which underlay address, so a destination resolves to a peer.
+    const owners = new Map<string, string>();
+    for (const device of built.devices.values()) {
+      if (!(device instanceof Router)) continue;
+      for (const row of device.interfaceSummaries()) {
+        if (row.ip !== undefined && !owners.has(row.ip)) owners.set(row.ip, device.id);
+      }
+    }
+    const overlays: LabUiVpnTunnel[] = [];
+    const seen = new Set<string>();
+    for (const device of built.devices.values()) {
+      if (!(device instanceof Router) || !device.supportsTunnels()) continue;
+      const sessions = new Map(device.ikeSessionSummaries().map((entry) => [entry.peerId, entry]));
+      for (const tunnel of device.tunnelSummaries()) {
+        const remoteDeviceId = owners.get(tunnel.destinationAddress);
+        if (!remoteDeviceId || remoteDeviceId === device.id) continue;
+        // One overlay per peer pair, so two ends of the same tunnel draw once.
+        const key = [device.id, remoteDeviceId].sort().join(" ");
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const profile = tunnel.ipsecProfileId === undefined
+          ? undefined
+          : device.ipsec.profile(tunnel.ipsecProfileId);
+        const session = profile ? sessions.get(profile.ikePeerId) : undefined;
+        const state: LabUiVpnTunnel["state"] = tunnel.ipsecProfileId === undefined
+          ? (tunnel.operUp ? "gre" : "failed")
+          : session?.state === "ESTABLISHED"
+            ? "protected"
+            : session?.state === "FAILED" || session?.state === "EXPIRED"
+              ? "failed"
+              : "negotiating";
+        overlays.push({
+          id: `vpn:${device.id}:${tunnel.name}`,
+          localDeviceId: device.id,
+          remoteDeviceId,
+          interfaceId: tunnel.name,
+          label: tunnel.ipsecProfileId === undefined ? "GRE" : `GRE/IPsec ${tunnel.ipsecProfileId}`,
+          state,
+        });
+      }
+    }
+    return overlays.sort((left, right) => left.id.localeCompare(right.id));
   }
 
   private inspectDevice(deviceId: string): DeviceInspection {

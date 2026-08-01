@@ -443,7 +443,11 @@ function validatePolicy(rule: FirewallPolicyRule): void {
   if (rule.protocol !== "ip"
     && rule.protocol !== IpProtocol.ICMP
     && rule.protocol !== IpProtocol.TCP
-    && rule.protocol !== IpProtocol.UDP) {
+    && rule.protocol !== IpProtocol.UDP
+    // A zone policy may permit or deny the underlay traffic of a site-to-site
+    // VPN, so GRE and ESP are matchable here too.
+    && rule.protocol !== IpProtocol.GRE
+    && rule.protocol !== IpProtocol.ESP) {
     throw new FirewallError("FIREWALL_INVALID_CONFIGURATION", "Unsupported firewall protocol.");
   }
   if (rule.protocol !== IpProtocol.TCP && rule.protocol !== IpProtocol.UDP

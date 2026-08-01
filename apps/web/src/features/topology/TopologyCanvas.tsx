@@ -114,6 +114,8 @@ interface TopologyCanvasProps {
   terminalTabs: string[];
   portLabelMode: PortLabelMode;
   wirelessAssociationsShown: boolean;
+  /** View → Protocol Overlays → VPN Tunnels. Local workspace state only. */
+  vpnTunnelsShown: boolean;
   fitRequest: number;
   zoomResetRequest: number;
   zoomInRequest: number;
@@ -405,6 +407,15 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         ? props.snapshot?.wirelessAssociations?.map((association) => ({
             ...association,
             state: association.state,
+          }))
+        : [],
+      vpnTunnels: props.vpnTunnelsShown
+        ? props.snapshot?.vpnTunnels?.map((tunnel) => ({
+            id: tunnel.id,
+            localDeviceId: tunnel.localDeviceId,
+            remoteDeviceId: tunnel.remoteDeviceId,
+            label: tunnel.label,
+            state: tunnel.state,
           }))
         : [],
     };

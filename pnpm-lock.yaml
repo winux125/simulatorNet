@@ -176,6 +176,9 @@ importers:
 
   packages/cli-engine:
     dependencies:
+      '@sim/console-auth':
+        specifier: workspace:*
+        version: link:../console-auth
       '@sim/contracts':
         specifier: workspace:*
         version: link:../contracts

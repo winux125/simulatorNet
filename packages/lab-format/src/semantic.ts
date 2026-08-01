@@ -11,6 +11,7 @@ import type {
   ServerDeviceConfig,
 } from "@sim/contracts";
 import {
+  isDefaultVpnConfiguration,
   MAX_DIAGRAM_ASSET_BYTES,
   MAX_DIAGRAM_ASSET_TOTAL_BYTES,
   MAX_DIAGRAM_ASSETS,
@@ -398,9 +399,14 @@ function validateRouter(config: RouterDeviceConfig, node: NodeSpec, path: string
     }
   });
 
+  // Every subnet this device is directly attached to. A logical interface
+  // counts: a loopback and a GRE tunnel overlay each produce a connected route,
+  // so a static route through an overlay next hop is legitimate.
   const connected = [
     ...config.interfaces.flatMap((iface) => (iface.ipv4 ? [iface.ipv4] : [])),
     ...config.subinterfaces.flatMap((iface) => (iface.ipv4 ? [iface.ipv4] : [])),
+    ...(config.loopbacks ?? []).flatMap((loopback) => (loopback.ipv4 ? [loopback.ipv4] : [])),
+    ...(config.vpn?.tunnels ?? []).flatMap((tunnel) => (tunnel.ipv4 ? [tunnel.ipv4] : [])),
   ];
   config.staticRoutes.forEach((route, index) => {
     const mask = maskToInt(route.prefixLength);
@@ -478,10 +484,102 @@ function validateRouter(config: RouterDeviceConfig, node: NodeSpec, path: string
       fail("missing-nat-role", `${path}.natInterfaceRoles`, "NAT requires inside and outside interface roles");
     }
   }
+  validateVpn(config, node, path, l3Interfaces);
   validateDiscovery(config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG, node, `${path}.discovery`, true);
   // OSPF runs on the router itself; the firewall and cloud reuse this shape but
   // are not OSPF speakers in this release.
   validateRoutedProtocols(config, node, path, l3Interfaces, node.kind === "router");
+}
+
+/**
+ * Site-to-site VPN: every tunnel, peer, proposal and profile reference must
+ * resolve, the device must actually terminate tunnels, and a configuration that
+ * is statically guaranteed to recurse is rejected before the lab is built.
+ *
+ * Only configuration is validated. IKE state, security associations, SPIs,
+ * sequence numbers and counters never appear in a document, so there is nothing
+ * runtime-shaped here to check.
+ */
+function validateVpn(
+  config: RouterDeviceConfig,
+  node: NodeSpec,
+  path: string,
+  l3Interfaces: ReadonlySet<string>,
+): void {
+  const vpn = config.vpn;
+  if (!vpn || isDefaultVpnConfiguration(vpn)) return;
+  const vpnPath = `${path}.vpn`;
+  if (!getDeviceProfile(node.kind).capabilities.includes("vpn-tunnel")) {
+    fail(
+      "unsupported-vpn-device",
+      vpnPath,
+      `Device type '${node.kind}' does not terminate GRE tunnels or IPsec profiles`,
+      { deviceId: node.id },
+    );
+  }
+
+  requireUnique(vpn.tunnels.map((tunnel) => String(tunnel.id)), `${vpnPath}.tunnels`, "tunnel id");
+  requireUnique(vpn.proposals.map((entry) => entry.id), `${vpnPath}.proposals`, "IKEv2 proposal id");
+  requireUnique(vpn.ikePeers.map((entry) => entry.id), `${vpnPath}.ikePeers`, "IKEv2 peer id");
+  requireUnique(vpn.ipsecProfiles.map((entry) => entry.id), `${vpnPath}.ipsecProfiles`, "IPsec profile id");
+
+  const proposalIds = new Set(vpn.proposals.map((entry) => entry.id));
+  const peerIds = new Set(vpn.ikePeers.map((entry) => entry.id));
+  const profileIds = new Set(vpn.ipsecProfiles.map((entry) => entry.id));
+
+  vpn.ikePeers.forEach((peer, index) => {
+    if (!proposalIds.has(peer.proposalId)) {
+      fail("unknown-ike-proposal", `${vpnPath}.ikePeers[${index}].proposalId`, `Unknown IKEv2 proposal '${peer.proposalId}'`);
+    }
+  });
+  vpn.ipsecProfiles.forEach((profile, index) => {
+    const profilePath = `${vpnPath}.ipsecProfiles[${index}]`;
+    if (!peerIds.has(profile.ikePeerId)) {
+      fail("unknown-ike-peer", `${profilePath}.ikePeerId`, `Unknown IKEv2 peer '${profile.ikePeerId}'`);
+    }
+    if (!proposalIds.has(profile.proposalId)) {
+      fail("unknown-ike-proposal", `${profilePath}.proposalId`, `Unknown IKEv2 proposal '${profile.proposalId}'`);
+    }
+  });
+
+  const physical = new Set(node.interfaces.map((iface) => iface.id));
+  vpn.tunnels.forEach((tunnel, index) => {
+    const tunnelPath = `${vpnPath}.tunnels[${index}]`;
+    if (tunnel.source.type === "interface") {
+      const sourceId = tunnel.source.interfaceId;
+      if (!physical.has(sourceId) && !l3Interfaces.has(sourceId)) {
+        fail("unknown-tunnel-source", `${tunnelPath}.source.interfaceId`, `Unknown tunnel source interface '${sourceId}'`);
+      }
+    } else if (!ownsTunnelSourceAddress(config, tunnel.source.address)) {
+      fail(
+        "unknown-tunnel-source",
+        `${tunnelPath}.source.address`,
+        `Tunnel source address '${tunnel.source.address}' is not configured on this device`,
+      );
+    }
+    // A destination inside the tunnel's own overlay subnet always recurses, and
+    // that is decidable from the document alone.
+    if (tunnel.ipv4 && inSubnet(tunnel.destinationAddress, tunnel.ipv4.address, tunnel.ipv4.prefixLength)) {
+      fail(
+        "recursive-tunnel-route",
+        `${tunnelPath}.destinationAddress`,
+        `Tunnel${tunnel.id} destination '${tunnel.destinationAddress}' is inside its own overlay subnet`,
+      );
+    }
+    if (tunnel.ipsecProfileId !== undefined && !profileIds.has(tunnel.ipsecProfileId)) {
+      fail("unknown-ipsec-profile", `${tunnelPath}.ipsecProfileId`, `Unknown IPsec profile '${tunnel.ipsecProfileId}'`);
+    }
+  });
+}
+
+/** True when a tunnel source address is one this device actually owns. */
+function ownsTunnelSourceAddress(config: RouterDeviceConfig, address: string): boolean {
+  const owned = [
+    ...config.interfaces.flatMap((iface) => (iface.ipv4 ? [iface.ipv4.address] : [])),
+    ...config.subinterfaces.flatMap((iface) => (iface.ipv4 ? [iface.ipv4.address] : [])),
+    ...(config.loopbacks ?? []).flatMap((loopback) => (loopback.ipv4 ? [loopback.ipv4.address] : [])),
+  ];
+  return owned.includes(address);
 }
 
 /**

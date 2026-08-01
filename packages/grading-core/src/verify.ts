@@ -37,6 +37,7 @@ import { VerificationError, VerificationResourceLimitError } from "./errors";
 import { DEFAULT_VERIFICATION_LIMITS, type VerificationLimits } from "./limits";
 import { isManagementCheck, runManagementCheck } from "./management-checks";
 import { isQosCheck, runQosCheck } from "./qos-checks";
+import { isVpnCheck, runVpnCheck } from "./vpn-checks";
 import { stableHash, stableStringify, utf8ByteLength } from "./stable";
 
 interface InternalCheckResult extends VerificationCheckResult {
@@ -278,6 +279,16 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
   // stored instead of a grading spec ever carrying one.
   if (isQosCheck(check)) {
     const outcome = runQosCheck(check, built, () => runtime.runUntil(() => built.engine.pendingEventCount() === 0));
+    return result(
+      check,
+      outcome.passed,
+      outcome.message,
+      outcome.error ? { ...outcome.diagnostics, failure: outcome.error } : outcome.diagnostics,
+      outcome.error && !outcome.passed ? "error" : outcome.passed ? "passed" : "failed",
+    );
+  }
+  if (isVpnCheck(check)) {
+    const outcome = runVpnCheck(check, built, () => runtime.runUntil(() => built.engine.pendingEventCount() === 0));
     return result(
       check,
       outcome.passed,

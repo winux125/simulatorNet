@@ -11,6 +11,9 @@ export type CliMode =
   | "config-cmap" // QoS class map: Router(config-cmap)#
   | "config-pmap" // QoS policy map: Router(config-pmap)#
   | "config-pmap-c" // QoS policy-map class: Router(config-pmap-c)#
+  | "config-ikev2-proposal" // IKEv2 proposal: Router(config-ikev2-proposal)#
+  | "config-ikev2-peer" // IKEv2 peer: Router(config-ikev2-peer)#
+  | "config-ipsec-profile" // IPsec profile: Router(ipsec-profile)#
   | "config-router"; // routing process config: Router(config-router)#
 
 /** The prompt suffix for a mode, appended after the device hostname. */
@@ -38,6 +41,12 @@ export function promptSuffix(mode: CliMode): string {
       return "(config-pmap)#";
     case "config-pmap-c":
       return "(config-pmap-c)#";
+    case "config-ikev2-proposal":
+      return "(config-ikev2-proposal)#";
+    case "config-ikev2-peer":
+      return "(config-ikev2-peer)#";
+    case "config-ipsec-profile":
+      return "(ipsec-profile)#";
     case "config-router":
       return "(config-router)#";
   }

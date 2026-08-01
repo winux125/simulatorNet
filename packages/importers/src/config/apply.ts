@@ -16,9 +16,14 @@ import type {
   Ospfv3ProcessConfig,
   QosConfiguration,
   SpanningTreeConfig,
+  VpnConfiguration,
 } from "@sim/contracts";
 import {
   isDefaultQosConfiguration,
+  isDefaultVpnConfiguration,
+  DEFAULT_TUNNEL_MTU_VALUE,
+  DEFAULT_TUNNEL_TTL_VALUE,
+  DEFAULT_VPN_LIFETIME_SECONDS,
   DEFAULT_CDP_HOLD_SECONDS,
   DEFAULT_CDP_INTERVAL_SECONDS,
   DEFAULT_LLDP_HOLD_SECONDS,
@@ -109,6 +114,80 @@ function loopbacksFrom(applied: ImportedDeviceConfiguration): LoopbackInterfaceC
     ipv4: loopback.ipv4,
     ipv6: loopback.ipv6,
   }));
+}
+
+/**
+ * Map the recognised site-to-site VPN subset onto a device configuration.
+ *
+ * A vendor pre-shared key is never decrypted and never carried over, so an
+ * imported peer has no `preSharedKeyVerifier` and is flagged
+ * `credentialResetRequired`. A tunnel whose source interface does not exist on
+ * the mapped device, or whose destination is missing, is dropped rather than
+ * invented — the source lines stay in the import report.
+ */
+function vpnFrom(
+  applied: ImportedDeviceConfiguration,
+  interfaceNames: readonly string[],
+): VpnConfiguration | undefined {
+  const interfaceIds = new Set(interfaceNames);
+  const proposals = applied.vpn.proposals.map((proposal) => ({
+    id: proposal.id,
+    encryption: proposal.encryption ?? "sim-aes256" as const,
+    integrity: "sim-sha256" as const,
+  }));
+  const proposalIds = new Set(proposals.map((proposal) => proposal.id));
+  const ikePeers = applied.vpn.ikePeers
+    .filter((peer) => peer.address !== undefined)
+    .map((peer) => ({
+      id: peer.id,
+      address: peer.address!,
+      localIdentity: peer.localIdentity,
+      remoteIdentity: peer.remoteIdentity,
+      // Never imported: the learner must set a key before the tunnel protects.
+      preSharedKeyVerifier: undefined,
+      proposalId: peer.proposalId !== undefined && proposalIds.has(peer.proposalId)
+        ? peer.proposalId
+        : proposals[0]?.id ?? "",
+      lifetimeSeconds: peer.lifetimeSeconds ?? DEFAULT_VPN_LIFETIME_SECONDS,
+      credentialResetRequired: peer.credentialResetRequired,
+    }))
+    .filter((peer) => peer.proposalId !== "");
+  const peerIds = new Set(ikePeers.map((peer) => peer.id));
+  const ipsecProfiles = applied.vpn.ipsecProfiles
+    .filter((profile) => profile.ikePeerId !== undefined && peerIds.has(profile.ikePeerId))
+    .map((profile) => ({
+      id: profile.id,
+      ikePeerId: profile.ikePeerId!,
+      proposalId: profile.proposalId !== undefined && proposalIds.has(profile.proposalId)
+        ? profile.proposalId
+        : proposals[0]?.id ?? "",
+      lifetimeSeconds: profile.lifetimeSeconds ?? DEFAULT_VPN_LIFETIME_SECONDS,
+    }))
+    .filter((profile) => profile.proposalId !== "");
+  const profileIds = new Set(ipsecProfiles.map((profile) => profile.id));
+  const tunnels = applied.vpn.tunnels
+    .filter((tunnel) => tunnel.destinationAddress !== undefined)
+    .filter((tunnel) => tunnel.sourceAddress !== undefined
+      || (tunnel.sourceInterface !== undefined && interfaceIds.has(tunnel.sourceInterface)))
+    .map((tunnel) => ({
+      id: tunnel.id,
+      description: tunnel.description,
+      shutdown: tunnel.shutdown,
+      source: tunnel.sourceInterface !== undefined && interfaceIds.has(tunnel.sourceInterface)
+        ? { type: "interface" as const, interfaceId: tunnel.sourceInterface }
+        : { type: "address" as const, address: tunnel.sourceAddress! },
+      destinationAddress: tunnel.destinationAddress!,
+      mode: "gre-ipv4" as const,
+      ipv4: tunnel.ipv4,
+      ipv6: tunnel.ipv6,
+      mtu: tunnel.mtu ?? DEFAULT_TUNNEL_MTU_VALUE,
+      ttl: tunnel.ttl ?? DEFAULT_TUNNEL_TTL_VALUE,
+      ipsecProfileId: tunnel.ipsecProfileId !== undefined && profileIds.has(tunnel.ipsecProfileId)
+        ? tunnel.ipsecProfileId
+        : undefined,
+    }));
+  const configuration: VpnConfiguration = { tunnels, proposals, ikePeers, ipsecProfiles };
+  return isDefaultVpnConfiguration(configuration) ? undefined : configuration;
 }
 
 function ospfFrom(applied: ImportedDeviceConfiguration): OspfProcessConfig | undefined {
@@ -301,6 +380,7 @@ export function buildDeviceConfigFromIos(
       ipv6Acls: applied.ipv6Acls,
       ipv6AclBindings: ipv6BindingsFrom(applied),
       qos: qosFrom(applied, interfaceIds),
+      vpn: vpnFrom(applied, interfaceIds),
       natPools: [],
       natRules: [],
       natInterfaceRoles: [],

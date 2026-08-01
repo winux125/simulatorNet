@@ -8,6 +8,10 @@
 import {
   Ipv6CidrSchema,
   Ipv6Schema,
+  MAXIMUM_TUNNEL_MTU,
+  MAXIMUM_VPN_LIFETIME_SECONDS,
+  MINIMUM_TUNNEL_MTU,
+  MINIMUM_VPN_LIFETIME_SECONDS,
   type Ipv6AclConfig,
   type Ospfv3ProcessConfig,
   type QosClassMapConfig,
@@ -64,6 +68,63 @@ export interface ImportedLoopbackConfig {
   ipv6?: Array<{ address: string; prefixLength: number }>;
 }
 
+/**
+ * `interface Tunnel<n>` recognised from an imported startup-config.
+ *
+ * Only the GRE-over-IPv4 subset SimulatorNet actually simulates is mapped.
+ * Crypto maps, IKEv1, certificate trustpoints, transport mode and NAT traversal
+ * are never invented: they stay in `unparsedLines` and are reported honestly.
+ */
+export interface ImportedTunnelConfig {
+  id: number;
+  description?: string;
+  shutdown: boolean;
+  ipv4?: { address: string; prefixLength: number };
+  ipv6?: Array<{ address: string; prefixLength: number }>;
+  sourceInterface?: string;
+  sourceAddress?: string;
+  destinationAddress?: string;
+  mode?: "gre-ipv4";
+  mtu?: number;
+  ttl?: number;
+  ipsecProfileId?: string;
+}
+
+export interface ImportedIkeProposalConfig {
+  id: string;
+  encryption?: "sim-aes128" | "sim-aes256";
+  integrity?: "sim-sha256";
+}
+
+export interface ImportedIkePeerConfig {
+  id: string;
+  address?: string;
+  localIdentity?: string;
+  remoteIdentity?: string;
+  proposalId?: string;
+  lifetimeSeconds?: number;
+  /**
+   * True when the source declared a pre-shared key. A vendor key or hash is
+   * never decrypted, never re-derived and never preserved: the peer is imported
+   * without a key and the learner must set one before the tunnel can protect.
+   */
+  credentialResetRequired: boolean;
+}
+
+export interface ImportedIpsecProfileConfig {
+  id: string;
+  ikePeerId?: string;
+  proposalId?: string;
+  lifetimeSeconds?: number;
+}
+
+export interface ImportedVpnConfiguration {
+  tunnels: ImportedTunnelConfig[];
+  proposals: ImportedIkeProposalConfig[];
+  ikePeers: ImportedIkePeerConfig[];
+  ipsecProfiles: ImportedIpsecProfileConfig[];
+}
+
 export interface ImportedOspfConfig {
   processId: number;
   routerId?: string;
@@ -94,6 +155,12 @@ export interface ImportedDeviceConfiguration {
    * `unparsedLines` and is reported honestly by the import report.
    */
   qos: QosConfiguration;
+  /**
+   * The recognised site-to-site VPN subset: Tunnel interfaces, tunnel
+   * source/destination/mode/mtu/ttl, tunnel protection, and the simplified
+   * IKEv2 proposal/peer and IPsec profile blocks.
+   */
+  vpn: ImportedVpnConfiguration;
   appliedLines: string[];
   unparsedLines: string[];
 }
@@ -189,6 +256,152 @@ function parseQosMatch(tokens: string[]): QosMatchRuleConfig | undefined {
   return undefined;
 }
 
+/** Bounded positive integer, or undefined when the token is not one. */
+function boundedNumber(token: string | undefined, minimum: number, maximum: number): number | undefined {
+  if (token === undefined) return undefined;
+  const value = Number(token);
+  if (!Number.isInteger(value) || value < minimum || value > maximum) return undefined;
+  return value;
+}
+
+/**
+ * The `interface Tunnel<n>` body the importer understands. Only GRE over IPv4
+ * is mapped; `tunnel mode ipsec ipv4`, mGRE, NHRP and anything else fall
+ * through to `unparsedLines`.
+ */
+function applyTunnelLine(
+  tunnel: ImportedTunnelConfig,
+  tokens: string[],
+  head: string,
+  resolveSource: (name: string) => string | undefined,
+): boolean {
+  if (head === "description" && tokens.length > 1) {
+    tunnel.description = tokens.slice(1).join(" ");
+    return true;
+  }
+  if (head === "shutdown") { tunnel.shutdown = true; return true; }
+  if (head === "no" && tokens[1]?.toLowerCase() === "shutdown") { tunnel.shutdown = false; return true; }
+  if (head === "ip" && tokens[1]?.toLowerCase() === "address" && isIpv4(tokens[2])) {
+    const prefix = maskToPrefix(tokens[3]);
+    if (prefix === undefined) return false;
+    tunnel.ipv4 = { address: tokens[2], prefixLength: prefix };
+    return true;
+  }
+  if (head === "ipv6" && tokens[1]?.toLowerCase() === "address") {
+    const address = ipv6Cidr(tokens[2]);
+    if (!address) return false;
+    tunnel.ipv6 = [...(tunnel.ipv6 ?? []), address];
+    return true;
+  }
+  if (head !== "tunnel") return false;
+  const keyword = tokens[1]?.toLowerCase();
+  if (keyword === "source" && tokens[2]) {
+    if (isIpv4(tokens[2])) { tunnel.sourceAddress = tokens[2]; return true; }
+    // Resolve the abbreviation to the interface the device actually has, so a
+    // `tunnel source GigabitEthernet0/1` matches a mapped `Gi0/1`.
+    const typed = tokens.slice(2).join("");
+    const actual = resolveSource(typed);
+    if (!actual) return false;
+    tunnel.sourceInterface = actual;
+    return true;
+  }
+  if (keyword === "destination" && isIpv4(tokens[2])) {
+    tunnel.destinationAddress = tokens[2];
+    return true;
+  }
+  if (keyword === "mode") {
+    const mode = tokens.slice(2).map((token) => token.toLowerCase()).join(" ");
+    // Only plain GRE over IPv4 is simulated; every other mode is unparsed.
+    if (mode === "gre ip" || mode === "gre ipv4") { tunnel.mode = "gre-ipv4"; return true; }
+    return false;
+  }
+  if (keyword === "mtu") {
+    const mtu = boundedNumber(tokens[2], MINIMUM_TUNNEL_MTU, MAXIMUM_TUNNEL_MTU);
+    if (mtu === undefined) return false;
+    tunnel.mtu = mtu;
+    return true;
+  }
+  if (keyword === "ttl") {
+    const ttl = boundedNumber(tokens[2], 1, 255);
+    if (ttl === undefined) return false;
+    tunnel.ttl = ttl;
+    return true;
+  }
+  if (keyword === "protection"
+    && tokens[2]?.toLowerCase() === "ipsec"
+    && tokens[3]?.toLowerCase() === "profile"
+    && tokens[4]) {
+    tunnel.ipsecProfileId = tokens[4];
+    return true;
+  }
+  return false;
+}
+
+/**
+ * The IKEv2 proposal body. A real transform name is never silently accepted:
+ * SimulatorNet only has simulated `sim-` transforms, so `aes-cbc-256` maps to
+ * the nearest simulated strength and anything unrecognised stays unparsed.
+ */
+function applyProposalLine(proposal: ImportedIkeProposalConfig, tokens: string[], head: string): boolean {
+  const value = tokens[1]?.toLowerCase();
+  if (head === "encryption" && value) {
+    if (value.includes("128")) { proposal.encryption = "sim-aes128"; return true; }
+    if (value.includes("256") || value.includes("aes")) { proposal.encryption = "sim-aes256"; return true; }
+    return false;
+  }
+  if (head === "integrity" && value) {
+    if (value.includes("sha256") || value.includes("sha-256")) { proposal.integrity = "sim-sha256"; return true; }
+    return false;
+  }
+  return false;
+}
+
+/**
+ * The IKEv2 peer body. A vendor pre-shared key — plaintext, `key 6` encrypted
+ * or a password hash — is never decrypted and never preserved. The peer is
+ * imported without a key and flagged so the learner sets one explicitly.
+ */
+function applyPeerLine(peer: ImportedIkePeerConfig, tokens: string[], head: string): boolean {
+  if (head === "address" && isIpv4(tokens[1])) { peer.address = tokens[1]; return true; }
+  if (head === "proposal" && tokens[1]) { peer.proposalId = tokens[1]; return true; }
+  if (head === "lifetime") {
+    const seconds = boundedNumber(tokens[1], MINIMUM_VPN_LIFETIME_SECONDS, MAXIMUM_VPN_LIFETIME_SECONDS);
+    if (seconds === undefined) return false;
+    peer.lifetimeSeconds = seconds;
+    return true;
+  }
+  if (head === "identity" && tokens[2]) {
+    const side = tokens[1]?.toLowerCase();
+    if (side === "local") { peer.localIdentity = tokens.slice(2).join(" "); return true; }
+    if (side === "remote") { peer.remoteIdentity = tokens.slice(2).join(" "); return true; }
+    return false;
+  }
+  if (head === "pre-shared-key") {
+    // Recognised, but the key itself is dropped: importing a credential a
+    // learner cannot verify would be worse than requiring an explicit reset.
+    peer.credentialResetRequired = true;
+    return true;
+  }
+  return false;
+}
+
+/** The IPsec profile body: peer, proposal and lifetime. */
+function applyProfileLine(profile: ImportedIpsecProfileConfig, tokens: string[], head: string): boolean {
+  if (head === "set" && tokens[2]) {
+    const keyword = tokens[1]?.toLowerCase();
+    if (keyword === "ikev2-peer") { profile.ikePeerId = tokens[2]; return true; }
+    if (keyword === "proposal" || keyword === "ikev2-proposal") { profile.proposalId = tokens[2]; return true; }
+    return false;
+  }
+  if (head === "lifetime") {
+    const seconds = boundedNumber(tokens[1], MINIMUM_VPN_LIFETIME_SECONDS, MAXIMUM_VPN_LIFETIME_SECONDS);
+    if (seconds === undefined) return false;
+    profile.lifetimeSeconds = seconds;
+    return true;
+  }
+  return false;
+}
+
 /** The policy-map class actions the importer understands. */
 function applyQosClassLine(entry: QosPolicyClassConfig, tokens: string[]): boolean {
   const head = tokens[0]?.toLowerCase();
@@ -266,11 +479,13 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     vlans: [],
     spanningTreeVlanPriorities: [],
     qos: { classMaps: [], policyMaps: [], servicePolicies: [] },
+    vpn: { tunnels: [], proposals: [], ikePeers: [], ipsecProfiles: [] },
     appliedLines: [],
     unparsedLines: [],
   };
   const vlanNames = new Map<number, string>();
   const loopbacks = new Map<number, ImportedLoopbackConfig>();
+  const tunnels = new Map<number, ImportedTunnelConfig>();
   let current: ImportedInterfaceConfig | undefined;
   let currentLoopback: ImportedLoopbackConfig | undefined;
   let currentVlan: number | undefined;
@@ -280,12 +495,21 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
   let currentClassMap: QosClassMapConfig | undefined;
   let currentPolicyMap: QosPolicyMapConfig | undefined;
   let currentPolicyClass: QosPolicyClassConfig | undefined;
+  let currentTunnel: ImportedTunnelConfig | undefined;
+  let currentProposal: ImportedIkeProposalConfig | undefined;
+  let currentPeer: ImportedIkePeerConfig | undefined;
+  let currentProfile: ImportedIpsecProfileConfig | undefined;
   const applied = (line: string): void => { result.appliedLines.push(line.trim()); };
   const unparsed = (line: string): void => { result.unparsedLines.push(line.trim()); };
   const clearQosContext = (): void => {
     currentClassMap = undefined;
     currentPolicyMap = undefined;
     currentPolicyClass = undefined;
+  };
+  const clearCryptoContext = (): void => {
+    currentProposal = undefined;
+    currentPeer = undefined;
+    currentProfile = undefined;
   };
 
   for (const raw of text.split(/\r\n|\r|\n/u)) {
@@ -295,11 +519,13 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     if (trimmed === "!" || trimmed === "end") {
       current = undefined;
       currentLoopback = undefined;
+      currentTunnel = undefined;
       currentVlan = undefined;
       inOspf = false;
       inOspfv3 = false;
       currentIpv6Acl = undefined;
       clearQosContext();
+      clearCryptoContext();
       continue;
     }
     const tokens = trimmed.split(/\s+/u);
@@ -314,16 +540,30 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       inOspfv3 = false;
       currentIpv6Acl = undefined;
       clearQosContext();
+      clearCryptoContext();
       const loopbackMatch = /^lo(?:opback)?(\d+)$/u.exec(normalizeInterfaceName(spec));
       if (loopbackMatch) {
         const id = Number(loopbackMatch[1]);
         currentLoopback = loopbacks.get(id) ?? { id, shutdown: false };
         loopbacks.set(id, currentLoopback);
         current = undefined;
+        currentTunnel = undefined;
+        applied(line);
+        continue;
+      }
+      // `interface Tunnel<n>`: a logical GRE tunnel, not a cabled port.
+      const tunnelMatch = /^tu(?:nnel)?(\d+)$/u.exec(normalizeInterfaceName(spec));
+      if (tunnelMatch) {
+        const id = Number(tunnelMatch[1]);
+        currentTunnel = tunnels.get(id) ?? { id, shutdown: false };
+        tunnels.set(id, currentTunnel);
+        current = undefined;
+        currentLoopback = undefined;
         applied(line);
         continue;
       }
       currentLoopback = undefined;
+      currentTunnel = undefined;
       const actual = resolve.get(normalizeInterfaceName(spec));
       if (actual) { current = ensureInterface(actual); applied(line); } else { current = undefined; unparsed(line); }
       continue;
@@ -549,6 +789,62 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       unparsed(line);
       continue;
     }
+    // --- Tunnel interface body --------------------------------------------
+    if (currentTunnel && isIndented) {
+      const resolveSource = (name: string): string | undefined =>
+        resolve.get(normalizeInterfaceName(name));
+      if (applyTunnelLine(currentTunnel, tokens, head, resolveSource)) { applied(line); } else unparsed(line);
+      continue;
+    }
+
+    // --- simplified IKEv2 / IPsec blocks ----------------------------------
+    if (head === "crypto") {
+      const kind = tokens.slice(1, 3).map((token) => token.toLowerCase()).join(" ");
+      const name = tokens[3];
+      current = undefined;
+      currentLoopback = undefined;
+      currentTunnel = undefined;
+      clearQosContext();
+      clearCryptoContext();
+      if (kind === "ikev2 proposal" && name) {
+        currentProposal = result.vpn.proposals.find((entry) => entry.id === name) ?? { id: name };
+        if (!result.vpn.proposals.includes(currentProposal)) result.vpn.proposals.push(currentProposal);
+        applied(line);
+        continue;
+      }
+      if (kind === "ikev2 peer" && name) {
+        currentPeer = result.vpn.ikePeers.find((entry) => entry.id === name)
+          ?? { id: name, credentialResetRequired: false };
+        if (!result.vpn.ikePeers.includes(currentPeer)) result.vpn.ikePeers.push(currentPeer);
+        applied(line);
+        continue;
+      }
+      if (kind === "ipsec profile" && name) {
+        currentProfile = result.vpn.ipsecProfiles.find((entry) => entry.id === name) ?? { id: name };
+        if (!result.vpn.ipsecProfiles.includes(currentProfile)) result.vpn.ipsecProfiles.push(currentProfile);
+        applied(line);
+        continue;
+      }
+      // Crypto maps, IKEv1 policies, ISAKMP keys, transform sets, trustpoints
+      // and anything else are deliberately not mapped; they are preserved as
+      // unparsed lines rather than approximated into something SimulatorNet
+      // does not simulate.
+      unparsed(line);
+      continue;
+    }
+    if (currentProposal && isIndented) {
+      if (applyProposalLine(currentProposal, tokens, head)) { applied(line); } else unparsed(line);
+      continue;
+    }
+    if (currentPeer && isIndented) {
+      if (applyPeerLine(currentPeer, tokens, head)) { applied(line); } else unparsed(line);
+      continue;
+    }
+    if (currentProfile && isIndented) {
+      if (applyProfileLine(currentProfile, tokens, head)) { applied(line); } else unparsed(line);
+      continue;
+    }
+
     if (head === "ip" && tokens[1]?.toLowerCase() === "route" && isIpv4(tokens[2]) && isIpv4(tokens[4])) {
       const prefix = maskToPrefix(tokens[3]);
       if (prefix !== undefined) { result.staticRoutes.push({ network: tokens[2], prefixLength: prefix, nextHop: tokens[4] }); applied(line); }
@@ -692,6 +988,15 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
 
   result.interfaces = [...interfaces.values()];
   result.loopbacks = [...loopbacks.values()].sort((a, b) => a.id - b.id);
+  result.vpn.tunnels = [...tunnels.values()].sort((a, b) => a.id - b.id);
+  // A tunnel that names a profile the file never defined keeps its other
+  // settings but loses the binding: an invented profile would be a lie.
+  for (const tunnel of result.vpn.tunnels) {
+    if (tunnel.ipsecProfileId !== undefined
+      && !result.vpn.ipsecProfiles.some((profile) => profile.id === tunnel.ipsecProfileId)) {
+      tunnel.ipsecProfileId = undefined;
+    }
+  }
   result.vlans = [...vlanNames.entries()].map(([id, name]) => ({ id, name }));
   // Bindings are collected per interface and lifted into the device's QoS
   // configuration; a binding to a policy map the file never defined is dropped

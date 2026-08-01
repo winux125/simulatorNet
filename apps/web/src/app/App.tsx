@@ -10,7 +10,7 @@ import {
   type LayoutChangedMeta,
 } from "react-resizable-panels";
 import {
-  AlertTriangle, Cable, CheckCircle2, ClipboardPaste, Command, Download, Eraser, FilePlus2, FlaskConical, FolderOpen, FolderX,
+  AlertTriangle, Cable, CheckCircle2, ClipboardPaste, Clock3, Command, Download, Eraser, FilePlus2, FlaskConical, FolderOpen, FolderX,
   Grid3X3, Info, Keyboard, Maximize2, Move, PanelBottom, PanelRight, Play, Redo2, RotateCcw, SkipForward,
   Square, SunMoon, Tag, TerminalSquare, Type, Undo2, Wrench, X,
 } from "lucide-react";
@@ -72,6 +72,7 @@ const BottomDock = lazy(() => import("../features/dock/BottomDock"));
 const BottomPanelStrip = lazy(() => import("../features/dock/BottomDock").then((module) => ({ default: module.BottomPanelStrip })));
 const STEP_EXPLANATION_KEY = "simulatornet.stepModeExplained";
 const WIRELESS_ASSOCIATIONS_KEY = "simulatornet.wirelessAssociations";
+const VPN_TUNNEL_OVERLAY_KEY = "simulatornet.vpnTunnelOverlay";
 
 interface AppProps { client: SimulatorClient }
 
@@ -190,6 +191,14 @@ export function App({ client }: AppProps) {
   const chooseWirelessAssociations = (shown: boolean) => {
     window.localStorage.setItem(WIRELESS_ASSOCIATIONS_KEY, shown ? "show" : "hide");
     setWirelessAssociationsShown(shown);
+  };
+  // A VPN overlay is derived presentation, so whether it is drawn is local
+  // workspace state; it never enters LabDocument, a submission or grading.
+  const [vpnTunnelsShown, setVpnTunnelsShown] = useState(() =>
+    window.localStorage.getItem(VPN_TUNNEL_OVERLAY_KEY) !== "hide");
+  const chooseVpnTunnels = (shown: boolean) => {
+    window.localStorage.setItem(VPN_TUNNEL_OVERLAY_KEY, shown ? "show" : "hide");
+    setVpnTunnelsShown(shown);
   };
   const chooseTerminalAppearance = (id: TerminalAppearance) => { applyTerminalAppearance(id); setTerminalAppearanceState(id); };
   // Local-only terminal preference: never part of LabDocument or a submission.
@@ -362,6 +371,18 @@ export function App({ client }: AppProps) {
   const run = useCallback(() => void client.request({ type: "RUN_UNTIL_IDLE" }).then((result) => useWorkspaceStore.getState().setSnapshot(result.snapshot)).catch(reportError), [client, reportError]);
   const step = useCallback(() => void client.request({ type: "STEP_NEXT_EVENT" }).then((result) => useWorkspaceStore.getState().setSnapshot(result.snapshot)).catch(reportError), [client, reportError]);
   const reset = () => void client.request({ type: "RESET_RUNTIME" }).then((ready) => { workspace.clearTraces(); workspace.setSnapshot(ready); }).catch(reportError);
+  /**
+   * Move the deterministic virtual clock forward by a fixed amount. This is how
+   * a lifetime-driven event — a DHCP lease, a VTY idle timeout, an IPsec rekey —
+   * becomes due without waiting in wall-clock time. It is virtual time, not a
+   * playback speed.
+   */
+  const advanceTime = useCallback(
+    (milliseconds: number) => void client.request({ type: "ADVANCE_TIME", milliseconds })
+      .then((result) => useWorkspaceStore.getState().setSnapshot(result.snapshot))
+      .catch(reportError),
+    [client, reportError],
+  );
 
   // Structural connectivity is locked while running; presentation and typed
   // configuration changes remain live without rebuilding the worker.
@@ -631,9 +652,17 @@ export function App({ client }: AppProps) {
         { id: "ports-selected", label: "Selected", checked: workspace.portLabelMode === "selected", onSelect: () => workspace.setPortLabelMode("selected") },
         { id: "ports-hidden", label: "Hidden", checked: workspace.portLabelMode === "hidden", onSelect: () => workspace.setPortLabelMode("hidden") },
       ] },
-      { id: "view-wireless-associations", label: "Wireless Associations", submenu: [
-        { id: "wireless-associations-show", label: "Show", checked: wirelessAssociationsShown, onSelect: () => chooseWirelessAssociations(true) },
-        { id: "wireless-associations-hide", label: "Hide", checked: !wirelessAssociationsShown, onSelect: () => chooseWirelessAssociations(false) },
+      // Derived runtime overlays. They are drawn from worker state and are never
+      // LabDocument links, so showing or hiding one changes nothing but the view.
+      { id: "view-protocol-overlays", label: "Protocol Overlays", submenu: [
+        { id: "view-wireless-associations", label: "Wireless Associations", submenu: [
+          { id: "wireless-associations-show", label: "Show", checked: wirelessAssociationsShown, onSelect: () => chooseWirelessAssociations(true) },
+          { id: "wireless-associations-hide", label: "Hide", checked: !wirelessAssociationsShown, onSelect: () => chooseWirelessAssociations(false) },
+        ] },
+        { id: "view-vpn-tunnels", label: "VPN Tunnels", submenu: [
+          { id: "vpn-tunnels-show", label: "Show", checked: vpnTunnelsShown, onSelect: () => chooseVpnTunnels(true) },
+          { id: "vpn-tunnels-hide", label: "Hide", checked: !vpnTunnelsShown, onSelect: () => chooseVpnTunnels(false) },
+        ] },
       ] },
       { id: "view-bottom-panel", label: "Bottom Panel", icon: <PanelBottom size={14} />, submenu: [
         { id: "bottom-panel-show", label: "Show", shortcut: "Ctrl J", checked: bottomPanelExpanded, disabled: !labOpen, onSelect: () => setBottomPanel("expanded") },
@@ -681,6 +710,15 @@ export function App({ client }: AppProps) {
       { separator: true },
       { id: "sim-step", label: "Step Next Event", icon: <SkipForward size={14} />, disabled: !simulationEnabled || workspace.executionMode !== "step" || (workspace.snapshot?.queuedEvents ?? 0) === 0, onSelect: step },
       { id: "sim-run", label: "Run All Queued Events", shortcut: "Ctrl ↵", icon: <Play size={14} />, disabled: !simulationEnabled || (workspace.snapshot?.queuedEvents ?? 0) === 0, onSelect: run },
+      { separator: true },
+      // Virtual time, never wall-clock playback: this is what makes a lease,
+      // an idle timeout or an IPsec rekey become due on demand.
+      { id: "sim-advance", label: "Advance Virtual Time", icon: <Clock3 size={14} />, disabled: !simulationEnabled, submenu: [
+        { id: "sim-advance-1s", label: "1 second", onSelect: () => advanceTime(1_000) },
+        { id: "sim-advance-10s", label: "10 seconds", onSelect: () => advanceTime(10_000) },
+        { id: "sim-advance-1m", label: "1 minute", onSelect: () => advanceTime(60_000) },
+        { id: "sim-advance-5m", label: "5 minutes", onSelect: () => advanceTime(300_000) },
+      ] },
       { separator: true },
       { id: "sim-clear", label: "Clear Event List", icon: <Eraser size={14} />, disabled: !labOpen, onSelect: workspace.clearTraces },
     ] },
@@ -1048,6 +1086,7 @@ export function App({ client }: AppProps) {
       terminalTabs: workspace.terminalTabs,
       portLabelMode: workspace.portLabelMode,
       wirelessAssociationsShown,
+      vpnTunnelsShown,
       fitRequest: workspace.fitRequest,
       zoomResetRequest: workspace.zoomResetRequest,
       zoomInRequest: workspace.zoomInRequest,

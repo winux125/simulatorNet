@@ -8,9 +8,11 @@ import {
   DEFAULT_STP_MAX_AGE_SECONDS,
   isDefaultPhysicalLayout,
   isDefaultQosConfiguration,
+  isDefaultVpnConfiguration,
   type LabPhysicalLayout,
   type NeighborDiscoveryConfig,
   type QosConfiguration,
+  type VpnConfiguration,
 } from "@sim/contracts";
 import type {
   ConsoleAccessConfiguration,
@@ -434,6 +436,42 @@ function canonicalQos(configuration: QosConfiguration | undefined): QosConfigura
 }
 
 /**
+ * Canonical VPN ordering: tunnels by numeric id, proposals, peers and profiles
+ * by id. Absent when nothing is configured, so a schema-v1 lab written before
+ * M10.9 keeps opening and an untouched lab round-trips byte-identically.
+ * Runtime — IKE state, SAs, SPIs, sequence numbers, counters — is never here.
+ */
+function canonicalVpn(configuration: VpnConfiguration | undefined): VpnConfiguration | undefined {
+  if (isDefaultVpnConfiguration(configuration) || !configuration) return undefined;
+  return {
+    tunnels: [...configuration.tunnels].sort((a, b) => a.id - b.id).map((tunnel) => withoutUndefined({
+      ...tunnel,
+      source: { ...tunnel.source },
+      ipv4: tunnel.ipv4 ? { ...tunnel.ipv4 } : undefined,
+      ipv6: tunnel.ipv6 ? tunnel.ipv6.map((address) => ({ ...address })) : undefined,
+    })),
+    proposals: [...configuration.proposals].sort(byId).map((entry) => ({ ...entry })),
+    ikePeers: [...configuration.ikePeers].sort(byId).map((peer) => withoutUndefined({
+      ...peer,
+      preSharedKeyVerifier: peer.preSharedKeyVerifier ? { ...peer.preSharedKeyVerifier } : undefined,
+    })),
+    ipsecProfiles: [...configuration.ipsecProfiles].sort(byId).map((entry) => ({ ...entry })),
+  };
+}
+
+/**
+ * Drop keys whose value is `undefined`, so an optional field that was never
+ * configured is *absent* rather than present-and-undefined. Without this a
+ * serialize → canonicalize round trip would differ from the original document
+ * by exactly those keys.
+ */
+function withoutUndefined<T extends object>(value: T): T {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined),
+  ) as T;
+}
+
+/**
  * Canonical physical placement: sites, rooms and racks by id, placements by
  * device id. Ordering is observable in the saved document, so it must never
  * depend on insertion order. Absent when nothing is placed, so a lab written
@@ -539,6 +577,7 @@ function routerConfiguration(node: NodeSpec, config: RouterDeviceConfig | undefi
     ...canonicalRoutedIpv6(config),
     ...canonicalAcls(config),
     qos: canonicalQos(config?.qos),
+    vpn: canonicalVpn(config?.vpn),
     ...canonicalNat(config),
     ...canonicalRoutedProtocols(config),
     discovery: canonicalDiscovery(config?.discovery),

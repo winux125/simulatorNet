@@ -60,12 +60,14 @@ import {
   applyOspfConfiguration,
   applyOspfv3Configuration,
   applySpanningTreeConfiguration,
+  applyVpnConfiguration,
   serializeDiscoveryConfiguration,
   serializeEtherChannelConfiguration,
   serializeLoopbackConfiguration,
   serializeOspfConfiguration,
   serializeOspfv3Configuration,
   serializeSpanningTreeConfiguration,
+  serializeVpnConfiguration,
 } from "./protocol-config";
 
 export interface BuiltLab {
@@ -549,6 +551,9 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
       device.validateInterfaceCount();
     }
     applyLoopbackConfiguration(device, config.loopbacks ?? []);
+    // Tunnels need their underlay source addresses, so the VPN is applied after
+    // interface addressing and before the routing protocols that may run over it.
+    applyVpnConfiguration(device, config.vpn);
     applyDiscoveryConfiguration(device, config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG);
     if (config.ospf) applyOspfConfiguration(device, config.ospf);
     if (config.ospfv3) applyOspfv3Configuration(device, config.ospfv3);
@@ -1127,6 +1132,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
         const role = device.natRole(iface.name);
         return role ? [{ interfaceName: iface.name, role }] : [];
       }),
+    vpn: serializeVpnConfiguration(device),
     discovery: serializeDiscoveryConfiguration(device),
     loopbacks: serializeLoopbackConfiguration(device),
     ospf: serializeOspfConfiguration(device),

@@ -1,4 +1,4 @@
-import { loopbackName } from "@sim/sim-core";
+import { loopbackName, tunnelName } from "@sim/sim-core";
 import { InvalidModeError, ValidationError } from "../errors/errors";
 import type { CommandSpec, SessionApi } from "../types";
 import {
@@ -205,6 +205,7 @@ export const interfaceCommands: CommandSpec[] = [
 function routedInterfaceName(s: SessionApi): string {
   const ctx = requireCtx(s);
   if (ctx.loopback !== undefined) return loopbackName(ctx.loopback);
+  if (ctx.tunnel !== undefined) return tunnelName(ctx.tunnel);
   if (ctx.sviVlan !== undefined) return `Vlan${ctx.sviVlan}`;
   if (ctx.isSubinterface) {
     if (!ctx.subCreated || ctx.subVlan === undefined) {

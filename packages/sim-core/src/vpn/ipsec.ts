@@ -32,6 +32,12 @@ export interface IkePeerConfiguration {
   readonly preSharedKeyVerifier?: PasswordVerifier;
   readonly proposalId: string;
   readonly lifetimeNs: number;
+  /**
+   * Set when an imported peer's key could not be carried over — a vendor key is
+   * never decrypted — so the learner must set one before the tunnel protects.
+   * Persistent configuration, not runtime state.
+   */
+  readonly credentialResetRequired?: boolean;
 }
 
 export interface IpsecProposalConfiguration {
@@ -899,6 +905,11 @@ export class IpsecEngine {
     session.rekeyAtNs = undefined;
     session.state = "REKEYING";
     session.generation += 1;
+    // Give the exchange a bounded window of its own. Leaving the previous
+    // generation's expiry in place would let a lifetime check — including the
+    // re-entrant one `sendIke` triggers through the routing table — expire the
+    // session before its own rekey response could arrive.
+    session.expiresAtNs = hooks.nowNs() + DEFAULT_VPN_LIMITS.negotiationTimeoutNs;
     hooks.sendIke(localAddress, peer.remoteAddress, {
       kind: "ike",
       exchange: "rekey",

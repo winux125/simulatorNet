@@ -5,15 +5,18 @@ import type {
   OspfProcessConfig,
   Ospfv3ProcessConfig,
   SpanningTreeConfig,
+  VpnConfiguration,
 } from "@sim/contracts";
 import {
   DEFAULT_STP_PORT_PRIORITY_VALUE,
+  isDefaultVpnConfiguration,
 } from "@sim/contracts";
 import {
   type L2Switch,
   type Layer3Switch,
   loopbackName,
   NS_PER_S,
+  parseTunnelName,
   portChannelName,
   type Router,
 } from "@sim/sim-core";
@@ -100,6 +103,115 @@ export function applyLoopbackConfiguration(
       device.setInterfaceIpv6(loopbackName(loopback.id), address.address, address.prefixLength);
     }
   }
+}
+
+/**
+ * Site-to-site VPN configuration. Proposals, peers and profiles are applied
+ * before the tunnels that reference them, so a `tunnel protection ipsec profile`
+ * binding always resolves. Nothing runtime is rebuilt: negotiation starts from
+ * scratch, exactly as it does in the verifier.
+ */
+export function applyVpnConfiguration(device: Router, configuration: VpnConfiguration | undefined): void {
+  if (!configuration || isDefaultVpnConfiguration(configuration)) return;
+  for (const proposal of configuration.proposals) {
+    device.defineIpsecProposal({
+      id: proposal.id,
+      encryption: proposal.encryption,
+      integrity: proposal.integrity,
+    });
+  }
+  for (const peer of configuration.ikePeers) {
+    device.defineIkePeer({
+      id: peer.id,
+      remoteAddress: peer.address,
+      localIdentity: peer.localIdentity,
+      remoteIdentity: peer.remoteIdentity,
+      preSharedKeyVerifier: peer.preSharedKeyVerifier,
+      proposalId: peer.proposalId,
+      lifetimeNs: peer.lifetimeSeconds * NS_PER_S,
+      credentialResetRequired: peer.credentialResetRequired,
+    });
+  }
+  for (const profile of configuration.ipsecProfiles) {
+    device.defineIpsecProfile({
+      id: profile.id,
+      ikePeerId: profile.ikePeerId,
+      proposalId: profile.proposalId,
+      lifetimeNs: profile.lifetimeSeconds * NS_PER_S,
+    });
+  }
+  for (const tunnel of configuration.tunnels) {
+    device.configureTunnel(tunnel.id, {
+      source: tunnel.source.type === "interface"
+        ? { type: "interface", interfaceId: tunnel.source.interfaceId }
+        : { type: "address", address: tunnel.source.address },
+      destinationAddress: tunnel.destinationAddress,
+      mode: tunnel.mode,
+      ipv4Addresses: tunnel.ipv4
+        ? [{ address: tunnel.ipv4.address, prefixLength: tunnel.ipv4.prefixLength }]
+        : [],
+      ipv6Addresses: (tunnel.ipv6 ?? []).map((address) => ({
+        address: address.address,
+        prefixLength: address.prefixLength,
+      })),
+      mtu: tunnel.mtu,
+      ttl: tunnel.ttl,
+      adminUp: !tunnel.shutdown,
+      ipsecProfileId: tunnel.ipsecProfileId,
+    });
+    if (tunnel.description !== undefined) {
+      device.getOrCreateTunnel(tunnel.id).physical.setDescription(tunnel.description);
+    }
+  }
+}
+
+export function serializeVpnConfiguration(device: Router): VpnConfiguration | undefined {
+  const summaries = new Map(device.tunnelSummaries().map((row) => [row.name, row]));
+  const configuration: VpnConfiguration = {
+    tunnels: device.tunnelConfigurations().map((tunnel) => {
+      const id = parseTunnelName(tunnel.id) ?? 0;
+      const summary = summaries.get(tunnel.id);
+      const primary = tunnel.ipv4Addresses[0];
+      return {
+        id,
+        description: device.getOrCreateTunnel(id).physical.description,
+        shutdown: summary ? !summary.adminUp : !tunnel.adminUp,
+        source: tunnel.source.type === "interface"
+          ? { type: "interface" as const, interfaceId: tunnel.source.interfaceId }
+          : { type: "address" as const, address: tunnel.source.address },
+        destinationAddress: tunnel.destinationAddress,
+        mode: tunnel.mode,
+        ipv4: primary ? { address: primary.address, prefixLength: primary.prefixLength } : undefined,
+        ipv6: tunnel.ipv6Addresses.length > 0
+          ? tunnel.ipv6Addresses.map((address) => ({
+              address: address.address,
+              prefixLength: address.prefixLength,
+            }))
+          : undefined,
+        mtu: tunnel.mtu,
+        ttl: tunnel.ttl,
+        ipsecProfileId: tunnel.ipsecProfileId,
+      };
+    }),
+    proposals: device.ipsecProposalConfigurations().map((proposal) => ({ ...proposal })),
+    ikePeers: device.ikePeerConfigurations().map((peer) => ({
+      id: peer.id,
+      address: peer.remoteAddress,
+      localIdentity: peer.localIdentity,
+      remoteIdentity: peer.remoteIdentity,
+      preSharedKeyVerifier: peer.preSharedKeyVerifier,
+      proposalId: peer.proposalId,
+      lifetimeSeconds: toSeconds(peer.lifetimeNs),
+      credentialResetRequired: peer.credentialResetRequired ?? false,
+    })),
+    ipsecProfiles: device.ipsecProfileConfigurations().map((profile) => ({
+      id: profile.id,
+      ikePeerId: profile.ikePeerId,
+      proposalId: profile.proposalId,
+      lifetimeSeconds: toSeconds(profile.lifetimeNs),
+    })),
+  };
+  return isDefaultVpnConfiguration(configuration) ? undefined : configuration;
 }
 
 export function applyOspfConfiguration(device: Router | Layer3Switch, config: OspfProcessConfig): void {

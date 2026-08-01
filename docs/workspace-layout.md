@@ -296,3 +296,34 @@ Keep local-only:
 
 Never persist X6 graph JSON, DOM geometry, worker instances, terminal state,
 transient protocol caches, or a client-computed verification result.
+
+## Site-to-site VPN surfaces
+
+A Router or Firewall device window carries exactly one top-level **VPN** tab,
+the same shape as the consolidated QoS tab. Tunnels, IKE Peers, IPsec Profiles,
+Sessions and Counters are secondary navigation *inside* it — never five
+top-level tabs, and never a nested modal window. Which section is open is local
+UI state: it never reaches `LabDocument`, a submission, grading or the database.
+A device with no tunnel capability gets no VPN tab at all.
+
+The IKE Peers section can set or reset a pre-shared key. The key is derived into
+an opaque verifier in the main thread and only that value crosses the worker
+boundary; the panel never reads a key or a verifier back, and shows only whether
+one is configured. Sessions and Counters show SPIs, sequence numbers, virtual
+age and packet/byte counts — all runtime, none of it persisted.
+
+**View → Protocol Overlays** groups the derived runtime overlays: Wireless
+Associations and VPN Tunnels. A VPN overlay is a curved, dashed presentation
+edge between two tunnel peers, coloured by what the engine reports — plain GRE,
+protected, negotiating or failed. Like a wireless association it has no port
+identity, never enters `LabDocument.topology.links`, never opens the cable
+modal and never triggers Apply Topology. Whether it is drawn is local workspace
+state (`simulatornet.vpnTunnelOverlay`).
+
+Packet Trace adds a `VPN` filter for the whole family plus `GRE`, `IKE`, `IPsec`
+and `ESP` for one stage each. Problems reports a tunnel that is down with the
+reason the engine gave — source unavailable, destination unreachable, recursive
+route, protection unavailable — and an IKE failure as authentication failed,
+proposal mismatch, peer unreachable, no pre-shared key, identity mismatch or
+rekey failed. No VPN surface ever renders a key or a verifier. See
+[vpn-tunnels.md](vpn-tunnels.md).

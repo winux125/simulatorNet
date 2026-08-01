@@ -1,4 +1,4 @@
-import { loopbackName, portChannelName } from "@sim/sim-core";
+import { loopbackName, portChannelName, tunnelName } from "@sim/sim-core";
 import { InvalidModeError, ValidationError } from "../errors/errors";
 import type { CommandSpec, SessionApi } from "../types";
 import {
@@ -15,6 +15,25 @@ import {
   resolveInterface,
 } from "./helpers";
 
+/** A fresh `config-if` context with every logical selector cleared. */
+function interfaceContext(
+  physical: string,
+  overrides: Partial<import("../types").InterfaceContext> = {},
+): import("../types").InterfaceContext {
+  return {
+    physical,
+    isSubinterface: false,
+    label: physical,
+    subVlan: undefined,
+    subCreated: false,
+    sviVlan: undefined,
+    loopback: undefined,
+    tunnel: undefined,
+    range: undefined,
+    ...overrides,
+  };
+}
+
 /**
  * Select a logical interface — `Loopback0` or `Port-channel1` — which exists
  * inside the device rather than on the canvas. Returns true when it handled the
@@ -26,16 +45,17 @@ function selectLogicalInterface(session: SessionApi, spec: string): boolean {
   if (loopback && isOspfDevice(session.device)) {
     const id = Number(loopback[1]);
     session.device.getOrCreateLoopback(id);
-    session.ifaceCtx = {
-      physical: loopbackName(id),
-      isSubinterface: false,
-      label: loopbackName(id),
-      subVlan: undefined,
-      subCreated: false,
-      sviVlan: undefined,
-      loopback: id,
-      range: undefined,
-    };
+    session.ifaceCtx = interfaceContext(loopbackName(id), { loopback: id });
+    session.enter("config-if");
+    return true;
+  }
+  // A GRE tunnel is logical too: it has no cable, so it is recognised here
+  // rather than through the physical interface map.
+  const tunnel = /^tu(?:nnel)?(\d+)$/i.exec(compact);
+  if (tunnel && isRouter(session.device) && session.device.supportsTunnels()) {
+    const id = Number(tunnel[1]);
+    session.device.getOrCreateTunnel(id);
+    session.ifaceCtx = interfaceContext(tunnelName(id), { tunnel: id });
     session.enter("config-if");
     return true;
   }
@@ -45,17 +65,7 @@ function selectLogicalInterface(session: SessionApi, spec: string): boolean {
     if (!session.device.etherChannel.hasChannel(id)) {
       throw new ValidationError(`Port-channel${id} does not exist; add a member with 'channel-group ${id} mode ...' first.`);
     }
-    const name = portChannelName(id);
-    session.ifaceCtx = {
-      physical: name,
-      isSubinterface: false,
-      label: name,
-      subVlan: undefined,
-      subCreated: false,
-      sviVlan: undefined,
-      loopback: undefined,
-      range: undefined,
-    };
+    session.ifaceCtx = interfaceContext(portChannelName(id));
     session.enter("config-if");
     return true;
   }
@@ -108,6 +118,7 @@ export const navigationCommands: CommandSpec[] = [
     modes: [
       "config-if", "config-vlan", "config-acl", "config-line", "config-aaa-server",
       "config-cmap", "config-pmap", "config-router",
+      "config-ikev2-proposal", "config-ikev2-peer", "config-ipsec-profile",
     ],
     device: "network",
     run: (s) => s.enter("config"),
@@ -124,6 +135,7 @@ export const navigationCommands: CommandSpec[] = [
     modes: [
       "config", "config-if", "config-vlan", "config-acl", "config-line", "config-aaa-server",
       "config-cmap", "config-pmap", "config-pmap-c", "config-router",
+      "config-ikev2-proposal", "config-ikev2-peer", "config-ipsec-profile",
     ],
     device: "network",
     run: (s) => s.enter("privileged"),
@@ -148,16 +160,24 @@ export const navigationCommands: CommandSpec[] = [
       if (isLayer3Switch(s.device)) s.device.defineSvi(vlanId);
       else if (isSwitch(s.device)) s.device.defineManagementSvi(vlanId);
       else return;
-      s.ifaceCtx = {
-        physical: `Vlan${vlanId}`,
-        isSubinterface: false,
-        label: `Vlan${vlanId}`,
-        subVlan: undefined,
-        subCreated: false,
-        sviVlan: vlanId,
-        loopback: undefined,
-        range: undefined,
-      };
+      s.ifaceCtx = interfaceContext(`Vlan${vlanId}`, { sviVlan: vlanId });
+      s.enter("config-if");
+    },
+  },
+  {
+    pattern: "interface tunnel {id}",
+    usage: "interface tunnel <0-2147483647>",
+    modes: ["config"],
+    device: "router",
+    capabilities: ["vpn-tunnel"],
+    run: (s, p) => {
+      const id = Number(p.id!);
+      if (!Number.isInteger(id) || id < 0) throw new ValidationError("Tunnel number must be a non-negative integer.");
+      if (!isRouter(s.device) || !s.device.supportsTunnels()) {
+        throw new InvalidModeError("GRE tunnels require a Router or a Firewall");
+      }
+      s.device.getOrCreateTunnel(id);
+      s.ifaceCtx = interfaceContext(tunnelName(id), { tunnel: id });
       s.enter("config-if");
     },
   },
@@ -171,16 +191,7 @@ export const navigationCommands: CommandSpec[] = [
       if (!Number.isInteger(id) || id < 0) throw new ValidationError("Loopback number must be a non-negative integer.");
       if (!isOspfDevice(s.device)) throw new InvalidModeError("Loopbacks require a Router or an L3 Switch");
       s.device.getOrCreateLoopback(id);
-      s.ifaceCtx = {
-        physical: loopbackName(id),
-        isSubinterface: false,
-        label: loopbackName(id),
-        subVlan: undefined,
-        subCreated: false,
-        sviVlan: undefined,
-        loopback: id,
-        range: undefined,
-      };
+      s.ifaceCtx = interfaceContext(loopbackName(id), { loopback: id });
       s.enter("config-if");
     },
   },
@@ -192,16 +203,10 @@ export const navigationCommands: CommandSpec[] = [
     run: (s, p) => {
       // Expand and validate the whole range before anything is configured.
       const ports = expandInterfaceRange(s.device, p.spec!);
-      s.ifaceCtx = {
-        physical: ports[0]!,
-        isSubinterface: false,
+      s.ifaceCtx = interfaceContext(ports[0]!, {
         label: `range ${ports[0]} - ${ports.at(-1)}`,
-        subVlan: undefined,
-        subCreated: false,
-        sviVlan: undefined,
-        loopback: undefined,
         range: ports,
-      };
+      });
       s.enter("config-if");
     },
   },
@@ -222,16 +227,10 @@ export const navigationCommands: CommandSpec[] = [
         throw new InvalidModeError("Subinterfaces are only supported on a router");
       }
       if (isRouter(s.device) && !isSub) s.device.getOrCreateInterface(resolved.physical);
-      s.ifaceCtx = {
-        physical: resolved.physical,
+      s.ifaceCtx = interfaceContext(resolved.physical, {
         isSubinterface: isSub,
         label: resolved.subLabel,
-        subVlan: undefined,
-        subCreated: false,
-        sviVlan: undefined,
-        loopback: undefined,
-        range: undefined,
-      };
+      });
       s.enter("config-if");
     },
   },

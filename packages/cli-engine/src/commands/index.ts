@@ -8,6 +8,7 @@ import { managementCommands } from "./management";
 import { protocolCommands } from "./protocols";
 import { qosCommands } from "./qos";
 import { securityCommands } from "./security";
+import { vpnCommands } from "./vpn";
 
 /** Every command the CLI understands, across all modes. */
 export const allCommands: CommandSpec[] = [
@@ -18,6 +19,7 @@ export const allCommands: CommandSpec[] = [
   ...applicationCommands,
   ...securityCommands,
   ...qosCommands,
+  ...vpnCommands,
   ...protocolCommands,
   ...managementCommands,
 ];

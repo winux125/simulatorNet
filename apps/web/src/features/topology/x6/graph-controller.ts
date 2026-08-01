@@ -35,6 +35,11 @@ import {
   wirelessAssociationEdgeId,
   type WirelessAssociationView,
 } from "./wireless-association-overlay";
+import {
+  vpnTunnelEdgeAppearance,
+  vpnTunnelEdgeId,
+  type VpnTunnelOverlayView,
+} from "./vpn-tunnel-overlay";
 
 export interface CreateControllerOptions {
   container: HTMLElement;
@@ -631,6 +636,7 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       ...links.map((link) => link.id),
       ...(state.view.wirelessAssociations ?? []).map((association) =>
         wirelessAssociationEdgeId(association.id)),
+      ...(state.view.vpnTunnels ?? []).map((tunnel) => vpnTunnelEdgeId(tunnel.id)),
       ...annotations
         .filter((annotation) => annotation.type === "line" || annotation.type === "arrow")
         .map((annotation) => annotationCellId(annotation.id)),
@@ -645,9 +651,92 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     for (const association of state.view.wirelessAssociations ?? []) {
       renderWirelessAssociation(association);
     }
+    for (const tunnel of state.view.vpnTunnels ?? []) {
+      renderVpnTunnel(tunnel);
+    }
     for (const cell of graph.getEdges()) {
       if (!linkIds.has(cell.id)) graph.removeCell(cell);
     }
+  }
+
+  /**
+   * A logical VPN overlay between two tunnel peers. It is drawn as a curved,
+   * dashed presentation edge with no port identity: it never becomes a
+   * LabDocument link, never opens the cable modal and never triggers a rebuild.
+   */
+  function renderVpnTunnel(tunnel: VpnTunnelOverlayView): void {
+    if (!graph.getCellById(tunnel.localDeviceId) || !graph.getCellById(tunnel.remoteDeviceId)) return;
+    const appearance = vpnTunnelEdgeAppearance(tunnel);
+    const metadata = {
+      kind: "vpn-tunnel",
+      localDeviceId: tunnel.localDeviceId,
+      remoteDeviceId: tunnel.remoteDeviceId,
+      state: tunnel.state,
+    };
+    const endpoint = (cell: string) => ({
+      cell,
+      anchor: { name: "center" },
+      connectionPoint: { name: "boundary" },
+    });
+    const attrs = {
+      line: {
+        stroke: appearance.stroke,
+        strokeWidth: 2,
+        strokeDasharray: appearance.dashArray,
+        sourceMarker: null,
+        targetMarker: null,
+        pointerEvents: "none",
+        "data-vpn-tunnel": tunnel.id,
+        "data-vpn-state": tunnel.state,
+      },
+      wrap: { stroke: "transparent", strokeWidth: 0, pointerEvents: "none" },
+    };
+    const labels = [{
+      attrs: {
+        label: {
+          text: appearance.label,
+          fill: "var(--color-text-muted, #52657a)",
+          fontSize: 10,
+          fontWeight: 600,
+          pointerEvents: "none",
+        },
+        body: {
+          fill: "var(--color-surface-raised, #f4f7fa)",
+          stroke: "var(--color-border-subtle, #cbd6e0)",
+          strokeWidth: 1,
+          rx: 4,
+          ry: 4,
+          ref: "label",
+          refWidth: "120%",
+          refHeight: "150%",
+          refX: "-10%",
+          refY: "-25%",
+          pointerEvents: "none",
+        },
+      },
+      position: { distance: 0.5 },
+    }];
+    const existing = graph.getCellById(appearance.id);
+    if (existing?.isEdge()) {
+      existing.setSource(endpoint(tunnel.localDeviceId));
+      existing.setTarget(endpoint(tunnel.remoteDeviceId));
+      existing.setData(metadata, { overwrite: true });
+      existing.setAttrs(attrs);
+      existing.setLabels(labels);
+      existing.setConnector("smooth");
+      existing.setZIndex(TOPOLOGY_EDGE_Z_INDEX - 2);
+      return;
+    }
+    graph.addEdge({
+      id: appearance.id,
+      source: endpoint(tunnel.localDeviceId),
+      target: endpoint(tunnel.remoteDeviceId),
+      data: metadata,
+      attrs,
+      labels,
+      connector: { name: "smooth" },
+      zIndex: TOPOLOGY_EDGE_Z_INDEX - 2,
+    });
   }
 
   function renderWirelessAssociation(association: WirelessAssociationView): void {

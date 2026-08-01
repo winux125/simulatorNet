@@ -50,6 +50,9 @@ function protocol(token: string): PolicyProtocol {
   if (token === "icmp") return IpProtocol.ICMP;
   if (token === "tcp") return IpProtocol.TCP;
   if (token === "udp") return IpProtocol.UDP;
+  // The underlay protocols of a site-to-site VPN, so a lab can block one.
+  if (token === "gre") return IpProtocol.GRE;
+  if (token === "esp") return IpProtocol.ESP;
   throw new ValidationError(`Unsupported ACL protocol '${token}'.`);
 }
 

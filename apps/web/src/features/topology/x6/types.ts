@@ -68,6 +68,18 @@ export interface TopologyView {
       | "associated"
       | "failed";
   }>;
+  /**
+   * Runtime site-to-site VPN overlays. Like a wireless association these are
+   * derived presentation edges: they are never a LabDocument link, never carry
+   * port identity and never trigger Apply Topology.
+   */
+  vpnTunnels?: Array<{
+    id: string;
+    localDeviceId: string;
+    remoteDeviceId: string;
+    label: string;
+    state: "gre" | "protected" | "negotiating" | "failed";
+  }>;
   /** `editing` blanks the rendered text while the inline editor draws it live. */
   annotations?: Record<string, { selected: boolean; editing?: boolean }>;
 }

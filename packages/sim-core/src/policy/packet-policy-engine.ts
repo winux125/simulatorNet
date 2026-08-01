@@ -17,9 +17,17 @@ export type AclDirection = "in" | "out";
 /**
  * Protocols an ACL, NAT rule or firewall policy can match. Deliberately not the
  * whole `IpProtocol` set: OSPF control traffic is terminated by the local
- * process before the policy pipeline and is never a policy subject.
+ * process before the policy pipeline and is never a policy subject. GRE and ESP
+ * *are* matchable, because blocking a site-to-site VPN on the underlay is a
+ * scenario a lab is meant to be able to build.
  */
-export type PolicyProtocol = "ip" | typeof IpProtocol.ICMP | typeof IpProtocol.TCP | typeof IpProtocol.UDP;
+export type PolicyProtocol =
+  | "ip"
+  | typeof IpProtocol.ICMP
+  | typeof IpProtocol.TCP
+  | typeof IpProtocol.UDP
+  | typeof IpProtocol.GRE
+  | typeof IpProtocol.ESP;
 export type Ipv6PolicyProtocol =
   | "ipv6"
   | typeof Ipv6NextHeader.ICMPv6
@@ -28,7 +36,11 @@ export type Ipv6PolicyProtocol =
 
 /** Narrow an IPv4 protocol number to the policy set; anything else is "ip". */
 export function policyProtocolOf(protocol: IpProtocol): PolicyProtocol {
-  return protocol === IpProtocol.ICMP || protocol === IpProtocol.TCP || protocol === IpProtocol.UDP
+  return protocol === IpProtocol.ICMP
+    || protocol === IpProtocol.TCP
+    || protocol === IpProtocol.UDP
+    || protocol === IpProtocol.GRE
+    || protocol === IpProtocol.ESP
     ? protocol
     : "ip";
 }
@@ -490,7 +502,11 @@ function validateAcl(acl: Ipv4Acl): void {
       if (extended.protocol !== "ip"
         && extended.protocol !== IpProtocol.ICMP
         && extended.protocol !== IpProtocol.TCP
-        && extended.protocol !== IpProtocol.UDP) {
+        && extended.protocol !== IpProtocol.UDP
+        // The underlay protocols of a site-to-site VPN are matchable, so a lab
+        // can deliberately block GRE or ESP and observe the tunnel fail.
+        && extended.protocol !== IpProtocol.GRE
+        && extended.protocol !== IpProtocol.ESP) {
         throw new PacketPolicyError("ACL_INVALID_CONFIGURATION", `Unsupported IP protocol '${extended.protocol}'.`);
       }
       if (extended.sourcePort) validatePortMatcher(extended.sourcePort);

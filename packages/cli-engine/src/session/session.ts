@@ -20,6 +20,7 @@ import {
 import type {
   AaaServerContext,
   AclContext,
+  CryptoContext,
   InterfaceContext,
   QosClassMapContext,
   QosPolicyMapContext,
@@ -52,10 +53,16 @@ export class CliSession implements SessionApi {
   aaaServerCtx: AaaServerContext | undefined;
   classMapCtx: QosClassMapContext | undefined;
   policyMapCtx: QosPolicyMapContext | undefined;
+  cryptoCtx: CryptoContext | undefined;
   private pendingInput: "ping-target" | undefined;
   private executionMode: NetworkExecutionMode = "auto";
   private pendingOperation: (() => string | undefined) | undefined;
   private pendingConfirmation: { prompt: string; onConfirm: () => string } | undefined;
+  private pendingCredential: {
+    prompt: string;
+    scope: string;
+    apply(fingerprint: string): string;
+  } | undefined;
   private remote: RemoteSessionBridge | undefined;
   private remoteOpener: RemoteSessionOpener | undefined;
 
@@ -66,6 +73,7 @@ export class CliSession implements SessionApi {
 
   /** The prompt shown before the next command, e.g. "S1(config-if)#". */
   prompt(): string {
+    if (this.pendingCredential) return this.pendingCredential.prompt;
     if (this.pendingConfirmation) return this.pendingConfirmation.prompt;
     if (this.pendingInput === "ping-target") return "Target IP address:";
     const remote = this.remote;
@@ -114,13 +122,29 @@ export class CliSession implements SessionApi {
     return this.remote && !this.remote.isClosed() ? this.remote : undefined;
   }
 
-  /** True while the *next* submitted line is a credential (remote login). */
+  /**
+   * True while the *next* submitted line is a credential — either a remote
+   * login answer or a local secret such as a VPN pre-shared key. The terminal
+   * suppresses echo, keeps it out of history, the transcript and Problems, and
+   * sends only the opaque fingerprint derived against `credentialScope`.
+   */
   expectsSecret(): boolean {
+    if (this.pendingCredential) return true;
     return this.remoteSession()?.expectsSecret() ?? false;
   }
 
   credentialScope(): string | undefined {
-    return this.remoteSession()?.credentialScope();
+    return this.pendingCredential?.scope ?? this.remoteSession()?.credentialScope();
+  }
+
+  /**
+   * Ask for a secret without ever accepting it in the clear. The next line is
+   * consumed as a pre-derived fingerprint; a plaintext key never reaches this
+   * session, sim-core, a trace, a log or `show running-config`.
+   */
+  requestCredential(prompt: string, scope: string, apply: (fingerprint: string) => string): string {
+    this.pendingCredential = { prompt, scope, apply };
+    return "";
   }
 
   /** Close an attached remote session, e.g. when the terminal tab is closed. */
@@ -144,6 +168,9 @@ export class CliSession implements SessionApi {
     if (mode !== "config-line") this.lineCtx = undefined;
     if (mode !== "config-aaa-server") this.aaaServerCtx = undefined;
     if (mode !== "config-cmap") this.classMapCtx = undefined;
+    if (mode !== "config-ikev2-proposal" && mode !== "config-ikev2-peer" && mode !== "config-ipsec-profile") {
+      this.cryptoCtx = undefined;
+    }
     // The policy-map context survives `class <name>`, which nests inside it.
     if (mode !== "config-pmap" && mode !== "config-pmap-c") this.policyMapCtx = undefined;
     if (mode === "config-pmap" && this.policyMapCtx) this.policyMapCtx.className = undefined;
@@ -222,6 +249,21 @@ export class CliSession implements SessionApi {
         () => remote.submit(line, credential),
         () => (remote.awaitingResponse() ? undefined : this.renderRemote(remote)),
       );
+    }
+    // A pending local secret owns the next line. Only the derived fingerprint
+    // is ever accepted, so an empty answer simply cancels the command.
+    const credentialPrompt = this.pendingCredential;
+    if (credentialPrompt) {
+      this.pendingCredential = undefined;
+      if (!credential) return "% No credential was provided; nothing was changed.";
+      try {
+        return credentialPrompt.apply(credential);
+      } catch (error) {
+        if (error instanceof CliError) return error.render();
+        const protocolError = renderProtocolError(error);
+        if (protocolError !== undefined) return protocolError;
+        throw error;
+      }
     }
     const confirmation = this.pendingConfirmation;
     if (confirmation) {

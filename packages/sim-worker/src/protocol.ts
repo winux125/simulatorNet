@@ -10,6 +10,7 @@ import type {
   DeviceConfig,
   PasswordVerifier,
   QosConfiguration,
+  VpnConfiguration,
   ServerServiceConfig,
   WirelessAccessPointConfiguration,
   WirelessAssociationStatus,
@@ -96,6 +97,21 @@ export interface LabUiWirelessAssociation {
   state: WirelessAssociationStatus["state"];
 }
 
+/**
+ * Runtime-only site-to-site VPN overlay: a logical tunnel between two peers
+ * that the canvas may draw. Like a wireless association it is derived from
+ * worker state and is never a structural `LabDocument.topology.links` entry.
+ */
+export interface LabUiVpnTunnel {
+  id: string;
+  localDeviceId: string;
+  remoteDeviceId: string;
+  /** Tunnel interface name on the local device, e.g. "Tunnel0". */
+  interfaceId: string;
+  label: string;
+  state: "gre" | "protected" | "negotiating" | "failed";
+}
+
 export interface LabUiSnapshot {
   labId: string;
   title: string;
@@ -105,6 +121,7 @@ export interface LabUiSnapshot {
   nodes: LabUiNode[];
   links: LabUiLink[];
   wirelessAssociations?: LabUiWirelessAssociation[];
+  vpnTunnels?: LabUiVpnTunnel[];
 }
 
 export interface SimulationTraceEvent {
@@ -404,6 +421,77 @@ export interface QosConfigurationView {
   };
 }
 
+/**
+ * One tunnel row for the VPN panel. Configuration comes from the document; the
+ * operational verdict is recomputed from the engine and is never persisted.
+ */
+export interface VpnTunnelView {
+  name: string;
+  tunnelId: number;
+  source: { type: "interface"; interfaceId: string } | { type: "address"; address: string };
+  sourceAddress?: string;
+  destinationAddress: string;
+  mode: "gre-ipv4";
+  mtu: number;
+  ttl: number;
+  adminUp: boolean;
+  operationalUp: boolean;
+  /** Why the tunnel is down; absent while it is operational. */
+  reason?: string;
+  ipv4?: { address: string; prefixLength: number };
+  ipv6: Array<{ address: string; prefixLength: number }>;
+  ipsecProfileId?: string;
+  protected: boolean;
+}
+
+/**
+ * IKE and IPsec runtime. It never carries a pre-shared key or a verifier: the
+ * panel only ever learns *that* a key is configured.
+ */
+export interface VpnIkePeerView {
+  peerId: string;
+  remoteAddress: string;
+  localAddress?: string;
+  state: "DOWN" | "INITIATING" | "NEGOTIATING" | "ESTABLISHED" | "REKEYING" | "FAILED" | "EXPIRED";
+  role?: "initiator" | "responder";
+  proposalId: string;
+  lifetimeSeconds: number;
+  establishedAtNs?: number;
+  expiresAtNs?: number;
+  failureReason?: string;
+  tunnelId?: string;
+  /** True when a key is stored. The key and its verifier are never sent. */
+  preSharedKeyConfigured: boolean;
+}
+
+export interface VpnSecurityAssociationView {
+  id: string;
+  direction: "inbound" | "outbound";
+  peerAddress: string;
+  spi: number;
+  proposalId: string;
+  sequenceNumber: number;
+  state: "active" | "rekeying" | "expired";
+  generation: number;
+  /** Virtual age in nanoseconds, so the panel never shows a wall clock. */
+  ageNs: number;
+  expiresInNs: number;
+  packetCount: number;
+  byteCount: number;
+}
+
+export interface VpnConfigurationView {
+  deviceId: string;
+  configuration: VpnConfiguration;
+  document: LabDocument;
+  runtime: {
+    tunnels: VpnTunnelView[];
+    peers: VpnIkePeerView[];
+    associations: VpnSecurityAssociationView[];
+    problems: Array<{ code: string; message: string; tunnelId?: string; peerId?: string }>;
+  };
+}
+
 /** The result of changing one cable's deterministic performance. */
 export interface LinkPerformanceView {
   linkId: string;
@@ -597,6 +685,23 @@ export type SimWorkerRequest =
   | { type: "GET_QOS_CONFIGURATION"; requestId: string; deviceId: string }
   | { type: "SET_QOS_CONFIGURATION"; requestId: string; deviceId: string; configuration: QosConfiguration }
   | { type: "CLEAR_QOS_RUNTIME"; requestId: string; deviceId: string }
+  // --- M10.9 site-to-site VPN (inspection + bounded runtime actions) ---
+  | { type: "GET_TUNNEL_INTERFACES"; requestId: string; deviceId: string }
+  | { type: "GET_IKE_STATUS"; requestId: string; deviceId: string }
+  | { type: "GET_IPSEC_SAS"; requestId: string; deviceId: string }
+  | { type: "RESTART_IKE_PEER"; requestId: string; deviceId: string; peerId?: string }
+  | { type: "CLEAR_IPSEC_SAS"; requestId: string; deviceId: string }
+  /**
+   * Store a pre-shared key from an already-derived, scope-bound verifier. The
+   * plaintext key is derived in the main thread and never crosses this boundary.
+   */
+  | {
+      type: "SET_IKE_PRE_SHARED_KEY";
+      requestId: string;
+      deviceId: string;
+      peerId: string;
+      verifier: PasswordVerifier;
+    }
   | {
       type: "SET_LINK_PERFORMANCE";
       requestId: string;
@@ -647,6 +752,7 @@ export type SimWorkerPayload =
   | ServerServiceRuntimeSnapshot
   | SecurityConfigurationView
   | QosConfigurationView
+  | VpnConfigurationView
   | LinkPerformanceView
   | SpanningTreeView
   | EtherChannelView
@@ -731,6 +837,12 @@ export interface SimWorkerPayloadByType {
   GET_QOS_CONFIGURATION: QosConfigurationView;
   SET_QOS_CONFIGURATION: QosConfigurationView;
   CLEAR_QOS_RUNTIME: QosConfigurationView;
+  GET_TUNNEL_INTERFACES: VpnConfigurationView;
+  GET_IKE_STATUS: VpnConfigurationView;
+  GET_IPSEC_SAS: VpnConfigurationView;
+  RESTART_IKE_PEER: VpnConfigurationView;
+  CLEAR_IPSEC_SAS: VpnConfigurationView;
+  SET_IKE_PRE_SHARED_KEY: VpnConfigurationView;
   SET_LINK_PERFORMANCE: LinkPerformanceView;
   GET_SPANNING_TREE_STATE: SpanningTreeView;
   RESET_BPDU_GUARD_PORT: SpanningTreeView;

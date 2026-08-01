@@ -334,6 +334,45 @@ An educational MQC subset. It is not full MQC and not Cisco hardware parity.
 
 See [`qos-simulation.md`](qos-simulation.md).
 
+## Site-to-site VPN (M10.9)
+
+Router and Firewall only. **SimulatorNet models deterministic educational GRE
+and site-to-site IPsec behaviour; its simulated ESP/IKE implementation does not
+provide real cryptographic protection.** The `sim-` transform names exist so
+that is never mistaken.
+
+| Command | Mode | Notes |
+| --- | --- | --- |
+| `interface Tunnel<n>` | config | Logical; no cable, never a topology link |
+| `ip address <ip> <mask>` / `ipv6 address <addr>/<len>` | config-if | Overlay addressing |
+| `tunnel source <interface\|ip>` | config-if | Must resolve to a usable local address |
+| `tunnel destination <ip>` | config-if | Resolved through the underlay table |
+| `tunnel mode gre ip` | config-if | The only supported mode |
+| `tunnel mtu <576-9000>` | config-if | Oversize packets drop; no fragmentation |
+| `tunnel ttl <1-255>` | config-if | Outer TTL |
+| `tunnel protection ipsec profile <name>` | config-if | One profile per tunnel |
+| `no tunnel protection ipsec profile` | config-if | Back to plain GRE |
+| `crypto ikev2 proposal <name>` | config | |
+| `encryption sim-aes128\|sim-aes256` | config-ikev2-proposal | Simulated transform |
+| `integrity sim-sha256` | config-ikev2-proposal | Simulated transform |
+| `crypto ikev2 peer <name>` | config | |
+| `address <ip>` | config-ikev2-peer | |
+| `pre-shared-key` | config-ikev2-peer | No-echo prompt; only a verifier is stored |
+| `proposal <name>` / `lifetime <60-86400>` | config-ikev2-peer | |
+| `identity local\|remote <name>` | config-ikev2-peer | Optional |
+| `crypto ipsec profile <name>` | config | |
+| `set ikev2-peer <name>` / `set proposal <name>` | config-ipsec-profile | |
+| `lifetime <60-86400>` | config-ipsec-profile | Drives the deterministic rekey |
+| `show interfaces tunnel` | exec/privileged | Names why a tunnel is down |
+| `show crypto ikev2 sa` | exec/privileged | Session state and role |
+| `show crypto ipsec sa` | exec/privileged | SPIs, sequence, counters |
+| `show crypto session` | exec/privileged | Per-tunnel summary |
+| `clear crypto ikev2 sa` / `clear crypto ipsec sa` | privileged | Runtime only |
+| `deny esp \| gre any any` | config-acl | Block a VPN on the underlay |
+
+`show running-config` renders a stored key as `pre-shared-key <configured>`; the
+key and its verifier are never printed. See [`vpn-tunnels.md`](vpn-tunnels.md).
+
 ## Deliberate omissions
 
 The following familiar IOS operations are not implemented and are omitted from
@@ -357,3 +396,10 @@ downloadable ACLs and wireless enterprise authentication; real RADIUS and
 TACACS+ packet crypto; and SNMPv1, SNMPv3, USM, VACM, BER/ASN.1 encoding,
 dynamic MIB loading, arbitrary OID scripting and SNMP SET. Nothing in
 SimulatorNet reaches a real device or a real network.
+
+The site-to-site VPN omits, deliberately: IKEv1, ISAKMP policies, main and
+aggressive mode, Diffie-Hellman, perfect forward secrecy configuration, crypto
+maps, transform sets, certificates and PKI trustpoints, remote-access VPN,
+DMVPN, GETVPN, NHRP, multipoint GRE, IPsec transport mode, NAT traversal,
+multiple child SAs per tunnel, and tunnel keys or GRE checksums. A Firewall uses
+the same SimulatorNet VPN configuration as a Router; no ASA parity is claimed.

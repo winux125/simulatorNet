@@ -612,9 +612,29 @@ export class Router extends Device {
     return updated;
   }
 
-  /** Tunnel configuration in canonical order, without any runtime state. */
+  /**
+   * Tunnel configuration in canonical order, without any runtime state.
+   *
+   * Overlay addressing is read back from the L3 interface rather than from a
+   * second copy inside the tunnel engine, so `ip address` / `ipv6 address`
+   * typed on a Tunnel interface and `configureTunnel` can never disagree.
+   */
   tunnelConfigurations(): GreTunnelConfiguration[] {
-    return this.tunnels.configurations().filter((tunnel) => this.l3.has(tunnel.id));
+    return this.tunnels.configurations()
+      .filter((tunnel) => this.l3.has(tunnel.id))
+      .map((tunnel) => {
+        const iface = this.l3.get(tunnel.id)!;
+        return {
+          ...tunnel,
+          adminUp: iface.physical.adminUp,
+          ipv4Addresses: iface.ip === undefined
+            ? []
+            : [{ address: iface.ip, prefixLength: popcount(iface.maskInt) }],
+          ipv6Addresses: iface.ipv6.summaries()
+            .filter((entry) => entry.source === "static")
+            .map((entry) => ({ address: entry.address, prefixLength: entry.prefixLength })),
+        };
+      });
   }
 
   /** `show interfaces tunnel`: configuration plus the derived operational verdict. */

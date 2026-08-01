@@ -852,7 +852,128 @@ export const TrafficPriorityOrderGradingCheckSchema = CheckIdentitySchema.extend
   }).strict(),
 }).strict();
 
+// --- M10.9 site-to-site VPN -------------------------------------------------
+//
+// A VPN check never carries a pre-shared key, a verifier or a hidden peer
+// identity, and a student result never exposes an SPI or internal diagnostics
+// from a hidden check.
+
+export const GreTunnelConfiguredGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("gre-tunnel-configured"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    tunnelId: z.number().int().nonnegative(),
+    expectedDestination: Ipv4Schema.optional(),
+    expectedSourceInterface: z.string().min(1).optional(),
+    expectedOverlayAddress: Ipv4Schema.optional(),
+  }).strict(),
+}).strict();
+
+export const GreTunnelOperationalGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("gre-tunnel-operational"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    tunnelId: z.number().int().nonnegative(),
+    expected: z.boolean().default(true),
+  }).strict(),
+}).strict();
+
+export const TunnelConnectivityGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("tunnel-connectivity"),
+  configuration: z.object({
+    sourceDeviceId: z.string().min(1),
+    destination: IpAddressSchema,
+    expected: z.enum(["success", "failure"]).default("success"),
+    /** The device whose tunnel must have carried the traffic. */
+    tunnelDeviceId: z.string().min(1).optional(),
+  }).strict(),
+}).strict();
+
+export const IkePeerConfiguredGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ike-peer-configured"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    peerId: z.string().min(1),
+    expectedAddress: Ipv4Schema.optional(),
+    /** Only that *a* key is configured is ever checked, never its value. */
+    expectPreSharedKey: z.boolean().default(true),
+    expectedProposalId: z.string().min(1).optional(),
+  }).strict(),
+}).strict();
+
+export const IkeStateGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ike-state"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    peerId: z.string().min(1),
+    expectedState: z.enum([
+      "DOWN", "INITIATING", "NEGOTIATING", "ESTABLISHED", "REKEYING", "FAILED", "EXPIRED",
+    ]),
+  }).strict(),
+}).strict();
+
+export const IpsecProfileGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ipsec-profile"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    profileId: z.string().min(1),
+    expectedPeerId: z.string().min(1).optional(),
+    expectedProposalId: z.string().min(1).optional(),
+    /** The tunnel this profile must protect. */
+    boundTunnelId: z.number().int().nonnegative().optional(),
+  }).strict(),
+}).strict();
+
+export const IpsecSaEstablishedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ipsec-sa-established"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    peerId: z.string().min(1),
+    /** Both directions must exist for the tunnel to carry return traffic. */
+    expectBothDirections: z.boolean().default(true),
+  }).strict(),
+}).strict();
+
+export const ProtectedPacketDeliveredGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("protected-packet-delivered"),
+  configuration: z.object({
+    sourceDeviceId: z.string().min(1),
+    destination: IpAddressSchema,
+    /** The device that must have applied simulated ESP protection. */
+    deviceId: z.string().min(1),
+  }).strict(),
+}).strict();
+
+export const EspReplayRejectedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("esp-replay-rejected"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    peerId: z.string().min(1),
+  }).strict(),
+}).strict();
+
+export const VpnRouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("vpn-route"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    network: IpAddressSchema,
+    prefixLength: z.number().int().min(0).max(128),
+    /** The tunnel the route must egress through. */
+    tunnelId: z.number().int().nonnegative(),
+  }).strict(),
+}).strict();
+
 export const GradingCheckSchema = z.discriminatedUnion("type", [
+  GreTunnelConfiguredGradingCheckSchema,
+  GreTunnelOperationalGradingCheckSchema,
+  TunnelConnectivityGradingCheckSchema,
+  IkePeerConfiguredGradingCheckSchema,
+  IkeStateGradingCheckSchema,
+  IpsecProfileGradingCheckSchema,
+  IpsecSaEstablishedGradingCheckSchema,
+  ProtectedPacketDeliveredGradingCheckSchema,
+  EspReplayRejectedGradingCheckSchema,
+  VpnRouteGradingCheckSchema,
   QosClassMapGradingCheckSchema,
   QosPolicyMapGradingCheckSchema,
   QosPolicyAttachedGradingCheckSchema,

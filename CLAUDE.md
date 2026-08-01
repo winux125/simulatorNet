@@ -190,6 +190,51 @@ near-identical components, and a device with no policy engine gets no QoS tab.
 The selected section is UI state and never reaches `LabDocument`, a submission,
 grading or the database. See `docs/qos-simulation.md`.
 
+### Site-to-site VPN
+
+A GRE tunnel is a **logical interface**, not a cable. `Tunnel<n>` has an
+administrative state, IPv4/IPv6 overlay addresses, an MTU and a TTL, and it
+produces connected overlay routes — but it never appears in the connection
+modal, never anchors a canvas edge and never becomes a `topology.links` entry.
+Router and Firewall terminate tunnels; an L3 Switch does not.
+
+Overlay and underlay stay separate. The tunnel destination resolves in the
+underlay routing table; the tunnel's own addresses produce the overlay routes
+static routing and OSPF use. A tunnel is up only when it is admin up, its source
+resolves to a usable local address, its destination has an underlay route that
+does not egress a tunnel, and — when protected — an outbound SA is active. GRE
+needs no handshake, so a missing peer is discovered only when traffic fails.
+`estimateIpPacketSizeBytes` is the one IP-layer size API tunnel MTU uses;
+an oversized packet is dropped and reported, never fragmented.
+
+IKEv2 and ESP are a **deterministic educational model, not cryptography**.
+There is no encryption, no key exchange, no certificate handling and no message
+authentication code; the `sim-` transform names exist so that is unmistakable.
+Web Crypto derives an opaque, fixed-scope pre-shared-key verifier *before* packet
+processing — exactly like WPA2-PSK and the management plane — and only that
+fingerprint crosses the simulated wire. A key never reaches sim-core, a trace,
+`show running-config`, Problems, a log or a grading result.
+
+IKE travels over ordinary simulated UDP 500, so an ACL genuinely blocks it. The
+fixed pipeline is: GRE encapsulation → IPsec protection → outer underlay routing
+→ ACL/Firewall/QoS → transmit; inbound is outer ACL/Firewall → SA lookup →
+replay validation → unprotect → GRE decapsulation. A protected tunnel never
+falls back to sending in the clear.
+
+IPsec keeps **no periodic timer**: a repeating event would leave the deterministic
+queue permanently non-empty and `runUntilIdle()` would never return. Lifetimes
+are evaluated against `VirtualClock` whenever a protected packet, an inspection
+or an explicit time advance looks, which produces the same deterministic rekey
+with a bounded queue.
+
+`LabDocument` stores tunnels, proposals, peers, key verifiers, profiles and the
+tunnel→profile binding. It must never store IKE state, SAs, SPIs, sequence or
+replay state, counters, rekey timers or peer reachability. A device window
+carries exactly one top-level `VPN` tab — Tunnels, IKE Peers, IPsec Profiles,
+Sessions and Counters are secondary navigation inside it, as with QoS. A VPN
+canvas overlay is derived presentation like a wireless association: never a
+link, never a cable workflow. NAT-T is not modelled. See `docs/vpn-tunnels.md`.
+
 ### Management plane
 
 Remote management is a real path through the simulated network. A Telnet or SSH

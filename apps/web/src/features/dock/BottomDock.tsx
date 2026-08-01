@@ -92,6 +92,9 @@ const managementPacketPrefixes = [
   "telnet-", "ssh-", "radius-", "tacacs-", "snmp-",
 ] as const;
 
+/** M10.9 site-to-site VPN: GRE encapsulation, IKEv2 negotiation, simulated ESP. */
+const vpnPacketPrefixes = ["gre-", "ike-", "ipsec-", "esp-"] as const;
+
 const ipv6PacketPrefixes = [
   "icmpv6-", "ipv6-", "ndp-", "slaac-", "dhcpv6-", "ospfv3-",
 ] as const;
@@ -102,6 +105,7 @@ function isPacketTraceEvent(event: SimulationTraceEvent): boolean {
     || type.startsWith("qos-")
     || ipv6PacketPrefixes.some((prefix) => type.startsWith(prefix))
     || managementPacketPrefixes.some((prefix) => type.startsWith(prefix))
+    || vpnPacketPrefixes.some((prefix) => type.startsWith(prefix))
     || type.startsWith("wireless-");
 }
 
@@ -114,6 +118,7 @@ export const TRACE_PROTOCOL_FILTERS = [
   "IPv6", "ICMPv6", "NDP", "SLAAC", "DHCPv6", "OSPFv3", "IPv6 ACL",
   "Wireless", "Beacon", "Probe", "Authentication", "Association", "Roaming",
   "Telnet", "SSH", "AAA", "RADIUS", "TACACS+", "SNMP",
+  "VPN", "GRE", "IKE", "IPsec", "ESP",
 ] as const;
 
 /** Tab descriptors shared by the expanded panel and the minimized strip. */
@@ -313,6 +318,9 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
     const protocol = traceProtocol(event);
     // "QoS" is the whole family; the narrower filters select one stage.
     if (filter === "QoS") return protocol === "QoS" || qosFamilyOf(event.type) !== undefined;
+    // "VPN" is the whole site-to-site family; GRE, IKE, IPsec and ESP each
+    // select one stage of it.
+    if (filter === "VPN") return isVpnTraceEvent(event.type);
     return protocol === filter;
   });
   return <div className="dock-table-wrap"><div className="trace-filter"><label>Protocol filter <select aria-label="Packet trace protocol filter" value={filter} onChange={(event) => setFilter(event.target.value)}>{TRACE_PROTOCOL_FILTERS.map((protocol) => <option key={protocol}>{protocol}</option>)}</select></label><span>{visible.length} records</span></div><table className="data-table packet-table"><thead><tr><th>Time</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Ports</th><th>Event</th><th>QoS</th><th>Result</th></tr></thead><tbody>{visible.slice(-300).reverse().map((event, index) => {
@@ -329,8 +337,18 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
   })}</tbody></table></div>;
 }
 
+function isVpnTraceEvent(type: string): boolean {
+  return vpnPacketPrefixes.some((prefix) => type.toLowerCase().startsWith(prefix));
+}
+
 function traceProtocol(event: SimulationTraceEvent): string {
   const type = event.type.toLowerCase();
+  // Site-to-site VPN first: GRE encapsulation, IKEv2 negotiation and simulated
+  // ESP each get their own filter, and "VPN" selects the whole family.
+  if (type.startsWith("gre-")) return "GRE";
+  if (type.startsWith("ike-")) return "IKE";
+  if (type.startsWith("ipsec-")) return "IPsec";
+  if (type.startsWith("esp-")) return "ESP";
   // QoS first: classification, marking, queueing, policing and shaping each get
   // their own filter, and "QoS" selects the whole family.
   const qosFamily = qosFamilyOf(type);

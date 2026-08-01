@@ -23,12 +23,13 @@ import {
   type SecuritySection,
 } from "./SecurityConfigurationPanel";
 import { QosPanel, qosCapabilitiesFor } from "./QosPanel";
+import { VpnPanel, vpnSupportedFor } from "./VpnPanel";
 
 type DeviceWindowTab =
   | "overview" | "desktop" | "config" | "console" | "services" | "terminal" | "interfaces" | "attributes"
   | "routing" | "routes" | "vlans" | "svis" | "acl" | "nat" | "runtime"
   | "zones" | "policies" | "connections" | "impairments" | "flows" | "run" | "results"
-  | "ipv6" | "qos"
+  | "ipv6" | "qos" | "vpn"
   | "wireless" | "clients" | "apps" | "setup" | "lan" | "wan" | "dhcp" | "firewall"
   | ManagementSection;
 type DesktopTool = "ip" | "command" | "web" | "tftp" | "ntp" | "syslog" | "transport";
@@ -170,7 +171,12 @@ export function DeviceWindow(props: DeviceWindowProps) {
     const qos: Array<{ id: DeviceWindowTab; label: string }> = qosCapabilitiesFor(props.node.type)
       ? [{ id: "qos", label: "QoS" }]
       : [];
-    return [...withConsole, ...qos, ...management];
+    // Exactly one top-level VPN tab, like QoS. Tunnels, IKE Peers, IPsec
+    // Profiles, Sessions and Counters are secondary navigation inside it.
+    const vpn: Array<{ id: DeviceWindowTab; label: string }> = vpnSupportedFor(props.node.type)
+      ? [{ id: "vpn", label: "VPN" }]
+      : [];
+    return [...withConsole, ...qos, ...vpn, ...management];
   }, [
     isAccessPoint,
     isLaptop,
@@ -240,6 +246,16 @@ export function DeviceWindow(props: DeviceWindowProps) {
           )}
           {tab === "qos" && (props.runtimeAvailable
             ? <QosPanel
+                client={props.client}
+                deviceId={props.node.id}
+                deviceType={props.node.type}
+                interfaces={props.node.interfaces}
+                onConfigurationChanged={props.onConfigurationChanged}
+                onError={props.onError}
+              />
+            : <DraftRuntimeNotice />)}
+          {tab === "vpn" && (props.runtimeAvailable
+            ? <VpnPanel
                 client={props.client}
                 deviceId={props.node.id}
                 deviceType={props.node.type}
