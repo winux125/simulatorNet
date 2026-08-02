@@ -20,7 +20,7 @@ import {
   type SnmpAgentConfiguration,
   type SwitchDeviceConfig,
   type Topology,
-  getDeviceProfile,
+  resolveDeviceInterfaceTemplates,
   isDefaultQosConfiguration,
   type QosConfiguration,
   type WirelessRadioSettings,
@@ -267,7 +267,7 @@ function createDevice(node: NodeSpec, config: DeviceConfig, engine: SimulationEn
 }
 
 function wirelessInterfaceConfiguration(node: NodeSpec, radio: WirelessRadioSettings) {
-  const template = getDeviceProfile(node.kind).interfaceTemplates.find(
+  const template = resolveDeviceInterfaceTemplates(node.kind, node.hardwareProfileId).find(
     (entry) => entry.media === "wireless",
   );
   if (!template) {
@@ -741,9 +741,9 @@ export function createDeviceInstance(
   engine: SimulationEngine,
 ): Device {
   const device = createDevice(node, config, engine);
-  const profile = getDeviceProfile(node.kind);
+  const interfaceTemplates = resolveDeviceInterfaceTemplates(node.kind, node.hardwareProfileId);
   for (const iface of node.interfaces) {
-    const template = profile.interfaceTemplates.find((entry) => entry.id === iface.id);
+    const template = interfaceTemplates.find((entry) => entry.id === iface.id);
     // A wireless interface is created by the radio configuration, not cabled on.
     if (template?.media === "wireless") continue;
     device.addInterface(iface.id, iface.mac as Mac);
@@ -764,9 +764,9 @@ export function buildLabFromDocument(document: LabDocument): BuiltLab {
   }
   for (const node of canonical.topology.nodes) {
     const device = devices.get(asDeviceId(node.id))!;
-    const profile = getDeviceProfile(node.kind);
+    const interfaceTemplates = resolveDeviceInterfaceTemplates(node.kind, node.hardwareProfileId);
     for (const iface of node.interfaces) {
-      const template = profile.interfaceTemplates.find((entry) => entry.id === iface.id);
+      const template = interfaceTemplates.find((entry) => entry.id === iface.id);
       if (template?.media === "wireless") continue;
       device.addInterface(iface.id, iface.mac as Mac);
     }

@@ -1,4 +1,4 @@
-import { getDeviceProfile, type LabDocument, type NodeSpec, type Topology } from "@sim/contracts";
+import { resolveDeviceInterfaceTemplates, type LabDocument, type NodeSpec, type Topology } from "@sim/contracts";
 import { allocateId } from "../../lab/document";
 import type { ConnectionValidation, GraphLinkModel, GraphNodeModel, TopologyDraftLink } from "./types";
 
@@ -56,7 +56,7 @@ function findInterface(topology: Topology, nodeId: string, ifaceId: string): boo
 
 function ethernetInterfaceIds(node: NodeSpec): string[] {
   const media = new Map(
-    getDeviceProfile(node.kind).interfaceTemplates.map((iface) => [iface.id, iface.media]),
+    resolveDeviceInterfaceTemplates(node.kind, node.hardwareProfileId).map((iface) => [iface.id, iface.media]),
   );
   return node.interfaces
     .map((iface) => iface.id)

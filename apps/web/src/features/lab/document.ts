@@ -1,7 +1,9 @@
 import {
-  getDeviceProfile,
+  getDeviceHardwareProfile,
+  resolveDeviceInterfaceTemplates,
   type ConsoleAccessConfiguration,
   type DeviceConfig,
+  type DeviceHardwareProfileId,
   type DeviceType,
   type DiagramAnnotation,
   type DiagramAsset,
@@ -55,9 +57,15 @@ export function allocateId(prefix: string, existing: Iterable<string>): string {
   return `${prefix}-${index}`;
 }
 
-function defaultNode(kind: NodeSpec["kind"], id: string, index: number, position?: { x: number; y: number }): NodeSpec {
-  const profile = getDeviceProfile(kind);
-  const interfaces = profile.interfaceTemplates.map((template) => ({ id: template.id }));
+function defaultNode(
+  kind: NodeSpec["kind"],
+  id: string,
+  index: number,
+  position?: { x: number; y: number },
+  hardwareProfileId?: DeviceHardwareProfileId,
+): NodeSpec {
+  const interfaces = resolveDeviceInterfaceTemplates(kind, hardwareProfileId)
+    .map((template) => ({ id: template.id }));
   const label: Record<DeviceType, string> = {
     pc: "PC",
     server: "SRV",
@@ -78,6 +86,7 @@ function defaultNode(kind: NodeSpec["kind"], id: string, index: number, position
   return {
     id,
     kind,
+    hardwareProfileId,
     name: `${label[kind]}${index}`,
     position: position ?? { x: 120 + ((index - 1) % 3) * 240, y: 100 + Math.floor((index - 1) / 3) * 180 },
     interfaces,
@@ -218,15 +227,84 @@ export function addDraftDevice(
   document: LabDocument,
   kind: NodeSpec["kind"],
   position?: { x: number; y: number },
+  hardwareProfileId?: DeviceHardwareProfileId,
 ): LabDocument {
   const prefix = idPrefix(kind);
   const id = allocateId(prefix, document.topology.nodes.map((node) => node.id));
   const index = Number(id.slice(id.lastIndexOf("-") + 1));
-  const node = defaultNode(kind, id, index, position);
+  const compatibleProfile = hardwareProfileId
+    && getDeviceHardwareProfile(hardwareProfileId).deviceType === kind
+    ? hardwareProfileId
+    : undefined;
+  const node = defaultNode(kind, id, index, position, compatibleProfile);
   return {
     ...document,
     topology: { ...document.topology, nodes: [...document.topology.nodes, node] },
     configurations: { ...document.configurations, [id]: defaultConfiguration(node) },
+  };
+}
+
+export type HardwareProfileChangeResult =
+  | { readonly ok: true; readonly document: LabDocument }
+  | { readonly ok: false; readonly message: string };
+
+/**
+ * Replace only a switch's physical inventory. The caller enforces the stopped
+ * lab lifecycle; this pure helper prevents destructive shrinking when a link
+ * still owns an interface that the new chassis would remove.
+ */
+export function withDeviceHardwareProfile(
+  document: LabDocument,
+  nodeId: string,
+  hardwareProfileId: DeviceHardwareProfileId,
+): HardwareProfileChangeResult {
+  const node = document.topology.nodes.find((candidate) => candidate.id === nodeId);
+  if (!node) return { ok: false, message: `Device '${nodeId}' does not exist.` };
+  const profile = getDeviceHardwareProfile(hardwareProfileId);
+  if (profile.deviceType !== node.kind) {
+    return { ok: false, message: `${profile.displayName} is not compatible with ${node.kind}.` };
+  }
+
+  const nextInterfaceIds = new Set(profile.interfaceTemplates.map((template) => template.id));
+  const occupiedRemovedPorts = document.topology.links.flatMap((link) => {
+    const endpoints = [link.a, link.b];
+    return endpoints
+      .filter((endpoint) => endpoint.node === nodeId && !nextInterfaceIds.has(endpoint.iface))
+      .map((endpoint) => endpoint.iface);
+  });
+  if (occupiedRemovedPorts.length > 0) {
+    const ports = [...new Set(occupiedRemovedPorts)].sort().join(", ");
+    return {
+      ok: false,
+      message: `Disconnect ${ports} before selecting a smaller hardware profile.`,
+    };
+  }
+
+  const existing = new Map(node.interfaces.map((iface) => [iface.id, iface]));
+  const interfaces = profile.interfaceTemplates.map((template) => existing.get(template.id) ?? { id: template.id });
+  const configuration = document.configurations[nodeId];
+  const configurations = configuration
+    ? {
+        ...document.configurations,
+        [nodeId]: {
+          ...configuration,
+          interfaces: configuration.interfaces.filter((iface) => nextInterfaceIds.has(iface.id)),
+        } as DeviceConfig,
+      }
+    : document.configurations;
+
+  return {
+    ok: true,
+    document: {
+      ...document,
+      topology: {
+        ...document.topology,
+        nodes: document.topology.nodes.map((candidate) => candidate.id === nodeId
+          ? { ...candidate, hardwareProfileId, interfaces }
+          : candidate),
+      },
+      configurations,
+    },
   };
 }
 

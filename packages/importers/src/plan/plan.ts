@@ -13,6 +13,7 @@ import {
   MAX_EXTERNAL_APPLIANCE_UNPARSED_CONFIG_CHARS,
   MAX_EXTERNAL_APPLIANCE_WARNINGS,
   MAX_LAB_SOURCE_IMPORT_WARNINGS,
+  inferSwitchHardwareProfile,
   type DeviceConfig,
   type DiagramAsset,
   type ExternalApplianceDeviceConfig,
@@ -175,6 +176,7 @@ function assemble(
     nodes.push({
       id: node.id,
       kind: entry.deviceType,
+      hardwareProfileId: inferSwitchHardwareProfile(entry.deviceType, interfaceIds),
       name: node.label,
       position: node.position ? { x: node.position.x, y: node.position.y } : undefined,
       interfaces: interfaceIds.map((id) => ({ id })),

@@ -1,9 +1,12 @@
 import {
   DEVICE_TYPES,
+  DEVICE_HARDWARE_PROFILE_IDS,
   getDeviceProfile,
+  resolveDeviceInterfaceTemplates,
   type DiagramAnnotation,
   type LabDocument,
   type NodeSpec,
+  type DeviceHardwareProfileId,
 } from "@sim/contracts";
 import type { LabUiSnapshot } from "@sim/sim-worker";
 import {
@@ -109,6 +112,7 @@ interface TopologyCanvasProps {
   mode: WorkspaceMode;
   activeTool: WorkspaceTool;
   pendingDeviceKind: NodeSpec["kind"] | undefined;
+  pendingHardwareProfileId: DeviceHardwareProfileId | undefined;
   selectedNodeId: string | undefined;
   selectedLinkId: string | undefined;
   terminalTabs: string[];
@@ -454,11 +458,12 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           unsavedConfiguration: props.configurationStatus
             ?.some((entry) => entry.deviceId === node.id && entry.drift === "modified") ?? false,
           // An appliance with no known/supported interfaces cannot be wired.
-          connectable: cableHandleAvailable && getDeviceProfile(node.kind).interfaceTemplates
-            .some((template) =>
+          connectable: cableHandleAvailable && (
+            resolveDeviceInterfaceTemplates(node.kind, node.hardwareProfileId).some((template) =>
               template.media !== "wireless"
               && node.interfaces.some((iface) => iface.id === template.id),
-            ),
+            ) || ((node.kind === "l2-switch" || node.kind === "l3-switch") && node.interfaces.length > 0)
+          ),
           onActivate: activateNode,
           onOpen: props.onOpenDevice,
           onConnectStart: startConnection,
@@ -609,9 +614,9 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       setSelectedAnnotationIds([next.id]);
     }
   };
-  const addAt = (kind: NodeSpec["kind"], position?: Point) => {
+  const addAt = (kind: NodeSpec["kind"], position?: Point, hardwareProfileId?: DeviceHardwareProfileId) => {
     if (!structuralEditable) return;
-    props.onChange(addDraftDevice(document, kind, position), "structural");
+    props.onChange(addDraftDevice(document, kind, position, hardwareProfileId), "structural");
     setContextMenu(undefined);
   };
   const addFromPane = (kind: NodeSpec["kind"]) => {
@@ -627,7 +632,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     }
     setContextMenu(undefined);
     if (structuralEditable && props.pendingDeviceKind) {
-      addAt(props.pendingDeviceKind, local);
+      addAt(props.pendingDeviceKind, local, props.pendingHardwareProfileId);
       props.onPlacedDevice();
       return;
     }
@@ -1231,7 +1236,12 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         onPanePointerMove={panePointerMove}
         onPanePointerUp={panePointerUp}
         onPaneContextMenu={(x, y) => setContextMenu({ kind: "pane", x, y })}
-        onDropDevice={(kind, local) => { if ((DEVICE_TYPES as readonly string[]).includes(kind)) addAt(kind as NodeSpec["kind"], local); }}
+        onDropDevice={(kind, local, hardwareProfileId) => {
+          const validKind = (DEVICE_TYPES as readonly string[]).includes(kind);
+          const validProfile = hardwareProfileId === undefined
+            || (DEVICE_HARDWARE_PROFILE_IDS as readonly string[]).includes(hardwareProfileId);
+          if (validKind && validProfile) addAt(kind as NodeSpec["kind"], local, hardwareProfileId);
+        }}
         onDropImage={(file, local) => { void insertImageFile(file, local); }}
       />
 

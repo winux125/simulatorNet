@@ -934,6 +934,7 @@ export function App({ client }: AppProps) {
             open={workspace.paletteOpen}
             disabled={!workspace.draft || workspace.mode !== "edit"}
             selectedKind={workspace.pendingDeviceKind}
+            selectedHardwareProfileId={workspace.pendingHardwareProfileId}
             activeTool={workspace.activeTool}
             onOpenChange={workspace.setPaletteOpen}
             onSelectKind={workspace.setPendingDeviceKind}
@@ -1239,6 +1240,7 @@ export function App({ client }: AppProps) {
           else state.applyDraft(next, "configuration");
           refreshConfigurationStatus();
         }}
+        onTopologyChanged={(next) => useWorkspaceStore.getState().applyDraft(next, "structural")}
         onError={reportInspectionError}
         onClose={() => setDeviceWindowId(undefined)}
       />}
@@ -1252,6 +1254,7 @@ export function App({ client }: AppProps) {
       mode: workspace.mode,
       activeTool: workspace.activeTool,
       pendingDeviceKind: workspace.pendingDeviceKind,
+      pendingHardwareProfileId: workspace.pendingHardwareProfileId,
       selectedNodeId: workspace.selectedNodeId,
       selectedLinkId: workspace.selectedLinkId,
       terminalTabs: workspace.terminalTabs,

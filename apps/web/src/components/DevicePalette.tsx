@@ -1,4 +1,9 @@
-import { DEVICE_PROFILE_LIST, type NodeSpec } from "@sim/contracts";
+import {
+  DEVICE_PROFILE_LIST,
+  getDeviceHardwareProfiles,
+  type DeviceHardwareProfileId,
+  type NodeSpec,
+} from "@sim/contracts";
 import {
   Cable,
   ChevronDown,
@@ -20,9 +25,10 @@ interface DevicePaletteProps {
   open: boolean;
   disabled: boolean;
   selectedKind: NodeSpec["kind"] | undefined;
+  selectedHardwareProfileId: DeviceHardwareProfileId | undefined;
   activeTool: WorkspaceTool;
   onOpenChange(open: boolean): void;
-  onSelectKind(kind: NodeSpec["kind"]): void;
+  onSelectKind(kind: NodeSpec["kind"], hardwareProfileId?: DeviceHardwareProfileId): void;
   onTool(tool: WorkspaceTool): void;
 }
 
@@ -54,8 +60,8 @@ export function DevicePalette(props: DevicePaletteProps) {
     return () => document.removeEventListener("mousedown", closeOutside);
   }, [props.open, props.onOpenChange]);
 
-  const selectKind = (kind: NodeSpec["kind"]) => {
-    props.onSelectKind(kind);
+  const selectKind = (kind: NodeSpec["kind"], hardwareProfileId?: DeviceHardwareProfileId) => {
+    props.onSelectKind(kind, hardwareProfileId);
     props.onOpenChange(false);
   };
   const selectTool = (tool: WorkspaceTool) => {
@@ -105,30 +111,43 @@ export function DevicePalette(props: DevicePaletteProps) {
             ))}
           </div>
           <div className="device-picker__models" role="tabpanel" aria-label={`${categories.find((entry) => entry.id === category)?.label} models`}>
-            {category !== "connections" && devices.map((profile) => {
-              const selected = props.selectedKind === profile.type;
-              return (
+            {category !== "connections" && devices.flatMap((profile) => {
+              const hardwareProfiles = getDeviceHardwareProfiles(profile.type);
+              const models = hardwareProfiles.length > 0 ? hardwareProfiles : [undefined];
+              return models.map((hardwareProfile, modelIndex) => {
+                const selected = props.selectedKind === profile.type
+                  && props.selectedHardwareProfileId === hardwareProfile?.id;
+                const isLegacyDefault = modelIndex === 0;
+                const ariaLabel = isLegacyDefault
+                  ? `Add ${profile.displayName}`
+                  : `Add ${hardwareProfile!.displayName} ${profile.displayName}`;
+                return (
                 <button
-                  key={profile.type}
+                  key={`${profile.type}:${hardwareProfile?.id ?? "default"}`}
                   type="button"
                   className={`device-picker-model${selected ? " is-active" : ""}`}
-                  aria-label={`Add ${profile.displayName}`}
+                  aria-label={ariaLabel}
                   aria-pressed={selected}
-                  title={`${profile.description} Click, then place on the logical workspace.`}
+                  title={`${hardwareProfile?.description ?? profile.description} Click, then place on the logical workspace.`}
                   disabled={props.disabled}
                   draggable={!props.disabled}
                   data-device-kind={profile.type}
+                  data-hardware-profile={hardwareProfile?.id}
                   onDragStart={(event) => {
                     event.dataTransfer.effectAllowed = "copy";
                     event.dataTransfer.setData("application/x-simulator-device", profile.type);
+                    if (hardwareProfile) {
+                      event.dataTransfer.setData("application/x-simulator-hardware-profile", hardwareProfile.id);
+                    }
                   }}
                   onDragEnd={() => props.onOpenChange(false)}
-                  onClick={() => selectKind(profile.type)}
+                  onClick={() => selectKind(profile.type, hardwareProfile?.id)}
                 >
                   <span className="device-picker-model__icon"><DeviceIcon type={profile.type} size={30} /></span>
-                  <span>{profile.displayName}</span>
+                  <span>{hardwareProfile?.displayName ?? profile.displayName}</span>
                 </button>
-              );
+                );
+              });
             })}
             {category === "connections" && <>
               <ConnectionTool

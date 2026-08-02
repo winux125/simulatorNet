@@ -9,6 +9,7 @@ import {
   removeDraftLink,
   withDiagramLinkLabel,
   withHostStaticConfiguration,
+  withDeviceHardwareProfile,
   withNodePosition,
 } from "./document";
 import {
@@ -83,6 +84,9 @@ describe("LabChangeImpact", () => {
     const reconnected = structuredClone(HUB_ETHERNET_DEMO);
     reconnected.topology.links[0]!.b.iface = "Eth0/3";
     expect(classifyLabChange(HUB_ETHERNET_DEMO, reconnected)).toBe("structural");
+    const withSwitch = addDraftDevice(HUB_ETHERNET_DEMO, "l2-switch", undefined, "compact-8");
+    const expanded = withDeviceHardwareProfile(withSwitch, "switch-1", "access-24");
+    expect(expanded.ok && classifyLabChange(withSwitch, expanded.document)).toBe("structural");
   });
 
   it("fails safely for an unknown document mutation or a false declaration", () => {

@@ -1,4 +1,10 @@
-import { getDeviceProfile, type LabDocument } from "@sim/contracts";
+import {
+  getDefaultHardwareProfileId,
+  getDeviceHardwareProfiles,
+  getDeviceProfile,
+  type DeviceHardwareProfileId,
+  type LabDocument,
+} from "@sim/contracts";
 import type { DeviceInspection, LabUiNode, Ospfv3View } from "@sim/sim-worker";
 import {
   AlertTriangle, Clock3, FileDown, Globe2, Network, ScrollText,
@@ -28,6 +34,7 @@ import {
   type DeviceWindowSectionDefinition,
   type DeviceWindowSectionId,
 } from "./device-window-registry";
+import { withDeviceHardwareProfile } from "../lab/document";
 type DesktopTool = "ip" | "command" | "web" | "tftp" | "ntp" | "syslog" | "transport";
 
 interface DeviceWindowProps {
@@ -40,6 +47,7 @@ interface DeviceWindowProps {
   configurationDrift?: string;
   onOpenTerminal(deviceId: string): void;
   onConfigurationChanged(document: LabDocument, runtimeSynchronized: boolean): void;
+  onTopologyChanged?(document: LabDocument): void;
   onError(message: string): void;
   onClose(): void;
 }
@@ -142,7 +150,15 @@ export function DeviceWindow(props: DeviceWindowProps) {
                 onError={props.onError}
               />
             : <DraftRuntimeNotice />)}
-          {tab === "attributes" && <Attributes node={props.node} description={profile.description} capabilities={profile.capabilities} />}
+          {tab === "attributes" && <Attributes
+            document={props.document}
+            node={props.node}
+            description={profile.description}
+            capabilities={profile.capabilities}
+            powerState={props.powerState}
+            onTopologyChanged={props.onTopologyChanged}
+            onError={props.onError}
+          />}
         </div>
       </section>
     </div>
@@ -554,8 +570,50 @@ function Ipv6RuntimePanel({
   </div>;
 }
 
-function Attributes({ node, description, capabilities }: { node: LabUiNode; description: string; capabilities: readonly string[] }) {
-  return <div className="device-window-section"><p className="section-eyebrow">Attributes</p><h2>{node.hostname}</h2><p>{description}</p><dl className="property-list"><div><dt>Device ID</dt><dd><code>{node.id}</code></dd></div><div><dt>Profile</dt><dd>{node.type}</dd></div><div><dt>Capabilities</dt><dd>{capabilities.join(", ")}</dd></div></dl></div>;
+function Attributes({
+  document,
+  node,
+  description,
+  capabilities,
+  powerState,
+  onTopologyChanged,
+  onError,
+}: {
+  document: LabDocument;
+  node: LabUiNode;
+  description: string;
+  capabilities: readonly string[];
+  powerState: LabPowerState;
+  onTopologyChanged?(document: LabDocument): void;
+  onError(message: string): void;
+}) {
+  const topologyNode = document.topology.nodes.find((candidate) => candidate.id === node.id);
+  const hardwareProfiles = getDeviceHardwareProfiles(node.type);
+  const selectedHardwareProfile = topologyNode?.hardwareProfileId ?? getDefaultHardwareProfileId(node.type);
+  const changeHardwareProfile = (hardwareProfileId: DeviceHardwareProfileId) => {
+    const result = withDeviceHardwareProfile(document, node.id, hardwareProfileId);
+    if (!result.ok) {
+      onError(result.message);
+      return;
+    }
+    onTopologyChanged?.(result.document);
+  };
+
+  return <div className="device-window-section"><p className="section-eyebrow">Attributes</p><h2>{node.hostname}</h2><p>{description}</p>
+    {hardwareProfiles.length > 0 && <label className="device-attribute-field">
+      <span>Hardware profile</span>
+      <select
+        aria-label="Hardware profile"
+        value={selectedHardwareProfile}
+        disabled={powerState !== "stopped" || !onTopologyChanged}
+        onChange={(event) => changeHardwareProfile(event.target.value as DeviceHardwareProfileId)}
+      >
+        {hardwareProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.displayName}</option>)}
+      </select>
+      <small>{powerState === "stopped" ? "Changing the chassis is a structural topology edit." : "Stop the lab before changing switch hardware."}</small>
+    </label>}
+    <dl className="property-list"><div><dt>Device ID</dt><dd><code>{node.id}</code></dd></div><div><dt>Profile</dt><dd>{node.type}</dd></div><div><dt>Interfaces</dt><dd>{topologyNode?.interfaces.length ?? node.interfaces.length}</dd></div><div><dt>Capabilities</dt><dd>{capabilities.join(", ")}</dd></div></dl>
+  </div>;
 }
 
 function Desktop({

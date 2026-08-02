@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DeviceTypeSchema } from "./devices";
+import { DeviceHardwareProfileIdSchema, DeviceTypeSchema } from "./devices";
 
 /**
  * Serializable topology document. This is the vendor-neutral description of a
@@ -18,6 +18,8 @@ export type InterfaceSpec = z.infer<typeof InterfaceSpecSchema>;
 export const NodeSpecSchema = z.object({
   id: z.string().min(1),
   kind: DeviceTypeSchema,
+  /** Optional physical inventory profile; protocol behavior remains defined by kind. */
+  hardwareProfileId: DeviceHardwareProfileIdSchema.optional(),
   name: z.string().optional(),
   /** Editor canvas position; irrelevant to simulation. */
   position: z.object({ x: z.number(), y: z.number() }).optional(),

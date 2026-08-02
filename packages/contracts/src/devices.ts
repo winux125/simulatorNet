@@ -69,6 +69,27 @@ export interface InterfaceTemplate {
   readonly media: "ethernet" | "wireless";
 }
 
+export const DEVICE_HARDWARE_PROFILE_IDS = [
+  "compact-8",
+  "access-24",
+  "access-48",
+  "multilayer-8",
+  "multilayer-24",
+  "multilayer-48",
+] as const;
+
+export const DeviceHardwareProfileIdSchema = z.enum(DEVICE_HARDWARE_PROFILE_IDS);
+export type DeviceHardwareProfileId = z.infer<typeof DeviceHardwareProfileIdSchema>;
+
+export interface DeviceHardwareProfile {
+  readonly id: DeviceHardwareProfileId;
+  readonly deviceType: "l2-switch" | "l3-switch";
+  readonly displayName: string;
+  readonly interfaceTemplates: readonly InterfaceTemplate[];
+  readonly rackUnitSpan?: number;
+  readonly description: string;
+}
+
 export type DeviceCliProfile =
   | "pc-host"
   | "server-host"
@@ -100,6 +121,114 @@ function numbered(prefix: string, first: number, last: number): readonly Interfa
 
 function wireless(ids: readonly string[]): readonly InterfaceTemplate[] {
   return ids.map((id) => ({ id, media: "wireless" as const }));
+}
+
+function accessSwitchInterfaces(accessPorts: number, uplinkPorts: number): readonly InterfaceTemplate[] {
+  return [
+    ...numbered("Fa0/", 1, accessPorts),
+    ...numbered("Gi0/", 1, uplinkPorts),
+  ];
+}
+
+/**
+ * Hardware inventory is deliberately separate from DeviceType: all profiles
+ * reuse the same L2/L3 protocol implementation and differ only in their
+ * bounded physical interface templates.
+ */
+export const DEVICE_HARDWARE_PROFILES = {
+  "compact-8": {
+    id: "compact-8",
+    deviceType: "l2-switch",
+    displayName: "Compact — 8 Gigabit ports",
+    interfaceTemplates: numbered("Gi0/", 1, 8),
+    rackUnitSpan: 1,
+    description: "Compact L2 switch for small labs.",
+  },
+  "access-24": {
+    id: "access-24",
+    deviceType: "l2-switch",
+    displayName: "Access — 24 ports + 2 uplinks",
+    interfaceTemplates: accessSwitchInterfaces(24, 2),
+    rackUnitSpan: 1,
+    description: "High-density L2 access switch with FastEthernet access ports and Gigabit uplinks.",
+  },
+  "access-48": {
+    id: "access-48",
+    deviceType: "l2-switch",
+    displayName: "Access — 48 ports + 4 uplinks",
+    interfaceTemplates: accessSwitchInterfaces(48, 4),
+    rackUnitSpan: 1,
+    description: "High-density L2 access switch for large endpoint labs.",
+  },
+  "multilayer-8": {
+    id: "multilayer-8",
+    deviceType: "l3-switch",
+    displayName: "Multilayer — 8 Gigabit ports",
+    interfaceTemplates: numbered("Gi0/", 1, 8),
+    rackUnitSpan: 1,
+    description: "Compact multilayer switch for routed campus labs.",
+  },
+  "multilayer-24": {
+    id: "multilayer-24",
+    deviceType: "l3-switch",
+    displayName: "Multilayer — 24 ports + 2 uplinks",
+    interfaceTemplates: accessSwitchInterfaces(24, 2),
+    rackUnitSpan: 1,
+    description: "High-density multilayer access switch with routed and switched ports.",
+  },
+  "multilayer-48": {
+    id: "multilayer-48",
+    deviceType: "l3-switch",
+    displayName: "Multilayer — 48 ports + 4 uplinks",
+    interfaceTemplates: accessSwitchInterfaces(48, 4),
+    rackUnitSpan: 1,
+    description: "High-density multilayer switch for large campus labs.",
+  },
+} as const satisfies Record<DeviceHardwareProfileId, DeviceHardwareProfile>;
+
+const DEFAULT_HARDWARE_PROFILE_BY_DEVICE = {
+  "l2-switch": "compact-8",
+  "l3-switch": "multilayer-8",
+} as const satisfies Partial<Record<DeviceType, DeviceHardwareProfileId>>;
+
+export function getDeviceHardwareProfile(id: DeviceHardwareProfileId): DeviceHardwareProfile {
+  return DEVICE_HARDWARE_PROFILES[id];
+}
+
+export function getDeviceHardwareProfiles(type: DeviceType): readonly DeviceHardwareProfile[] {
+  return DEVICE_HARDWARE_PROFILE_IDS
+    .map((id) => DEVICE_HARDWARE_PROFILES[id])
+    .filter((profile) => profile.deviceType === type);
+}
+
+export function getDefaultHardwareProfileId(type: DeviceType): DeviceHardwareProfileId | undefined {
+  return DEFAULT_HARDWARE_PROFILE_BY_DEVICE[type as keyof typeof DEFAULT_HARDWARE_PROFILE_BY_DEVICE];
+}
+
+export function resolveDeviceInterfaceTemplates(
+  type: DeviceType,
+  hardwareProfileId?: DeviceHardwareProfileId,
+): readonly InterfaceTemplate[] {
+  if (!hardwareProfileId) return DEVICE_PROFILES[type].interfaceTemplates;
+  const hardwareProfile = DEVICE_HARDWARE_PROFILES[hardwareProfileId];
+  return hardwareProfile.deviceType === type
+    ? hardwareProfile.interfaceTemplates
+    : DEVICE_PROFILES[type].interfaceTemplates;
+}
+
+export function inferSwitchHardwareProfile(
+  type: DeviceType,
+  interfaceIds: readonly string[],
+): DeviceHardwareProfileId | undefined {
+  if (type !== "l2-switch" && type !== "l3-switch") return undefined;
+  const normalized = new Set(interfaceIds.map((id) => id.toLowerCase()));
+  const candidates = getDeviceHardwareProfiles(type)
+    .filter((profile) => profile.interfaceTemplates.every((template) => normalized.has(template.id.toLowerCase())))
+    .sort((a, b) => b.interfaceTemplates.length - a.interfaceTemplates.length || a.id.localeCompare(b.id));
+  if (candidates[0]) return candidates[0].id;
+  const density = interfaceIds.length > 26 ? 48 : interfaceIds.length > 8 ? 24 : 8;
+  if (type === "l2-switch") return density === 48 ? "access-48" : density === 24 ? "access-24" : "compact-8";
+  return density === 48 ? "multilayer-48" : density === 24 ? "multilayer-24" : "multilayer-8";
 }
 
 /**

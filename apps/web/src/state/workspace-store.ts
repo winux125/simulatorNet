@@ -1,4 +1,4 @@
-import type { LabDocument, NodeSpec } from "@sim/contracts";
+import type { DeviceHardwareProfileId, LabDocument, NodeSpec } from "@sim/contracts";
 import type { LabUiSnapshot, SimulationTraceEvent } from "@sim/sim-worker";
 import { create } from "zustand";
 import {
@@ -108,6 +108,7 @@ interface WorkspaceState {
   executionMode: ExecutionMode;
   activeTool: WorkspaceTool;
   pendingDeviceKind: NodeSpec["kind"] | undefined;
+  pendingHardwareProfileId: DeviceHardwareProfileId | undefined;
   unsaved: boolean;
   pendingTopologyChanges: boolean;
   error: string | undefined;
@@ -168,7 +169,7 @@ interface WorkspaceState {
   setView(view: WorkspaceView): void;
   setExecutionMode(mode: ExecutionMode): void;
   setActiveTool(tool: WorkspaceTool): void;
-  setPendingDeviceKind(kind: NodeSpec["kind"] | undefined): void;
+  setPendingDeviceKind(kind: NodeSpec["kind"] | undefined, hardwareProfileId?: DeviceHardwareProfileId): void;
   setError(error: string | undefined, source?: WorkspaceProblem["source"]): void;
   clearProblems(): void;
   replaceRuntimeWarnings(messages: string[]): void;
@@ -213,6 +214,7 @@ const initialState = {
   executionMode: "auto" as const,
   activeTool: "select" as const,
   pendingDeviceKind: undefined,
+  pendingHardwareProfileId: undefined,
   unsaved: false,
   pendingTopologyChanges: false,
   error: undefined,
@@ -424,14 +426,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   )),
   setWorkerStatus: (workerStatus) => set({ workerStatus }),
   setPowerState: (powerState) => set({ powerState }),
-  setMode: (mode) => set({ mode, activeTool: "select", pendingDeviceKind: undefined, paletteOpen: false }),
+  setMode: (mode) => set({ mode, activeTool: "select", pendingDeviceKind: undefined, pendingHardwareProfileId: undefined, paletteOpen: false }),
   // Switching representation is a display change: it keeps the draft, the
   // runtime, terminal sessions, traces and selection exactly as they were.
   setView: (view) => set({ view }),
   setExecutionMode: (executionMode) => set({ executionMode }),
-  setActiveTool: (activeTool) => set({ activeTool, pendingDeviceKind: undefined, paletteOpen: false }),
-  setPendingDeviceKind: (pendingDeviceKind) => set({
+  setActiveTool: (activeTool) => set({ activeTool, pendingDeviceKind: undefined, pendingHardwareProfileId: undefined, paletteOpen: false }),
+  setPendingDeviceKind: (pendingDeviceKind, pendingHardwareProfileId) => set({
     pendingDeviceKind,
+    pendingHardwareProfileId,
     activeTool: pendingDeviceKind ? "add-device" : "select",
   }),
   setError: (error, source = "worker") => error

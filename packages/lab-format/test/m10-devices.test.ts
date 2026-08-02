@@ -44,6 +44,43 @@ function rebuild(input: LabDocument) {
 }
 
 describe("M10 device lab-format integration", () => {
+  it("builds one access-24 switch with twenty independent endpoint links", () => {
+    const hosts = Array.from({ length: 20 }, (_, index) => host(`pc-${index + 1}`, `10.20.0.${index + 10}`));
+    const switchNode: LabDocument["topology"]["nodes"][number] = {
+      id: "access",
+      kind: "l2-switch",
+      name: "SW-ACCESS",
+      hardwareProfileId: "access-24",
+      interfaces: [
+        ...Array.from({ length: 24 }, (_, index) => ({ id: `Fa0/${index + 1}` })),
+        { id: "Gi0/1" },
+        { id: "Gi0/2" },
+      ],
+    };
+    const lab = document(
+      [...hosts.map((entry) => entry.node), switchNode],
+      hosts.map((entry, index) => ({
+        id: `host-${index + 1}`,
+        a: { node: entry.node.id, iface: "eth0" },
+        b: { node: "access", iface: `Fa0/${index + 1}` },
+      })),
+      {
+        ...Object.fromEntries(hosts.map((entry) => [entry.node.id, entry.config])),
+        access: { kind: "l2-switch", hostname: "SW-ACCESS", interfaces: [], vlans: [] },
+      },
+    );
+    const { second, serialized } = rebuild(lab);
+    const source = second.getPc("pc-1")!;
+    source.ping("10.20.0.29", 1);
+    second.engine.runUntilIdle();
+    expect(source.pingResults[0]).toMatchObject({ success: true });
+    expect(second.getSwitch("access")!.macAddressTable().length).toBeGreaterThanOrEqual(2);
+    expect(serialized.topology.nodes.find((node) => node.id === "access")).toMatchObject({
+      hardwareProfileId: "access-24",
+      interfaces: expect.arrayContaining([{ id: "Fa0/24", mac: expect.any(String) }]),
+    });
+  });
+
   it("round-trips a hub without introducing learned state", () => {
     const a = host("a", "192.168.1.10");
     const b = host("b", "192.168.1.11");

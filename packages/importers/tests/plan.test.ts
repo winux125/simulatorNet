@@ -80,6 +80,19 @@ describe("import plan and execution", () => {
     expect(a.report.unsupportedDeviceTypes).toEqual(["acme-widget-9000"]);
   });
 
+  it("selects the nearest switch hardware profile while preserving imported port names", () => {
+    const source = parsed();
+    source.nodes.find((node) => node.id === "sw1")!.interfaces = Array.from(
+      { length: 24 },
+      (_, index) => `Ethernet${index + 1}`,
+    );
+    source.links = [];
+    const result = executeLabImport(planFromParsed(source, "access.unl"));
+    const node = result.document.topology.nodes.find((candidate) => candidate.id === "sw1")!;
+    expect(node.hardwareProfileId).toBe("access-24");
+    expect(node.interfaces.map((iface) => iface.id)).toEqual(expect.arrayContaining(["Ethernet1", "Ethernet24"]));
+  });
+
   it("lets the user override a suggestion with a placeholder or exclusion", () => {
     const plan = planFromParsed(parsed(), "campus.clab.yml");
     const result = executeLabImport(plan, { r1: { kind: "placeholder" }, pc1: { kind: "exclude" } });

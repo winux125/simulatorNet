@@ -1,4 +1,4 @@
-import type { LabDocument } from "@sim/contracts";
+import type { DeviceHardwareProfileId, LabDocument } from "@sim/contracts";
 import { useEffect, useRef, type DragEvent } from "react";
 import { isSameCanvasViewport, type CanvasViewport } from "./canvas-navigation";
 import { createTopologyGraphController } from "./x6/graph-controller";
@@ -49,7 +49,7 @@ export interface TopologyGraphSurfaceProps {
   onPanePointerMove(local: Point): void;
   onPanePointerUp(local: Point, modifiers: { shift: boolean; alt: boolean }): void;
   onPaneContextMenu(clientX: number, clientY: number): void;
-  onDropDevice(kind: string, local: Point): void;
+  onDropDevice(kind: string, local: Point, hardwareProfileId?: DeviceHardwareProfileId): void;
   onDropImage(file: File, local: Point): void;
 }
 
@@ -147,11 +147,12 @@ export function TopologyGraphSurface(props: TopologyGraphSurfaceProps) {
   const onDrop = (event: DragEvent) => {
     event.preventDefault();
     const kind = event.dataTransfer.getData("application/x-simulator-device");
+    const hardwareProfileId = event.dataTransfer.getData("application/x-simulator-hardware-profile") || undefined;
     const controller = controllerRef.current;
     if (!controller) return;
     const local = controller.clientToLocal({ x: event.clientX, y: event.clientY });
     if (kind) {
-      props.onDropDevice(kind, local);
+      props.onDropDevice(kind, local, hardwareProfileId as DeviceHardwareProfileId | undefined);
       return;
     }
     const file = [...event.dataTransfer.files].find((candidate) => candidate.type.startsWith("image/"));

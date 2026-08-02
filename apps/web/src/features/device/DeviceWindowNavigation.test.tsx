@@ -104,4 +104,52 @@ describe("device window information architecture", () => {
     expect(screen.getByText(/Start the lab to open this tool/)).toBeTruthy();
     expect(openTerminal).not.toHaveBeenCalled();
   });
+
+  it("changes switch hardware from Attributes only while the lab is stopped", async () => {
+    const node: LabUiNode = {
+      id: "switch-1",
+      type: "l2-switch",
+      hostname: "SW1",
+      position: { x: 0, y: 0 },
+      status: "down",
+      interfaces: Array.from({ length: 8 }, (_, index) => ({
+        id: `Gi0/${index + 1}`,
+        adminUp: true,
+        operationalUp: false,
+      })),
+    };
+    const document: LabDocument = {
+      schemaVersion: 1,
+      id: "switch-hardware",
+      title: "Switch hardware",
+      simulation: { seed: 1 },
+      topology: {
+        schemaVersion: 1,
+        nodes: [{ id: node.id, kind: node.type, hardwareProfileId: "compact-8", interfaces: node.interfaces.map(({ id }) => ({ id })) }],
+        links: [],
+      },
+      configurations: { [node.id]: { kind: "l2-switch", hostname: "SW1", interfaces: [], vlans: [] } },
+    };
+    const onTopologyChanged = vi.fn();
+    render(<DeviceWindow
+      client={{ request: vi.fn(), onEvent: vi.fn(() => () => undefined) } as unknown as SimulatorClient}
+      document={document}
+      node={node}
+      powerState="stopped"
+      runtimeAvailable={false}
+      onOpenTerminal={() => undefined}
+      onConfigurationChanged={() => undefined}
+      onTopologyChanged={onTopologyChanged}
+      onError={() => undefined}
+      onClose={() => undefined}
+    />);
+    await userEvent.click(screen.getByRole("tab", { name: "Attributes" }));
+    await userEvent.selectOptions(screen.getByLabelText("Hardware profile"), "access-24");
+    expect(onTopologyChanged).toHaveBeenCalledWith(expect.objectContaining({
+      topology: expect.objectContaining({
+        nodes: [expect.objectContaining({ hardwareProfileId: "access-24", interfaces: expect.any(Array) })],
+      }),
+    }));
+    expect(onTopologyChanged.mock.calls[0]?.[0].topology.nodes[0]?.interfaces).toHaveLength(26);
+  });
 });

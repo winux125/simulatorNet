@@ -140,7 +140,7 @@ describe("M10.3.3c cable-only connection workflow", () => {
     expect(canvas).toContain("const cableHandleAvailable = structuralEditable");
     expect(canvas).toContain('props.activeTool === "select" || props.activeTool === "add-link"');
     expect(canvas).toContain("textEditing === undefined");
-    expect(canvas).toContain("connectable: cableHandleAvailable && getDeviceProfile(node.kind).interfaceTemplates");
+    expect(canvas).toContain("resolveDeviceInterfaceTemplates(node.kind, node.hardwareProfileId)");
     expect(canvas).toContain('template.media !== "wireless"');
   });
 

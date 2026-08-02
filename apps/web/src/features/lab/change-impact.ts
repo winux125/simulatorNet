@@ -18,6 +18,7 @@ function structuralProjection(document: LabDocument) {
     nodes: document.topology.nodes.map((node) => ({
       id: node.id,
       kind: node.kind,
+      hardwareProfileId: node.hardwareProfileId,
       interfaces: node.interfaces,
     })),
     links: document.topology.links,

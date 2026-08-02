@@ -20,7 +20,9 @@ import {
 import {
   DEFAULT_NEIGHBOR_DISCOVERY_CONFIG,
   DEFAULT_SPANNING_TREE_CONFIG,
+  getDeviceHardwareProfile,
   getDeviceProfile,
+  resolveDeviceInterfaceTemplates,
 } from "@sim/contracts";
 import { ipToInt, maskToInt, normalizeDnsName, normalizeHttpPath, normalizeTftpFilename } from "@sim/sim-core";
 import { LabSemanticError } from "./errors";
@@ -871,7 +873,8 @@ function validateConfiguration(config: DeviceConfig, node: NodeSpec, path: strin
     if (config.dhcpEnabled && config.ipv4) {
       fail("host-address-mode-conflict", path, "A wireless host cannot use static IPv4 and DHCP at the same time");
     }
-    const wireless = getDeviceProfile(node.kind).interfaceTemplates.find((iface) => iface.media === "wireless");
+    const wireless = resolveDeviceInterfaceTemplates(node.kind, node.hardwareProfileId)
+      .find((iface) => iface.media === "wireless");
     if (!wireless || !node.interfaces.some((iface) => iface.id === wireless.id)) {
       fail("wireless-interface-missing", `${path}.wireless`, "A wireless host requires its wlan0 topology interface");
     }
@@ -932,6 +935,13 @@ export function validateLabSemantics(document: LabDocument): void {
   const nodes = new Map<string, NodeSpec>();
   for (const [index, node] of document.topology.nodes.entries()) {
     nodes.set(node.id, node);
+    if (node.hardwareProfileId && getDeviceHardwareProfile(node.hardwareProfileId).deviceType !== node.kind) {
+      fail(
+        "hardware-profile-kind-mismatch",
+        `topology.nodes[${index}].hardwareProfileId`,
+        `Hardware profile '${node.hardwareProfileId}' is not compatible with '${node.kind}'.`,
+      );
+    }
     requireUnique(node.interfaces.map((iface) => iface.id), `topology.nodes[${index}].interfaces`, "interface id");
     node.interfaces.forEach((iface, ifaceIndex) => {
       if (iface.mac !== undefined && !/^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$/i.test(iface.mac)) {
@@ -953,7 +963,7 @@ export function validateLabSemantics(document: LabDocument): void {
       if (!node.interfaces.some((iface) => iface.id === endpoint.iface)) {
         fail("unknown-interface", `${endpointPath}.iface`, `Unknown interface '${endpoint.node}/${endpoint.iface}'`);
       }
-      const template = getDeviceProfile(node.kind).interfaceTemplates.find(
+      const template = resolveDeviceInterfaceTemplates(node.kind, node.hardwareProfileId).find(
         (iface) => iface.id === endpoint.iface,
       );
       if (template?.media === "wireless") {

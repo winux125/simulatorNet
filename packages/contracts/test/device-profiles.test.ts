@@ -1,11 +1,14 @@
 import {
   DEVICE_CAPABILITIES,
+  DEVICE_HARDWARE_PROFILES,
   DEVICE_PROFILE_LIST,
   DEVICE_PROFILES,
   DEVICE_TYPES,
   DeviceTypeSchema,
   LabDocumentSchema,
   deviceTypeHasCapability,
+  getDefaultHardwareProfileId,
+  inferSwitchHardwareProfile,
 } from "@sim/contracts";
 import * as browserContracts from "@sim/contracts";
 import { describe, expect, it } from "vitest";
@@ -60,6 +63,29 @@ describe("device profile registry", () => {
     ]);
   });
 
+  it("defines bounded 8, 24 and 48-port hardware inventories without new device types", () => {
+    expect(DEVICE_HARDWARE_PROFILES["compact-8"].interfaceTemplates).toHaveLength(8);
+    expect(DEVICE_HARDWARE_PROFILES["access-24"].interfaceTemplates).toHaveLength(26);
+    expect(DEVICE_HARDWARE_PROFILES["access-48"].interfaceTemplates).toHaveLength(52);
+    expect(DEVICE_HARDWARE_PROFILES["multilayer-8"].interfaceTemplates).toHaveLength(8);
+    expect(DEVICE_HARDWARE_PROFILES["multilayer-24"].interfaceTemplates).toHaveLength(26);
+    expect(DEVICE_HARDWARE_PROFILES["multilayer-48"].interfaceTemplates).toHaveLength(52);
+    expect(DEVICE_HARDWARE_PROFILES["access-24"].interfaceTemplates.map(({ id }) => id).slice(-3)).toEqual([
+      "Fa0/24", "Gi0/1", "Gi0/2",
+    ]);
+    expect(getDefaultHardwareProfileId("l2-switch")).toBe("compact-8");
+    expect(getDefaultHardwareProfileId("l3-switch")).toBe("multilayer-8");
+  });
+
+  it("infers the nearest standard switch chassis while preserving custom inventories", () => {
+    expect(inferSwitchHardwareProfile("l2-switch", Array.from({ length: 24 }, (_, index) => `Ethernet${index + 1}`)))
+      .toBe("access-24");
+    expect(inferSwitchHardwareProfile("l2-switch", Array.from({ length: 48 }, (_, index) => `Ethernet${index + 1}`)))
+      .toBe("access-48");
+    expect(inferSwitchHardwareProfile("l3-switch", ["Gi0/1", "Gi0/2"])).toBe("multilayer-8");
+    expect(inferSwitchHardwareProfile("router", ["Gi0/0", "Gi0/1"])).toBeUndefined();
+  });
+
   it("declares capabilities deliberately for each supported type", () => {
     for (const profile of DEVICE_PROFILE_LIST) {
       expect(new Set(profile.capabilities).size).toBe(profile.capabilities.length);
@@ -99,6 +125,7 @@ describe("device profile registry", () => {
     const second = LabDocumentSchema.parse(JSON.parse(JSON.stringify(first)));
     expect(second).toEqual(first);
     expect(first.schemaVersion).toBe(1);
+    expect(first.topology.nodes[0]?.hardwareProfileId).toBeUndefined();
   });
 
   it("parses every new schema-v1 device configuration without runtime state", () => {
