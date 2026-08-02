@@ -3,7 +3,9 @@ import type { DiagramAnnotation, LabDocument } from "@sim/contracts";
 import { normalizeCanvasViewport, type CanvasViewport } from "../canvas-navigation";
 import {
   calculateAdaptiveLinkAnchors,
+  distributeAdaptiveIncidentAnchors,
   indexAdaptiveLinkLayout,
+  type AdaptiveDistributedAnchorPlacement,
   type AdaptiveLinkAnchors,
 } from "./adaptive-link-anchor";
 import { attachCanvasNavigation } from "./canvas-navigation-controller";
@@ -207,7 +209,51 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     node.portProp(portId, "args", next);
   }
 
-  function anchorsForLink(link: GraphLinkModel): AdaptiveLinkAnchors | undefined {
+  type DistributedPlacementIndex = ReadonlyMap<string, ReadonlyMap<string, AdaptiveDistributedAnchorPlacement>>;
+
+  function distributedPlacementsForNodes(nodeIds: Iterable<string>): DistributedPlacementIndex {
+    const result = new Map<string, ReadonlyMap<string, AdaptiveDistributedAnchorPlacement>>();
+    for (const nodeId of nodeIds) {
+      const node = graph.getCellById(nodeId);
+      if (!node?.isNode()) continue;
+      const rectangle = node.getBBox();
+      const incidents = [...state.linkLayout.incidentLinkIds.get(nodeId) ?? []].flatMap((linkId) => {
+        const link = state.linkModels.get(linkId);
+        if (!link) return [];
+        const sourceEndpoint = link.source === nodeId;
+        const peer = graph.getCellById(sourceEndpoint ? link.target : link.source);
+        if (!peer?.isNode()) return [];
+        const previous = state.anchorHistory.get(linkId);
+        return [{
+          linkId,
+          peerCenter: peer.getBBox().getCenter(),
+          previousSide: sourceEndpoint ? previous?.source.side : previous?.target.side,
+        }];
+      });
+      result.set(nodeId, distributeAdaptiveIncidentAnchors(
+        { x: rectangle.x, y: rectangle.y, width: rectangle.width, height: rectangle.height },
+        rectangle.getCenter(),
+        incidents,
+      ));
+    }
+    return result;
+  }
+
+  function previousPlacement(
+    anchor: AdaptiveLinkAnchors["source"] | undefined,
+  ): AdaptiveDistributedAnchorPlacement | undefined {
+    return anchor ? {
+      side: anchor.side,
+      offsetAlongSide: anchor.offsetAlongSide,
+      incidentCount: 1,
+      incidentIndex: 0,
+    } : undefined;
+  }
+
+  function anchorsForLink(
+    link: GraphLinkModel,
+    placements: DistributedPlacementIndex,
+  ): AdaptiveLinkAnchors | undefined {
     const sourceNode = graph.getCellById(link.source);
     const targetNode = graph.getCellById(link.target);
     if (!sourceNode?.isNode() || !targetNode?.isNode()) return undefined;
@@ -215,6 +261,7 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     const targetRectangle = targetNode.getBBox();
     const placement = state.linkLayout.parallelPlacement.get(link.id)
       ?? { parallelCount: 1, parallelIndex: 0 };
+    const previous = state.anchorHistory.get(link.id);
     const anchors = calculateAdaptiveLinkAnchors({
       sourceRectangle: {
         x: sourceRectangle.x,
@@ -232,7 +279,9 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       targetCenter: targetRectangle.getCenter(),
       linkId: link.id,
       ...placement,
-      previous: state.anchorHistory.get(link.id),
+      sourcePlacement: placements.get(link.source)?.get(link.id) ?? previousPlacement(previous?.source),
+      targetPlacement: placements.get(link.target)?.get(link.id) ?? previousPlacement(previous?.target),
+      previous,
     });
     moveInvisiblePort(sourceNode, link.sourcePort, anchors.source.point);
     moveInvisiblePort(targetNode, link.targetPort, anchors.target.point);
@@ -240,26 +289,38 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     return anchors;
   }
 
-  function refreshRenderedLink(linkId: string): void {
+  function refreshRenderedLink(linkId: string, placements: DistributedPlacementIndex): void {
     const link = state.linkModels.get(linkId);
     const edge = graph.getCellById(linkId);
     if (!link || !edge?.isEdge()) return;
-    updateLinkEdge(edge, link, state.view.links[linkId], anchorsForLink(link));
+    updateLinkEdge(edge, link, state.view.links[linkId], anchorsForLink(link, placements));
   }
 
   function flushAdaptiveRefresh(): void {
     adaptiveRefreshFrame = undefined;
     const ids = new Set<string>();
+    const affectedNodes = new Set<string>();
     if (refreshAllLinks) {
-      for (const linkId of state.linkModels.keys()) ids.add(linkId);
+      for (const nodeId of state.linkLayout.incidentLinkIds.keys()) affectedNodes.add(nodeId);
     } else {
       for (const nodeId of nodesAwaitingAnchorRefresh) {
-        for (const linkId of state.linkLayout.incidentLinkIds.get(nodeId) ?? []) ids.add(linkId);
+        affectedNodes.add(nodeId);
+        for (const linkId of state.linkLayout.incidentLinkIds.get(nodeId) ?? []) {
+          const link = state.linkModels.get(linkId);
+          if (link) {
+            affectedNodes.add(link.source);
+            affectedNodes.add(link.target);
+          }
+        }
       }
     }
+    for (const nodeId of affectedNodes) {
+      for (const linkId of state.linkLayout.incidentLinkIds.get(nodeId) ?? []) ids.add(linkId);
+    }
+    const placements = distributedPlacementsForNodes(affectedNodes);
     refreshAllLinks = false;
     nodesAwaitingAnchorRefresh.clear();
-    for (const linkId of ids) refreshRenderedLink(linkId);
+    for (const linkId of ids) refreshRenderedLink(linkId, placements);
   }
 
   function scheduleAdaptiveRefresh(nodeId?: string): void {
@@ -642,9 +703,10 @@ export function createTopologyGraphController(options: CreateControllerOptions):
         .filter((annotation) => annotation.type === "line" || annotation.type === "arrow")
         .map((annotation) => annotationCellId(annotation.id)),
     ]);
+    const placements = distributedPlacementsForNodes(state.linkLayout.incidentLinkIds.keys());
     for (const link of links) {
       const linkView = state.view.links[link.id];
-      const anchors = anchorsForLink(link);
+      const anchors = anchorsForLink(link, placements);
       const existing = graph.getCellById(link.id);
       if (existing && existing.isEdge()) updateLinkEdge(existing, link, linkView, anchors);
       else addLinkEdge(graph, link, linkView, anchors);

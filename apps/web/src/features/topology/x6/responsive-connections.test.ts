@@ -262,7 +262,9 @@ describe("M10.3.2b responsive topology connections", () => {
     const schedule = controller.match(/function scheduleAdaptiveRefresh\(nodeId\?: string\): void \{([\s\S]*?)\n  \}/)?.[1] ?? "";
     const destroy = controller.match(/destroy\(\) \{([\s\S]*?)\n    \},/)?.[1] ?? "";
     expect(flush).toContain("state.linkLayout.incidentLinkIds.get(nodeId)");
-    expect(flush).toContain("refreshRenderedLink(linkId)");
+    expect(flush).toContain("affectedNodes.add(link.source)");
+    expect(flush).toContain("distributedPlacementsForNodes(affectedNodes)");
+    expect(flush).toContain("refreshRenderedLink(linkId, placements)");
     expect(schedule).toContain("window.requestAnimationFrame(flushAdaptiveRefresh)");
     expect(destroy).toContain("window.cancelAnimationFrame(adaptiveRefreshFrame)");
   });

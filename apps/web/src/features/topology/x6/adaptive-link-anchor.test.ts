@@ -3,6 +3,7 @@ import {
   ADAPTIVE_ANCHOR_HYSTERESIS_PX,
   calculateAdaptiveLinkAnchors,
   chooseAdaptiveAnchorSide,
+  distributeAdaptiveIncidentAnchors,
   indexAdaptiveLinkLayout,
   type AdaptiveLinkAnchorInput,
   type AdaptiveNodeRectangle,
@@ -149,5 +150,86 @@ describe("adaptive device link anchors", () => {
   it("chooses a deterministic side for overlapping device centers", () => {
     expect(chooseAdaptiveAnchorSide(center(SOURCE), center(SOURCE), "link-overlap"))
       .toBe(chooseAdaptiveAnchorSide(center(SOURCE), center(SOURCE), "link-overlap"));
+  });
+
+  it("distributes twenty incident links to distinct anchors across one safe edge", () => {
+    const placements = distributeAdaptiveIncidentAnchors(
+      SOURCE,
+      center(SOURCE),
+      Array.from({ length: 20 }, (_, index) => ({
+        linkId: `link-${String(index + 1).padStart(2, "0")}`,
+        peerCenter: { x: 400, y: index * 20 },
+      })),
+    );
+    const offsets = [...placements.values()].map((placement) => placement.offsetAlongSide);
+    expect(new Set(offsets).size).toBe(20);
+    expect([...placements.values()].every((placement) => placement.side === "right")).toBe(true);
+    expect(Math.min(...offsets)).toBe(-32);
+    expect(Math.max(...offsets)).toBe(32);
+  });
+
+  it("keeps dense ordering stable regardless of input order", () => {
+    const incidents = [
+      { linkId: "link-c", peerCenter: { x: 400, y: 300 } },
+      { linkId: "link-a", peerCenter: { x: 400, y: 100 } },
+      { linkId: "link-b", peerCenter: { x: 400, y: 200 } },
+    ];
+    const first = distributeAdaptiveIncidentAnchors(SOURCE, center(SOURCE), incidents);
+    const second = distributeAdaptiveIncidentAnchors(SOURCE, center(SOURCE), [...incidents].reverse());
+    expect([...first]).toEqual([...second]);
+    expect(first.get("link-a")!.offsetAlongSide).toBeLessThan(first.get("link-b")!.offsetAlongSide);
+    expect(first.get("link-b")!.offsetAlongSide).toBeLessThan(first.get("link-c")!.offsetAlongSide);
+  });
+
+  it("groups top, right, bottom and left incidents independently", () => {
+    const placements = distributeAdaptiveIncidentAnchors(SOURCE, center(SOURCE), [
+      { linkId: "top", peerCenter: { x: 56, y: -300 } },
+      { linkId: "right", peerCenter: { x: 400, y: 46 } },
+      { linkId: "bottom", peerCenter: { x: 56, y: 300 } },
+      { linkId: "left", peerCenter: { x: -300, y: 46 } },
+    ]);
+    expect(Object.fromEntries([...placements].map(([id, placement]) => [id, placement.side]))).toEqual({
+      top: "top",
+      right: "right",
+      bottom: "bottom",
+      left: "left",
+    });
+    expect([...placements.values()].every((placement) => placement.offsetAlongSide === 0)).toBe(true);
+  });
+
+  it("uses link ID as the stable tie-break for parallel links to one peer", () => {
+    const placements = distributeAdaptiveIncidentAnchors(SOURCE, center(SOURCE), [
+      { linkId: "link-20", peerCenter: { x: 400, y: 46 } },
+      { linkId: "link-10", peerCenter: { x: 400, y: 46 } },
+    ]);
+    expect(placements.get("link-10")?.incidentIndex).toBe(0);
+    expect(placements.get("link-20")?.incidentIndex).toBe(1);
+    expect(placements.get("link-10")?.offsetAlongSide).toBe(-7);
+    expect(placements.get("link-20")?.offsetAlongSide).toBe(7);
+  });
+
+  it("recenters the remaining dense endpoint after a link is removed", () => {
+    const before = distributeAdaptiveIncidentAnchors(SOURCE, center(SOURCE), [
+      { linkId: "link-1", peerCenter: { x: 400, y: 46 } },
+      { linkId: "link-2", peerCenter: { x: 400, y: 46 } },
+    ]);
+    const after = distributeAdaptiveIncidentAnchors(SOURCE, center(SOURCE), [
+      { linkId: "link-2", peerCenter: { x: 400, y: 46 } },
+    ]);
+    expect(before.get("link-2")?.offsetAlongSide).toBe(7);
+    expect(after.get("link-2")?.offsetAlongSide).toBe(0);
+  });
+
+  it("applies node-wide source and target offsets without changing link identity", () => {
+    const result = anchors(
+      { x: 300, y: 0, width: 112, height: 92 },
+      {
+        sourcePlacement: { side: "right", offsetAlongSide: -20, incidentCount: 20, incidentIndex: 3 },
+        targetPlacement: { side: "left", offsetAlongSide: 12, incidentCount: 4, incidentIndex: 2 },
+      },
+    );
+    expect(result.linkId).toBe("link-1");
+    expect(result.source).toMatchObject({ side: "right", point: { x: 112, y: 26 } });
+    expect(result.target).toMatchObject({ side: "left", point: { x: 300, y: 58 } });
   });
 });

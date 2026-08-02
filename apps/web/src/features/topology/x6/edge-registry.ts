@@ -43,6 +43,8 @@ function attrs(
       "data-target-interface": link.targetPort,
       "data-source-side": anchors?.source.side,
       "data-target-side": anchors?.target.side,
+      "data-source-offset": anchors?.source.offsetAlongSide,
+      "data-target-offset": anchors?.target.offsetAlongSide,
       "data-parallel-offset": anchors?.source.parallelLinkOffset,
     },
     wrap: {
