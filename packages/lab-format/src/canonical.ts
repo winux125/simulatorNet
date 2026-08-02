@@ -26,6 +26,7 @@ import type {
   Layer3SwitchInterfaceConfig,
   LabDocument,
   LabDocumentDraft,
+  LabStartupConfigurations,
   NodeSpec,
   PcDeviceConfig,
   PhysicalInterfaceConfig,
@@ -846,6 +847,22 @@ function wirelessRouterConfiguration(
   };
 }
 
+/**
+ * Fill one device configuration with its schema defaults, exactly as
+ * `canonicalizeLabDocument` does for a whole document.
+ *
+ * Startup snapshots, drift comparison and a reload all go through this, so a
+ * configuration built by the engine and one read from a file are the same
+ * object when they describe the same device. Passing `undefined` produces the
+ * factory-default configuration a device boots with after `erase startup-config`.
+ */
+export function canonicalizeDeviceConfiguration(
+  node: NodeSpec,
+  existing: DeviceConfig | undefined,
+): DeviceConfig {
+  return configurationFor(node, existing);
+}
+
 function configurationFor(node: NodeSpec, existing: DeviceConfig | undefined): DeviceConfig {
   if (node.kind === "pc") return pcConfiguration(node, existing?.kind === "pc" ? existing : undefined);
   if (node.kind === "server") return serverConfiguration(node, existing?.kind === "server" ? existing : undefined);
@@ -970,9 +987,38 @@ export function canonicalizeLabDocument(document: LabDocument | LabDocumentDraft
       })),
     },
     configurations,
+    startupConfigurations: canonicalStartupConfigurations(nodes, parsed.startupConfigurations),
   };
   validateLabSemantics(canonical);
   return canonical;
+}
+
+/**
+ * Canonicalize the saved startup snapshots.
+ *
+ * Entries are rebuilt in sorted node order so the serialized record is stable,
+ * a saved configuration is filled with the same schema defaults as the running
+ * one (otherwise a device could look "modified" purely because one snapshot
+ * spelled a default out), and an entry for a device that no longer exists — or
+ * one whose kind no longer matches — is dropped rather than resurrected.
+ *
+ * The whole map is omitted when nothing is stored, so a lab that has never used
+ * `copy running-config startup-config` round-trips byte-identically.
+ */
+function canonicalStartupConfigurations(
+  nodes: readonly NodeSpec[],
+  existing: LabStartupConfigurations | undefined,
+): LabStartupConfigurations | undefined {
+  if (!existing) return undefined;
+  const startup: LabStartupConfigurations = {};
+  for (const node of nodes) {
+    const entry = existing[node.id];
+    if (!entry) continue;
+    if (entry.state === "absent") { startup[node.id] = { state: "absent" }; continue; }
+    if (entry.configuration.kind !== node.kind) continue;
+    startup[node.id] = { state: "saved", configuration: configurationFor(node, entry.configuration) };
+  }
+  return Object.keys(startup).length === 0 ? undefined : startup;
 }
 
 export function stringifyLabDocument(document: LabDocument): string {

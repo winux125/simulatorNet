@@ -1,4 +1,8 @@
-import { createCliSession, type CliSession } from "@sim/cli-engine";
+import {
+  createCliSession,
+  type CliSession,
+  type DeviceConfigurationService,
+} from "@sim/cli-engine";
 import {
   HostStaticConfigurationSchema,
   HostIpv6ConfigSchema,
@@ -18,12 +22,23 @@ import {
 import {
   buildLabFromDocument,
   canonicalizeLabDocument,
+  deviceConfigurationDrift,
+  eraseStartupConfiguration,
   findDuplicateHostAddresses,
   migrateLabDocument,
   parseLabDocument,
+  reloadDevice,
+  renderDeviceRunningConfiguration,
+  renderDeviceStartupConfiguration,
+  runningConfigurationOf,
+  saveRunningConfiguration,
   serializeLabDocument,
   type BuiltLab,
 } from "@sim/lab-format";
+import {
+  supportsDeviceConfigurationApply,
+  supportsDeviceConfigurationText,
+} from "@sim/device-config";
 import {
   AccessPoint,
   EndHost,
@@ -51,7 +66,9 @@ import { SimulationWorkerError, serializeWorkerError } from "./errors";
 import type {
   CliExecutionResult,
   EngineUiState,
+  DeviceConfigurationView,
   DeviceInspection,
+  LabConfigurationStatusView,
   HostNetworkStatus,
   HostNetworkWarning,
   HostIpv6NetworkStatus,
@@ -468,6 +485,32 @@ export class SimulationWorkerRuntime {
         this.requireServer(deviceId).services.networkManagement.clearTraps();
         return this.nmsRuntime(deviceId);
       }
+      case "GET_DEVICE_CONFIGURATION":
+        return this.deviceConfiguration(requireString(request, "deviceId"));
+      case "SAVE_DEVICE_CONFIGURATION": {
+        const deviceId = requireString(request, "deviceId");
+        saveRunningConfiguration(this.requireBuiltLab(), deviceId);
+        this.serialize();
+        return this.deviceConfiguration(deviceId);
+      }
+      case "ERASE_DEVICE_STARTUP_CONFIGURATION": {
+        const deviceId = requireString(request, "deviceId");
+        eraseStartupConfiguration(this.requireBuiltLab(), deviceId);
+        this.serialize();
+        return this.deviceConfiguration(deviceId);
+      }
+      case "RELOAD_DEVICE":
+        return this.reloadDevice(requireString(request, "deviceId"), request.save === true);
+      case "APPLY_DEVICE_CONFIGURATION":
+        return this.applyDeviceConfiguration(
+          requireString(request, "deviceId"),
+          request.configuration,
+          requireString(request, "target"),
+        );
+      case "GET_LAB_CONFIGURATION_STATUS":
+        return this.labConfigurationStatus();
+      case "SAVE_ALL_DEVICE_CONFIGURATIONS":
+        return this.saveAllDeviceConfigurations();
       case "SERIALIZE_LAB":
         return this.serialize();
       default:
@@ -543,6 +586,9 @@ export class SimulationWorkerRuntime {
       // Remote CLI is opened from a host terminal; the opener is owned by the
       // runtime so the CLI itself never reaches into the management plane.
       session.useRemoteSessionOpener(built.management);
+      // …and the configuration lifecycle is injected the same way, so the CLI
+      // never learns how a device is serialized, stored or rebuilt.
+      session.useConfigurationService(this.configurationService());
       entry = { deviceId, session };
     }
     entry.session.setExecutionMode(this.executionMode);
@@ -682,6 +728,158 @@ export class SimulationWorkerRuntime {
     const document = serializeLabDocument(built, this.metadata);
     this.document = document;
     return document;
+  }
+
+  // --- running / startup configuration lifecycle ---------------------------
+
+  /**
+   * The configuration service handed to every CLI session on this device.
+   *
+   * The CLI owns the grammar; the lifecycle itself is `lab-format`, so the
+   * verifier reaches the identical behaviour through the identical functions.
+   */
+  private configurationService(): DeviceConfigurationService {
+    return {
+      runningConfigurationText: (deviceId) =>
+        renderDeviceRunningConfiguration(this.requireBuiltLab(), deviceId),
+      startupConfigurationText: (deviceId) =>
+        renderDeviceStartupConfiguration(this.requireBuiltLab(), deviceId),
+      drift: (deviceId) => deviceConfigurationDrift(this.requireBuiltLab(), deviceId).drift,
+      saveRunningConfiguration: (deviceId) => {
+        saveRunningConfiguration(this.requireBuiltLab(), deviceId);
+        this.serialize();
+      },
+      eraseStartupConfiguration: (deviceId) => {
+        eraseStartupConfiguration(this.requireBuiltLab(), deviceId);
+        this.serialize();
+      },
+      reloadDevice: (deviceId, options) => {
+        this.reloadDevice(deviceId, options.save);
+      },
+    };
+  }
+
+  private deviceConfiguration(deviceId: string): DeviceConfigurationView {
+    const built = this.requireBuiltLab();
+    const device = built.getDevice(deviceId);
+    const node = built.getNode(deviceId);
+    if (!device || !node) throw new SimulationWorkerError("unknown-device", `Unknown device '${deviceId}'`);
+    const status = deviceConfigurationDrift(built, deviceId);
+    return {
+      deviceId,
+      hostname: device.name,
+      deviceType: node.kind,
+      interfaceIds: node.interfaces.map((iface) => iface.id),
+      configuration: runningConfigurationOf(built, deviceId),
+      runningConfigurationText: renderDeviceRunningConfiguration(built, deviceId),
+      startupConfigurationText: renderDeviceStartupConfiguration(built, deviceId),
+      drift: status.drift,
+      runningDigest: status.runningDigest,
+      startupDigest: status.startupDigest,
+      supportsConfigurationText: supportsDeviceConfigurationText(node.kind),
+      supportsConfigurationApply: supportsDeviceConfigurationApply(node.kind),
+      document: this.serialize(),
+    };
+  }
+
+  private labConfigurationStatus(): LabConfigurationStatusView {
+    const built = this.requireBuiltLab();
+    return {
+      devices: built.topology.nodes.map((node) => ({
+        deviceId: node.id,
+        hostname: built.getDevice(node.id)?.name ?? node.name ?? node.id,
+        deviceType: node.kind,
+        drift: deviceConfigurationDrift(built, node.id).drift,
+        supportsConfigurationText: supportsDeviceConfigurationText(node.kind),
+      })),
+      document: this.serialize(),
+    };
+  }
+
+  /** Lab menu ▸ Save All Device Configurations: `copy run start` everywhere. */
+  private saveAllDeviceConfigurations(): LabConfigurationStatusView {
+    const built = this.requireBuiltLab();
+    for (const node of built.topology.nodes) {
+      if (!supportsDeviceConfigurationText(node.kind)) continue;
+      saveRunningConfiguration(built, node.id);
+    }
+    this.serialize();
+    return this.labConfigurationStatus();
+  }
+
+  /**
+   * Reload one device. Its CLI and remote sessions end because the instance
+   * they were attached to is gone; every other terminal keeps its session.
+   */
+  private reloadDevice(deviceId: string, save: boolean): DeviceConfigurationView {
+    const built = this.requireBuiltLab();
+    if (!built.getDevice(deviceId)) {
+      throw new SimulationWorkerError("unknown-device", `Unknown device '${deviceId}'`);
+    }
+    for (const [sessionId, entry] of [...this.sessions]) {
+      if (entry.deviceId !== deviceId) continue;
+      entry.session.closeRemoteSession();
+      this.sessions.delete(sessionId);
+    }
+    reloadDevice(built, deviceId, { save });
+    // The rebooted device re-arms its protocols; the rest of the lab is not
+    // touched, so this is an ordinary bounded drain, not a topology rebuild.
+    built.engine.runUntilIdle();
+    const view = this.deviceConfiguration(deviceId);
+    this.emitStateChanged();
+    this.emitHostWarnings();
+    this.flushTrace();
+    return view;
+  }
+
+  /**
+   * Install structured configuration parsed from text.
+   *
+   * `running` rebuilds this device from the new configuration — the same
+   * single-device rebuild a reload performs, because a running configuration
+   * describes a device, not a patch. `startup` writes only the NVRAM snapshot.
+   */
+  private applyDeviceConfiguration(
+    deviceId: string,
+    input: unknown,
+    target: string,
+  ): DeviceConfigurationView {
+    if (target !== "running" && target !== "startup") {
+      throw new SimulationWorkerError("invalid-request", "target must be 'running' or 'startup'");
+    }
+    const built = this.requireBuiltLab();
+    const node = built.getNode(deviceId);
+    if (!node) throw new SimulationWorkerError("unknown-device", `Unknown device '${deviceId}'`);
+    const configuration = DeviceConfigSchema.parse(input);
+    if (configuration.kind !== node.kind) {
+      throw new SimulationWorkerError(
+        "configuration-type-mismatch",
+        `Configuration is for a ${configuration.kind}, but '${deviceId}' is a ${node.kind}`,
+      );
+    }
+    if (target === "startup") {
+      built.setStartupConfiguration(deviceId, { state: "saved", configuration });
+      this.serialize();
+      return this.deviceConfiguration(deviceId);
+    }
+    for (const [sessionId, entry] of [...this.sessions]) {
+      if (entry.deviceId !== deviceId) continue;
+      entry.session.closeRemoteSession();
+      this.sessions.delete(sessionId);
+    }
+    // Stage the configuration as the boot snapshot, reload the device onto it,
+    // then restore the startup snapshot the device actually had: applying a
+    // running configuration must not silently write NVRAM.
+    const previousStartup = built.startupConfigurationOf(deviceId);
+    built.setStartupConfiguration(deviceId, { state: "saved", configuration });
+    reloadDevice(built, deviceId, { save: false });
+    built.setStartupConfiguration(deviceId, previousStartup);
+    built.engine.runUntilIdle();
+    const view = this.deviceConfiguration(deviceId);
+    this.emitStateChanged();
+    this.emitHostWarnings();
+    this.flushTrace();
+    return view;
   }
 
   private securityConfiguration(deviceId: string): SecurityConfigurationView {
@@ -1057,7 +1255,7 @@ export class SimulationWorkerRuntime {
         const remoteDeviceId = owners.get(tunnel.destinationAddress);
         if (!remoteDeviceId || remoteDeviceId === device.id) continue;
         // One overlay per peer pair, so two ends of the same tunnel draw once.
-        const key = [device.id, remoteDeviceId].sort().join(" ");
+        const key = [device.id, remoteDeviceId].sort().join("\u0000");
         if (seen.has(key)) continue;
         seen.add(key);
         const profile = tunnel.ipsecProfileId === undefined

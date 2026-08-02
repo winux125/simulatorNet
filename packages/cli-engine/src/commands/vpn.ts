@@ -6,8 +6,6 @@ import {
   DEFAULT_VPN_LIMITS,
   NS_PER_S,
   Router,
-  parseTunnelName,
-  tunnelName,
   type IkeSessionSummary,
   type IpsecSecurityAssociation,
   type TunnelSummary,
@@ -558,59 +556,6 @@ function clearVpnRuntime(session: SessionApi, message: string): string {
       return [message, ...sessions.map((entry) => ` ${entry.peerId}: ${entry.state}`)].join("\n");
     },
   );
-}
-
-/** `show running-config` fragment for one device's VPN configuration. */
-export function runningConfigVpnLines(device: Router): string[] {
-  const out: string[] = [];
-  for (const proposal of device.ipsecProposalConfigurations()) {
-    out.push(
-      `crypto ikev2 proposal ${proposal.id}`,
-      ` encryption ${proposal.encryption}`,
-      ` integrity ${proposal.integrity}`,
-      "!",
-    );
-  }
-  for (const peer of device.ikePeerConfigurations()) {
-    out.push(`crypto ikev2 peer ${peer.id}`, ` address ${peer.remoteAddress}`);
-    if (peer.localIdentity) out.push(` identity local ${peer.localIdentity}`);
-    if (peer.remoteIdentity) out.push(` identity remote ${peer.remoteIdentity}`);
-    // A pre-shared key is a shared secret: never rendered, not even as its
-    // verifier, so a saved or pasted running-config can never leak it.
-    if (peer.preSharedKeyVerifier) out.push(" pre-shared-key <configured>");
-    if (peer.proposalId) out.push(` proposal ${peer.proposalId}`);
-    out.push(` lifetime ${Math.round(peer.lifetimeNs / NS_PER_S)}`, "!");
-  }
-  for (const profile of device.ipsecProfileConfigurations()) {
-    out.push(`crypto ipsec profile ${profile.id}`);
-    if (profile.ikePeerId) out.push(` set ikev2-peer ${profile.ikePeerId}`);
-    if (profile.proposalId) out.push(` set proposal ${profile.proposalId}`);
-    out.push(` lifetime ${Math.round(profile.lifetimeNs / NS_PER_S)}`, "!");
-  }
-  for (const tunnel of device.tunnelConfigurations()) {
-    const id = parseTunnelName(tunnel.id) ?? 0;
-    out.push(`interface ${tunnelName(id)}`);
-    const primary = tunnel.ipv4Addresses[0];
-    if (primary) out.push(` ip address ${primary.address} ${prefixToMask(primary.prefixLength)}`);
-    for (const address of tunnel.ipv6Addresses) {
-      out.push(` ipv6 address ${address.address}/${address.prefixLength}`);
-    }
-    out.push(
-      ` tunnel source ${tunnel.source.type === "interface" ? tunnel.source.interfaceId : tunnel.source.address}`,
-      ` tunnel destination ${tunnel.destinationAddress}`,
-      " tunnel mode gre ip",
-      ` tunnel mtu ${tunnel.mtu}`,
-      ` tunnel ttl ${tunnel.ttl}`,
-    );
-    if (tunnel.ipsecProfileId) out.push(` tunnel protection ipsec profile ${tunnel.ipsecProfileId}`);
-    out.push(tunnel.adminUp ? " no shutdown" : " shutdown", "!");
-  }
-  return out;
-}
-
-function prefixToMask(prefixLength: number): string {
-  const mask = prefixLength === 0 ? 0 : (0xffffffff << (32 - prefixLength)) >>> 0;
-  return [(mask >>> 24) & 0xff, (mask >>> 16) & 0xff, (mask >>> 8) & 0xff, mask & 0xff].join(".");
 }
 
 export type { IkeSessionSummary, IpsecSecurityAssociation, TunnelSummary };

@@ -12,6 +12,7 @@ export default defineConfig({
       "@sim/contracts": fromRoot("./packages/contracts/src/index.ts"),
       "@sim/sim-core": fromRoot("./packages/sim-core/src/index.ts"),
       "@sim/cli-engine": fromRoot("./packages/cli-engine/src/index.ts"),
+      "@sim/device-config": fromRoot("./packages/device-config/src/index.ts"),
       "@sim/lab-format": fromRoot("./packages/lab-format/src/index.ts"),
       "@sim/importers": fromRoot("./packages/importers/src/index.ts"),
       "@sim/console-auth": fromRoot("./packages/console-auth/src/index.ts"),

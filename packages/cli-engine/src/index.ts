@@ -7,6 +7,10 @@ export {
 } from "./session/session";
 export { type CliMode, promptSuffix } from "./session/mode";
 export type {
+  ConfigurationDrift,
+  DeviceConfigurationService,
+} from "./session/configuration";
+export type {
   RemoteLineSummary,
   RemoteSessionBridge,
   RemoteSessionOpener,

@@ -18,7 +18,7 @@ import type {
   WirelessSecurityConfiguration,
   WirelessStationConfiguration,
 } from "@sim/contracts";
-import type { CliMode } from "@sim/cli-engine";
+import type { CliMode, ConfigurationDrift } from "@sim/cli-engine";
 import type {
   DiscoveryInterfaceStatus,
   DiscoveryNeighbor,
@@ -492,6 +492,45 @@ export interface VpnConfigurationView {
   };
 }
 
+/**
+ * One device's configuration lifecycle, as the workspace sees it.
+ *
+ * Both text projections are rendered by the worker from structured state, so
+ * the UI never renders configuration itself and can never show something the
+ * engine does not actually hold. Neither text ever contains a secret.
+ */
+export interface DeviceConfigurationView {
+  deviceId: string;
+  hostname: string;
+  deviceType: DeviceType;
+  /** Interface ids the device actually has, for parsing pasted text. */
+  interfaceIds: string[];
+  /** Structured running configuration — the canonical source of truth. */
+  configuration: DeviceConfig;
+  runningConfigurationText: string;
+  startupConfigurationText: string;
+  drift: ConfigurationDrift;
+  runningDigest: string;
+  startupDigest?: string;
+  /** False for a host, which is configured through Desktop / IP Configuration. */
+  supportsConfigurationText: boolean;
+  /** False when text can be read and exported but not applied back. */
+  supportsConfigurationApply: boolean;
+  document: LabDocument;
+}
+
+/** Configuration status for every device, for badges and Save All. */
+export interface LabConfigurationStatusView {
+  devices: Array<{
+    deviceId: string;
+    hostname: string;
+    deviceType: DeviceType;
+    drift: ConfigurationDrift;
+    supportsConfigurationText: boolean;
+  }>;
+  document: LabDocument;
+}
+
 /** The result of changing one cable's deterministic performance. */
 export interface LinkPerformanceView {
   linkId: string;
@@ -735,6 +774,25 @@ export type SimWorkerRequest =
   | { type: "SNMP_WALK"; requestId: string; deviceId: string; targetId: string; oid: string }
   | { type: "GET_NMS_TRAPS"; requestId: string; deviceId: string }
   | { type: "CLEAR_NMS_TRAPS"; requestId: string; deviceId: string }
+  // --- M10.9.1 running / startup configuration lifecycle ---
+  | { type: "GET_DEVICE_CONFIGURATION"; requestId: string; deviceId: string }
+  | { type: "SAVE_DEVICE_CONFIGURATION"; requestId: string; deviceId: string }
+  | { type: "ERASE_DEVICE_STARTUP_CONFIGURATION"; requestId: string; deviceId: string }
+  | { type: "RELOAD_DEVICE"; requestId: string; deviceId: string; save: boolean }
+  /**
+   * Install structured configuration parsed from text. `running` rebuilds the
+   * device from it; `startup` writes only the NVRAM snapshot, leaving the
+   * running configuration alone until a reload.
+   */
+  | {
+      type: "APPLY_DEVICE_CONFIGURATION";
+      requestId: string;
+      deviceId: string;
+      configuration: DeviceConfig;
+      target: "running" | "startup";
+    }
+  | { type: "GET_LAB_CONFIGURATION_STATUS"; requestId: string }
+  | { type: "SAVE_ALL_DEVICE_CONFIGURATIONS"; requestId: string }
   | { type: "SERIALIZE_LAB"; requestId: string };
 
 export type SimWorkerPayload =
@@ -766,6 +824,8 @@ export type SimWorkerPayload =
   | AaaStatusResponse
   | SnmpAgentStatusView
   | SnmpOperationView
+  | DeviceConfigurationView
+  | LabConfigurationStatusView
   | LabDocument
   | { closed: boolean }
   | { paused: boolean; snapshot: LabUiSnapshot };
@@ -865,6 +925,13 @@ export interface SimWorkerPayloadByType {
   SNMP_WALK: SnmpOperationView;
   GET_NMS_TRAPS: SnmpOperationView;
   CLEAR_NMS_TRAPS: SnmpOperationView;
+  GET_DEVICE_CONFIGURATION: DeviceConfigurationView;
+  SAVE_DEVICE_CONFIGURATION: DeviceConfigurationView;
+  ERASE_DEVICE_STARTUP_CONFIGURATION: DeviceConfigurationView;
+  RELOAD_DEVICE: DeviceConfigurationView;
+  APPLY_DEVICE_CONFIGURATION: DeviceConfigurationView;
+  GET_LAB_CONFIGURATION_STATUS: LabConfigurationStatusView;
+  SAVE_ALL_DEVICE_CONFIGURATIONS: LabConfigurationStatusView;
   SERIALIZE_LAB: LabDocument;
 }
 

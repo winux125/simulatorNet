@@ -65,33 +65,53 @@ export class ManagementPlane implements RemoteSessionOpener {
     private readonly devices: ReadonlyMap<string, Device>,
     private readonly engine: SimulationEngine,
   ) {
-    for (const [deviceId, device] of devices) {
-      const managed = managedDeviceOf(device, engine);
-      if (!managed) continue;
-      const service = new RemoteCliService(managed, () => this.totalSessions() < MANAGEMENT_LIMITS.maximumRemoteSessionsPerLab);
-      service.onSessionClosed((_session, reason) => {
-        const explanation = CLOSE_PROBLEM[reason];
-        if (explanation) this.reportProblem(`${device.name}: ${explanation}.`);
+    for (const deviceId of devices.keys()) this.installDevice(deviceId);
+  }
+
+  /** Build (or rebuild) the remote CLI service one device terminates. */
+  private installDevice(deviceId: string): void {
+    const device = this.devices.get(deviceId);
+    if (!device) return;
+    const managed = managedDeviceOf(device, this.engine);
+    if (!managed) return;
+    const service = new RemoteCliService(managed, () => this.totalSessions() < MANAGEMENT_LIMITS.maximumRemoteSessionsPerLab);
+    service.onSessionClosed((_session, reason) => {
+      const explanation = CLOSE_PROBLEM[reason];
+      if (explanation) this.reportProblem(`${device.name}: ${explanation}.`);
+    });
+    const aaaState = device instanceof L2Switch || device instanceof Router ? device.aaa : undefined;
+    if (aaaState) {
+      // One shared decision layer per device: console, VTY, Telnet, SSH and
+      // AAA local fallback all resolve through it.
+      const provider = new AaaAuthenticationProvider(
+        managed,
+        () => aaaState,
+        () => this.accessOf(deviceId),
+        (index) => service.vtyLineConfig(index),
+      );
+      service.useAuthenticationProvider(provider, {
+        authorizeCommand: (request, done) => provider.authorizeCommand(request, done),
+        account: (event, session, detail) => provider.account(event, session, detail),
       });
-      const aaaState = device instanceof L2Switch || device instanceof Router ? device.aaa : undefined;
-      if (aaaState) {
-        // One shared decision layer per device: console, VTY, Telnet, SSH and
-        // AAA local fallback all resolve through it.
-        const provider = new AaaAuthenticationProvider(
-          managed,
-          () => aaaState,
-          () => this.accessOf(deviceId),
-          (index) => service.vtyLineConfig(index),
-        );
-        service.useAuthenticationProvider(provider, {
-          authorizeCommand: (request, done) => provider.authorizeCommand(request, done),
-          account: (event, session, detail) => provider.account(event, session, detail),
-        });
-        provider.onProblem((message) => this.reportProblem(message));
-        this.authenticators.set(deviceId, provider);
-      }
-      this.services.set(deviceId, service);
+      provider.onProblem((message) => this.reportProblem(message));
+      this.authenticators.set(deviceId, provider);
+    } else {
+      this.authenticators.delete(deviceId);
     }
+    this.services.set(deviceId, service);
+  }
+
+  /**
+   * Re-arm the management plane after one device instance was replaced — a
+   * single-device reload. Sessions terminated by that device end, because the
+   * device they were talking to no longer exists; every other device keeps its
+   * sessions, lines and listeners untouched.
+   */
+  rebuildDevice(deviceId: string, reason: RemoteCloseReason = "cleared-by-administrator"): void {
+    this.closeForDevice(deviceId, reason);
+    this.services.delete(deviceId);
+    this.authenticators.delete(deviceId);
+    this.installDevice(deviceId);
   }
 
   /** Apply persisted configuration for one device and re-arm its listeners. */
@@ -161,6 +181,12 @@ export class ManagementPlane implements RemoteSessionOpener {
     for (const device of this.devices.values()) {
       if (device instanceof L2Switch || device instanceof Router) device.snmp.start();
     }
+  }
+
+  /** Emit `coldStart` from one device only — a single-device reload booting. */
+  startSnmpAgentFor(deviceId: string): void {
+    const device = this.devices.get(deviceId);
+    if (device instanceof L2Switch || device instanceof Router) device.snmp.start();
   }
 
   /** Close everything: Stop Lab, rebuild, or a removed device. */

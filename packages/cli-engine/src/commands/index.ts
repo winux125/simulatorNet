@@ -1,4 +1,5 @@
 import type { CommandSpec } from "../types";
+import { configurationCommands } from "./configuration";
 import { interfaceCommands } from "./interface";
 import { navigationCommands } from "./navigation";
 import { showCommands } from "./show";
@@ -16,6 +17,7 @@ export const allCommands: CommandSpec[] = [
   ...interfaceCommands,
   ...vlanCommands,
   ...showCommands,
+  ...configurationCommands,
   ...applicationCommands,
   ...securityCommands,
   ...qosCommands,

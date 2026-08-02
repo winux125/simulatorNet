@@ -724,10 +724,38 @@ export const LabMetadataSchema = z.object({
 });
 export type LabMetadata = z.infer<typeof LabMetadataSchema>;
 
+/**
+ * One device's saved startup configuration.
+ *
+ * `absent` is the deliberate result of `erase startup-config`: the NVRAM is
+ * empty and a reload boots factory defaults. A device with no entry at all is
+ * *implicit* — the state of every lab written before startup snapshots existed —
+ * and its startup configuration is by definition the configuration the document
+ * was saved with.
+ *
+ * A startup snapshot stores configuration only. ARP/MAC tables, learned routes,
+ * DHCP leases, TCP sessions, NAT translations, VPN security associations, QoS
+ * queues, protocol neighbours and packet trace are runtime and never appear
+ * here — exactly as they never appear in `configurations`.
+ */
+export const DeviceStartupConfigurationSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("absent") }).strict(),
+  z.object({ state: z.literal("saved"), configuration: DeviceConfigSchema }),
+]);
+export type DeviceStartupConfiguration = z.infer<typeof DeviceStartupConfigurationSchema>;
+
+export const LabStartupConfigurationsSchema = z.record(z.string(), DeviceStartupConfigurationSchema);
+export type LabStartupConfigurations = z.infer<typeof LabStartupConfigurationsSchema>;
+
 export const LabSnapshotSchema = z.object({
   topology: TopologySchema,
-  /** Device id -> structured, persistent configuration. */
+  /** Device id -> structured, persistent configuration (the running config). */
   configurations: z.record(z.string(), DeviceConfigSchema).default({}),
+  /**
+   * Device id -> saved startup configuration. Optional: an omitted map means
+   * every device's startup configuration equals its running configuration.
+   */
+  startupConfigurations: LabStartupConfigurationsSchema.optional(),
 });
 export type LabSnapshot = z.infer<typeof LabSnapshotSchema>;
 
@@ -741,6 +769,12 @@ export const LabDocumentSchema = LabMetadataSchema.extend({
   simulation: z.object({ seed: z.number().int().nonnegative() }),
   topology: TopologySchema,
   configurations: z.record(z.string(), DeviceConfigSchema).default({}),
+  /**
+   * Saved startup configuration per device. Absent — as in every lab written
+   * before M10.9.1 — means startup equals running, so an older document keeps
+   * opening without a migration and without a false "unsaved changes" state.
+   */
+  startupConfigurations: LabStartupConfigurationsSchema.optional(),
 });
 export type LabDocument = z.infer<typeof LabDocumentSchema>;
 

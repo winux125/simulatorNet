@@ -9,6 +9,7 @@ import {
   macFromIndex,
 } from "@sim/sim-core";
 import { describe, expect, it } from "vitest";
+import { createTestConfigurationService } from "./helpers/configuration";
 
 describe("M10 capability-aware CLI", () => {
   it("gives a bridge interface/MAC CLI without VLAN commands", () => {
@@ -17,6 +18,7 @@ describe("M10 capability-aware CLI", () => {
     bridge.addInterface("Eth0/1", macFromIndex(1));
     bridge.addInterface("Eth0/2", macFromIndex(2));
     const cli = createCliSession(bridge, engine);
+    cli.useConfigurationService(createTestConfigurationService(bridge));
     expect(cli.execute("?")).toContain("show");
     cli.execute("enable");
     cli.execute("configure terminal");
@@ -54,6 +56,7 @@ describe("M10 capability-aware CLI", () => {
     sw.addInterface("Gi0/2", macFromIndex(102));
     sw.addInterface("Gi0/8", macFromIndex(108));
     const cli = createCliSession(sw, engine);
+    cli.useConfigurationService(createTestConfigurationService(sw));
     for (const line of [
       "enable",
       "configure terminal",
@@ -78,7 +81,8 @@ describe("M10 capability-aware CLI", () => {
     expect(sw.ipRoutingEnabled).toBe(true);
     expect(sw.sviSummaries()).toContainEqual(expect.objectContaining({ vlanId: 10, ip: "192.168.10.1" }));
     expect(sw.isRoutedPort("Gi0/8")).toBe(true);
-    expect(cli.execute("show running-config")).toContain("interface vlan 10");
+    // The renderer writes IOS's own SVI form, `interface Vlan10`.
+    expect(cli.execute("show running-config")).toContain("interface Vlan10");
     expect(cli.execute("show ip route")).toContain("192.168.10.0/24");
     cli.execute("configure terminal");
     expect(cli.execute("interface ?")).toContain("vlan <1-4094>");

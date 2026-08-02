@@ -84,7 +84,28 @@ same deterministic end-host stack.
 | `tracert`, `arp -a`, `nslookup`, `netstat` | No | No | No | No | Yes | Yes | Packet Tracer host-like | `tracert` is a simplified reachability trace |
 | `sim http/tftp/ntp/syslog ...` | No | No | No | No | Yes | Yes | SimulatorNet extension | Desktop tools use the same worker commands |
 | `sim show services/dns/http/tftp/syslog` | No | No | No | No | No | Yes | SimulatorNet extension | Read-only service inspection |
-| startup config, `copy`, `write`, `reload` | No | No | No | No | No | No | Unsupported | Omitted from contextual help |
+| `show startup-config`, `copy run start`, `write`, `erase startup-config`, `reload` | Yes | Yes | Yes | Yes | No | No | IOS-like | See the configuration lifecycle below |
+
+## Configuration lifecycle (M10.9.1)
+
+Structured device configuration is the single source of truth. `show
+running-config` renders it deterministically; the startup configuration is a
+separate structured snapshot of the same model, never a second text copy.
+
+| Command | Mode | Behaviour |
+| --- | --- | --- |
+| `show running-config` | user / privileged | Rendered from structured state; secrets appear only as `<configured>` |
+| `show startup-config` | privileged | The saved snapshot, or `% startup-config is not present` |
+| `copy running-config startup-config` (`copy run start`) | privileged | Copies the structured running snapshot into NVRAM |
+| `write memory` / `write` (`wr`) | privileged | The same save, with the short IOS output |
+| `erase startup-config` | privileged | `[confirm]`; running configuration is untouched until a reload |
+| `reload` | privileged | `[yes/no]` when modified, then `[confirm]`; reloads this device only |
+
+A reload replaces one device instance: its runtime state (ARP/MAC tables,
+learned routes, leases, sessions, translations, security associations, queues)
+is discarded and it boots from its startup configuration — factory defaults if
+the NVRAM was erased. The topology is not rebuilt and every other device keeps
+running. See [`device-configuration.md`](device-configuration.md).
 
 ## Host commands
 
@@ -376,8 +397,9 @@ key and its verifier are never printed. See [`vpn-tunnels.md`](vpn-tunnels.md).
 ## Deliberate omissions
 
 The following familiar IOS operations are not implemented and are omitted from
-contextual help: startup configuration, `copy`, `write`, `erase`, `reload`,
-`no ip address`, `no ip route`, EIGRP/BGP/IS-IS, multi-area OSPF, OSPF
+contextual help: `no ip address`, `no ip route`, `copy` to or from a network
+server or flash (only `copy running-config startup-config` exists),
+EIGRP/BGP/IS-IS, multi-area OSPF, OSPF
 authentication and redistribution, MSTP and MST regions, Loop Guard, Root Guard,
 UDLD, UplinkFast/BackboneFast/Flex Links, multi-chassis EtherChannel, LACP fast
 rate, PAgP silent modes, LLDP-MED, port security, reflexive/time-based ACLs, NAT

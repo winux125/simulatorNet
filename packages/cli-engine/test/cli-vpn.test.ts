@@ -2,6 +2,7 @@ import { createCliSession } from "@sim/cli-engine";
 import { createVpnPreSharedKeyVerifier, VPN_PRE_SHARED_KEY_SCOPE } from "@sim/console-auth";
 import { Firewall, Layer3Switch, Router, createSimulationEngine, macFromIndex } from "@sim/sim-core";
 import { describe, expect, it } from "vitest";
+import { createTestConfigurationService } from "./helpers/configuration";
 
 function routerSession(kind: "router" | "firewall" = "router") {
   const engine = createSimulationEngine({ seed: 10_909 });
@@ -13,6 +14,7 @@ function routerSession(kind: "router" | "firewall" = "router") {
   device.configureInterface("Gi0/0", { ip: "10.1.0.1", mask: 24 });
   device.configureInterface("Gi0/1", { ip: "203.0.113.1", mask: 30 });
   const session = createCliSession(device, engine);
+  session.useConfigurationService(createTestConfigurationService(device));
   session.execute("enable");
   session.execute("configure terminal");
   return { engine, device, session };

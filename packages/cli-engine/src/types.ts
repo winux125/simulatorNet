@@ -1,6 +1,7 @@
 import type { DeviceCapability } from "@sim/contracts";
 import type { Device, SimulationEngine } from "@sim/sim-core";
 import type { Params } from "./parser/matcher";
+import type { DeviceConfigurationService } from "./session/configuration";
 import type { CliMode } from "./session/mode";
 
 /** Which device kind a command applies to. */
@@ -130,6 +131,17 @@ export interface SessionApi {
    * session, sim-core, a trace, a log or `show running-config`.
    */
   requestCredential(prompt: string, scope: string, apply: (fingerprint: string) => string): string;
+  /**
+   * Ask a free-form question. The next line the learner types is handed to
+   * `answer` verbatim, so a command can implement IOS's `[yes/no]:` prompts
+   * without inventing a second confirmation model.
+   */
+  requestAnswer(prompt: string, answer: (line: string) => string): string;
+  /**
+   * The running/startup configuration service, when the runtime attached one.
+   * A bare session (a unit test with no lab behind it) has none.
+   */
+  configurationService(): DeviceConfigurationService | undefined;
 }
 
 export interface CommandSpec {

@@ -8,7 +8,6 @@ import {
   showIpInterfaceBrief,
   showIpRoute,
   showMacAddressTable,
-  showRunningConfig,
   showVlanBrief,
 } from "../formatter/show";
 import type { CliMode } from "../session/mode";
@@ -19,12 +18,6 @@ const SHOW_MODES: CliMode[] = ["exec", "privileged"];
 
 /** `show ...` commands and `ping`, valid in user/privileged EXEC. */
 export const showCommands: CommandSpec[] = [
-  {
-    pattern: "show running-config",
-    modes: SHOW_MODES,
-    device: "network",
-    run: (s) => showRunningConfig(s.device),
-  },
   {
     pattern: "show interfaces trunk",
     modes: SHOW_MODES,

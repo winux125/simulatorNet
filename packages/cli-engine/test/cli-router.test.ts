@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createSimulationEngine, L2Switch, macFromIndex, Pc, Router } from "@sim/sim-core";
 import { createCliSession } from "@sim/cli-engine";
+import { createTestConfigurationService } from "./helpers/configuration";
 
 describe("CLI router configuration", () => {
   it("configures interfaces, a subinterface and a static route via public methods", () => {
@@ -25,6 +26,7 @@ describe("CLI router configuration", () => {
     r.addInterface("Gi0/0", macFromIndex(10));
     r.addInterface("Gi0/1", macFromIndex(11));
     const session = createCliSession(r, engine);
+    session.useConfigurationService(createTestConfigurationService(r));
     expect(session.transcript(ROUTER_SCRIPT)).toBe(GOLDEN_ROUTER_TRANSCRIPT);
   });
 });
@@ -162,6 +164,8 @@ Gi0/0.10                192.168.10.1    down                    down
 R1#show running-config
 !
 hostname R1
+!
+interface Gi0/0
 !
 interface Gi0/1
  ip address 10.0.0.1 255.255.255.0

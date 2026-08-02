@@ -13,13 +13,17 @@ import {
   macFromIndex,
 } from "@sim/sim-core";
 import { describe, expect, it } from "vitest";
+import { createTestConfigurationService } from "./helpers/configuration";
 
 function routerCli() {
   const engine = createSimulationEngine({ seed: 101 });
   const router = engine.add(new Router("r1", "R1"));
   router.addInterface("Gi0/0", macFromIndex(1));
   router.addInterface("Gi0/1", macFromIndex(2));
-  return { engine, router, cli: createCliSession(router, engine) };
+  const cli = createCliSession(router, engine);
+  const configuration = createTestConfigurationService(router);
+  cli.useConfigurationService(configuration);
+  return { engine, router, cli, configuration };
 }
 
 function switchCli(layer3 = false) {
@@ -234,8 +238,56 @@ describe("M10.2.1 device command profiles", () => {
     expect(cli.execute("nslookup ?")).toContain("<hostname>");
   });
 
-  it("omits unsupported IOS lifecycle commands", () => {
-    const { cli } = routerCli();
+  it("runs the IOS configuration lifecycle", () => {
+    const { cli, configuration } = routerCli();
+    cli.execute("enable");
+    expect(cli.execute("show ?")).toContain("startup-config");
+    expect(cli.execute("copy run start")).toBe(
+      "Destination filename [startup-config]?\nBuilding configuration...\n[OK]",
+    );
+    expect(configuration.drift("r1")).toBe("saved");
+    expect(cli.execute("wr")).toBe("Building configuration...\n[OK]");
+
+    // `erase startup-config` and `reload` both require an explicit confirmation.
+    expect(cli.prompt()).toBe("R1#");
+    cli.execute("erase startup-config");
+    expect(cli.prompt()).toContain("[confirm]");
+    expect(cli.execute("")).toContain("Erase of nvram: complete");
+    expect(configuration.drift("r1")).toBe("no-startup-configuration");
+    expect(cli.execute("show startup-config")).toBe("% startup-config is not present");
+  });
+
+  it("offers the three-way reload answer when the running config is modified", () => {
+    const { cli, configuration } = routerCli();
+    cli.execute("enable");
+    cli.execute("copy run start");
+    cli.execute("configure terminal");
+    cli.execute("hostname R9");
+    cli.execute("end");
+    expect(configuration.drift("r1")).toBe("modified");
+
+    cli.execute("reload");
+    expect(cli.prompt()).toBe("System configuration has been modified. Save? [yes/no]:");
+    cli.execute("no");
+    expect(cli.prompt()).toBe("Proceed with reload? [confirm]");
+    expect(cli.execute("")).toContain("Reload requested.");
+    expect(configuration.reloaded).toEqual([{ deviceId: "r1", save: false }]);
+  });
+
+  it("cancels a reload when the modified prompt is answered with anything else", () => {
+    const { cli, configuration } = routerCli();
+    cli.execute("enable");
+    cli.execute("copy run start");
+    cli.execute("configure terminal");
+    cli.execute("hostname R9");
+    cli.execute("end");
+    cli.execute("reload");
+    expect(cli.execute("maybe")).toBe("% Reload cancelled.");
+    expect(configuration.reloaded).toEqual([]);
+  });
+
+  it("keeps the configuration lifecycle off a host CLI", () => {
+    const { cli } = hostCli();
     expect(cli.execute("show ?")).not.toContain("startup-config");
     expect(cli.execute("copy running-config startup-config")).toContain("% Invalid input");
     expect(cli.execute("reload")).toContain("% Invalid input");
@@ -271,12 +323,13 @@ describe("M10.2.1 device command profiles", () => {
       "netstat",
       "sim http get {url}",
       "sim show services",
-    ]) expect(patterns, documented).toContain(documented);
-    for (const unsupported of [
       "show startup-config",
       "copy running-config startup-config",
       "write memory",
+      "erase startup-config",
       "reload",
+    ]) expect(patterns, documented).toContain(documented);
+    for (const unsupported of [
       "no ip address",
       "no ip route",
     ]) expect(patterns, unsupported).not.toContain(unsupported);

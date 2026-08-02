@@ -1,0 +1,19 @@
+{
+  "name": "@sim/device-config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Human-readable device configuration: the deterministic running/startup-config renderer, the shared text parser, and canonical configuration comparison. Pure functions over structured DeviceConfig; no engine, no DOM, no Node APIs.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@sim/contracts": "workspace:*"
+  }
+}

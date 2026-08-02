@@ -16,6 +16,7 @@
   "dependencies": {
     "@sim/console-auth": "workspace:*",
     "@sim/contracts": "workspace:*",
+    "@sim/device-config": "workspace:*",
     "@sim/lab-format": "workspace:*",
     "zod": "^3.24.0"
   }

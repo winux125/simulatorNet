@@ -4,8 +4,10 @@ import {
   DEFAULT_SPANNING_TREE_CONFIG,
   type DeviceConfig,
   type DeviceId,
+  type DeviceStartupConfiguration,
   type LabDocument,
   type LabMetadata,
+  type LabStartupConfigurations,
   type Ipv4AclConfig,
   type Ipv6AclConfig,
   type Ipv6InterfaceAddress,
@@ -75,6 +77,27 @@ export interface BuiltLab {
   readonly devices: ReadonlyMap<DeviceId, Device>;
   readonly topology: Topology;
   readonly seed: number;
+  /** The topology node behind a device, for its canonical interfaces and MACs. */
+  getNode(id: DeviceId | string): NodeSpec | undefined;
+  /**
+   * The device's saved startup configuration, or `undefined` when it has none
+   * stored — the *implicit* state, in which startup equals running.
+   */
+  startupConfigurationOf(id: DeviceId | string): DeviceStartupConfiguration | undefined;
+  /**
+   * Replace one device's startup snapshot. This is configuration, never
+   * runtime: `copy running-config startup-config` and `erase startup-config`
+   * are the only things that call it.
+   */
+  setStartupConfiguration(id: DeviceId | string, entry: DeviceStartupConfiguration | undefined): void;
+  /** Every stored startup snapshot, or `undefined` when none exists. */
+  startupConfigurations(): LabStartupConfigurations | undefined;
+  /**
+   * Swap in a freshly built instance for one device id. Used only by a
+   * single-device reload, which rebuilds that device and nothing else; the map
+   * is shared with the management plane, so both see the new instance.
+   */
+  replaceDevice(id: DeviceId | string, device: Device): void;
   /**
    * Telnet/SSH listeners, VTY lines and remote sessions for this lab. Built
    * identically in the browser worker and the verifier so a management result
@@ -100,16 +123,52 @@ export interface BuiltLab {
 }
 
 class BuiltLabImpl implements BuiltLab {
+  private readonly startup = new Map<DeviceId, DeviceStartupConfiguration>();
+
   constructor(
     readonly engine: SimulationEngine,
     readonly devices: ReadonlyMap<DeviceId, Device>,
     readonly topology: Topology,
     readonly seed: number,
     readonly management: ManagementPlane,
-  ) {}
+    startup: LabStartupConfigurations | undefined,
+  ) {
+    for (const node of topology.nodes) {
+      const entry = startup?.[node.id];
+      if (entry) this.startup.set(asDeviceId(node.id), entry);
+    }
+  }
 
   getDevice(id: DeviceId | string): Device | undefined {
     return this.devices.get(asDeviceId(id));
+  }
+
+  getNode(id: DeviceId | string): NodeSpec | undefined {
+    return this.topology.nodes.find((node) => node.id === id);
+  }
+
+  startupConfigurationOf(id: DeviceId | string): DeviceStartupConfiguration | undefined {
+    return this.startup.get(asDeviceId(id));
+  }
+
+  setStartupConfiguration(id: DeviceId | string, entry: DeviceStartupConfiguration | undefined): void {
+    if (entry) this.startup.set(asDeviceId(id), entry);
+    else this.startup.delete(asDeviceId(id));
+  }
+
+  replaceDevice(id: DeviceId | string, device: Device): void {
+    (this.devices as Map<DeviceId, Device>).set(asDeviceId(id), device);
+  }
+
+  startupConfigurations(): LabStartupConfigurations | undefined {
+    if (this.startup.size === 0) return undefined;
+    const result: LabStartupConfigurations = {};
+    // Node order, not insertion order, so the serialized record is canonical.
+    for (const node of this.topology.nodes) {
+      const entry = this.startup.get(asDeviceId(node.id));
+      if (entry) result[node.id] = entry;
+    }
+    return result;
   }
 
   getPc(id: DeviceId | string): Pc | undefined {
@@ -667,6 +726,32 @@ function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3Swit
   if (config.ospfv3) applyOspfv3Configuration(device, config.ospfv3);
 }
 
+/**
+ * Instantiate one device: create it, give it the topology's canonical
+ * interfaces and MAC addresses, and apply its structured configuration.
+ *
+ * `buildLabFromDocument` does this for the whole lab in three passes because
+ * cabling needs every device to exist first. A single-device reload needs the
+ * same three steps for exactly one device, so they live here rather than being
+ * duplicated by the lifecycle module.
+ */
+export function createDeviceInstance(
+  node: NodeSpec,
+  config: DeviceConfig,
+  engine: SimulationEngine,
+): Device {
+  const device = createDevice(node, config, engine);
+  const profile = getDeviceProfile(node.kind);
+  for (const iface of node.interfaces) {
+    const template = profile.interfaceTemplates.find((entry) => entry.id === iface.id);
+    // A wireless interface is created by the radio configuration, not cabled on.
+    if (template?.media === "wireless") continue;
+    device.addInterface(iface.id, iface.mac as Mac);
+  }
+  applyConfiguration(device, config, node);
+  return device;
+}
+
 export function buildLabFromDocument(document: LabDocument): BuiltLab {
   const canonical = canonicalizeLabDocument(document);
   const engine = createSimulationEngine({ seed: canonical.simulation.seed });
@@ -718,7 +803,14 @@ export function buildLabFromDocument(document: LabDocument): BuiltLab {
     management.configureDevice(node.id, remote, access);
   }
 
-  return new BuiltLabImpl(engine, devices, canonical.topology, canonical.simulation.seed, management);
+  return new BuiltLabImpl(
+    engine,
+    devices,
+    canonical.topology,
+    canonical.simulation.seed,
+    management,
+    canonical.startupConfigurations,
+  );
 }
 
 function prefixLength(maskInt: number): number {
@@ -851,6 +943,17 @@ function serializeAaa(state: { snapshot(): AaaConfiguration }): AaaConfiguration
 function serializeSnmp(agent: { snapshot(): SnmpAgentConfiguration }): SnmpAgentConfiguration | undefined {
   const snapshot = agent.snapshot();
   return isDefaultSnmpAgentConfiguration(snapshot) ? undefined : snapshot;
+}
+
+/**
+ * Read one device's live configuration back as structured data.
+ *
+ * This is the bridge from the engine to the canonical model: the running
+ * configuration a CLI command just changed, a `.cfg` projection and a startup
+ * snapshot all come from here, so they cannot disagree.
+ */
+export function serializeDeviceConfiguration(device: Device, node: NodeSpec): DeviceConfig {
+  return serializeConfiguration(device, node);
 }
 
 function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
@@ -1187,5 +1290,8 @@ export function serializeLabDocument(builtLab: BuiltLab, metadata: LabMetadata):
     simulation: { seed: builtLab.seed },
     topology: { ...builtLab.topology, nodes },
     configurations,
+    // Startup snapshots are configuration, so they survive serialization exactly
+    // like the running configuration does. Runtime state never joins them.
+    startupConfigurations: builtLab.startupConfigurations(),
   });
 }

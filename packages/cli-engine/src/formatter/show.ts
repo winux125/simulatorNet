@@ -2,13 +2,10 @@ import {
   type Device,
   EndHost,
   EthernetBridge,
-  intToIp,
   L2Switch,
   Layer3Switch,
   Router,
-  Server,
 } from "@sim/sim-core";
-import { runningConfigVpnLines } from "../commands/vpn";
 import { dashes, row } from "./tables";
 
 function maskLen(maskInt: number): number {
@@ -179,107 +176,10 @@ export function showArp(device: Device): string {
 }
 
 // --- running-config ------------------------------------------------------
+//
+// `show running-config` is no longer rendered here. Configuration text is a
+// projection of structured `DeviceConfig` produced by `@sim/device-config`, so
+// the browser, the verifier, a `.cfg` export and a startup snapshot all read
+// the same bytes. The CLI reaches it through the injected
+// `DeviceConfigurationService` (see `commands/configuration.ts`).
 
-export function showRunningConfig(device: Device): string {
-  const out: string[] = ["!", `hostname ${device.name}`, "!"];
-  if (device instanceof Layer3Switch) {
-    for (const vlan of device.vlanBrief()) {
-      if (vlan.id === 1) continue;
-      out.push(`vlan ${vlan.id}`, ` name ${vlan.name}`, "!");
-    }
-    const routed = new Map(device.routedInterfaceSummaries().map((entry) => [entry.name, entry]));
-    for (const port of device.portSummaries()) {
-      out.push(`interface ${port.name}`);
-      if (port.description) out.push(` description ${port.description}`);
-      if (device.isRoutedPort(port.name)) {
-        out.push(" no switchport");
-        const l3 = routed.get(port.name);
-        if (l3?.ip) out.push(` ip address ${l3.ip} ${intToIp(l3.maskInt)}`);
-      } else if (port.mode === "access") {
-        if (port.accessVlan !== 1) out.push(" switchport mode access", ` switchport access vlan ${port.accessVlan}`);
-      } else {
-        out.push(" switchport mode trunk");
-        if (port.nativeVlan !== 1) out.push(` switchport trunk native vlan ${port.nativeVlan}`);
-        if (port.allowedVlans !== "all") out.push(` switchport trunk allowed vlan ${port.allowedVlans.join(",")}`);
-      }
-      if (!port.adminUp) out.push(" shutdown");
-      out.push("!");
-    }
-    for (const svi of device.sviSummaries()) {
-      out.push(`interface vlan ${svi.vlanId}`);
-      if (svi.description) out.push(` description ${svi.description}`);
-      if (svi.ip) out.push(` ip address ${svi.ip} ${intToIp(svi.maskInt)}`);
-      if (!svi.adminUp) out.push(" shutdown");
-      out.push("!");
-    }
-    out.push(device.ipRoutingEnabled ? "ip routing" : "no ip routing");
-    for (const route of device.routingTable()) {
-      if (route.kind === "static") out.push(`ip route ${route.network} ${intToIp(route.maskInt)} ${route.viaIp}`);
-    }
-    out.push("!");
-  } else if (device instanceof L2Switch) {
-    for (const v of device.vlanBrief()) {
-      if (v.id === 1) continue;
-      out.push(`vlan ${v.id}`, ` name ${v.name}`, "!");
-    }
-    for (const p of device.portSummaries()) {
-      out.push(`interface ${p.name}`);
-      if (p.description !== undefined) out.push(` description ${p.description}`);
-      if (p.mode === "access") {
-        if (p.accessVlan !== 1) {
-          out.push(" switchport mode access", ` switchport access vlan ${p.accessVlan}`);
-        }
-      } else {
-        out.push(" switchport mode trunk");
-        if (p.nativeVlan !== 1) out.push(` switchport trunk native vlan ${p.nativeVlan}`);
-        if (p.allowedVlans !== "all") out.push(` switchport trunk allowed vlan ${p.allowedVlans.join(",")}`);
-      }
-      if (!p.adminUp) out.push(" shutdown");
-      out.push("!");
-    }
-  } else if (device instanceof EthernetBridge) {
-    for (const [name, iface] of device.interfaces) {
-      out.push(`interface ${name}`);
-      if (iface.description) out.push(` description ${iface.description}`);
-      if (!iface.adminUp) out.push(" shutdown");
-      out.push("!");
-    }
-  } else if (device instanceof Router) {
-    const tunnels = new Set(device.tunnelConfigurations().map((tunnel) => tunnel.id));
-    for (const i of device.interfaceSummaries()) {
-      // Tunnels are rendered by the VPN section, with their source, destination
-      // and protection, so they are not repeated as plain interfaces here.
-      if (tunnels.has(i.name)) continue;
-      out.push(`interface ${i.name}`);
-      if (i.description !== undefined) out.push(` description ${i.description}`);
-      if (i.vlan !== undefined) out.push(` encapsulation dot1Q ${i.vlan}${i.native ? " native" : ""}`);
-      if (i.ip !== undefined) out.push(` ip address ${i.ip} ${intToIp(i.maskInt)}`);
-      else out.push(" no ip address");
-      if (!i.adminUp) out.push(" shutdown");
-      out.push("!");
-    }
-    // Crypto and tunnel configuration. The pre-shared key is a shared secret
-    // and is rendered as `<configured>`, never as a key or as its verifier.
-    out.push(...runningConfigVpnLines(device));
-    for (const rt of device.routingTable()) {
-      if (rt.kind === "static") out.push(`ip route ${rt.network} ${intToIp(rt.maskInt)} ${rt.viaIp}`);
-    }
-    out.push("!");
-  } else if (device instanceof EndHost) {
-    const state = device.configurationSnapshot();
-    out.push(`interface ${device.primary.name}`);
-    if (state.ip) out.push(` ip address ${state.ip} ${intToIp(state.maskInt)}`);
-    if (state.dhcpEnabled) out.push(" ip address dhcp");
-    if (!device.primary.adminUp) out.push(" shutdown");
-    out.push("!");
-    if (state.gateway) out.push(`ip default-gateway ${state.gateway}`);
-    if (state.dnsServer) out.push(`ip name-server ${state.dnsServer}`);
-    if (device instanceof Server) {
-      for (const service of device.services.configurations()) {
-        out.push(`service ${service.type} ${service.enabled ? "enabled" : "disabled"} port ${service.port}`);
-      }
-    }
-  }
-  out.push("end");
-  return out.join("\n");
-}

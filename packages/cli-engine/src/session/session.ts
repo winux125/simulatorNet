@@ -28,6 +28,7 @@ import type {
   SessionApi,
   VtyLineContext,
 } from "../types";
+import type { DeviceConfigurationService } from "./configuration";
 import { type CliMode, promptSuffix } from "./mode";
 import type { RemoteSessionBridge, RemoteSessionOpener, RemoteSessionRequest } from "./remote";
 
@@ -63,8 +64,10 @@ export class CliSession implements SessionApi {
     scope: string;
     apply(fingerprint: string): string;
   } | undefined;
+  private pendingAnswer: { prompt: string; answer(line: string): string } | undefined;
   private remote: RemoteSessionBridge | undefined;
   private remoteOpener: RemoteSessionOpener | undefined;
+  private configuration: DeviceConfigurationService | undefined;
 
   constructor(
     readonly device: Device,
@@ -74,6 +77,7 @@ export class CliSession implements SessionApi {
   /** The prompt shown before the next command, e.g. "S1(config-if)#". */
   prompt(): string {
     if (this.pendingCredential) return this.pendingCredential.prompt;
+    if (this.pendingAnswer) return this.pendingAnswer.prompt;
     if (this.pendingConfirmation) return this.pendingConfirmation.prompt;
     if (this.pendingInput === "ping-target") return "Target IP address:";
     const remote = this.remote;
@@ -182,6 +186,23 @@ export class CliSession implements SessionApi {
     return "";
   }
 
+  requestAnswer(prompt: string, answer: (line: string) => string): string {
+    this.pendingAnswer = { prompt, answer };
+    return "";
+  }
+
+  /**
+   * Attach the running/startup configuration service. Owned by the runtime
+   * (worker or verifier), never by a command handler.
+   */
+  useConfigurationService(service: DeviceConfigurationService | undefined): void {
+    this.configuration = service;
+  }
+
+  configurationService(): DeviceConfigurationService | undefined {
+    return this.configuration;
+  }
+
   setExecutionMode(mode: NetworkExecutionMode): void {
     this.executionMode = mode;
   }
@@ -262,6 +283,18 @@ export class CliSession implements SessionApi {
         if (error instanceof CliError) return error.render();
         const protocolError = renderProtocolError(error);
         if (protocolError !== undefined) return protocolError;
+        throw error;
+      }
+    }
+    // A free-form question owns the next line before any command matching, so
+    // an answer is never mistaken for a command (and a pasted sequence stops).
+    const question = this.pendingAnswer;
+    if (question) {
+      this.pendingAnswer = undefined;
+      try {
+        return question.answer(line.trim());
+      } catch (error) {
+        if (error instanceof CliError) return error.render();
         throw error;
       }
     }

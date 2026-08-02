@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@sim/contracts": "workspace:*",
+    "@sim/device-config": "workspace:*",
     "@sim/remote-management": "workspace:*",
     "@sim/sim-core": "workspace:*",
     "zod": "^3.24.0"

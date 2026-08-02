@@ -406,7 +406,7 @@ export class QosPolicyEngine {
   counterSummaries(): QosClassCounter[] {
     return [...this.counters.entries()]
       .map(([key, row]) => {
-        const [policyMapId, direction, interfaceName, className] = key.split(" ");
+        const [policyMapId, direction, interfaceName, className] = key.split("\u0000");
         return {
           policyMapId: policyMapId!,
           direction: direction as QosDirection,
@@ -727,11 +727,11 @@ function clonePolicyClass(policyClass: QosPolicyClass): QosPolicyClass {
 }
 
 function bindingKey(interfaceName: string, direction: QosDirection): string {
-  return `${interfaceName} ${direction}`;
+  return `${interfaceName}\u0000${direction}`;
 }
 
 function counterKey(result: QosClassificationResult): string {
-  return [result.policyMapId, result.direction, result.interfaceName, result.className].join(" ");
+  return [result.policyMapId, result.direction, result.interfaceName, result.className].join("\u0000");
 }
 
 export { MAXIMUM_COS };

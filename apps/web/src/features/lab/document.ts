@@ -311,6 +311,9 @@ export function mergeRunningConfiguration(running: LabDocument, draft: LabDocume
     ...draft,
     topology: draft.topology,
     configurations,
+    // Startup snapshots are configuration, so they come from the worker beside
+    // the running configuration — never from the stale editor draft.
+    startupConfigurations: running.startupConfigurations ?? draft.startupConfigurations,
   });
 }
 

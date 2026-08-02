@@ -79,6 +79,31 @@ export class SimulationEngine {
   }
 
   /**
+   * Detach one device from the running lab.
+   *
+   * Every cable it holds is removed first, so no packet is ever delivered to a
+   * device that is no longer part of the topology, and each interface drops
+   * whatever it still had queued. This exists for a single-device reload: the
+   * rest of the lab keeps its runtime state, virtual time and event queue.
+   *
+   * Any event already scheduled by the removed instance still runs — the queue
+   * stays deterministic and bounded — but it now acts on a detached device with
+   * no links, so it cannot reach the network.
+   */
+  remove(deviceId: string): Device | undefined {
+    const device = this.devices.get(deviceId);
+    if (!device) return undefined;
+    for (const iface of device.interfaces.values()) {
+      if (iface.link) this.disconnect(iface.link);
+      iface.flushEgress("runtime-cleared");
+      this.wireless.removeStation(deviceId, iface.name);
+      this.wireless.removeAccessPoint(deviceId, iface.name, "access-point-removed");
+    }
+    this.devices.delete(deviceId);
+    return device;
+  }
+
+  /**
    * Cable two interfaces together. `performance` may be a plain propagation
    * delay in nanoseconds (the pre-M10.8 form) or a structured link performance
    * description with capacity and queue depth.

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createSimulationEngine, L2Switch, macFromIndex, type SimulationEngine } from "@sim/sim-core";
 import { createCliSession } from "@sim/cli-engine";
+import { createTestConfigurationService } from "./helpers/configuration";
 
 function buildSwitch(): { engine: SimulationEngine; sw: L2Switch } {
   const engine = createSimulationEngine({ seed: 1 });
@@ -58,6 +59,7 @@ describe("CLI vertical slice: configure a VLAN and an access port", () => {
   it("produces a stable Cisco-like transcript (golden)", () => {
     const { engine, sw } = buildSwitch();
     const session = createCliSession(sw, engine);
+    session.useConfigurationService(createTestConfigurationService(sw));
     const transcript = session.transcript(VERTICAL_SLICE);
     expect(transcript).toBe(GOLDEN_SWITCH_TRANSCRIPT);
   });
@@ -138,7 +140,9 @@ interface Gi0/1
  switchport access vlan 10
 !
 interface Gi0/2
+ switchport mode access
 !
 interface Gi0/3
+ switchport mode access
 !
 end`;

@@ -16,6 +16,7 @@
   "dependencies": {
     "@sim/cli-engine": "workspace:*",
     "@sim/contracts": "workspace:*",
+    "@sim/device-config": "workspace:*",
     "@sim/lab-format": "workspace:*",
     "@sim/sim-core": "workspace:*"
   }
