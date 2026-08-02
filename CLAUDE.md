@@ -187,12 +187,14 @@ service-policy bindings. It must never store queued packets, token counts, the
 scheduler cursor, counters, drops or measured waiting times. Capacity is an
 educational serialization model, never a hardware throughput claim.
 
-A device window carries exactly one top-level `QoS` tab. Overview,
-Classification, Policies, Interfaces and Queues & Counters are secondary
-navigation inside it, an interface row opens its detail in the same tab, and no
-nested modal window is created. One reusable `QosPanel` serves Router, L3 Switch
-and Firewall; differences are declared as capabilities rather than forked into
-near-identical components, and a device with no policy engine gets no QoS tab.
+A managed device window carries `QoS` as one capability-driven section under
+`Config`; queue and counter inspection is also reachable from `Monitor`.
+Overview, Classification, Policies, Interfaces and Queues & Counters remain
+secondary navigation inside the reusable panel, an interface row opens its
+detail in place, and no nested modal window is created. One `QosPanel` serves
+Router, L3 Switch and Firewall; differences are declared as capabilities rather
+than forked into near-identical components, and a device with no policy engine
+gets no QoS section.
 The selected section is UI state and never reaches `LabDocument`, a submission,
 grading or the database. See `docs/qos-simulation.md`.
 
@@ -235,9 +237,10 @@ with a bounded queue.
 
 `LabDocument` stores tunnels, proposals, peers, key verifiers, profiles and the
 tunnel→profile binding. It must never store IKE state, SAs, SPIs, sequence or
-replay state, counters, rekey timers or peer reachability. A device window
-carries exactly one top-level `VPN` tab — Tunnels, IKE Peers, IPsec Profiles,
-Sessions and Counters are secondary navigation inside it, as with QoS. A VPN
+replay state, counters, rekey timers or peer reachability. A managed device
+window carries one `VPN` section under `Config`, with runtime sessions reachable
+from `Monitor`; Tunnels, IKE Peers, IPsec Profiles, Sessions and Counters remain
+secondary navigation inside the reusable panel, as with QoS. A VPN
 canvas overlay is derived presentation like a wireless association: never a
 link, never a cable workflow. NAT-T is not modelled. See `docs/vpn-tunnels.md`.
 

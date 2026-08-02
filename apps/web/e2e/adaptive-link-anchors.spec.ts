@@ -76,8 +76,8 @@ async function connectDevices(
   await page.mouse.up();
   const dialog = page.getByRole("dialog", { name: "Configure connection" });
   await expect(dialog).toBeVisible();
-  if (sourceInterface) await dialog.getByLabel("From interface").selectOption(sourceInterface);
-  if (targetInterface) await dialog.getByLabel("To interface").selectOption(targetInterface);
+  if (sourceInterface) await dialog.getByLabel("From interface", { exact: true }).selectOption(sourceInterface);
+  if (targetInterface) await dialog.getByLabel("To interface", { exact: true }).selectOption(targetInterface);
   await dialog.getByRole("button", { name: "Connect", exact: true }).click();
   await expect(dialog).toHaveCount(0);
 }
@@ -86,6 +86,7 @@ async function configurePc(page: Page, hostname: string, address: string) {
   await closeInspector(page);
   await page.getByRole("button", { name: `Select ${hostname}` }).dblclick();
   const deviceWindow = page.getByRole("dialog", { name: `${hostname} device window` });
+  await deviceWindow.getByRole("tab", { name: "Config" }).click();
   await deviceWindow.getByLabel("IPv4 Address").fill(address);
   await deviceWindow.getByLabel("Subnet Mask").fill("255.255.255.0");
   await deviceWindow.getByRole("button", { name: "Apply" }).click();

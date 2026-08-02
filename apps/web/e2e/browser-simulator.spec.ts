@@ -486,6 +486,7 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   for (const tab of ["Desktop", "Config", "Terminal", "Attributes"]) {
     await expect(deviceWindow.getByRole("tab", { name: tab })).toBeVisible();
   }
+  await deviceWindow.getByRole("tab", { name: "Desktop" }).click();
   await expect(deviceWindow.getByRole("button", { name: "Web Browser" })).toBeVisible();
   await deviceWindow.getByRole("button", { name: "Close device window" }).click();
 
@@ -725,10 +726,11 @@ test("M10.3d ACL NAT Firewall and Traffic Generator workflows", async ({ page })
   await closeInspector(page);
   await page.getByRole("button", { name: "Select FW1" }).dblclick();
   const firewallWindow = page.getByRole("dialog", { name: "FW1 device window" });
-  for (const tab of ["Overview", "Interfaces", "Zones", "Policies", "NAT", "Routes", "Connections", "CLI"]) {
+  for (const tab of ["Physical", "Config", "CLI", "Monitor", "Attributes"]) {
     await expect(firewallWindow.getByRole("tab", { name: tab, exact: true })).toBeVisible();
   }
-  await firewallWindow.getByRole("tab", { name: "Policies", exact: true }).click();
+  await firewallWindow.getByRole("tab", { name: "Config", exact: true }).click();
+  await firewallWindow.getByRole("button", { name: "Policies", exact: true }).click();
   await expect(firewallWindow.getByRole("heading", { name: "Firewall Policies" })).toBeVisible();
   await expect(firewallWindow.getByLabel("Firewall Policies JSON")).toContainText("inside-out");
   await page.screenshot({
@@ -742,7 +744,8 @@ test("M10.3d ACL NAT Firewall and Traffic Generator workflows", async ({ page })
   await closeInspector(page);
   await page.getByRole("button", { name: "Select FW1" }).dblclick();
   const connectionWindow = page.getByRole("dialog", { name: "FW1 device window" });
-  await connectionWindow.getByRole("tab", { name: "Connections", exact: true }).click();
+  await connectionWindow.getByRole("tab", { name: "Monitor", exact: true }).click();
+  await connectionWindow.getByRole("button", { name: "Firewall Connections", exact: true }).click();
   await expect(connectionWindow.getByText("inside", { exact: false })).toBeVisible();
   await connectionWindow.getByRole("button", { name: "Close device window" }).click();
 
@@ -791,6 +794,7 @@ test("two draft-configured PCs ping through an L2 switch after Start Lab", async
   const configurePc = async (hostname: string, address: string) => {
     await page.getByRole("button", { name: `Select ${hostname}` }).dblclick();
     const window = page.getByRole("dialog", { name: `${hostname} device window` });
+    await window.getByRole("tab", { name: "Config" }).click();
     await expect(window.getByRole("heading", { name: "IP Configuration" })).toBeVisible();
     await window.getByLabel("IPv4 Address").fill(address);
     await window.getByLabel("Subnet Mask").fill("255.255.255.0");
@@ -813,7 +817,7 @@ test("two draft-configured PCs ping through an L2 switch after Start Lab", async
     await handle.dragTo(targetNode.locator(".device-node__surface"));
     const dialog = page.getByRole("dialog", { name: "Configure connection" });
     await expect(dialog.getByLabel("Connection type")).toHaveValue("ethernet");
-    await dialog.getByLabel("To interface").selectOption(targetPort);
+    await dialog.getByLabel("To interface", { exact: true }).selectOption(targetPort);
     if (source === "pc-1") await page.screenshot({ path: "/tmp/device-connection-modal-1440x900.png", animations: "disabled" });
     await dialog.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(dialog).toHaveCount(0);
@@ -1040,6 +1044,7 @@ test("M10.2 DNS and HTTP traverse UDP/TCP and expose Server service UI", async (
   await closeInspector(page);
   await page.getByRole("button", { name: "Select PC1" }).dblclick();
   const pcWindow = page.getByRole("dialog", { name: "PC1 device window" });
+  await pcWindow.getByRole("tab", { name: "Desktop" }).click();
   await pcWindow.getByRole("button", { name: "Web Browser" }).click();
   await pcWindow.getByRole("button", { name: "Go" }).click();
   await expect(pcWindow.getByLabel("Web response preview")).toContainText("HTTP/1.1 200");

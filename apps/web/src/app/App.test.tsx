@@ -809,15 +809,21 @@ describe("M10.2.1 Packet Tracer-style workspace", () => {
     await loadDemo(client);
     fireEvent.doubleClick(screen.getByRole("button", { name: "Select R1" }));
     let dialog = await screen.findByRole("dialog", { name: "R1 device window" });
-    for (const tab of ["Interfaces", "Routing", "ACL", "NAT", "CLI", "Runtime"]) {
+    for (const tab of ["Physical", "Config", "CLI", "Monitor", "Attributes"]) {
       expect(within(dialog).getByRole("tab", { name: tab })).toBeTruthy();
     }
+    expect(within(dialog).queryByRole("tab", { name: "ACL" })).toBeNull();
+    expect(within(dialog).queryByRole("tab", { name: "NAT" })).toBeNull();
+    await userEvent.click(within(dialog).getByRole("tab", { name: "Config" }));
+    expect(within(dialog).getByRole("button", { name: "ACL" })).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "NAT" })).toBeTruthy();
     await userEvent.click(within(dialog).getByRole("button", { name: "Close device window" }));
     fireEvent.doubleClick(screen.getByRole("button", { name: "Select PC1" }));
     dialog = await screen.findByRole("dialog", { name: "PC1 device window" });
     for (const tab of ["Desktop", "Config", "Terminal", "Attributes"]) {
       expect(within(dialog).getByRole("tab", { name: tab })).toBeTruthy();
     }
+    await userEvent.click(within(dialog).getByRole("tab", { name: "Desktop" }));
     for (const tool of ["IP Configuration", "Command Prompt", "Web Browser", "TFTP Client", "NTP Client", "Syslog Tool", "Transport Viewer"]) {
       expect(within(dialog).getByRole("button", { name: tool })).toBeTruthy();
     }

@@ -1,7 +1,7 @@
 /**
  * The device Configuration workspace.
  *
- * One top-level tab with four secondary sections — Running Config, Startup
+ * One Config section with four secondary views — Running Config, Startup
  * Config, Compare and Import / Paste — over the *same* structured configuration
  * the CLI edits. The panel renders nothing itself: every byte of text comes
  * from the worker, which projects it from structured state, so the workspace

@@ -7,7 +7,7 @@ import type { SimulatorClient } from "../../app/simulator-client";
 import { Button } from "../../ui";
 
 /**
- * One top-level VPN tab with secondary navigation inside it — the same shape as
+ * One reusable VPN surface embedded by Config and Monitor — the same shape as
  * the consolidated QoS tab. The selected section is pure UI state: it never
  * reaches LabDocument, a submission, grading or the database.
  */
@@ -37,6 +37,8 @@ interface VpnPanelProps {
   deviceId: string;
   deviceType: DeviceType;
   interfaces: readonly LabUiInterface[];
+  /** Opens a configuration or runtime subsection when embedded in Config/Monitor. */
+  initialSection?: VpnSection;
   onConfigurationChanged(document: LabDocument, runtimeSynchronized: boolean): void;
   onError(message: string): void;
 }
@@ -52,7 +54,7 @@ interface VpnPanelProps {
  */
 export function VpnPanel(props: VpnPanelProps) {
   const [view, setView] = useState<VpnConfigurationView>();
-  const [section, setSection] = useState<VpnSection>("tunnels");
+  const [section, setSection] = useState<VpnSection>(props.initialSection ?? "tunnels");
   const [busy, setBusy] = useState(true);
   const [keyPeerId, setKeyPeerId] = useState<string>();
   const [keyValue, setKeyValue] = useState("");

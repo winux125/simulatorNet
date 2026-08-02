@@ -6,7 +6,7 @@ import type { SimulatorClient } from "../../app/simulator-client";
 import { Button } from "../../ui";
 
 /**
- * One top-level QoS tab with secondary navigation inside it. The sections are
+ * One reusable QoS surface embedded by Config and Monitor. Its subsections are
  * pure UI state: they are never written to LabDocument, a submission, grading
  * or the database, and switching between them changes no configuration.
  */
@@ -58,6 +58,8 @@ interface QosPanelProps {
   deviceType: DeviceType;
   /** Topology interfaces, for the honest admin/operational status column. */
   interfaces: readonly LabUiInterface[];
+  /** Opens the appropriate configuration or runtime subsection when embedded in Config/Monitor. */
+  initialSection?: QosSection;
   onConfigurationChanged(document: LabDocument, runtimeSynchronized: boolean): void;
   onError(message: string): void;
 }
@@ -73,7 +75,7 @@ const SERVICE_POLICY_TEMPLATE = { interfaceName: "", direction: "output", policy
  */
 export function QosPanel(props: QosPanelProps) {
   const [view, setView] = useState<QosConfigurationView>();
-  const [section, setSection] = useState<QosSection>("overview");
+  const [section, setSection] = useState<QosSection>(props.initialSection ?? "overview");
   const [selectedInterface, setSelectedInterface] = useState<string>();
   const [editor, setEditor] = useState("");
   const [busy, setBusy] = useState(true);

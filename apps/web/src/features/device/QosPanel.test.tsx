@@ -59,7 +59,7 @@ async function openPanel(deviceId = "router", deviceType: DeviceType = "router")
 const section = (name: string) => screen.getByRole("tab", { name });
 
 describe("consolidated QoS panel", () => {
-  it("exposes exactly one QoS top-level tab and no per-section tabs", async () => {
+  it("groups QoS below Config instead of adding top-level tabs", async () => {
     const client = new RuntimeClient();
     const document = canonicalizeLabDocument(DSCP_CLASSIFICATION_DEMO);
     const ready = await client.request({ type: "INITIALIZE_LAB", document });
@@ -77,8 +77,10 @@ describe("consolidated QoS panel", () => {
     />);
     const tabs = within(screen.getByRole("tablist", { name: /R1 sections/ })).getAllByRole("tab");
     const labels = tabs.map((tab) => tab.textContent);
-    expect(labels.filter((label) => label?.includes("QoS"))).toEqual(["QoS"]);
-    // The M10.8 per-section top-level tabs are gone.
+    expect(labels).toEqual(["Physical", "Config", "CLI", "Monitor", "Attributes"]);
+    expect(labels.filter((label) => label?.includes("QoS"))).toEqual([]);
+    await userEvent.click(screen.getByRole("tab", { name: "Config" }));
+    expect(within(screen.getByRole("navigation", { name: "Configuration sections" })).getByRole("button", { name: "QoS" })).toBeTruthy();
     for (const removed of ["QoS Class Maps", "QoS Policy Maps", "QoS Interface Policies", "QoS Queues", "QoS Counters"]) {
       expect(labels).not.toContain(removed);
     }

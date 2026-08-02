@@ -75,7 +75,14 @@ async function openDeviceTab(page: Page, hostname: string, tab: RegExp) {
   await page.getByRole("button", { name: `Select ${hostname}` }).dblclick();
   const window = page.getByRole("dialog", { name: /device window/ });
   await expect(window).toBeVisible();
-  await window.getByRole("tab", { name: tab }).click();
+  if (tab.test("Configuration")) {
+    await window.getByRole("tab", { name: "Config", exact: true }).click();
+    const compact = window.getByRole("combobox", { name: "Configuration section", exact: true });
+    if (await compact.isVisible()) await compact.selectOption("configuration-files");
+    else await window.getByRole("navigation", { name: "Configuration sections" }).getByRole("button", { name: "Running & Startup" }).click();
+  } else {
+    await window.getByRole("tab", { name: tab }).click();
+  }
   return window;
 }
 

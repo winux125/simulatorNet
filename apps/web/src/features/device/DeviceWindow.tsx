@@ -1,39 +1,33 @@
 import { getDeviceProfile, type LabDocument } from "@sim/contracts";
-import { supportsDeviceConfigurationText } from "@sim/device-config";
 import type { DeviceInspection, LabUiNode, Ospfv3View } from "@sim/sim-worker";
 import {
   AlertTriangle, Clock3, FileDown, Globe2, Network, ScrollText,
   Settings2, TerminalSquare, X, type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { SimulatorClient } from "../../app/simulator-client";
 import type { LabPowerState } from "../../state/workspace-store";
 import { DeviceIcon } from "../../components/DeviceIcon";
 import { Button, IconButton } from "../../ui";
 import { ServerServicesPanel } from "../inspector/ServerServicesPanel";
-import { CONSOLE_CAPABLE_KINDS } from "../lab/document";
 import { ConsoleAccessPanel } from "./ConsoleAccessPanel";
-import { isManagementSection, ManagementPanel, type ManagementSection } from "./ManagementPanel";
-
-/** Devices with a management plane: Router, L2/L3 Switch and Firewall. */
-const MANAGED_KINDS = new Set(["router", "l2-switch", "l3-switch", "firewall"]);
+import { ManagementPanel } from "./ManagementPanel";
 import { HostIpConfigurationPanel } from "./HostIpConfigurationPanel";
 import { WirelessPanel } from "./WirelessPanel";
 import {
   SecurityConfigurationPanel,
   type SecuritySection,
 } from "./SecurityConfigurationPanel";
-import { QosPanel, qosCapabilitiesFor } from "./QosPanel";
-import { VpnPanel, vpnSupportedFor } from "./VpnPanel";
+import { QosPanel } from "./QosPanel";
+import { VpnPanel } from "./VpnPanel";
 import { ConfigurationPanel, ConfigurationStatusBadge } from "./ConfigurationPanel";
-
-type DeviceWindowTab =
-  | "overview" | "desktop" | "config" | "configuration" | "console" | "services" | "terminal" | "interfaces" | "attributes"
-  | "routing" | "routes" | "vlans" | "svis" | "acl" | "nat" | "runtime"
-  | "zones" | "policies" | "connections" | "impairments" | "flows" | "run" | "results"
-  | "ipv6" | "qos" | "vpn"
-  | "wireless" | "clients" | "apps" | "setup" | "lan" | "wan" | "dhcp" | "firewall"
-  | ManagementSection;
+import {
+  getDeviceWindowDefinition,
+  isManagedDeviceWindow,
+  type DeviceWindowMainTabId,
+  type DeviceWindowSectionDefinition,
+  type DeviceWindowSectionId,
+} from "./device-window-registry";
 type DesktopTool = "ip" | "command" | "web" | "tftp" | "ntp" | "syslog" | "transport";
 
 interface DeviceWindowProps {
@@ -52,153 +46,24 @@ interface DeviceWindowProps {
 
 export function DeviceWindow(props: DeviceWindowProps) {
   const profile = getDeviceProfile(props.node.type);
-  const isServer = props.node.type === "server";
-  const isPc = props.node.type === "pc";
   const isLaptop = props.node.type === "laptop";
   const isSmartphone = props.node.type === "smartphone";
   const isAccessPoint = props.node.type === "access-point";
   const isWirelessRouter = props.node.type === "wireless-router";
-  const tabs = useMemo<Array<{ id: DeviceWindowTab; label: string }>>(() => {
-    const base = ((): Array<{ id: DeviceWindowTab; label: string }> => {
-    if (isServer) return [
-      { id: "config", label: "Config" },
-      { id: "services", label: "Services" },
-      { id: "desktop", label: "Desktop" },
-      { id: "terminal", label: "Terminal" },
-      { id: "attributes", label: "Attributes" },
-    ];
-    if (isPc) return [
-      { id: "desktop", label: "Desktop" },
-      { id: "config", label: "Config" },
-      { id: "terminal", label: "Terminal" },
-      { id: "attributes", label: "Attributes" },
-    ];
-    if (isLaptop) return [
-      { id: "desktop", label: "Desktop" },
-      { id: "wireless", label: "Wireless" },
-      { id: "config", label: "Config" },
-      { id: "terminal", label: "Terminal" },
-      { id: "interfaces", label: "Interfaces" },
-      { id: "attributes", label: "Attributes" },
-    ];
-    if (isSmartphone) return [
-      { id: "wireless", label: "Wireless" },
-      { id: "config", label: "IP Configuration" },
-      { id: "apps", label: "Apps" },
-      { id: "interfaces", label: "Interfaces" },
-      { id: "attributes", label: "Attributes" },
-    ];
-    if (isAccessPoint) return [
-      { id: "overview", label: "Overview" },
-      { id: "wireless", label: "Wireless" },
-      { id: "clients", label: "Associated Clients" },
-      { id: "interfaces", label: "Interfaces" },
-      { id: "config", label: "Configuration" },
-      { id: "runtime", label: "Runtime" },
-    ];
-    if (isWirelessRouter) return [
-      { id: "setup", label: "Setup" },
-      { id: "wireless", label: "Wireless" },
-      { id: "lan", label: "LAN" },
-      { id: "wan", label: "WAN" },
-      { id: "dhcp", label: "DHCP" },
-      { id: "ipv6", label: "IPv6" },
-      { id: "nat", label: "NAT" },
-      { id: "firewall", label: "Firewall" },
-      { id: "clients", label: "Connected Clients" },
-      { id: "runtime", label: "Runtime" },
-    ];
-    if (props.node.type === "router") return [
-      { id: "interfaces", label: "Interfaces" },
-      { id: "ipv6", label: "IPv6" },
-      { id: "routing", label: "Routing" },
-      { id: "acl", label: "ACL" },
-      { id: "nat", label: "NAT" },
-      { id: "terminal", label: "CLI" },
-      { id: "runtime", label: "Runtime" },
-    ];
-    if (props.node.type === "l3-switch") return [
-      { id: "interfaces", label: "Interfaces" },
-      { id: "ipv6", label: "IPv6" },
-      { id: "vlans", label: "VLANs" },
-      { id: "svis", label: "SVI" },
-      { id: "routing", label: "Routing" },
-      { id: "acl", label: "ACL" },
-      { id: "terminal", label: "CLI" },
-      { id: "runtime", label: "Runtime" },
-    ];
-    if (props.node.type === "firewall") return [
-      { id: "overview", label: "Overview" },
-      { id: "interfaces", label: "Interfaces" },
-      { id: "zones", label: "Zones" },
-      { id: "policies", label: "Policies" },
-      { id: "nat", label: "NAT" },
-      { id: "routes", label: "Routes" },
-      { id: "connections", label: "Connections" },
-      { id: "terminal", label: "CLI" },
-    ];
-    if (props.node.type === "cloud") return [
-      { id: "overview", label: "Overview" },
-      { id: "interfaces", label: "Interfaces" },
-      { id: "routes", label: "Routes" },
-      { id: "impairments", label: "Impairments" },
-    ];
-    if (props.node.type === "traffic-generator") return [
-      { id: "flows", label: "Flows" },
-      { id: "run", label: "Run" },
-      { id: "results", label: "Results" },
-    ];
-    return [
-      { id: "overview", label: "Overview" },
-      { id: "config", label: "Config" },
-      ...(profile.cliProfile ? [{ id: "terminal" as const, label: "CLI" }] : []),
-      { id: "interfaces", label: "Interfaces" },
-      { id: "attributes", label: "Attributes" },
-    ];
-    })();
-    // Management sections are grouped together at the end so a device window
-    // stays readable instead of growing one flat row of a dozen tabs.
-    const management: Array<{ id: DeviceWindowTab; label: string }> = MANAGED_KINDS.has(props.node.type)
-      ? [
-          { id: "remote-access", label: "Remote Access" },
-          { id: "aaa", label: "AAA" },
-          { id: "snmp", label: "SNMP" },
-          { id: "sessions", label: "Sessions" },
-        ]
-      : [];
-    const withConsole = CONSOLE_CAPABLE_KINDS.has(props.node.type)
-      ? [...base, { id: "console" as const, label: "Console Access" }]
-      : base;
-    // Exactly one top-level QoS tab. Overview, Classification, Policies,
-    // Interfaces and Queues & Counters are secondary navigation inside it, so
-    // the window keeps a readable tab row.
-    const qos: Array<{ id: DeviceWindowTab; label: string }> = qosCapabilitiesFor(props.node.type)
-      ? [{ id: "qos", label: "QoS" }]
-      : [];
-    // Exactly one top-level VPN tab, like QoS. Tunnels, IKE Peers, IPsec
-    // Profiles, Sessions and Counters are secondary navigation inside it.
-    const vpn: Array<{ id: DeviceWindowTab; label: string }> = vpnSupportedFor(props.node.type)
-      ? [{ id: "vpn", label: "VPN" }]
-      : [];
-    // Exactly one top-level Configuration tab for a device that owns a
-    // configuration file. Running/Startup/Compare/Import are secondary
-    // navigation inside it, and the CLI stays its own tab.
-    const configuration: Array<{ id: DeviceWindowTab; label: string }> =
-      supportsDeviceConfigurationText(props.node.type)
-        ? [{ id: "configuration", label: "Configuration" }]
-        : [];
-    return [...withConsole, ...configuration, ...qos, ...vpn, ...management];
-  }, [
-    isAccessPoint,
-    isLaptop,
-    isPc,
-    isServer,
-    isSmartphone,
-    isWirelessRouter,
-    profile.cliProfile,
-    props.node.type,
-  ]);
-  const [tab, setTab] = useState<DeviceWindowTab>(tabs[0]!.id);
+  const definition = useMemo(() => getDeviceWindowDefinition(props.node.type), [props.node.type]);
+  const [tab, setTab] = useState<DeviceWindowMainTabId>(definition.mainTabs[0]!.id);
+  const [configSection, setConfigSection] = useState<DeviceWindowSectionId>(definition.configSections[0]?.id ?? "interfaces-config");
+  const [monitorSection, setMonitorSection] = useState<DeviceWindowSectionId>(definition.monitorSections[0]?.id ?? "runtime-overview");
+
+  useEffect(() => {
+    if (!definition.mainTabs.some((entry) => entry.id === tab)) setTab(definition.mainTabs[0]!.id);
+    if (!definition.configSections.some((entry) => entry.id === configSection)) {
+      setConfigSection(definition.configSections[0]?.id ?? "interfaces-config");
+    }
+    if (!definition.monitorSections.some((entry) => entry.id === monitorSection)) {
+      setMonitorSection(definition.monitorSections[0]?.id ?? "runtime-overview");
+    }
+  }, [configSection, definition, monitorSection, tab]);
 
   useEffect(() => {
     const close = (event: KeyboardEvent) => { if (event.key === "Escape") props.onClose(); };
@@ -218,10 +83,31 @@ export function DeviceWindow(props: DeviceWindowProps) {
           <IconButton label="Close device window" icon={<X size={15} />} onClick={props.onClose} />
         </header>
         <nav className="device-window__tabs" role="tablist" aria-label={`${props.node.hostname} sections`}>
-          {tabs.map((entry) => <button key={entry.id} type="button" role="tab" aria-selected={tab === entry.id} className={tab === entry.id ? "is-active" : ""} onClick={() => setTab(entry.id)}>{entry.label}</button>)}
+          {definition.mainTabs.map((entry) => <button key={entry.id} type="button" role="tab" aria-selected={tab === entry.id} className={tab === entry.id ? "is-active" : ""} onClick={() => setTab(entry.id)}>{entry.label}</button>)}
         </nav>
         <div className="device-window__content" role="tabpanel">
-          {tab === "overview" && <Overview node={props.node} description={profile.description} />}
+          {tab === "physical" && <PhysicalSummary node={props.node} />}
+          {tab === "config" && (isManagedDeviceWindow(props.node.type)
+            ? <SectionWorkspace
+                label="Configuration"
+                sections={definition.configSections}
+                selected={configSection}
+                onSelect={setConfigSection}
+              >
+                <ConfigSection {...props} section={configSection} />
+              </SectionWorkspace>
+            : <ConfigSection {...props} section={definition.configSections[0]?.id ?? "interfaces-config"} />)}
+          {tab === "monitor" && <SectionWorkspace
+            label="Monitor"
+            sections={definition.monitorSections}
+            selected={monitorSection}
+            onSelect={setMonitorSection}
+          >
+            <MonitorSection {...props} section={monitorSection} />
+          </SectionWorkspace>}
+          {(tab === "cli" || tab === "terminal") && (props.runtimeAvailable
+            ? <TerminalWorkspaceLauncher node={props.node} onOpen={() => props.onOpenTerminal(props.node.id)} />
+            : <DraftRuntimeNotice />)}
           {tab === "desktop" && <Desktop
             client={props.client}
             document={props.document}
@@ -232,90 +118,22 @@ export function DeviceWindow(props: DeviceWindowProps) {
             onTerminal={() => props.onOpenTerminal(props.node.id)}
             onError={props.onError}
           />}
-          {/* `config` stays the host/wireless structured view; a device with a
-              configuration file gets the Configuration tab instead. */}
-          {tab === "config" && (isSmartphone
-            ? <HostIpConfigurationPanel
-                client={props.client}
-                document={props.document}
-                node={props.node}
-                powerState={props.powerState}
-                runtimeAvailable={props.runtimeAvailable}
-                onConfigurationChanged={props.onConfigurationChanged}
-                onError={props.onError}
-              />
-            : <StructuredConfiguration document={props.document} node={props.node} />)}
-          {(tab === "wireless" || tab === "clients") && props.runtimeAvailable && (
+          {tab === "wireless" && props.runtimeAvailable && (
             isLaptop || isSmartphone || isAccessPoint || isWirelessRouter
           ) && <WirelessPanel
             client={props.client}
             deviceId={props.node.id}
             deviceType={props.node.type}
-            section={tab}
+            section={isAccessPoint || isWirelessRouter ? "clients" : "wireless"}
             onConfigurationChanged={props.onConfigurationChanged}
             onError={props.onError}
           />}
-          {(tab === "wireless" || tab === "clients") && !props.runtimeAvailable && <DraftRuntimeNotice />}
+          {tab === "wireless" && !props.runtimeAvailable && <DraftRuntimeNotice />}
           {tab === "apps" && <SmartphoneApps client={props.client} node={props.node} runtimeAvailable={props.runtimeAvailable} onError={props.onError} />}
-          {(["setup", "lan", "wan", "dhcp", "firewall"] as DeviceWindowTab[]).includes(tab) && (
-            <StructuredConfiguration document={props.document} node={props.node} section={tab} />
-          )}
-          {tab === "configuration" && <ConfigurationPanel
-            client={props.client}
-            deviceId={props.node.id}
-            hostname={props.node.hostname}
-            runtimeAvailable={props.runtimeAvailable}
-            onConfigurationChanged={props.onConfigurationChanged}
-            onError={props.onError}
-          />}
-          {tab === "qos" && (props.runtimeAvailable
-            ? <QosPanel
-                client={props.client}
-                deviceId={props.node.id}
-                deviceType={props.node.type}
-                interfaces={props.node.interfaces}
-                onConfigurationChanged={props.onConfigurationChanged}
-                onError={props.onError}
-              />
-            : <DraftRuntimeNotice />)}
-          {tab === "vpn" && (props.runtimeAvailable
-            ? <VpnPanel
-                client={props.client}
-                deviceId={props.node.id}
-                deviceType={props.node.type}
-                interfaces={props.node.interfaces}
-                onConfigurationChanged={props.onConfigurationChanged}
-                onError={props.onError}
-              />
-            : <DraftRuntimeNotice />)}
-          {isManagementSection(tab) && <ManagementPanel
-            client={props.client}
-            node={props.node}
-            section={tab}
-            runtimeAvailable={props.runtimeAvailable}
-            onError={props.onError}
-          />}
-          {tab === "console" && <ConsoleAccessPanel
-            document={props.document}
-            node={props.node}
-            onConfigurationChanged={props.onConfigurationChanged}
-            onError={props.onError}
-          />}
           {tab === "services" && (props.runtimeAvailable
             ? <ServerServicesPanel client={props.client} deviceId={props.node.id} refreshKey={props.node.interfaces.length} onError={props.onError} />
             : <DraftRuntimeNotice />)}
-          {tab === "terminal" && (props.runtimeAvailable
-            ? <TerminalWorkspaceLauncher
-                node={props.node}
-                onOpen={() => props.onOpenTerminal(props.node.id)}
-              />
-            : <DraftRuntimeNotice />)}
-          {tab === "interfaces" && <Interfaces node={props.node} />}
-          {tab === "ipv6" && isWirelessRouter && <StructuredConfiguration document={props.document} node={props.node} section="ipv6" />}
-          {tab === "ipv6" && !isWirelessRouter && (props.runtimeAvailable
-            ? <Ipv6RuntimePanel client={props.client} document={props.document} deviceId={props.node.id} onError={props.onError} />
-            : <DraftRuntimeNotice />)}
-          {isSecuritySection(tab) && !isWirelessRouter && !isAccessPoint && (props.runtimeAvailable
+          {(tab === "flows" || tab === "run" || tab === "results") && (props.runtimeAvailable
             ? <SecurityConfigurationPanel
                 client={props.client}
                 deviceId={props.node.id}
@@ -323,8 +141,7 @@ export function DeviceWindow(props: DeviceWindowProps) {
                 onConfigurationChanged={props.onConfigurationChanged}
                 onError={props.onError}
               />
-              : <DraftRuntimeNotice />)}
-          {tab === "runtime" && (isWirelessRouter || isAccessPoint) && <StructuredConfiguration document={props.document} node={props.node} section="runtime" />}
+            : <DraftRuntimeNotice />)}
           {tab === "attributes" && <Attributes node={props.node} description={profile.description} capabilities={profile.capabilities} />}
         </div>
       </section>
@@ -332,11 +149,268 @@ export function DeviceWindow(props: DeviceWindowProps) {
   );
 }
 
-function isSecuritySection(tab: DeviceWindowTab): tab is SecuritySection {
-  return [
-    "routing", "routes", "vlans", "svis", "acl", "nat", "runtime", "zones",
-    "policies", "connections", "impairments", "flows", "run", "results",
-  ].includes(tab);
+function SectionWorkspace({
+  label,
+  sections,
+  selected,
+  onSelect,
+  children,
+}: {
+  label: string;
+  sections: readonly DeviceWindowSectionDefinition[];
+  selected: DeviceWindowSectionId;
+  onSelect(section: DeviceWindowSectionId): void;
+  children: ReactNode;
+}) {
+  return <div className="device-section-workspace">
+    <aside className="device-section-workspace__navigation">
+      <label className="device-section-workspace__select">
+        <span>{label} section</span>
+        <select value={selected} onChange={(event) => onSelect(event.target.value as DeviceWindowSectionId)}>
+          {sections.map((section) => <option key={section.id} value={section.id}>
+            {section.group ? `${section.group} · ` : ""}{section.label}
+          </option>)}
+        </select>
+      </label>
+      <nav className="device-section-workspace__rail" aria-label={`${label} sections`}>
+        {sections.map((section, index) => <div key={section.id} className="device-section-workspace__item">
+          {section.group && section.group !== sections[index - 1]?.group && <small>{section.group}</small>}
+          <button
+            type="button"
+            aria-current={selected === section.id ? "page" : undefined}
+            className={selected === section.id ? "is-active" : ""}
+            onClick={() => onSelect(section.id)}
+          >
+            {section.label}
+          </button>
+        </div>)}
+      </nav>
+    </aside>
+    <div className="device-section-workspace__content" aria-label={`${label} ${sections.find((entry) => entry.id === selected)?.label ?? "section"}`}>
+      {children}
+    </div>
+  </div>;
+}
+
+function ConfigSection(props: DeviceWindowProps & { section: DeviceWindowSectionId }) {
+  const { section } = props;
+  if (section === "host-ip") return <HostIpConfigurationPanel
+    client={props.client}
+    document={props.document}
+    node={props.node}
+    powerState={props.powerState}
+    runtimeAvailable={props.runtimeAvailable}
+    onConfigurationChanged={props.onConfigurationChanged}
+    onError={props.onError}
+  />;
+  if (section === "interfaces-config") return <Interfaces node={props.node} />;
+  if (section === "configuration-files") return <ConfigurationPanel
+    client={props.client}
+    deviceId={props.node.id}
+    hostname={props.node.hostname}
+    runtimeAvailable={props.runtimeAvailable}
+    onConfigurationChanged={props.onConfigurationChanged}
+    onError={props.onError}
+  />;
+  if (section === "console-config") return <ConsoleAccessPanel
+    document={props.document}
+    node={props.node}
+    onConfigurationChanged={props.onConfigurationChanged}
+    onError={props.onError}
+  />;
+  if (section === "wireless-config" && props.runtimeAvailable) return <WirelessPanel
+    client={props.client}
+    deviceId={props.node.id}
+    deviceType={props.node.type}
+    section="wireless"
+    onConfigurationChanged={props.onConfigurationChanged}
+    onError={props.onError}
+  />;
+  if (section === "qos-config") return props.runtimeAvailable
+    ? <QosPanel
+        client={props.client}
+        deviceId={props.node.id}
+        deviceType={props.node.type}
+        interfaces={props.node.interfaces}
+        onConfigurationChanged={props.onConfigurationChanged}
+        onError={props.onError}
+      />
+    : <DraftRuntimeNotice />;
+  if (section === "vpn-config") return props.runtimeAvailable
+    ? <VpnPanel
+        client={props.client}
+        deviceId={props.node.id}
+        deviceType={props.node.type}
+        interfaces={props.node.interfaces}
+        onConfigurationChanged={props.onConfigurationChanged}
+        onError={props.onError}
+      />
+    : <DraftRuntimeNotice />;
+
+  const securitySection: Partial<Record<DeviceWindowSectionId, SecuritySection>> = {
+    "routing-config": "routing",
+    "vlans-config": "vlans",
+    "svis-config": "svis",
+    "acl-config": "acl",
+    "nat-config": "nat",
+    "zones-config": "zones",
+    "policies-config": "policies",
+  };
+  const security = securitySection[section];
+  if (security) return props.runtimeAvailable
+    ? <SecurityConfigurationPanel
+        client={props.client}
+        deviceId={props.node.id}
+        section={security}
+        onConfigurationChanged={props.onConfigurationChanged}
+        onError={props.onError}
+      />
+    : <DraftRuntimeNotice />;
+
+  const projection: Partial<Record<DeviceWindowSectionId, { title: string; keys?: readonly string[] }>> = {
+    "ip-config": { title: "IPv4 & IPv6", keys: ["interfaces", "subinterfaces", "svis", "ipv6", "ipv6StaticRoutes"] },
+    "stp-config": { title: "Spanning Tree", keys: ["spanningTree", "vlans"] },
+    "etherchannel-config": { title: "EtherChannel", keys: ["etherChannels", "interfaces"] },
+    "ospf-config": { title: "OSPF", keys: ["ospf", "ospfv3"] },
+    "remote-access-config": { title: "Remote Access", keys: ["remoteAccess", "vtyLines"] },
+    "aaa-config": { title: "AAA", keys: ["aaa"] },
+    "snmp-config": { title: "SNMP", keys: ["snmp"] },
+    "services-config": { title: "Services", keys: ["services", "enabledServices"] },
+    "wireless-config": { title: "Wireless", keys: ["radio", "accessPoint", "wireless"] },
+  };
+  const selected = projection[section];
+  return <StructuredConfiguration
+    document={props.document}
+    node={props.node}
+    title={selected?.title}
+    keys={selected?.keys}
+  />;
+}
+
+function MonitorSection(props: DeviceWindowProps & { section: DeviceWindowSectionId }) {
+  const { section } = props;
+  if (section === "runtime-overview") return <Overview node={props.node} description={getDeviceProfile(props.node.type).description} />;
+  if (section === "interfaces-runtime") return <Interfaces node={props.node} />;
+  if (section === "sessions-runtime" || section === "aaa-runtime" || section === "snmp-runtime") {
+    return <ManagementPanel
+      client={props.client}
+      node={props.node}
+      section={section === "sessions-runtime" ? "sessions" : section === "aaa-runtime" ? "aaa" : "snmp"}
+      runtimeAvailable={props.runtimeAvailable}
+      onError={props.onError}
+    />;
+  }
+  if (section === "routes-runtime") return props.runtimeAvailable
+    ? <SecurityConfigurationPanel
+        client={props.client}
+        deviceId={props.node.id}
+        section="routes"
+        onConfigurationChanged={props.onConfigurationChanged}
+        onError={props.onError}
+      />
+    : <DraftRuntimeNotice />;
+  if (section === "nat-runtime" || section === "firewall-runtime") return props.runtimeAvailable
+    ? <SecurityConfigurationPanel
+        client={props.client}
+        deviceId={props.node.id}
+        section={section === "nat-runtime" ? "runtime" : "connections"}
+        onConfigurationChanged={props.onConfigurationChanged}
+        onError={props.onError}
+      />
+    : <DraftRuntimeNotice />;
+  if (section === "qos-runtime") return props.runtimeAvailable
+    ? <QosPanel
+        client={props.client}
+        deviceId={props.node.id}
+        deviceType={props.node.type}
+        interfaces={props.node.interfaces}
+        initialSection="queues"
+        onConfigurationChanged={props.onConfigurationChanged}
+        onError={props.onError}
+      />
+    : <DraftRuntimeNotice />;
+  if (section === "vpn-runtime") return props.runtimeAvailable
+    ? <VpnPanel
+        client={props.client}
+        deviceId={props.node.id}
+        deviceType={props.node.type}
+        interfaces={props.node.interfaces}
+        initialSection="sessions"
+        onConfigurationChanged={props.onConfigurationChanged}
+        onError={props.onError}
+      />
+    : <DraftRuntimeNotice />;
+  if (section === "protocols-runtime") return props.runtimeAvailable
+    ? <Ipv6RuntimePanel
+        client={props.client}
+        document={props.document}
+        deviceId={props.node.id}
+        onError={props.onError}
+      />
+    : <DraftRuntimeNotice />;
+  if (section === "neighbors-runtime" || section === "mac-runtime") {
+    return <DeviceInspectionPanel
+      client={props.client}
+      document={props.document}
+      deviceId={props.node.id}
+      section={section}
+      runtimeAvailable={props.runtimeAvailable}
+      onError={props.onError}
+    />;
+  }
+  return <Overview node={props.node} description={getDeviceProfile(props.node.type).description} />;
+}
+
+function PhysicalSummary({ node }: { node: LabUiNode }) {
+  return <div className="device-window-section">
+    <p className="section-eyebrow">Physical placement</p>
+    <h2>{node.hostname}</h2>
+    <p>Use the workspace Physical view to place this device in a site, room, rack, or on a workbench.</p>
+    <dl className="property-list">
+      <div><dt>Device</dt><dd>{getDeviceProfile(node.type).displayName}</dd></div>
+      <div><dt>Interfaces</dt><dd>{node.interfaces.length}</dd></div>
+      <div><dt>Power</dt><dd>{node.status}</dd></div>
+    </dl>
+  </div>;
+}
+
+function DeviceInspectionPanel({
+  client,
+  document,
+  deviceId,
+  section,
+  runtimeAvailable,
+  onError,
+}: {
+  client: SimulatorClient;
+  document: LabDocument;
+  deviceId: string;
+  section: "neighbors-runtime" | "mac-runtime";
+  runtimeAvailable: boolean;
+  onError(message: string): void;
+}) {
+  const [inspection, setInspection] = useState<DeviceInspection>();
+  useEffect(() => {
+    if (!runtimeAvailable) return;
+    let active = true;
+    void client.request({ type: "GET_DEVICE_INSPECTION", deviceId }).then((nextInspection) => {
+      if (!active) return;
+      setInspection(nextInspection);
+    }).catch((error) => {
+      if (active) onError(error instanceof Error ? error.message : "Unable to inspect device runtime");
+    });
+    return () => { active = false; };
+  }, [client, deviceId, runtimeAvailable, section, onError]);
+  if (!runtimeAvailable) return <DraftRuntimeNotice />;
+  if (!inspection) return <div className="device-window-section">Loading runtime inspection…</div>;
+  const value = section === "mac-runtime"
+    ? inspection.macEntries
+    : { arp: inspection.arpEntries, ndp: inspection.ipv6?.neighbors ?? [], configured: document.configurations[deviceId] };
+  return <div className="device-window-section">
+    <p className="section-eyebrow">Transient runtime</p>
+    <h2>{section === "mac-runtime" ? "MAC Table" : "ARP / NDP"}</h2>
+    <PropertyTree value={value} />
+  </div>;
 }
 
 function Overview({ node, description }: { node: LabUiNode; description: string }) {
@@ -346,18 +420,21 @@ function Overview({ node, description }: { node: LabUiNode; description: string 
 function StructuredConfiguration({
   document,
   node,
-  section,
+  title = "Structured Configuration",
+  keys,
 }: {
   document: LabDocument;
   node: LabUiNode;
-  section?: DeviceWindowTab;
+  title?: string;
+  keys?: readonly string[];
 }) {
   const configuration = document.configurations[node.id] as Record<string, unknown> | undefined;
-  const selected = section && configuration && section in configuration
-    ? configuration[section]
+  const selected = keys && configuration
+    ? Object.fromEntries(keys.filter((key) => key in configuration).map((key) => [key, configuration[key]]))
     : configuration ?? {};
   return <div className="device-window-section">
     <p className="section-eyebrow">Worker-owned configuration</p>
+    <h2>{title}</h2>
     <p className="section-note">
       This is one redacted view of the canonical device configuration; it is not an independent copy. The
       canonical JSON itself lives under File ▸ Advanced.
