@@ -1,9 +1,21 @@
+/**
+ * Deterministic JSON with sorted keys.
+ *
+ * A key whose value is `undefined` is dropped, exactly as `JSON.stringify`
+ * drops it. A verification request reaches the verifier as JSON over HTTP, so
+ * an absent optional field and a present-but-undefined one are the same
+ * request and must produce the same identifier and the same payload size.
+ */
 export function stableStringify(value: unknown): string {
   if (value === undefined) return "undefined";
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
   const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+  return `{${Object.keys(record)
+    .filter((key) => record[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(",")}}`;
 }
 
 export function utf8ByteLength(value: string): number {

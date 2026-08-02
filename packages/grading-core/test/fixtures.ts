@@ -85,7 +85,11 @@ export function submissionFrom(document: LabDocument = demoLabDocument()): LabSu
     labVersion: 1,
     schemaVersion: 1,
     simulation: document.simulation,
-    snapshot: { topology: document.topology, configurations: document.configurations },
+    snapshot: {
+      topology: document.topology,
+      configurations: document.configurations,
+      startupConfigurations: document.startupConfigurations,
+    },
     clientRevision: "fixture-1",
   };
 }

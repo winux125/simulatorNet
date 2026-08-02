@@ -98,6 +98,7 @@ function devicePresentationKey(data: DeviceCellData): string {
     serviceBadges: data.device.serviceBadges,
     terminalOpen: data.device.terminalOpen,
     configurationChanged: data.device.configurationChanged,
+    unsavedConfiguration: data.device.unsavedConfiguration,
     connectable: data.device.connectable,
   });
 }

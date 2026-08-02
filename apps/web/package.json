@@ -13,6 +13,7 @@
     "@antv/x6-react-shape": "^3.0.1",
     "@sim/console-auth": "workspace:*",
     "@sim/contracts": "workspace:*",
+    "@sim/device-config": "workspace:*",
     "@sim/importers": "workspace:*",
     "@sim/lab-format": "workspace:*",
     "@sim/sim-worker": "workspace:*",

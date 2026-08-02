@@ -963,7 +963,19 @@ export const VpnRouteGradingCheckSchema = CheckIdentitySchema.extend({
   }).strict(),
 }).strict();
 
+/**
+ * `copy running-config startup-config` was actually run on this device.
+ *
+ * It compares the canonical structured snapshots, never rendered text, so it
+ * cannot be fooled by formatting and cannot break when the renderer changes.
+ */
+export const ConfigurationSavedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("configuration-saved"),
+  configuration: z.object({ deviceId: z.string().min(1) }).strict(),
+}).strict();
+
 export const GradingCheckSchema = z.discriminatedUnion("type", [
+  ConfigurationSavedGradingCheckSchema,
   GreTunnelConfiguredGradingCheckSchema,
   GreTunnelOperationalGradingCheckSchema,
   TunnelConnectivityGradingCheckSchema,

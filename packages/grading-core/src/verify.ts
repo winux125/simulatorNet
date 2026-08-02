@@ -11,7 +11,12 @@ import {
   VerificationRequestSchema,
   VerificationResultSchema,
 } from "@sim/contracts/grading";
-import { buildLabFromDocument, parseLabDocument, type BuiltLab } from "@sim/lab-format";
+import {
+  buildLabFromDocument,
+  deviceConfigurationDrift,
+  parseLabDocument,
+  type BuiltLab,
+} from "@sim/lab-format";
 import {
   AccessPoint,
   EndHost,
@@ -112,6 +117,9 @@ function submissionDocument(request: VerificationRequest): LabDocument {
       simulation: submission.simulation,
       topology: submission.snapshot.topology,
       configurations: submission.snapshot.configurations,
+      // Startup snapshots are configuration, so a submission carries them and
+      // the verifier rebuilds them like everything else.
+      startupConfigurations: submission.snapshot.startupConfigurations,
     });
   } catch (error) {
     throw new VerificationError(
@@ -308,6 +316,21 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
     );
   }
   switch (check.type) {
+    case "configuration-saved": {
+      const { deviceId } = check.configuration;
+      if (!built.getDevice(deviceId)) return errorResult(check, `Device '${deviceId}' was not found`);
+      const status = deviceConfigurationDrift(built, deviceId);
+      return result(
+        check,
+        status.drift === "saved",
+        status.drift === "saved"
+          ? `${deviceId} running configuration matches its startup configuration`
+          : status.drift === "modified"
+            ? `${deviceId} has unsaved running configuration changes`
+            : `${deviceId} has no startup configuration`,
+        { deviceId, drift: status.drift },
+      );
+    }
     case "ping": {
       const candidate = built.getDevice(check.configuration.sourceDeviceId);
       const source = candidate instanceof EndHost || candidate instanceof Router || candidate instanceof Layer3Switch

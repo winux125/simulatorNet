@@ -12,6 +12,8 @@ export interface DeviceNodeData {
   serviceBadges?: string[];
   terminalOpen: boolean;
   configurationChanged: boolean;
+  /** Running differs from startup. A small marker only — never a large badge. */
+  unsavedConfiguration: boolean;
   connectable: boolean;
   onActivate(id: string): void;
   onOpen(id: string): void;
@@ -77,6 +79,9 @@ export function DeviceNode({ id, data, selected }: { id: string; data: DeviceNod
         <span className="visually-hidden" aria-label={`Enabled services: ${data.serviceBadges.join(", ")}`} />
       )}
       {data.configurationChanged && <span className="device-node__changed" title="Pending rebuild">!</span>}
+      {data.unsavedConfiguration && (
+        <span className="device-node__unsaved" title="Configuration: Modified" aria-label="Configuration modified" />
+      )}
     </div>
   );
 }

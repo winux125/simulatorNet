@@ -1,6 +1,6 @@
 import { getDeviceProfile, type LabDocument } from "@sim/contracts";
 import { canonicalizeLabDocument, stringifyLabDocument } from "@sim/lab-format";
-import type { LabUiNode, SimWorkerEvent } from "@sim/sim-worker";
+import type { LabConfigurationStatusView, LabUiNode, SimWorkerEvent } from "@sim/sim-worker";
 import {
   Group as PanelGroup,
   Panel as ResizablePanel,
@@ -11,7 +11,7 @@ import {
 } from "react-resizable-panels";
 import {
   AlertTriangle, Cable, CheckCircle2, ClipboardPaste, Clock3, Command, Download, Eraser, FilePlus2, FlaskConical, FolderOpen, FolderX,
-  Grid3X3, Info, Keyboard, Maximize2, Move, PanelBottom, PanelRight, Play, Redo2, RotateCcw, SkipForward,
+  Grid3X3, Info, Keyboard, Maximize2, Move, PanelBottom, PanelRight, Play, Redo2, RotateCcw, Save, SkipForward,
   Square, SunMoon, Tag, TerminalSquare, Type, Undo2, Wrench, X,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
@@ -89,6 +89,13 @@ export const EMPTY_LAB: LabDocument = {
   topology: { schemaVersion: 1, nodes: [], links: [] },
   configurations: {},
 };
+
+/**
+ * Advanced-only warning shown wherever the canonical JSON is exposed. JSON
+ * remains the internal model; it is not the format a learner saves in.
+ */
+export const ADVANCED_JSON_NOTICE =
+  "Advanced format intended for diagnostics and integration. For normal use, save a SimulatorNet Lab package.";
 
 export function downloadLabDocument(document: LabDocument, fileName?: string): void {
   const blob = new Blob([stringifyLabDocument(document)], { type: "application/json" });
@@ -224,6 +231,9 @@ export function App({ client }: AppProps) {
   const [validation, setValidation] = useState<string>();
   const [pendingMode, setPendingMode] = useState<WorkspaceMode>();
   const [deviceWindowId, setDeviceWindowId] = useState<string>();
+  const [confirmSaveAll, setConfirmSaveAll] = useState(false);
+  const [advancedJsonOpen, setAdvancedJsonOpen] = useState(false);
+  const [configurationStatus, setConfigurationStatus] = useState<LabConfigurationStatusView>();
   const dismissStepExplanation = useCallback(() => {
     window.localStorage.setItem(STEP_EXPLANATION_KEY, "true");
     setStepExplanationOpen(false);
@@ -302,6 +312,51 @@ export function App({ client }: AppProps) {
     if (workspace.unsaved) setConfirmClose(true);
     else workspace.reset();
   };
+
+  /**
+   * Refresh the per-device Saved/Modified badges. Configuration status is
+   * derived worker state, so it is fetched rather than tracked in the store.
+   */
+  const refreshConfigurationStatus = useCallback(() => {
+    const state = useWorkspaceStore.getState();
+    if (state.workerStatus !== "ready" || state.powerState !== "running") {
+      setConfigurationStatus(undefined);
+      return;
+    }
+    void client.request({ type: "GET_LAB_CONFIGURATION_STATUS" })
+      .then(setConfigurationStatus)
+      .catch(() => setConfigurationStatus(undefined));
+  }, [client]);
+
+  useEffect(refreshConfigurationStatus, [refreshConfigurationStatus, workspace.powerState, workspace.snapshot]);
+
+  const saveAllConfigurations = useCallback(() => {
+    setConfirmSaveAll(false);
+    void client.request({ type: "SAVE_ALL_DEVICE_CONFIGURATIONS" }).then((status) => {
+      setConfigurationStatus(status);
+      const state = useWorkspaceStore.getState();
+      if (state.draft) state.synchronizeConfiguration(mergeRunningConfiguration(status.document, state.draft));
+      setValidation(`Saved the running configuration on ${status.devices.filter((device) => device.supportsConfigurationText).length} device(s).`);
+    }).catch(reportError);
+  }, [client, reportError]);
+
+  const saveDeviceConfiguration = useCallback((deviceId: string) => {
+    void client.request({ type: "SAVE_DEVICE_CONFIGURATION", deviceId }).then((view) => {
+      const state = useWorkspaceStore.getState();
+      if (state.draft) state.synchronizeConfiguration(mergeRunningConfiguration(view.document, state.draft));
+      refreshConfigurationStatus();
+      setValidation(`${view.hostname}: running configuration copied to startup.`);
+    }).catch(reportError);
+  }, [client, refreshConfigurationStatus, reportError]);
+
+  const reloadDevice = useCallback((deviceId: string) => {
+    void client.request({ type: "RELOAD_DEVICE", deviceId, save: false }).then((view) => {
+      const state = useWorkspaceStore.getState();
+      if (state.draft) state.synchronizeConfiguration(mergeRunningConfiguration(view.document, state.draft));
+      refreshConfigurationStatus();
+      setValidation(`${view.hostname} reloaded from its startup configuration.`);
+    }).catch(reportError);
+  }, [client, refreshConfigurationStatus, reportError]);
 
   const exportLab = useCallback((fileName?: string) => void (async () => {
     const draft = useWorkspaceStore.getState().draft;
@@ -622,8 +677,15 @@ export function App({ client }: AppProps) {
       { id: "file-demo", label: "Load Demo Lab", icon: <FlaskConical size={14} />, onSelect: () => setDemoLabOpen(true) },
       { id: "file-close", label: "Close Lab", icon: <FolderX size={14} />, disabled: !labOpen, onSelect: closeLab },
       { separator: true },
-      { id: "file-save", label: "Save / Export Lab", shortcut: "Ctrl S", icon: <Download size={14} />, disabled: !ready, onSelect: save },
-      { id: "file-saveas", label: "Save As…", shortcut: "Ctrl ⇧ S", disabled: !ready, onSelect: () => setSaveAsOpen(true) },
+      { id: "file-save", label: "Save Lab", shortcut: "Ctrl S", icon: <Download size={14} />, disabled: !ready, onSelect: save },
+      { id: "file-saveas", label: "Save Lab As…", shortcut: "Ctrl ⇧ S", disabled: !ready, onSelect: () => setSaveAsOpen(true) },
+      { separator: true },
+      // The canonical JSON stays available for diagnostics and integration —
+      // and only there. It is the internal model, not the format a learner saves.
+      { id: "file-advanced", label: "Advanced", submenu: [
+        { id: "file-advanced-import-json", label: "Import Lab JSON…", onSelect: importLab },
+        { id: "file-advanced-export-json", label: "Export Lab JSON", disabled: !ready, onSelect: () => setAdvancedJsonOpen(true) },
+      ] },
     ] },
     { id: "edit", label: "Edit", items: [
       { id: "edit-undo", label: "Undo", shortcut: "Ctrl Z", icon: <Undo2 size={14} />, disabled: workspace.past.length === 0, onSelect: workspace.undo },
@@ -698,6 +760,15 @@ export function App({ client }: AppProps) {
         disabled: !workspace.pendingTopologyChanges,
         onSelect: () => { setPendingMode("edit"); setConfirmApply(true); },
       },
+      { separator: true },
+      {
+        id: "lab-save-configs",
+        label: "Save All Device Configurations",
+        icon: <Save size={14} />,
+        disabled: !simulationEnabled,
+        onSelect: () => setConfirmSaveAll(true),
+      },
+      { separator: true },
       { id: "lab-info", label: "Lab Information", icon: <Info size={14} />, disabled: !labOpen, onSelect: () => setLabInfoOpen(true) },
       { id: "lab-validate", label: "Validate Document", icon: <CheckCircle2 size={14} />, disabled: !labOpen, onSelect: validateDocument },
       { id: "lab-reset", label: "Reset Runtime", icon: <RotateCcw size={14} />, disabled: !simulationEnabled, onSelect: reset },
@@ -1009,6 +1080,16 @@ export function App({ client }: AppProps) {
         <p>The current laboratory has unsaved changes. Closing it will discard the current document.</p>
         <div className="dialog-actions"><Button variant="ghost" onClick={() => setConfirmClose(false)}>Keep Editing</Button><Button variant="danger" onClick={() => { setConfirmClose(false); workspace.reset(); }}>Discard &amp; Close</Button></div>
       </WorkspaceDialog>}
+      {confirmSaveAll && <WorkspaceDialog title="Save all device configurations?" eyebrow="Configuration lifecycle" onClose={() => setConfirmSaveAll(false)}>
+        <p>This copies the running configuration to the startup configuration on every device that keeps a configuration file — the same as running <code>copy running-config startup-config</code> on each of them.</p>
+        <p className="section-note">Runtime state is not copied and no device is reloaded.</p>
+        <div className="dialog-actions"><Button variant="ghost" onClick={() => setConfirmSaveAll(false)}>Cancel</Button><Button variant="primary" onClick={saveAllConfigurations}>Save All</Button></div>
+      </WorkspaceDialog>}
+      {advancedJsonOpen && <WorkspaceDialog title="Export Lab JSON" eyebrow="Advanced format" onClose={() => setAdvancedJsonOpen(false)}>
+        <p>{ADVANCED_JSON_NOTICE}</p>
+        <p className="section-note">The canonical <code>LabDocument</code> JSON is what the simulator, the database and the verifier use internally. It is fully supported — it is simply not the file a learner normally saves.</p>
+        <div className="dialog-actions"><Button variant="ghost" onClick={() => setAdvancedJsonOpen(false)}>Cancel</Button><Button variant="primary" onClick={() => { setAdvancedJsonOpen(false); exportLab(); }}>Export JSON</Button></div>
+      </WorkspaceDialog>}
       {saveAsOpen && <SaveAsDialog defaultName={workspace.draft?.id ?? "lab"} onClose={() => setSaveAsOpen(false)} onSave={(name) => { exportLab(name); setSaveAsOpen(false); }} />}
       {demoLabOpen && <DemoLabDialog onClose={() => setDemoLabOpen(false)} onLoad={loadDemo} />}
       {importFile && <ImportLabWizard
@@ -1058,6 +1139,8 @@ export function App({ client }: AppProps) {
         node={openDeviceNode}
         powerState={workspace.powerState}
         runtimeAvailable={Boolean(runtimeDeviceNode)}
+        configurationDrift={configurationStatus?.devices.find((device) => device.deviceId === deviceWindowId
+          && device.supportsConfigurationText)?.drift}
         onOpenTerminal={(deviceId) => {
           openTerminal(deviceId);
           setDeviceWindowId(undefined);
@@ -1067,6 +1150,7 @@ export function App({ client }: AppProps) {
           if (!state.draft) return;
           if (runtimeSynchronized) state.synchronizeConfiguration(mergeRunningConfiguration(next, state.draft));
           else state.applyDraft(next, "configuration");
+          refreshConfigurationStatus();
         }}
         onError={reportInspectionError}
         onClose={() => setDeviceWindowId(undefined)}
@@ -1098,6 +1182,9 @@ export function App({ client }: AppProps) {
       onSelectLink: workspace.selectLink,
       onOpenTerminal: openTerminal,
       onOpenDevice: setDeviceWindowId,
+      configurationStatus: configurationStatus?.devices,
+      onSaveDeviceConfiguration: saveDeviceConfiguration,
+      onReloadDevice: reloadDevice,
       onInspect: (id: string) => { workspace.selectNode(id); workspace.setInspectorOpen(true); },
       onPlacedDevice: () => workspace.setPendingDeviceKind(undefined),
       onActiveTool: workspace.setActiveTool,

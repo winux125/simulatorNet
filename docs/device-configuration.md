@@ -130,3 +130,48 @@ Router, Firewall, L2 Switch, L3 Switch and Bridge accept applied text. An Access
 Point, Wireless Router and Server render and export a readable configuration but
 are configured through their own panels; inventing a parser for a format nothing
 else writes would be a second, weaker source of truth.
+
+## The Configuration workspace
+
+A device that owns a configuration file gets exactly one top-level
+**Configuration** tab in its device window. Running Config, Startup Config,
+Compare and Import / Paste are secondary navigation inside it, exactly as QoS
+and VPN work. The CLI stays its own top-level tab.
+
+| Section | What it does |
+| --- | --- |
+| Running Config | Read-only, monospace, line-numbered, with Copy, Download `.cfg`, Copy Running to Startup and Apply Text Config… |
+| Startup Config | Read-only, with Copy, Download, Replace from text/file, Erase, and Load into Running — each destructive action behind an explicit confirmation |
+| Compare | A line diff of the two rendered projections, with `Running configuration has N unsaved changes.` The diff is never a configuration source. |
+| Import / Paste | Choose Running or Startup, paste or upload, **Parse**, review the report, then **Apply** |
+
+The editor is a plain textarea and a `<pre>` with line numbers and
+`Ctrl/Cmd+F` search — no embedded code editor was added for a read-mostly
+surface. A file upload is bounded and refused outright if it is not plain text.
+
+`Configuration: Saved` / `Configuration: Modified` appears in the device-window
+title bar and in the device context menu; the topology node gets only a small
+marker, never a large badge. The context menu adds Open Configuration, Save
+Running Configuration and Reload Device, and Lab ▸ Save All Device
+Configurations runs `copy running-config startup-config` everywhere after a
+confirmation.
+
+The device window shows **no raw JSON**. Structured views that used to dump JSON
+now render labelled values. The canonical `LabDocument` JSON is still exactly
+the model everything uses — it simply lives under **File ▸ Advanced ▸ Import /
+Export Lab JSON**, behind a note that it is for diagnostics and integration.
+
+## Academic labs
+
+Assignment autosave stores the whole canonical document, so the running
+configuration *and* the startup snapshot travel with it. A submission is graded
+on the **running** configuration; the startup snapshot rides along because it is
+configuration, and only a spec that explicitly asks looks at it:
+
+```json
+{ "type": "configuration-saved", "configuration": { "deviceId": "switch-1" } }
+```
+
+That check compares canonical structured snapshots. A submission with no
+snapshot at all — every lab written before M10.9.1 — counts as saved, so the
+check can never fail retroactively.

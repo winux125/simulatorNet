@@ -109,6 +109,9 @@ importers:
       '@sim/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@sim/device-config':
+        specifier: workspace:*
+        version: link:../../packages/device-config
       '@sim/importers':
         specifier: workspace:*
         version: link:../../packages/importers

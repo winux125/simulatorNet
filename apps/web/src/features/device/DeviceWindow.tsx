@@ -1,4 +1,5 @@
 import { getDeviceProfile, type LabDocument } from "@sim/contracts";
+import { supportsDeviceConfigurationText } from "@sim/device-config";
 import type { DeviceInspection, LabUiNode, Ospfv3View } from "@sim/sim-worker";
 import {
   AlertTriangle, Clock3, FileDown, Globe2, Network, ScrollText,
@@ -24,9 +25,10 @@ import {
 } from "./SecurityConfigurationPanel";
 import { QosPanel, qosCapabilitiesFor } from "./QosPanel";
 import { VpnPanel, vpnSupportedFor } from "./VpnPanel";
+import { ConfigurationPanel, ConfigurationStatusBadge } from "./ConfigurationPanel";
 
 type DeviceWindowTab =
-  | "overview" | "desktop" | "config" | "console" | "services" | "terminal" | "interfaces" | "attributes"
+  | "overview" | "desktop" | "config" | "configuration" | "console" | "services" | "terminal" | "interfaces" | "attributes"
   | "routing" | "routes" | "vlans" | "svis" | "acl" | "nat" | "runtime"
   | "zones" | "policies" | "connections" | "impairments" | "flows" | "run" | "results"
   | "ipv6" | "qos" | "vpn"
@@ -40,6 +42,8 @@ interface DeviceWindowProps {
   node: LabUiNode;
   powerState: LabPowerState;
   runtimeAvailable: boolean;
+  /** Saved / modified badge, when the lab is running and this device has a config file. */
+  configurationDrift?: string;
   onOpenTerminal(deviceId: string): void;
   onConfigurationChanged(document: LabDocument, runtimeSynchronized: boolean): void;
   onError(message: string): void;
@@ -176,7 +180,14 @@ export function DeviceWindow(props: DeviceWindowProps) {
     const vpn: Array<{ id: DeviceWindowTab; label: string }> = vpnSupportedFor(props.node.type)
       ? [{ id: "vpn", label: "VPN" }]
       : [];
-    return [...withConsole, ...qos, ...vpn, ...management];
+    // Exactly one top-level Configuration tab for a device that owns a
+    // configuration file. Running/Startup/Compare/Import are secondary
+    // navigation inside it, and the CLI stays its own tab.
+    const configuration: Array<{ id: DeviceWindowTab; label: string }> =
+      supportsDeviceConfigurationText(props.node.type)
+        ? [{ id: "configuration", label: "Configuration" }]
+        : [];
+    return [...withConsole, ...configuration, ...qos, ...vpn, ...management];
   }, [
     isAccessPoint,
     isLaptop,
@@ -201,6 +212,9 @@ export function DeviceWindow(props: DeviceWindowProps) {
         <header className="device-window__titlebar">
           <span className="device-window__icon" aria-hidden="true"><DeviceIcon type={props.node.type} size={24} state={props.node.status === "up" ? "running" : "stopped"} /></span>
           <div><strong>{props.node.hostname}</strong><small>{profile.displayName} · {props.node.id}</small></div>
+          {props.configurationDrift && (
+            <ConfigurationStatusBadge drift={props.configurationDrift} changedLines={0} />
+          )}
           <IconButton label="Close device window" icon={<X size={15} />} onClick={props.onClose} />
         </header>
         <nav className="device-window__tabs" role="tablist" aria-label={`${props.node.hostname} sections`}>
@@ -218,6 +232,8 @@ export function DeviceWindow(props: DeviceWindowProps) {
             onTerminal={() => props.onOpenTerminal(props.node.id)}
             onError={props.onError}
           />}
+          {/* `config` stays the host/wireless structured view; a device with a
+              configuration file gets the Configuration tab instead. */}
           {tab === "config" && (isSmartphone
             ? <HostIpConfigurationPanel
                 client={props.client}
@@ -244,6 +260,14 @@ export function DeviceWindow(props: DeviceWindowProps) {
           {(["setup", "lan", "wan", "dhcp", "firewall"] as DeviceWindowTab[]).includes(tab) && (
             <StructuredConfiguration document={props.document} node={props.node} section={tab} />
           )}
+          {tab === "configuration" && <ConfigurationPanel
+            client={props.client}
+            deviceId={props.node.id}
+            hostname={props.node.hostname}
+            runtimeAvailable={props.runtimeAvailable}
+            onConfigurationChanged={props.onConfigurationChanged}
+            onError={props.onError}
+          />}
           {tab === "qos" && (props.runtimeAvailable
             ? <QosPanel
                 client={props.client}
@@ -332,7 +356,50 @@ function StructuredConfiguration({
   const selected = section && configuration && section in configuration
     ? configuration[section]
     : configuration ?? {};
-  return <div className="device-window-section"><p className="section-eyebrow">Worker-owned configuration</p><p className="section-note">This is one redacted view of the canonical device configuration; it is not an independent copy.</p><pre className="configuration-view">{JSON.stringify(redactCredentialMaterial(selected), null, 2)}</pre></div>;
+  return <div className="device-window-section">
+    <p className="section-eyebrow">Worker-owned configuration</p>
+    <p className="section-note">
+      This is one redacted view of the canonical device configuration; it is not an independent copy. The
+      canonical JSON itself lives under File ▸ Advanced.
+    </p>
+    <PropertyTree value={redactCredentialMaterial(selected)} />
+  </div>;
+}
+
+/**
+ * A readable view of structured configuration.
+ *
+ * The device window deliberately shows no raw JSON: a network engineer reads a
+ * configuration, not a serialization format. The canonical document is still
+ * exactly what this renders — just spelled out as labelled values.
+ */
+function PropertyTree({ value, depth = 0 }: { value: unknown; depth?: number }) {
+  if (value === null || value === undefined) return <span className="property-tree__value">—</span>;
+  if (typeof value !== "object") return <span className="property-tree__value"><code>{String(value)}</code></span>;
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <span className="property-tree__value">none</span>;
+    return <ol className="property-tree property-tree--list" data-depth={depth}>
+      {value.map((entry, index) => <li key={index}><PropertyTree value={entry} depth={depth + 1} /></li>)}
+    </ol>;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (entries.length === 0) return <span className="property-tree__value">none</span>;
+  return <dl className="property-tree" data-depth={depth}>
+    {entries.map(([key, entry]) => (
+      <div key={key}>
+        <dt>{humanizeKey(key)}</dt>
+        <dd><PropertyTree value={entry} depth={depth + 1} /></dd>
+      </div>
+    ))}
+  </dl>;
+}
+
+/** `dhcpRangeStart` → `Dhcp range start`; ids and acronyms stay readable. */
+function humanizeKey(key: string): string {
+  const spaced = key.replace(/([a-z0-9])([A-Z])/gu, "$1 $2").replace(/[-_]+/gu, " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
 }
 
 function redactCredentialMaterial(value: unknown): unknown {
@@ -340,7 +407,7 @@ function redactCredentialMaterial(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
     key,
-    /(?:password|credential|secret).*verifier|verifier|passphrase|plaintext/iu.test(key)
+    /(?:password|credential|secret).*verifier|verifier|passphrase|plaintext|fingerprint/iu.test(key)
       ? "Security key configured"
       : redactCredentialMaterial(entry),
   ]));
@@ -405,7 +472,7 @@ function Ipv6RuntimePanel({
     <h3>IPv6 ACL</h3>
     {acls.length === 0
       ? <p>No IPv6 access lists configured.</p>
-      : acls.map((acl) => <div key={acl.id}><strong>{acl.id}</strong><pre className="configuration-view">{JSON.stringify(acl.rules, null, 2)}</pre></div>)}
+      : acls.map((acl) => <div key={acl.id}><strong>{acl.id}</strong><PropertyTree value={acl.rules} /></div>)}
     {ipv6.problems.map((problem) => <p className="host-ip-config__warning" key={problem}><AlertTriangle size={14} /> {problem}</p>)}
   </div>;
 }

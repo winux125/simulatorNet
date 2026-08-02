@@ -95,14 +95,35 @@ async function audit(database: SimulatorDatabase, context: TenantContext, reques
   await new TenantRepository(database).recordAuditEvent(context, { action, resourceType, resourceId, requestId, metadata });
 }
 
-/** Build a verifier submission document from a stored canonical lab document. */
-function submissionDocument(document: { id: string; schemaVersion: number; simulation: { seed: number }; topology: unknown; configurations: unknown }, labVersion: number) {
+/**
+ * Build a verifier submission document from a stored canonical lab document.
+ *
+ * The submission is graded on the **running** configuration. The startup
+ * snapshot travels with it — it is configuration, not runtime — so a spec that
+ * explicitly asks whether a device was saved can check it; nothing else looks
+ * at it.
+ */
+function submissionDocument(
+  document: {
+    id: string;
+    schemaVersion: number;
+    simulation: { seed: number };
+    topology: unknown;
+    configurations: unknown;
+    startupConfigurations?: unknown;
+  },
+  labVersion: number,
+) {
   return {
     labId: document.id,
     labVersion,
     schemaVersion: document.schemaVersion,
     simulation: document.simulation,
-    snapshot: { topology: document.topology, configurations: document.configurations },
+    snapshot: {
+      topology: document.topology,
+      configurations: document.configurations,
+      startupConfigurations: document.startupConfigurations,
+    },
   };
 }
 

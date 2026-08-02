@@ -128,6 +128,10 @@ interface TopologyCanvasProps {
   onOpenTerminal(id: string): void;
   onOpenDevice(id: string): void;
   onInspect(id: string): void;
+  /** Per-device Saved/Modified state, derived from the worker while running. */
+  configurationStatus?: ReadonlyArray<{ deviceId: string; drift: string; supportsConfigurationText: boolean }>;
+  onSaveDeviceConfiguration(id: string): void;
+  onReloadDevice(id: string): void;
   onPlacedDevice(): void;
   onActiveTool(tool: WorkspaceTool): void;
   onPortLabelMode(mode: PortLabelMode): void;
@@ -447,6 +451,8 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           serviceBadges: live?.serviceBadges,
           terminalOpen: props.terminalTabs.includes(node.id),
           configurationChanged: changed,
+          unsavedConfiguration: props.configurationStatus
+            ?.some((entry) => entry.deviceId === node.id && entry.drift === "modified") ?? false,
           // An appliance with no known/supported interfaces cannot be wired.
           connectable: cableHandleAvailable && getDeviceProfile(node.kind).interfaceTemplates
             .some((template) =>
@@ -690,6 +696,9 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     if (contextMenu.kind === "node") {
       if (action === "terminal") props.onOpenTerminal(contextMenu.id);
       if (action === "inspect") props.onInspect(contextMenu.id);
+      if (action === "configuration") props.onOpenDevice(contextMenu.id);
+      if (action === "save-configuration") props.onSaveDeviceConfiguration(contextMenu.id);
+      if (action === "reload") props.onReloadDevice(contextMenu.id);
       if (action === "connect") startConnection(contextMenu.id);
       if (action === "rename") {
         const current = document.configurations[contextMenu.id]?.hostname ?? contextMenu.id;
@@ -1346,6 +1355,17 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           {contextMenu.kind === "node" && <>
             {props.mode === "simulate" && getDeviceProfile(document.topology.nodes.find((node) => node.id === contextMenu.id)!.kind).cliProfile
               && <button role="menuitem" type="button" onClick={() => contextAction("terminal")}>Open CLI <kbd>Enter</kbd></button>}
+            {(() => {
+              const status = props.configurationStatus?.find((entry) => entry.deviceId === contextMenu.id);
+              if (!status?.supportsConfigurationText) return null;
+              return <>
+                <button role="menuitem" type="button" onClick={() => contextAction("configuration")}>
+                  Open Configuration <small>{status.drift === "saved" ? "Saved" : status.drift === "modified" ? "Modified" : "No startup"}</small>
+                </button>
+                <button role="menuitem" type="button" onClick={() => contextAction("save-configuration")}>Save Running Configuration</button>
+                <button role="menuitem" type="button" onClick={() => contextAction("reload")}>Reload Device</button>
+              </>;
+            })()}
             <button role="menuitem" type="button" onClick={() => contextAction("inspect")}>Inspect <Eye size={13} /></button>
             {structuralEditable && <>
               <span className="context-menu__separator" />

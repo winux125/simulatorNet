@@ -707,7 +707,7 @@ describe("M6.1 simulator workspace", () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     await openMenu("File");
-    await userEvent.click(screen.getByRole("menuitem", { name: /Save \/ Export Lab/ }));
+    await userEvent.click(screen.getByRole("menuitem", { name: /^Save LabCtrl/ }));
     await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
     expect(client.requestTypes).toContain("SERIALIZE_LAB");
   });
@@ -1005,7 +1005,7 @@ describe("M8.3 desktop menus and terminal", () => {
     render(<App client={client} />);
     await openMenu("File");
     expect(screen.getByRole("menuitem", { name: /New Lab/ })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: /Save \/ Export Lab/ })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /^Save LabCtrl/ })).toBeTruthy();
   });
 
   it("triggers Import from the File menu", async () => {
@@ -1022,7 +1022,7 @@ describe("M8.3 desktop menus and terminal", () => {
     const client = new RuntimeClient();
     await loadDemo(client);
     await openMenu("File");
-    await userEvent.click(screen.getByRole("menuitem", { name: /Save \/ Export Lab/ }));
+    await userEvent.click(screen.getByRole("menuitem", { name: /^Save LabCtrl/ }));
     await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
     expect(client.requestTypes).toContain("SERIALIZE_LAB");
   });
