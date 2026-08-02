@@ -119,7 +119,7 @@ test.describe("Site-to-site VPN", () => {
     // and the overlay still carries traffic.
     const downloadPromise = page.waitForEvent("download");
     await page.getByRole("menuitem", { name: "File", exact: true }).click();
-    await page.getByRole("menuitem", { name: /Save \/ Export Lab/ }).click();
+    await page.getByRole("menuitem", { name: /^Save Lab(?! As)/ }).click();
     const exportedPath = await (await downloadPromise).path();
     expect(exportedPath).not.toBeNull();
     await page.locator("#load-lab-file").setInputFiles(exportedPath!);

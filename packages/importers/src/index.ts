@@ -17,6 +17,7 @@ export * from "./adapters/adapter";
 export * from "./adapters/builtins";
 export * from "./config/ios-config";
 export * from "./config/apply";
+export * from "./native/simlab";
 export * from "./config/console-credentials";
 export * from "./config/management-config";
 export * from "./config/wireless-credentials";

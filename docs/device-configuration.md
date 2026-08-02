@@ -175,3 +175,71 @@ configuration, and only a spec that explicitly asks looks at it:
 That check compares canonical structured snapshots. A submission with no
 snapshot at all — every lab written before M10.9.1 — counts as saved, so the
 check can never fail retroactively.
+
+## The `.simlab` lab package
+
+A learner saves **one file**:
+
+```text
+my-network.simlab
+```
+
+It is a ZIP container:
+
+```text
+manifest.json
+lab.json
+configs/
+  R1-running.cfg
+  R1-startup.cfg
+  SW1-running.cfg
+  SW1-startup.cfg
+import-report.json        (optional)
+```
+
+`manifest.json` declares the format, the schema version, the title, the
+document path, the configuration directory and one validation entry per
+projection. It carries **no timestamp**, so the same lab always produces the
+same bytes.
+
+`lab.json` is the only source of truth. The `.cfg` files are projections
+generated at export: they exist to be read, diffed and version-controlled, and
+they are validated on import against the projections the document produces right
+now. A mismatch is reported —
+
+```text
+Configuration projection differs from the canonical lab document.
+```
+
+— and the document wins. A hand-edited `.cfg` is never applied silently; the
+device Configuration tab's Import / Paste flow is the explicit way to apply it.
+
+Reading a package goes through the same archive guards as any untrusted upload:
+ZIP-slip and absolute paths, symlinks, duplicate entries, the compression-ratio
+and total-size bombs, the entry-count limit, and no nested archives. On top of
+those, `SIMLAB_LIMITS` bounds the package size, the number of `.cfg` files, the
+size of one `.cfg` and the size of `lab.json`. Nothing in a package is executed,
+and no remote resource is ever fetched.
+
+### File menu
+
+| Action | Result |
+| --- | --- |
+| New Lab / Open Lab… / Close Lab | `Open Lab…` accepts `.simlab`, native `.json`, and external formats through the import wizard |
+| Save Lab / Save Lab As… | Writes a `.simlab` package |
+| Import External Lab… | The PNETLab/GNS3/CML/containerlab wizard |
+| Export Device Configurations… | All devices as a ZIP of `.cfg`, or the selected device's running or startup configuration |
+| Advanced ▸ Import / Export Lab JSON | The canonical JSON, for diagnostics and integration |
+
+### Compatibility
+
+Old `.json` labs open exactly as before. The API and the database keep storing
+the structured `LabDocument` as JSONB, and the verifier contract is unchanged —
+it never receives a ZIP. `.simlab` is a user-facing transport container, not a
+second persistence format.
+
+External PNETLab / GNS3 / CML configurations still convert one way: source text
+→ structured configuration → SimulatorNet running and startup state. Whatever
+the importer could not parse stays in the import report and never becomes an
+active running configuration. Packet Tracer `.pkt` / `.pka` remain
+recognised-but-unsupported.

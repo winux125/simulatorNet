@@ -11,6 +11,7 @@ import {
 } from "react-resizable-panels";
 import {
   AlertTriangle, Cable, CheckCircle2, ClipboardPaste, Clock3, Command, Download, Eraser, FilePlus2, FlaskConical, FolderOpen, FolderX,
+  FileDown, FileUp,
   Grid3X3, Info, Keyboard, Maximize2, Move, PanelBottom, PanelRight, Play, Redo2, RotateCcw, Save, SkipForward,
   Square, SunMoon, Tag, TerminalSquare, Type, Undo2, Wrench, X,
 } from "lucide-react";
@@ -31,7 +32,14 @@ import {
   removeDraftLink,
 } from "../features/lab/document";
 import type { LabChangeImpact } from "../features/lab/change-impact";
-import { detectLabImportFormat } from "@sim/importers";
+import {
+  detectLabImportFormat,
+  deviceConfigurationProjections,
+  readSimulatorNetLabPackage,
+  SIMLAB_EXTENSION,
+  writeDeviceConfigurationArchive,
+  writeSimulatorNetLabPackage,
+} from "@sim/importers";
 import { ImportLabWizard } from "../features/lab/ImportLabWizard";
 import { InspectorPanel } from "../features/inspector/InspectorPanel";
 import { DeviceWindow } from "../features/device/DeviceWindow";
@@ -97,15 +105,35 @@ export const EMPTY_LAB: LabDocument = {
 export const ADVANCED_JSON_NOTICE =
   "Advanced format intended for diagnostics and integration. For normal use, save a SimulatorNet Lab package.";
 
-export function downloadLabDocument(document: LabDocument, fileName?: string): void {
-  const blob = new Blob([stringifyLabDocument(document)], { type: "application/json" });
+function downloadBlob(blob: Blob, fileName: string): void {
   const url = URL.createObjectURL(blob);
   const anchor = window.document.createElement("a");
   anchor.href = url;
-  const name = (fileName ?? document.id).replace(/\.json$/i, "");
-  anchor.download = `${name || "lab"}.json`;
+  anchor.download = fileName;
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+export function downloadLabDocument(document: LabDocument, fileName?: string): void {
+  const name = (fileName ?? document.id).replace(/\.json$/i, "");
+  downloadBlob(new Blob([stringifyLabDocument(document)], { type: "application/json" }), `${name || "lab"}.json`);
+}
+
+/**
+ * The ordinary Save: one `.simlab` file holding the canonical document and the
+ * readable `.cfg` projections. JSON stays internal.
+ */
+export async function downloadLabPackage(document: LabDocument, fileName?: string): Promise<void> {
+  const bytes = await writeSimulatorNetLabPackage(document, {
+    // Provenance for a converted lab travels with the package as non-canonical
+    // metadata; it never affects the document or a grade.
+    importReport: document.sourceImport,
+  });
+  const name = (fileName ?? document.id).replace(/\.simlab$/i, "");
+  downloadBlob(
+    new Blob([bytes as unknown as BlobPart], { type: "application/zip" }),
+    `${name || "lab"}${SIMLAB_EXTENSION}`,
+  );
 }
 
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -233,6 +261,7 @@ export function App({ client }: AppProps) {
   const [deviceWindowId, setDeviceWindowId] = useState<string>();
   const [confirmSaveAll, setConfirmSaveAll] = useState(false);
   const [advancedJsonOpen, setAdvancedJsonOpen] = useState(false);
+  const [exportConfigsOpen, setExportConfigsOpen] = useState(false);
   const [configurationStatus, setConfigurationStatus] = useState<LabConfigurationStatusView>();
   const dismissStepExplanation = useCallback(() => {
     window.localStorage.setItem(STEP_EXPLANATION_KEY, "true");
@@ -296,6 +325,14 @@ export function App({ client }: AppProps) {
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const detection = detectLabImportFormat({ filename: file.name, bytes });
+      // A `.simlab` package opens directly: it is our own format, and a
+      // projection mismatch is reported rather than silently applied.
+      if (detection.format === "simulatornet-package") {
+        const read = await readSimulatorNetLabPackage(bytes);
+        await initialize(read.document);
+        for (const warning of read.warnings) reportError(warning, "validation");
+        return;
+      }
       // A .json file is native intent: use the native loader so JSON/validation
       // errors are reported directly. Foreign formats go through the wizard.
       const nativeIntent = detection.format === "simulatornet"
@@ -358,15 +395,53 @@ export function App({ client }: AppProps) {
     }).catch(reportError);
   }, [client, refreshConfigurationStatus, reportError]);
 
-  const exportLab = useCallback((fileName?: string) => void (async () => {
+  /** The current draft merged with the worker's running configuration. */
+  const currentDocument = useCallback(async (): Promise<LabDocument | undefined> => {
     const draft = useWorkspaceStore.getState().draft;
-    if (!draft) return;
+    if (!draft) return undefined;
     const running = await client.request({ type: "SERIALIZE_LAB" });
-    const merged = mergeRunningConfiguration(running, draft);
+    return mergeRunningConfiguration(running, draft);
+  }, [client]);
+
+  /** Advanced only: the canonical JSON, for diagnostics and integration. */
+  const exportLabJson = useCallback((fileName?: string) => void (async () => {
+    const merged = await currentDocument();
+    if (!merged) return;
     useWorkspaceStore.getState().markSaved(merged);
     downloadLabDocument(merged, fileName);
-  })().catch(reportError), [client, reportError]);
-  const save = useCallback(() => exportLab(), [exportLab]);
+  })().catch(reportError), [currentDocument, reportError]);
+
+  /** The ordinary Save: one `.simlab` package. */
+  const saveLabPackage = useCallback((fileName?: string) => void (async () => {
+    const merged = await currentDocument();
+    if (!merged) return;
+    useWorkspaceStore.getState().markSaved(merged);
+    await downloadLabPackage(merged, fileName);
+  })().catch(reportError), [currentDocument, reportError]);
+  const save = useCallback(() => saveLabPackage(), [saveLabPackage]);
+
+  const exportDeviceConfigurations = useCallback((choice: "all" | "running" | "startup") => void (async () => {
+    const merged = await currentDocument();
+    if (!merged) return;
+    if (choice === "all") {
+      const bytes = await writeDeviceConfigurationArchive(merged);
+      downloadBlob(new Blob([bytes as unknown as BlobPart], { type: "application/zip" }), `${merged.id || "lab"}-configs.zip`);
+      setExportConfigsOpen(false);
+      return;
+    }
+    const deviceId = useWorkspaceStore.getState().selectedNodeId;
+    const projection = deviceConfigurationProjections(merged)
+      .find((entry) => entry.deviceId === deviceId && entry.kind === choice);
+    if (!projection) {
+      reportError("Select a device that keeps a configuration file first.", "validation");
+      return;
+    }
+    downloadBlob(
+      new Blob([projection.text], { type: "text/plain;charset=utf-8" }),
+      projection.path.slice(projection.path.lastIndexOf("/") + 1),
+    );
+    setExportConfigsOpen(false);
+  })().catch(reportError), [currentDocument, reportError]);
 
   const rebuild = useCallback(async (nextMode: WorkspaceMode = "simulate") => {
     const state = useWorkspaceStore.getState();
@@ -673,12 +748,15 @@ export function App({ client }: AppProps) {
   const menus: MenuDef[] = [
     { id: "file", label: "File", items: [
       { id: "file-new", label: "New Lab", shortcut: "Ctrl N", icon: <FilePlus2 size={14} />, onSelect: newLab },
-      { id: "file-open", label: "Open / Import Lab…", shortcut: "Ctrl O", icon: <FolderOpen size={14} />, onSelect: importLab },
+      { id: "file-open", label: "Open Lab…", shortcut: "Ctrl O", icon: <FolderOpen size={14} />, onSelect: importLab },
       { id: "file-demo", label: "Load Demo Lab", icon: <FlaskConical size={14} />, onSelect: () => setDemoLabOpen(true) },
       { id: "file-close", label: "Close Lab", icon: <FolderX size={14} />, disabled: !labOpen, onSelect: closeLab },
       { separator: true },
       { id: "file-save", label: "Save Lab", shortcut: "Ctrl S", icon: <Download size={14} />, disabled: !ready, onSelect: save },
       { id: "file-saveas", label: "Save Lab As…", shortcut: "Ctrl ⇧ S", disabled: !ready, onSelect: () => setSaveAsOpen(true) },
+      { separator: true },
+      { id: "file-import-external", label: "Import External Lab…", icon: <FileUp size={14} />, onSelect: importLab },
+      { id: "file-export-configs", label: "Export Device Configurations…", icon: <FileDown size={14} />, disabled: !ready, onSelect: () => setExportConfigsOpen(true) },
       { separator: true },
       // The canonical JSON stays available for diagnostics and integration —
       // and only there. It is the internal model, not the format a learner saves.
@@ -894,7 +972,7 @@ export function App({ client }: AppProps) {
         onStopLab={stopLab}
         onLogout={() => void launchSession.logout().catch((error) => reportError(error, "validation"))}
       />
-      <input id="load-lab-file" className="visually-hidden" type="file" accept="application/json,.json,.unl,.zip,.gns3,.gns3project,.yml,.yaml,.virl,.pkt,.pka" onChange={(event) => { const file = event.target.files?.[0]; if (file) loadFile(file); event.target.value = ""; }} />
+      <input id="load-lab-file" className="visually-hidden" type="file" accept=".simlab,application/json,.json,.unl,.zip,.gns3,.gns3project,.yml,.yaml,.virl,.pkt,.pka" onChange={(event) => { const file = event.target.files?.[0]; if (file) loadFile(file); event.target.value = ""; }} />
       {launchSession.state.status === "authenticated" && <AssignmentPanel client={client} document={workspace.draft} onOpenDocument={(document) => initialize(document, "simulate")} onError={(message) => reportError(message, "validation")} />}
       {launchSession.state.status === "exchanging" && <div className="launch-status" role="status">Exchanging secure launch code…</div>}
       {launchSession.state.status === "error" && <div className="workspace-error" role="alert"><AlertTriangle size={14} /><span>{launchSession.state.message}</span></div>}
@@ -1088,9 +1166,18 @@ export function App({ client }: AppProps) {
       {advancedJsonOpen && <WorkspaceDialog title="Export Lab JSON" eyebrow="Advanced format" onClose={() => setAdvancedJsonOpen(false)}>
         <p>{ADVANCED_JSON_NOTICE}</p>
         <p className="section-note">The canonical <code>LabDocument</code> JSON is what the simulator, the database and the verifier use internally. It is fully supported — it is simply not the file a learner normally saves.</p>
-        <div className="dialog-actions"><Button variant="ghost" onClick={() => setAdvancedJsonOpen(false)}>Cancel</Button><Button variant="primary" onClick={() => { setAdvancedJsonOpen(false); exportLab(); }}>Export JSON</Button></div>
+        <div className="dialog-actions"><Button variant="ghost" onClick={() => setAdvancedJsonOpen(false)}>Cancel</Button><Button variant="primary" onClick={() => { setAdvancedJsonOpen(false); exportLabJson(); }}>Export JSON</Button></div>
       </WorkspaceDialog>}
-      {saveAsOpen && <SaveAsDialog defaultName={workspace.draft?.id ?? "lab"} onClose={() => setSaveAsOpen(false)} onSave={(name) => { exportLab(name); setSaveAsOpen(false); }} />}
+      {exportConfigsOpen && <WorkspaceDialog title="Export device configurations" eyebrow="Readable .cfg files" onClose={() => setExportConfigsOpen(false)}>
+        <p>Configuration files are rendered from the canonical device configuration. They contain no password, key, community string or verifier — only <code>&lt;configured&gt;</code>.</p>
+        <div className="dialog-actions">
+          <Button variant="ghost" onClick={() => setExportConfigsOpen(false)}>Cancel</Button>
+          <Button variant="ghost" disabled={!workspace.selectedNodeId} onClick={() => exportDeviceConfigurations("startup")}>Selected startup-config</Button>
+          <Button variant="ghost" disabled={!workspace.selectedNodeId} onClick={() => exportDeviceConfigurations("running")}>Selected running-config</Button>
+          <Button variant="primary" onClick={() => exportDeviceConfigurations("all")}>All devices (ZIP)</Button>
+        </div>
+      </WorkspaceDialog>}
+      {saveAsOpen && <SaveAsDialog defaultName={workspace.draft?.id ?? "lab"} onClose={() => setSaveAsOpen(false)} onSave={(name) => { saveLabPackage(name); setSaveAsOpen(false); }} />}
       {demoLabOpen && <DemoLabDialog onClose={() => setDemoLabOpen(false)} onLoad={loadDemo} />}
       {importFile && <ImportLabWizard
         file={importFile}
@@ -1115,8 +1202,8 @@ export function App({ client }: AppProps) {
         <div className="shortcut-list">
           <Shortcut keys="Ctrl / Cmd + N" label="New lab" />
           <Shortcut keys="Ctrl / Cmd + O" label="Open / import lab" />
-          <Shortcut keys="Ctrl / Cmd + S" label="Save / export JSON" />
-          <Shortcut keys="Ctrl / Cmd + Shift + S" label="Save As…" />
+          <Shortcut keys="Ctrl / Cmd + S" label="Save lab package" />
+          <Shortcut keys="Ctrl / Cmd + Shift + S" label="Save Lab As…" />
           <Shortcut keys="Ctrl / Cmd + Z" label="Undo topology edit" />
           <Shortcut keys="Ctrl / Cmd + Enter" label="Run all queued events" />
           <Shortcut keys="Delete" label="Delete selection in Edit mode" />
@@ -1254,11 +1341,11 @@ function WorkspaceDialog({ title, eyebrow, onClose, children }: { title: string;
 
 function SaveAsDialog({ defaultName, onClose, onSave }: { defaultName: string; onClose(): void; onSave(name: string): void }) {
   const [name, setName] = useState(defaultName);
-  return <WorkspaceDialog title="Save lab as" eyebrow="Canonical export" onClose={onClose}>
-    <p>Export the canonical LabDocument JSON under a file name of your choice. Server autosave is not the primary model yet, so Save writes a portable snapshot.</p>
+  return <WorkspaceDialog title="Save lab as" eyebrow="SimulatorNet Lab package" onClose={onClose}>
+    <p>One file holds the whole lab: the canonical document, every device&apos;s readable running and startup configuration, and the diagram.</p>
     <form className="dialog-form" onSubmit={(event) => { event.preventDefault(); onSave(name.trim() || defaultName); }}>
       <label htmlFor="save-as-name">File name</label>
-      <div className="dialog-field"><input id="save-as-name" value={name} autoFocus onChange={(event) => setName(event.target.value)} /><span>.json</span></div>
+      <div className="dialog-field"><input id="save-as-name" value={name} autoFocus onChange={(event) => setName(event.target.value)} /><span>{SIMLAB_EXTENSION}</span></div>
       <div className="dialog-actions"><Button variant="ghost" type="button" onClick={onClose}>Cancel</Button><Button variant="primary" type="submit">Save</Button></div>
     </form>
   </WorkspaceDialog>;

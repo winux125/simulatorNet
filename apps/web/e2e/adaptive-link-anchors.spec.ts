@@ -305,7 +305,7 @@ test("parallel switch links keep stable offsets through EtherChannel, resize and
 
   const download = page.waitForEvent("download");
   await page.getByRole("menuitem", { name: "File", exact: true }).click();
-  await page.getByRole("menuitem", { name: /Save \/ Export Lab/ }).click();
+  await page.getByRole("menuitem", { name: /^Save Lab(?! As)/ }).click();
   const exported = await (await download).path();
   expect(exported).not.toBeNull();
   await page.locator("#load-lab-file").setInputFiles(exported!);

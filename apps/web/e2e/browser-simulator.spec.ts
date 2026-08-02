@@ -189,7 +189,7 @@ test("responsive topology links preserve domain endpoints across workspace chang
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("menuitem", { name: "File", exact: true }).click();
-  await page.getByRole("menuitem", { name: /Save \/ Export Lab/ }).click();
+  await page.getByRole("menuitem", { name: /^Save Lab(?! As)/ }).click();
   const exportedPath = await (await downloadPromise).path();
   expect(exportedPath).not.toBeNull();
   await page.locator("#load-lab-file").setInputFiles(exportedPath!);
@@ -295,7 +295,7 @@ test("topology visual profiles and domain diagram tools persist", async ({ page 
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("menuitem", { name: "File", exact: true }).click();
-  await page.getByRole("menuitem", { name: /Save \/ Export Lab/ }).click();
+  await page.getByRole("menuitem", { name: /^Save Lab(?! As)/ }).click();
   const download = await downloadPromise;
   const exportPath = await download.path();
   expect(exportPath).not.toBeNull();
@@ -392,7 +392,7 @@ test("M10.3.2d diagram editor supports drag creation, transforms and round-trip"
   await page.screenshot({ path: "/tmp/m10-3-2-diagram-editor-1440x900.png", animations: "disabled" });
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("menuitem", { name: "File", exact: true }).click();
-  await page.getByRole("menuitem", { name: /Save \/ Export Lab/ }).click();
+  await page.getByRole("menuitem", { name: /^Save Lab(?! As)/ }).click();
   const exported = await (await downloadPromise).path();
   expect(exported).not.toBeNull();
   await page.locator("#load-lab-file").setInputFiles(exported!);
@@ -542,8 +542,8 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   // 10. File menu → export the canonical lab (browser download).
   const download = page.waitForEvent("download");
   await menu("File").click();
-  await page.getByRole("menuitem", { name: /Save \/ Export Lab/ }).click();
-  expect((await download).suggestedFilename()).toContain(".json");
+  await page.getByRole("menuitem", { name: /^Save Lab(?! As)/ }).click();
+  expect((await download).suggestedFilename()).toContain(".simlab");
 
   // Dark/light review screenshots.
   await chooseTheme(page, "Dark");
@@ -595,6 +595,10 @@ test("M10.2.1 CLI profiles expose host and IOS-like learning flows", async ({ pa
   }
   await expect(page.getByTestId("terminal-transcript")).toContainText("R1(config-if)# shut");
   await expect(page.getByTestId("terminal-transcript")).toContainText("interface Gi0/0");
+  // A full running configuration is longer than one screen, so leave the pager
+  // before typing again or the next command becomes a pager keystroke.
+  await page.locator(".terminal-session.is-active .xterm-screen").click();
+  await page.keyboard.press("q");
 
   await runCli(page, "ping");
   await expect(page.locator(".terminal-session.is-active .xterm-rows")).toContainText("Target IP address:");

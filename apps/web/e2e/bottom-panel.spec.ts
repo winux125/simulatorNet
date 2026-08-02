@@ -167,10 +167,14 @@ test("keeps a floating terminal and restores the panel when docking", async ({ p
   await expect(page.getByLabel("Workspace bottom panel, minimized")).toBeVisible();
   await expect(panel).toHaveCount(0);
 
-  // The exported LabDocument carries no panel, terminal or session state.
+  // The exported LabDocument carries no panel, terminal or session state. The
+  // ordinary Save writes a `.simlab` package, so the canonical JSON is read
+  // through File ▸ Advanced — the only place it is still exposed.
   const download = page.waitForEvent("download");
   await page.getByRole("menuitem", { name: "File", exact: true }).click();
-  await page.getByRole("menuitem", { name: /^Save \/ Export Lab/ }).click();
+  await page.getByRole("menuitem", { name: /^Advanced/ }).click();
+  await page.getByRole("menuitem", { name: /Export Lab JSON/ }).click();
+  await page.getByRole("button", { name: "Export JSON" }).click();
   const exported = await (await download).createReadStream();
   const chunks: Buffer[] = [];
   for await (const chunk of exported) chunks.push(Buffer.from(chunk));

@@ -50,6 +50,25 @@ export function deviceConfigurationDigest(config: DeviceConfig | undefined): str
 }
 
 /**
+ * A digest of *rendered* configuration text.
+ *
+ * Used to detect a `.cfg` projection inside a lab package that someone edited
+ * by hand. Like `deviceConfigurationDigest` it identifies content; it is not a
+ * security primitive and protects nothing.
+ */
+export function configurationTextDigest(text: string): string {
+  // The same normalization the renderer applies, so a stray trailing newline or
+  // a CRLF checkout does not read as a hand edit.
+  const normalized = text.replace(/\r\n|\r/gu, "\n").replace(/[ \t]+$/gmu, "").replace(/\n+$/u, "\n");
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < normalized.length; index++) {
+    hash ^= normalized.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `${hash.toString(16).padStart(8, "0")}${normalized.length.toString(16)}`;
+}
+
+/**
  * A device's saved startup configuration.
  *
  * `implicit` is what every lab written before this milestone has: no startup

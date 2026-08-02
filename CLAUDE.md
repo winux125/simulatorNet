@@ -86,6 +86,7 @@ Do not silently skip database tests in a quality gate.
 | --- | --- |
 | `packages/contracts` | Serializable Zod schemas and shared domain types |
 | `packages/sim-core` | Deterministic protocol engine, devices, services, transport, event queue |
+| `packages/device-config` | Deterministic running/startup-config renderer, shared configuration-text parser, drift comparison |
 | `packages/cli-engine` | Lexer, parser, contextual help, session state, command formatting |
 | `packages/console-auth` | Device-console login, privilege session behavior, management credential verifiers |
 | `packages/remote-management` | Simulated Telnet/SSH remote CLI, VTY lines, AAA decision layer |
@@ -118,6 +119,11 @@ labels, and diagram annotations. It must not contain:
   preferences;
 - ARP/MAC caches, DHCP leases, sockets, pending operations, or event queues;
 - computed scores or hidden grading definitions.
+
+`LabDocument.startupConfigurations` is the saved startup snapshot per device. It
+holds configuration only, never runtime state. An absent map — every lab written
+before M10.9.1 — means startup equals running, so an older file opens without a
+migration and without a false "unsaved" state.
 
 ### Simulation core
 
@@ -268,6 +274,40 @@ traffic and never enables routing or forwards transit packets. See
 `docs/remote-management.md`, `docs/aaa-simulation.md` and
 `docs/snmp-management.md`.
 
+### Device configuration
+
+Structured `DeviceConfig` is the single source of truth. Configuration text is a
+*projection* of it, produced by the one renderer in `device-config`; there is no
+second copy that can drift. `show running-config`, a `.cfg` file and a Compare
+view are the same bytes.
+
+The startup configuration is a separate **structured** snapshot, never a stored
+string. Drift is computed from canonical structured snapshots, so a renderer
+change can never turn a saved device into a modified one. A rendered
+configuration never contains runtime state and never contains credential
+material: a password, key, community string, passphrase, verifier, salt, hash or
+fingerprint renders as `<configured>` and nothing else.
+
+`reload` replaces exactly one device instance: its cables come back with their
+exact performance, its runtime state and sessions are gone, and it boots from
+its startup snapshot — or factory defaults after `erase startup-config`. The
+topology is not rebuilt and no other device is disturbed.
+
+Text becomes configuration only through
+`inspectDeviceConfigurationText` → `applyDeviceConfigurationPlan`: preview with
+line numbers, then an atomic apply. Nothing is replayed through an interactive
+terminal, unsupported lines are never applied silently, and settings the parser
+does not read are carried over rather than erased. A PC, laptop, smartphone,
+hub or traffic generator has no configuration file and is never dressed up as a
+Cisco appliance.
+
+`.simlab` is the user-facing container: a ZIP with `manifest.json`, the
+canonical `lab.json` and `configs/*.cfg` projections. `lab.json` always wins; a
+hand-edited projection is reported, never applied. It reuses the importer's
+archive guards and adds its own bounds. JSON stays the internal model, reachable
+only through File ▸ Advanced. The database and the verifier contract are
+unchanged. See `docs/device-configuration.md`.
+
 ### Browser worker
 
 The Web Worker owns the live engine, device instances, CLI sessions, virtual
@@ -320,7 +360,9 @@ into simulation packages.
 
 Imports are untrusted, one-way conversions into `LabDocument`. Detection,
 parsing, inspection, mapping, and execution must use centralized
-`DEFAULT_IMPORT_LIMITS`.
+`DEFAULT_IMPORT_LIMITS`. The package also owns the *native* `.simlab`
+container, because that is where archive safety lives: reading our own package
+goes through the same guards as any untrusted upload.
 
 - never execute imported scripts, vendor binaries, or appliance images;
 - never fetch remote resources;

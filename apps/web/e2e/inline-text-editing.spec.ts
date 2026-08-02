@@ -113,7 +113,7 @@ test("M10.3.3b inline text editing never opens a modal and survives a running la
   // 16-17. Export and re-import preserve the text and its style.
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("menuitem", { name: "File", exact: true }).click();
-  await page.getByRole("menuitem", { name: /Save \/ Export Lab/ }).click();
+  await page.getByRole("menuitem", { name: /^Save Lab(?! As)/ }).click();
   const exported = await (await downloadPromise).path();
   expect(exported).not.toBeNull();
   await page.locator("#load-lab-file").setInputFiles(exported!);

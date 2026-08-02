@@ -1014,7 +1014,7 @@ describe("M8.3 desktop menus and terminal", () => {
     const input = document.getElementById("load-lab-file") as HTMLInputElement;
     const clickSpy = vi.spyOn(input, "click");
     await openMenu("File");
-    await userEvent.click(screen.getByRole("menuitem", { name: /Open \/ Import Lab/ }));
+    await userEvent.click(screen.getByRole("menuitem", { name: /^Open Lab/ }));
     expect(clickSpy).toHaveBeenCalled();
   });
 
@@ -1081,7 +1081,7 @@ describe("M8.3 desktop menus and terminal", () => {
     await userEvent.keyboard("{ArrowDown}");
     expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: /New Lab/ }));
     await userEvent.keyboard("{ArrowDown}");
-    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: /Open \/ Import Lab/ }));
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: /^Open Lab/ }));
   });
 
   it("closes a menu with Escape and restores trigger focus", async () => {

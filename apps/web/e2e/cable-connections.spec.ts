@@ -266,7 +266,7 @@ test("M10.3.3c the lab power lock owns the cable handle, and ping still works", 
   expect(before).toHaveLength(2);
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("menuitem", { name: "File", exact: true }).click();
-  await page.getByRole("menuitem", { name: /Save \/ Export Lab/ }).click();
+  await page.getByRole("menuitem", { name: /^Save Lab(?! As)/ }).click();
   const exported = await (await downloadPromise).path();
   await page.locator("#load-lab-file").setInputFiles(exported!);
   await page.getByRole("button", { name: "Fit topology" }).click();

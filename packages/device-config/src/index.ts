@@ -18,6 +18,7 @@ export {
   type ConfigurationDiffLine,
 } from "./text";
 export {
+  configurationTextDigest,
   deviceConfigurationDigest,
   deviceConfigurationStatus,
   driftLabel,

@@ -32,6 +32,7 @@ import { ImportReportBuilder } from "../reports/report";
 import { boundText } from "../security/text";
 import { parseIosConfig } from "../config/ios-config";
 import { buildDeviceConfigFromIos, parseVpcsConfig } from "../config/apply";
+import { readSimulatorNetLabPackage } from "../native/simlab";
 import type {
   ImportedSourceArtifact,
   ImportMappingDecision,
@@ -338,6 +339,12 @@ export async function inspectLabImport(
     throw new ImportError("unsupported-format", `Unrecognised or unsupported lab format (${detection.format})`, { detection });
   }
   if (detection.format === "simulatornet") return nativePlan(source, detection.detail);
+  if (detection.format === "simulatornet-package") {
+    // A `.simlab` is native, not an import: `lab.json` is already canonical, so
+    // there is nothing to map. Projection mismatches surface as warnings.
+    const read = await readSimulatorNetLabPackage(source.bytes, limits);
+    return nativePlan(source, detection.detail, read.document, read.warnings);
+  }
 
   const adapter = getImportAdapter(detection.format);
   if (!adapter) {
@@ -347,11 +354,19 @@ export async function inspectLabImport(
   return planFromParsed(parsed, source.filename);
 }
 
-function nativePlan(source: ImportSource, _detail?: string): ImportPlan {
-  const text = new TextDecoder("utf-8", { fatal: false }).decode(source.bytes);
-  const document = canonicalizeLabDocument(parseLabDocument(JSON.parse(text)));
-  const report = new ImportReportBuilder()
-    .info("native-import", "SimulatorNet lab imported with full fidelity")
+function nativePlan(
+  source: ImportSource,
+  _detail?: string,
+  nativeDocument?: LabDocument,
+  warnings: readonly string[] = [],
+): ImportPlan {
+  const document = nativeDocument ?? canonicalizeLabDocument(parseLabDocument(
+    JSON.parse(new TextDecoder("utf-8", { fatal: false }).decode(source.bytes)),
+  ));
+  const builder = new ImportReportBuilder()
+    .info("native-import", "SimulatorNet lab imported with full fidelity");
+  for (const warning of warnings) builder.warning("package-projection-differs", warning);
+  const report = builder
     .build({
       format: "simulatornet",
       platform: "simulatornet",

@@ -2,7 +2,10 @@ import type { DeviceType, LabDocument, NodeSpec, LinkSpec, DiagramAnnotation } f
 
 /** Every foreign lab container SimulatorNet can recognise (supported or not). */
 export type LabImportFormat =
+  /** The canonical `LabDocument` JSON. */
   | "simulatornet"
+  /** The native `.simlab` package: the same document plus `.cfg` projections. */
+  | "simulatornet-package"
   | "pnetlab-unl"
   | "eve-ng-unl"
   | "gns3-project"

@@ -11,8 +11,8 @@ import { looksBinary } from "../security/text";
 import type { DetectionConfidence, ImportDetectionResult, ImportSource, LabImportFormat } from "../types";
 
 const SUPPORTED: ReadonlySet<LabImportFormat> = new Set<LabImportFormat>([
-  "simulatornet", "pnetlab-unl", "eve-ng-unl", "gns3-project", "gns3-portable",
-  "containerlab-yaml", "cml-yaml", "virl-xml",
+  "simulatornet", "simulatornet-package", "pnetlab-unl", "eve-ng-unl", "gns3-project",
+  "gns3-portable", "containerlab-yaml", "cml-yaml", "virl-xml",
 ]);
 
 function result(
@@ -52,6 +52,10 @@ function detectArchive(bytes: Uint8Array, limits: ImportLimits): ImportDetection
     names = readZipCentralDirectory(bytes, limits).map((entry) => entry.name.toLowerCase());
   } catch {
     return result("unknown", "structure", true, "Unreadable or unsafe ZIP archive");
+  }
+  // The native package first: it is our own format, not an import.
+  if (names.includes("manifest.json") && names.includes("lab.json")) {
+    return result("simulatornet-package", "structure", true);
   }
   if (names.some((name) => name.endsWith("project.gns3") || name.endsWith(".gns3"))) {
     return result("gns3-portable", "structure", true);

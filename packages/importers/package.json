@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Browser-safe, cross-platform network-lab import framework. Detects foreign topology formats and converts the supported subset into SimulatorNet LabDocuments. It never executes, decodes or uploads vendor appliance images and never touches sim-core runtime.",
+  "description": "Browser-safe, cross-platform network-lab import framework and the native .simlab package container. Detects foreign topology formats and converts the supported subset into SimulatorNet LabDocuments, and reads/writes our own package through the same archive guards. It never executes, decodes or uploads vendor appliance images and never touches sim-core runtime.",
   "exports": {
     ".": {
       "types": "./src/index.ts",

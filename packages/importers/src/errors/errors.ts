@@ -28,7 +28,11 @@ export type ImportErrorCode =
   | "too-many-nodes"
   | "too-many-links"
   | "adapter-error"
-  | "plan-invalid";
+  | "plan-invalid"
+  // --- native `.simlab` package ---
+  | "package-invalid"
+  | "package-too-large"
+  | "package-unsupported-version";
 
 /** Base error for any refused or failed import. Carries a stable machine code. */
 export class ImportError extends Error {
