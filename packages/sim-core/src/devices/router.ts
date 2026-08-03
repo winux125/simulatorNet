@@ -55,7 +55,7 @@ import {
   Ospfv3Process,
   type Ospfv3InterfaceDescriptor,
 } from "../protocols/ospfv3";
-import { BgpProcess } from "../protocols/bgp";
+import { BgpProcess, type Vpnv4Route } from "../protocols/bgp";
 import {
   LdpProcess,
   type LdpFecRoute,
@@ -136,6 +136,12 @@ import {
   type NatTranslationResult,
 } from "../policy/nat-engine";
 import {
+  VrfRoutingTable,
+  type ImportedVpnRoute,
+  type VrfConfiguration,
+  type VrfRoute,
+} from "../routing/vrf";
+import {
   BROADCAST_IP,
   intToIp,
   type Ipv4,
@@ -182,6 +188,8 @@ export interface L3Interface {
   ip: Ipv4 | undefined;
   maskInt: number;
   readonly ipv6: Ipv6InterfaceState;
+  /** Explicit routing context. Undefined always means global. */
+  vrfId?: string;
 }
 
 export interface RouterAdvertisementConfig {
@@ -357,6 +365,8 @@ export class Router extends Device {
   readonly mpls = new MplsForwardingPlane();
   /** LDP discovers only directly attached, MPLS-enabled Router peers. */
   readonly ldp = new LdpProcess(this);
+  /** Isolated customer IPv4 RIBs; MPLS remains Router-only. */
+  readonly vrfs = new VrfRoutingTable();
   /**
    * Logical GRE tunnel configuration. It holds no packets and no peer state:
    * operational status is derived from the underlay routing table on demand.
@@ -1218,6 +1228,9 @@ export class Router extends Device {
     if (iface.name !== iface.physical.name || isTunnelInterface(iface.physical) || this.isLoopback(interfaceName)) {
       throw new Error(`MPLS is supported only on physical Router interfaces (${interfaceName}).`);
     }
+    if (enabled && iface.vrfId !== undefined) {
+      throw new Error(`Customer-facing VRF interface ${interfaceName} cannot be an MPLS core interface.`);
+    }
     this.mpls.setInterfaceEnabled(interfaceName, enabled);
     this.ldp.arm();
   }
@@ -1239,6 +1252,53 @@ export class Router extends Device {
 
   configureLdpRouterId(interfaceName: string | undefined): void {
     this.ldp.configureRouterId(interfaceName);
+  }
+
+  defineVrf(configuration: VrfConfiguration): void {
+    this.vrfs.define(configuration);
+    this.rebuildVpnLabelBindings();
+    this.bgp.refreshRoutes();
+  }
+
+  vrfConfigurations(): readonly VrfConfiguration[] {
+    return this.vrfs.configurationsSnapshot();
+  }
+
+  assignInterfaceVrf(interfaceName: string, vrfId: string | undefined): void {
+    const iface = this.l3.get(interfaceName) ?? this.getOrCreateInterface(interfaceName);
+    if (this.isLoopback(interfaceName) || isTunnelInterface(iface.physical)) {
+      throw new Error(`Interface ${interfaceName} cannot be assigned to a customer VRF.`);
+    }
+    if (vrfId !== undefined && !this.vrfs.configuration(vrfId)) throw new Error(`Unknown VRF '${vrfId}'.`);
+    if (vrfId !== undefined && this.mpls.interfaceEnabled(interfaceName)) {
+      throw new Error(`MPLS core interface ${interfaceName} cannot be assigned to VRF ${vrfId}.`);
+    }
+    if (iface.ip !== undefined) {
+      const duplicate = [...this.l3.values()].find((candidate) =>
+        candidate !== iface && candidate.vrfId === vrfId && candidate.ip === iface.ip);
+      if (duplicate) throw new Error(`Duplicate IPv4 address ${iface.ip} in ${vrfId ? `VRF ${vrfId}` : "global routing"}.`);
+    }
+    iface.vrfId = vrfId;
+    this.ospf.arm();
+    this.ldp.arm();
+    this.bgp.refreshRoutes();
+    this.bgp.onInterfaceStateChanged();
+  }
+
+  interfaceVrf(interfaceName: string): string | undefined {
+    return this.l3.get(interfaceName)?.vrfId;
+  }
+
+  addVrfStaticRoute(vrfId: string, network: Ipv4, prefixLength: number, nextHop: Ipv4): void {
+    if (!this.connectedVrfInterfaceFor(vrfId, nextHop)) {
+      throw new Error(`VRF ${vrfId} next hop ${nextHop} is not reachable in the same VRF.`);
+    }
+    this.vrfs.addStaticRoute(vrfId, network, prefixLength, nextHop);
+    this.bgp.refreshRoutes();
+  }
+
+  vrfRoutingTable(vrfId: string): readonly VrfRoute[] {
+    return this.vrfs.routes(vrfId, this.connectedVrfRoutes(vrfId));
   }
 
   /** `encapsulation dot1Q <vlan> [native]`: ensure the subinterface exists. */
@@ -1266,6 +1326,9 @@ export class Router extends Device {
   setInterfaceIp(name: string, ip: Ipv4, mask: Ipv4 | number): void {
     const iface = this.l3.get(name);
     if (!iface) throw new Error(`Router ${this.id} has no L3 interface ${name}`);
+    const duplicate = [...this.l3.values()].find((candidate) =>
+      candidate !== iface && candidate.vrfId === iface.vrfId && candidate.ip === ip);
+    if (duplicate) throw new Error(`Duplicate IPv4 address ${ip} in ${iface.vrfId ? `VRF ${iface.vrfId}` : "global routing"}.`);
     iface.ip = ip;
     iface.maskInt = maskToInt(mask);
     this.ospf.arm();
@@ -1575,7 +1638,7 @@ export class Router extends Device {
   routingTable(): RouteRow[] {
     const rows: RouteRow[] = [];
     for (const iface of this.l3.values()) {
-      if (iface.ip === undefined) continue;
+      if (iface.ip === undefined || iface.vrfId !== undefined) continue;
       // Preserve the educational configured-route view for ordinary physical
       // interfaces. A down tunnel is different: its overlay route cannot exist
       // without a usable underlay and would otherwise recurse into itself.
@@ -1638,7 +1701,7 @@ export class Router extends Device {
     return this.ospf.routeTable().filter((route) => {
       const network = (ipToInt(route.network) & route.maskInt) >>> 0;
       for (const iface of this.l3.values()) {
-        if (iface.ip === undefined || iface.maskInt !== route.maskInt) continue;
+        if (iface.ip === undefined || iface.vrfId !== undefined || iface.maskInt !== route.maskInt) continue;
         if (((ipToInt(iface.ip) & iface.maskInt) >>> 0) === network) return false;
       }
       return !this.staticRoutes.some((entry) => entry.maskInt === route.maskInt && entry.network === network);
@@ -1778,12 +1841,27 @@ export class Router extends Device {
       operation === "swap" ? "mpls-label-swapped" : operation === "pop" ? "mpls-label-popped" : "mpls-label-imposed",
       { before, after, egress: egress.name, fec: decision.entry.fec },
     );
+    if (operation === "pop" && decision.entry.source === "ldp") {
+      this.traceMpls("mpls-php-applied", {
+        incomingLabel: decision.entry.incomingLabel,
+        remainingLabels: after,
+        fec: decision.entry.fec,
+      });
+    }
     this.traceMpls("mpls-packet-forwarded", { labels: after, egress: egress.name, nextHop });
     this.sendResolvedPayload(decision.packet, EtherType.MPLS, egress, nextHop);
   }
 
-  /** Extension point used by the later VRF stage. */
-  protected receiveMplsIpv4(packet: Ipv4Packet, ingress: L3Interface, _vrfId?: string): void {
+  protected receiveMplsIpv4(packet: Ipv4Packet, ingress: L3Interface, vrfId?: string): void {
+    if (vrfId !== undefined) {
+      if (!this.vrfs.configuration(vrfId)) {
+        this.traceMpls("mpls-packet-dropped", { reason: "vrf-reference-missing", vrfId });
+        return;
+      }
+      if (this.isOwnIpInContext(packet.dst, vrfId)) this.deliverLocal(packet);
+      else this.forwardVrf(packet, ingress, vrfId, false);
+      return;
+    }
     if (this.isOwnIp(packet.dst)) this.deliverLocal(packet);
     else this.forwardAfterMpls(packet, ingress);
   }
@@ -1797,6 +1875,50 @@ export class Router extends Device {
     }
     if (!this.permitForward(packet, ingress, route.egress)) return;
     this.egressSend(packet, route.egress, route.nextHopIp);
+  }
+
+  private forwardVrf(packet: Ipv4Packet, ingress: L3Interface, vrfId: string, decrementTtl: boolean): void {
+    if (!this.forwardingEnabled) return;
+    const ttl = decrementTtl ? packet.ttl - 1 : packet.ttl;
+    if (ttl <= 0) {
+      this.sendIcmpError(IcmpType.TimeExceeded, IcmpCode.TtlExceeded, packet, ingress);
+      return;
+    }
+    const route = this.vrfs.lookup(vrfId, packet.dst, this.connectedVrfRoutes(vrfId));
+    if (!route) {
+      this.traceMpls("l3vpn-packet-dropped", { reason: "no-vrf-route", vrfId, destination: packet.dst });
+      this.sendIcmpError(IcmpType.DestinationUnreachable, IcmpCode.NetUnreachable, packet, ingress);
+      return;
+    }
+    const outbound = { ...packet, ttl };
+    if (route.source === "bgp-vpn") {
+      if (!route.remotePe || route.vpnLabel === undefined) {
+        this.traceMpls("l3vpn-packet-dropped", { reason: "vpn-label-unavailable", vrfId, destination: packet.dst });
+        return;
+      }
+      const transport = this.ldp.outgoingLabelFor(`${route.remotePe}/32`);
+      if (!transport) {
+        this.traceMpls("l3vpn-packet-dropped", { reason: "transport-label-unavailable", vrfId, remotePe: route.remotePe });
+        return;
+      }
+      const egress = this.l3.get(transport.outgoingInterfaceId);
+      if (!egress?.physical.operationalUp || !this.mpls.interfaceEnabled(egress.name)) {
+        this.traceMpls("l3vpn-packet-dropped", { reason: "mpls-egress-unavailable", vrfId, egress: transport.outgoingInterfaceId });
+        return;
+      }
+      const labels = transport.label === 3 ? [route.vpnLabel] : [transport.label, route.vpnLabel];
+      const labelled = this.mpls.impose(outbound, labels);
+      this.traceMpls("mpls-label-imposed", { vrfId, labels, remotePe: route.remotePe, destination: packet.dst });
+      this.traceMpls("l3vpn-packet-forwarded", { vrfId, labels, remotePe: route.remotePe });
+      this.sendResolvedPayload(labelled, EtherType.MPLS, egress, transport.nextHop);
+      return;
+    }
+    const nextHop = route.nextHop ?? packet.dst;
+    const egress = route.outgoingInterfaceId
+      ? this.l3.get(route.outgoingInterfaceId)
+      : this.connectedVrfInterfaceFor(vrfId, nextHop);
+    if (!egress?.physical.operationalUp || !this.permitForward(outbound, ingress, egress)) return;
+    this.egressSend(outbound, egress, nextHop);
   }
 
   private traceMpls(type: string, detail: Readonly<Record<string, unknown>>): void {
@@ -1885,6 +2007,7 @@ export class Router extends Device {
 
   ospfInterfaces(): readonly OspfInterfaceDescriptor[] {
     return [...this.l3.values()]
+      .filter((iface) => iface.vrfId === undefined)
       .map((iface): OspfInterfaceDescriptor => ({
         id: iface.name,
         address: iface.ip,
@@ -1934,6 +2057,8 @@ export class Router extends Device {
       detail: { routes: this.ospf.routeTable().length },
     });
     this.ldp.arm();
+    this.bgp.refreshRoutes();
+    this.bgp.onInterfaceStateChanged();
   }
 
   /** Send through the normal ARP-resolving egress path (used by OSPF unicast). */
@@ -1972,7 +2097,7 @@ export class Router extends Device {
   discoveryManagementAddress(): Ipv4 | undefined {
     let lowest: Ipv4 | undefined;
     for (const iface of this.l3.values()) {
-      if (iface.ip === undefined) continue;
+      if (iface.ip === undefined || iface.vrfId !== undefined) continue;
       if (lowest === undefined || ipToInt(iface.ip) < ipToInt(lowest)) lowest = iface.ip;
     }
     return lowest;
@@ -2301,7 +2426,7 @@ export class Router extends Device {
     // OSPF is this router's own control traffic. It is delivered to the local
     // process before the NAT and ACL pipeline, so a lab can never accidentally
     // filter away its own adjacencies while learning about ACLs.
-    if (packet.protocol === OSPF_PROTOCOL && packet.payload.kind === "ospf") {
+    if (ingress.vrfId === undefined && packet.protocol === OSPF_PROTOCOL && packet.payload.kind === "ospf") {
       this.ospf.onPacket(packet.payload, ingress.name, packet.src);
       return;
     }
@@ -2335,11 +2460,12 @@ export class Router extends Device {
       return;
     }
 
-    if (this.isOwnIp(acceptedPacket.dst)) {
+    if (this.isOwnIpInContext(acceptedPacket.dst, ingress.vrfId)) {
       this.deliverLocal(acceptedPacket);
       return;
     }
-    this.forward(acceptedPacket, ingress);
+    if (ingress.vrfId !== undefined) this.forwardVrf(acceptedPacket, ingress, ingress.vrfId, true);
+    else this.forward(acceptedPacket, ingress);
   }
 
   private deliverLocal(packet: Ipv4Packet): void {
@@ -2511,7 +2637,7 @@ export class Router extends Device {
       if (route?.egress.ip !== undefined) return route.egress.ip;
     }
     return [...this.l3.values()]
-      .flatMap((iface) => (iface.ip === undefined ? [] : [iface.ip]))
+      .flatMap((iface) => (iface.ip === undefined || iface.vrfId !== undefined ? [] : [iface.ip]))
       .sort((a, b) => ipToInt(a) - ipToInt(b))[0];
   }
 
@@ -2565,7 +2691,7 @@ export class Router extends Device {
   /** Every address this device answers management traffic on, lowest first. */
   managementAddresses(): IpAddress[] {
     const ipv4 = [...this.l3.values()]
-      .flatMap((iface) => (iface.ip === undefined ? [] : [iface.ip]))
+      .flatMap((iface) => (iface.ip === undefined || iface.vrfId !== undefined ? [] : [iface.ip]))
       .sort((a, b) => ipToInt(a) - ipToInt(b));
     const ipv6 = this.ipv6InterfaceSummaries()
       .flatMap((row) => row.addresses)
@@ -2612,6 +2738,80 @@ export class Router extends Device {
       device: this.id,
       detail: { routes: this.bgp.selectedRoutes().length },
     });
+  }
+
+  bgpVpnv4Exports(): readonly Vpnv4Route[] {
+    const bgp = this.bgp.configurationSnapshot();
+    const nextHop = bgp?.routerId ?? this.ldp.routerId();
+    if (!bgp || !nextHop) return [];
+    const routes: Vpnv4Route[] = [];
+    for (const family of [...(bgp.vrfAddressFamilies ?? [])].sort((a, b) => a.vrfId.localeCompare(b.vrfId))) {
+      const vrf = this.vrfs.configuration(family.vrfId);
+      if (!vrf) continue;
+      const candidates = this.vrfRoutingTable(vrf.id).filter((route) =>
+        (route.source === "connected" && family.redistributeConnected)
+        || (route.source === "static" && family.redistributeStatic));
+      for (const route of candidates) {
+        const routeId = `local-vpnv4:${vrf.routeDistinguisher}:${route.network}/${route.prefixLength}`;
+        routes.push({
+          routeDistinguisher: vrf.routeDistinguisher,
+          network: route.network,
+          prefixLength: route.prefixLength,
+          routeTargets: [...vrf.exportRouteTargets],
+          vpnLabel: this.vrfs.vpnLabel(vrf.id),
+          nextHop,
+          sourceVrfId: vrf.id,
+          path: { origin: "igp", asPath: [], nextHop, localPreference: 100, med: 0 },
+          routeId,
+          source: "local",
+          neighborRouterId: bgp.routerId,
+          learnedAtNs: 0,
+          localPreference: 100,
+          med: 0,
+          weight: 32_768,
+          igpMetric: 0,
+        });
+      }
+    }
+    return routes.sort((a, b) => a.routeDistinguisher.localeCompare(b.routeDistinguisher)
+      || ipToInt(a.network) - ipToInt(b.network)
+      || b.prefixLength - a.prefixLength);
+  }
+
+  bgpVpnv4RoutesChanged(routes: readonly Vpnv4Route[]): void {
+    const imported: ImportedVpnRoute[] = routes.map((route) => ({
+      routeDistinguisher: route.routeDistinguisher,
+      network: route.network,
+      prefixLength: route.prefixLength,
+      routeTargets: [...route.routeTargets],
+      vpnLabel: route.vpnLabel,
+      nextHop: route.nextHop,
+      metric: route.igpMetric,
+    }));
+    this.vrfs.replaceImported(imported);
+    this.rebuildVpnLabelBindings();
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "bgp-vpnv4-routing-table-changed",
+      device: this.id,
+      detail: { routes: imported.length },
+    });
+  }
+
+  vpnLabelBindings(): ReadonlyArray<{ label: number; vrfId: string }> {
+    return this.vrfs.configurationsSnapshot().map((vrf) => ({ label: this.vrfs.vpnLabel(vrf.id), vrfId: vrf.id }));
+  }
+
+  private rebuildVpnLabelBindings(): void {
+    this.mpls.removeBySource("vpn");
+    for (const vrf of this.vrfs.configurationsSnapshot()) {
+      this.mpls.install({
+        incomingLabel: this.vrfs.vpnLabel(vrf.id),
+        fec: `${vrf.routeDistinguisher}:vrf`,
+        operation: { type: "deliver", vrfId: vrf.id },
+        source: "vpn",
+      });
+    }
   }
 
   // --- LDP host ---------------------------------------------------------
@@ -2972,7 +3172,7 @@ export class Router extends Device {
   private connectedInterfaceFor(ip: Ipv4, ignoreTunnelState = false): L3Interface | undefined {
     const ipInt = ipToInt(ip);
     for (const iface of this.l3.values()) {
-      if (iface.ip === undefined) continue;
+      if (iface.ip === undefined || iface.vrfId !== undefined) continue;
       if (!iface.physical.operationalUp
         && (!ignoreTunnelState || !isTunnelInterface(iface.physical))) continue;
       const network = (ipToInt(iface.ip) & iface.maskInt) >>> 0;
@@ -2981,11 +3181,38 @@ export class Router extends Device {
     return undefined;
   }
 
+  private connectedVrfRoutes(vrfId: string): VrfRoute[] {
+    return [...this.l3.values()]
+      .filter((iface): iface is L3Interface & { ip: Ipv4 } =>
+        iface.vrfId === vrfId && iface.ip !== undefined && iface.physical.operationalUp)
+      .map((iface) => ({
+        network: intToIp((ipToInt(iface.ip) & iface.maskInt) >>> 0),
+        prefixLength: popcount(iface.maskInt),
+        source: "connected" as const,
+        outgoingInterfaceId: iface.name,
+        administrativeDistance: 0,
+        metric: 0,
+      }));
+  }
+
+  private connectedVrfInterfaceFor(vrfId: string, address: Ipv4): L3Interface | undefined {
+    const value = ipToInt(address);
+    return [...this.l3.values()]
+      .filter((iface): iface is L3Interface & { ip: Ipv4 } =>
+        iface.vrfId === vrfId && iface.ip !== undefined && iface.physical.operationalUp)
+      .sort((a, b) => b.name.localeCompare(a.name))
+      .find((iface) => ((value & iface.maskInt) >>> 0) === ((ipToInt(iface.ip) & iface.maskInt) >>> 0));
+  }
+
   private isOwnIp(ip: Ipv4): boolean {
     for (const iface of this.l3.values()) {
-      if (iface.ip === ip) return true;
+      if (iface.vrfId === undefined && iface.ip === ip) return true;
     }
     return false;
+  }
+
+  private isOwnIpInContext(ip: Ipv4, vrfId: string | undefined): boolean {
+    return [...this.l3.values()].some((iface) => iface.vrfId === vrfId && iface.ip === ip);
   }
 
   private permitByAcl(packet: Ipv4Packet, iface: L3Interface, direction: AclDirection): boolean {

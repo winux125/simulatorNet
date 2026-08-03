@@ -76,6 +76,7 @@ export * from "./packets/dhcpv6";
 export * from "./policy/packet-policy-engine";
 export * from "./policy/nat-engine";
 export * from "./routing/route-policy";
+export * from "./routing/vrf";
 
 // Deterministic MPLS label stack and LFIB forwarding
 export * from "./mpls/limits";

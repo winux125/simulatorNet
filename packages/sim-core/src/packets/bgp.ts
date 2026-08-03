@@ -9,6 +9,7 @@ export interface BgpOpenMessage {
   readonly localAs: number;
   readonly holdTimeSeconds: number;
   readonly bgpIdentifier: Ipv4;
+  readonly addressFamilies?: readonly ("ipv4-unicast" | "vpnv4-unicast")[];
 }
 
 export interface BgpKeepaliveMessage {
@@ -30,10 +31,24 @@ export interface BgpNlri {
   readonly routeId: string;
 }
 
+export interface Vpnv4Nlri {
+  readonly routeDistinguisher: string;
+  readonly network: Ipv4;
+  readonly prefixLength: number;
+  readonly routeTargets: readonly string[];
+  readonly vpnLabel: number;
+  readonly nextHop: Ipv4;
+  readonly sourceVrfId: string;
+  readonly path: BgpPathAttributes;
+  readonly routeId: string;
+}
+
 export interface BgpUpdateMessage {
   readonly kind: "bgp-update";
   readonly withdrawn: readonly Pick<BgpNlri, "network" | "prefixLength">[];
   readonly nlri: readonly BgpNlri[];
+  readonly vpnv4Withdrawn?: readonly Pick<Vpnv4Nlri, "routeDistinguisher" | "network" | "prefixLength">[];
+  readonly vpnv4Nlri?: readonly Vpnv4Nlri[];
 }
 
 export interface BgpNotificationMessage {

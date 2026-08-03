@@ -6,6 +6,7 @@ import {
   isBgpMessage,
   type BgpMessage,
   type BgpNotificationMessage,
+  type Vpnv4Nlri,
 } from "../packets/bgp";
 import type { TcpApplicationPayload } from "../packets/tcp";
 import { TcpState, type TcpConnection, type TcpConnectionHandlers } from "../transport/tcp";
@@ -42,6 +43,8 @@ export interface BgpNeighborConfiguration {
   readonly prefixListOut?: string;
   readonly routeMapIn?: string;
   readonly routeMapOut?: string;
+  readonly vpnv4Activated?: boolean;
+  readonly sendCommunityExtended?: boolean;
 }
 
 export interface BgpNetworkStatement {
@@ -56,6 +59,13 @@ export interface BgpConfiguration {
   readonly holdTimeSeconds?: number;
   readonly neighbors?: readonly BgpNeighborConfiguration[];
   readonly networks?: readonly BgpNetworkStatement[];
+  readonly vrfAddressFamilies?: readonly BgpVrfAddressFamilyConfiguration[];
+}
+
+export interface BgpVrfAddressFamilyConfiguration {
+  readonly vrfId: string;
+  readonly redistributeConnected?: boolean;
+  readonly redistributeStatic?: boolean;
 }
 
 export type BgpRouteSource = "local" | "ebgp" | "ibgp";
@@ -76,6 +86,19 @@ export interface BgpRoute {
   readonly learnedAtNs: number;
   readonly routeId: string;
   readonly igpMetric: number;
+}
+
+export interface Vpnv4Route extends Vpnv4Nlri {
+  readonly source: "local" | "ebgp" | "ibgp";
+  readonly neighborAddress?: Ipv4;
+  readonly neighborAs?: number;
+  readonly neighborRouterId?: Ipv4;
+  readonly learnedAtNs: number;
+  readonly localPreference: number;
+  readonly med: number;
+  readonly weight: number;
+  readonly igpMetric: number;
+  readonly best?: boolean;
 }
 
 export interface BgpRibEntry extends BgpRoute {
@@ -106,6 +129,8 @@ export interface BgpHost {
   bgpExactRouteExists(network: Ipv4, prefixLength: number): boolean;
   bgpIgpMetric(address: Ipv4): number | undefined;
   bgpRoutesChanged(): void;
+  bgpVpnv4Exports(): readonly Vpnv4Route[];
+  bgpVpnv4RoutesChanged(routes: readonly Vpnv4Route[]): void;
 }
 
 interface NeighborRuntime {
@@ -120,6 +145,7 @@ interface NeighborRuntime {
   messagesReceived: number;
   generation: number;
   remoteRouterId?: Ipv4;
+  remoteAddressFamilies?: readonly ("ipv4-unicast" | "vpnv4-unicast")[];
 }
 
 const ORIGIN_ORDER: Readonly<Record<BgpRoute["origin"], number>> = Object.freeze({ igp: 0, egp: 1, incomplete: 2 });
@@ -145,6 +171,30 @@ export function compareBgpPaths(left: BgpRoute, right: BgpRoute): number {
 
 export function selectBestBgpPath(routes: readonly BgpRoute[]): BgpRoute | undefined {
   return [...routes].sort(compareBgpPaths)[0];
+}
+
+export function compareVpnv4Paths(left: Vpnv4Route, right: Vpnv4Route): number {
+  return compareBgpPaths(vpnComparable(left), vpnComparable(right));
+}
+
+function vpnComparable(route: Vpnv4Route): BgpRoute {
+  return {
+    network: route.network,
+    prefixLength: route.prefixLength,
+    origin: route.path.origin,
+    asPath: route.path.asPath,
+    nextHop: route.nextHop,
+    localPreference: route.localPreference,
+    med: route.med,
+    weight: route.weight,
+    source: route.source,
+    neighborAddress: route.neighborAddress,
+    neighborAs: route.neighborAs,
+    neighborRouterId: route.neighborRouterId,
+    learnedAtNs: route.learnedAtNs,
+    routeId: route.routeId,
+    igpMetric: route.igpMetric,
+  };
 }
 
 function validateAsn(value: number, field: string): void {
@@ -174,6 +224,9 @@ export class BgpProcess {
   private readonly locRib = new Map<string, BgpRoute>();
   private readonly adjRibOut = new Map<Ipv4, Map<string, BgpRoute>>();
   private readonly ribFailures = new Map<string, string>();
+  private readonly vpnv4AdjRibIn = new Map<Ipv4, Map<string, Vpnv4Route>>();
+  private readonly vpnv4LocRib = new Map<string, Vpnv4Route>();
+  private readonly vpnv4AdjRibOut = new Map<Ipv4, Map<string, Vpnv4Route>>();
   private listening = false;
   private activity: ProtocolActivity | undefined;
   private activityRounds = 1;
@@ -227,8 +280,16 @@ export class BgpProcess {
         throw new ControlProtocolConfigurationError("BGP network statement must use a canonical network address", "networks");
       }
     }
+    const vrfAddressFamilies = [...(configuration.vrfAddressFamilies ?? [])];
+    const vrfIds = new Set<string>();
+    for (const family of vrfAddressFamilies) {
+      if (!family.vrfId.trim() || vrfIds.has(family.vrfId)) {
+        throw new ControlProtocolConfigurationError(`Duplicate or empty BGP VRF address family '${family.vrfId}'`, "vrfAddressFamilies");
+      }
+      vrfIds.add(family.vrfId);
+    }
     this.resetRuntime(false);
-    this.configuration = { ...configuration, keepaliveSeconds, holdTimeSeconds, neighbors: configured, networks };
+    this.configuration = { ...configuration, keepaliveSeconds, holdTimeSeconds, neighbors: configured, networks, vrfAddressFamilies };
     this.activityRounds = Math.max(
       1,
       Math.min(BGP_ACTIVITY_QUIESCENCE_ROUNDS, Math.floor(BGP_ACTIVITY_WINDOW_SECONDS / Math.max(1, keepaliveSeconds))),
@@ -266,6 +327,10 @@ export class BgpProcess {
     this.locRib.clear();
     this.adjRibOut.clear();
     this.ribFailures.clear();
+    this.vpnv4AdjRibIn.clear();
+    this.vpnv4LocRib.clear();
+    this.vpnv4AdjRibOut.clear();
+    this.host.bgpVpnv4RoutesChanged([]);
   }
 
   start(): void {
@@ -336,6 +401,28 @@ export class BgpProcess {
       ipToInt(a.network) - ipToInt(b.network) || b.prefixLength - a.prefixLength || a.routeId.localeCompare(b.routeId));
   }
 
+  vpnv4Routes(): Vpnv4Route[] {
+    this.expireHoldTimers();
+    const all = new Map<string, Vpnv4Route>();
+    for (const route of this.host.bgpVpnv4Exports()) all.set(route.routeId, route);
+    for (const rib of this.vpnv4AdjRibIn.values()) {
+      for (const route of rib.values()) all.set(`${route.routeId}\u0000${route.neighborAddress ?? ""}`, route);
+    }
+    return [...all.values()].map((route) => ({
+      ...route,
+      best: this.vpnv4LocRib.get(this.vpnPrefixKey(route.routeDistinguisher, route.network, route.prefixLength))?.routeId === route.routeId,
+    })).sort((a, b) => a.routeDistinguisher.localeCompare(b.routeDistinguisher)
+      || ipToInt(a.network) - ipToInt(b.network)
+      || compareVpnv4Paths(a, b));
+  }
+
+  selectedVpnv4Routes(): Vpnv4Route[] {
+    return [...this.vpnv4LocRib.values()].sort((a, b) =>
+      a.routeDistinguisher.localeCompare(b.routeDistinguisher)
+      || ipToInt(a.network) - ipToInt(b.network)
+      || a.routeId.localeCompare(b.routeId));
+  }
+
   adjRibInEntries(address?: Ipv4): BgpRoute[] {
     this.expireHoldTimers();
     const entries = address === undefined ? [...this.adjRibIn.values()] : [this.adjRibIn.get(address) ?? new Map()];
@@ -357,6 +444,7 @@ export class BgpProcess {
   refreshRoutes(): void {
     if (!this.configuration) return;
     this.recomputeLocRib();
+    this.recomputeVpnv4LocRib();
     this.advertiseRoutes();
   }
 
@@ -366,6 +454,7 @@ export class BgpProcess {
       ...this.configuration,
       neighbors: [...(this.configuration.neighbors ?? [])].map((neighbor) => ({ ...neighbor })),
       networks: [...(this.configuration.networks ?? [])].map((network) => ({ ...network })),
+      vrfAddressFamilies: [...(this.configuration.vrfAddressFamilies ?? [])].map((family) => ({ ...family })),
     };
   }
 
@@ -481,6 +570,7 @@ export class BgpProcess {
       localAs: this.configuration.localAs,
       holdTimeSeconds: this.configuration.holdTimeSeconds ?? DEFAULT_BGP_HOLD_SECONDS,
       bgpIdentifier: this.configuration.routerId ?? runtime.localAddress ?? "0.0.0.0",
+      addressFamilies: runtime.configuration.vpnv4Activated ? ["ipv4-unicast", "vpnv4-unicast"] : ["ipv4-unicast"],
     });
   }
 
@@ -510,6 +600,7 @@ export class BgpProcess {
       const localHold = this.configuration?.holdTimeSeconds ?? DEFAULT_BGP_HOLD_SECONDS;
       runtime.negotiatedHoldTimeSeconds = Math.min(localHold, message.holdTimeSeconds);
       runtime.remoteRouterId = message.bgpIdentifier;
+      runtime.remoteAddressFamilies = message.addressFamilies ?? ["ipv4-unicast"];
       this.transition(runtime, "open-confirm");
       this.send(runtime, { kind: "bgp-keepalive" });
       return;
@@ -536,6 +627,8 @@ export class BgpProcess {
       neighbor: runtime.configuration.address,
       announced: message.nlri.length,
       withdrawn: message.withdrawn.length,
+      vpnv4Announced: message.vpnv4Nlri?.length ?? 0,
+      vpnv4Withdrawn: message.vpnv4Withdrawn?.length ?? 0,
     });
   }
 
@@ -554,7 +647,12 @@ export class BgpProcess {
     this.trace(traceType, {
       neighbor: runtime.configuration.address,
       messageType: message.kind,
-      ...(message.kind === "bgp-update" ? { announced: message.nlri.length, withdrawn: message.withdrawn.length } : {}),
+      ...(message.kind === "bgp-update" ? {
+        announced: message.nlri.length,
+        withdrawn: message.withdrawn.length,
+        vpnv4Announced: message.vpnv4Nlri?.length ?? 0,
+        vpnv4Withdrawn: message.vpnv4Withdrawn?.length ?? 0,
+      } : {}),
     });
   }
 
@@ -590,8 +688,11 @@ export class BgpProcess {
     const rawChanged = this.rawAdjRibIn.delete(address);
     const inboundChanged = this.adjRibIn.delete(address);
     const outboundChanged = this.adjRibOut.delete(address);
-    const changed = rawChanged || inboundChanged || outboundChanged;
+    const vpnInboundChanged = this.vpnv4AdjRibIn.delete(address);
+    const vpnOutboundChanged = this.vpnv4AdjRibOut.delete(address);
+    const changed = rawChanged || inboundChanged || outboundChanged || vpnInboundChanged || vpnOutboundChanged;
     if (changed) this.recomputeLocRib();
+    if (vpnInboundChanged || vpnOutboundChanged) this.recomputeVpnv4LocRib();
   }
 
   private transition(runtime: NeighborRuntime, state: BgpSessionState, reason?: string): void {
@@ -705,6 +806,7 @@ export class BgpProcess {
     this.rawAdjRibIn.set(runtime.configuration.address, rawRib);
     this.evaluateInboundRib(runtime);
     this.recomputeLocRib();
+    this.applyVpnv4Update(runtime, message);
     this.advertiseRoutes();
   }
 
@@ -758,6 +860,65 @@ export class BgpProcess {
     this.trace("bgp-best-path-changed", { routes: this.locRib.size });
   }
 
+  private applyVpnv4Update(runtime: NeighborRuntime, message: Extract<BgpMessage, { kind: "bgp-update" }>): void {
+    const negotiated = runtime.configuration.vpnv4Activated === true
+      && runtime.remoteAddressFamilies?.includes("vpnv4-unicast") === true;
+    if (!negotiated) return;
+    const rib = this.vpnv4AdjRibIn.get(runtime.configuration.address) ?? new Map<string, Vpnv4Route>();
+    for (const withdrawn of message.vpnv4Withdrawn ?? []) {
+      rib.delete(this.vpnPrefixKey(withdrawn.routeDistinguisher, withdrawn.network, withdrawn.prefixLength));
+    }
+    for (const nlri of message.vpnv4Nlri ?? []) {
+      if (nlri.prefixLength < 0 || nlri.prefixLength > 32 || nlri.path.asPath.length > 256) continue;
+      if (this.configuration && nlri.path.asPath.includes(this.configuration.localAs)) continue;
+      const metric = this.host.bgpIgpMetric(nlri.nextHop);
+      const route: Vpnv4Route = {
+        ...nlri,
+        routeTargets: [...nlri.routeTargets],
+        path: { ...nlri.path, asPath: [...nlri.path.asPath] },
+        source: runtime.configuration.remoteAs === this.configuration?.localAs ? "ibgp" : "ebgp",
+        neighborAddress: runtime.configuration.address,
+        neighborAs: runtime.configuration.remoteAs,
+        neighborRouterId: runtime.remoteRouterId,
+        learnedAtNs: this.host.engine.now(),
+        localPreference: nlri.path.localPreference ?? 100,
+        med: nlri.path.med ?? 0,
+        weight: 0,
+        igpMetric: metric ?? Number.MAX_SAFE_INTEGER,
+      };
+      rib.set(this.vpnPrefixKey(route.routeDistinguisher, route.network, route.prefixLength), route);
+      this.trace("bgp-vpnv4-route-received", {
+        neighbor: runtime.configuration.address,
+        rd: route.routeDistinguisher,
+        prefix: `${route.network}/${route.prefixLength}`,
+        routeTargets: route.routeTargets,
+      });
+    }
+    this.vpnv4AdjRibIn.set(runtime.configuration.address, rib);
+    this.recomputeVpnv4LocRib();
+  }
+
+  private recomputeVpnv4LocRib(): void {
+    const groups = new Map<string, Vpnv4Route[]>();
+    for (const route of [...this.host.bgpVpnv4Exports(), ...[...this.vpnv4AdjRibIn.values()].flatMap((rib) => [...rib.values()])]) {
+      if (route.source !== "local" && this.host.bgpIgpMetric(route.nextHop) === undefined) continue;
+      const key = this.vpnPrefixKey(route.routeDistinguisher, route.network, route.prefixLength);
+      const list = groups.get(key) ?? [];
+      list.push({ ...route, igpMetric: route.source === "local" ? 0 : (this.host.bgpIgpMetric(route.nextHop) ?? route.igpMetric) });
+      groups.set(key, list);
+    }
+    const next = new Map<string, Vpnv4Route>();
+    for (const [key, candidates] of groups) {
+      const best = [...candidates].sort(compareVpnv4Paths)[0];
+      if (best) next.set(key, best);
+    }
+    if (JSON.stringify([...next]) === JSON.stringify([...this.vpnv4LocRib])) return;
+    this.vpnv4LocRib.clear();
+    for (const [key, route] of next) this.vpnv4LocRib.set(key, route);
+    this.host.bgpVpnv4RoutesChanged([...next.values()].filter((route) => route.source !== "local"));
+    this.trace("bgp-vpnv4-best-path-changed", { routes: next.size });
+  }
+
   private advertiseRoutes(): void {
     if (!this.configuration) return;
     for (const runtime of this.neighbors.values()) {
@@ -765,6 +926,9 @@ export class BgpProcess {
       const previous = this.adjRibOut.get(runtime.configuration.address) ?? new Map<string, BgpRoute>();
       const desired = new Map<string, BgpRoute>();
       const announcements: import("../packets/bgp").BgpNlri[] = [];
+      const vpnPrevious = this.vpnv4AdjRibOut.get(runtime.configuration.address) ?? new Map<string, Vpnv4Route>();
+      const vpnDesired = new Map<string, Vpnv4Route>();
+      const vpnAnnouncements: Vpnv4Nlri[] = [];
       for (const route of this.locRib.values()) {
         if (route.neighborAddress === runtime.configuration.address) continue;
         const peerIsIbgp = runtime.configuration.remoteAs === this.configuration.localAs;
@@ -805,15 +969,67 @@ export class BgpProcess {
       const withdrawn = [...previous.entries()]
         .filter(([key]) => !desired.has(key))
         .map(([, route]) => ({ network: route.network, prefixLength: route.prefixLength }));
-      if (announcements.length || withdrawn.length) {
-        this.send(runtime, { kind: "bgp-update", withdrawn, nlri: announcements });
+      const vpnNegotiated = runtime.configuration.vpnv4Activated === true
+        && runtime.remoteAddressFamilies?.includes("vpnv4-unicast") === true;
+      if (vpnNegotiated) {
+        for (const route of this.vpnv4LocRib.values()) {
+          if (route.neighborAddress === runtime.configuration.address) continue;
+          const peerIsIbgp = runtime.configuration.remoteAs === this.configuration.localAs;
+          if (peerIsIbgp && route.source === "ibgp") continue;
+          const key = this.vpnPrefixKey(route.routeDistinguisher, route.network, route.prefixLength);
+          const advertised: Vpnv4Route = {
+            ...route,
+            routeTargets: runtime.configuration.sendCommunityExtended ? [...route.routeTargets] : [],
+            path: {
+              ...route.path,
+              asPath: peerIsIbgp ? [...route.path.asPath] : [this.configuration.localAs, ...route.path.asPath],
+              localPreference: peerIsIbgp ? route.localPreference : undefined,
+            },
+            routeId: `${this.configuration.routerId ?? this.host.id}:vpnv4:${key}`,
+          };
+          vpnDesired.set(key, advertised);
+          if (JSON.stringify(vpnPrevious.get(key)) !== JSON.stringify(advertised)) {
+            vpnAnnouncements.push({
+              routeDistinguisher: advertised.routeDistinguisher,
+              network: advertised.network,
+              prefixLength: advertised.prefixLength,
+              routeTargets: advertised.routeTargets,
+              vpnLabel: advertised.vpnLabel,
+              nextHop: advertised.nextHop,
+              sourceVrfId: advertised.sourceVrfId,
+              path: advertised.path,
+              routeId: advertised.routeId,
+            });
+          }
+        }
+      }
+      const vpnWithdrawn = [...vpnPrevious.entries()]
+        .filter(([key]) => !vpnDesired.has(key))
+        .map(([, route]) => ({
+          routeDistinguisher: route.routeDistinguisher,
+          network: route.network,
+          prefixLength: route.prefixLength,
+        }));
+      if (announcements.length || withdrawn.length || vpnAnnouncements.length || vpnWithdrawn.length) {
+        this.send(runtime, {
+          kind: "bgp-update",
+          withdrawn,
+          nlri: announcements,
+          vpnv4Withdrawn: vpnWithdrawn,
+          vpnv4Nlri: vpnAnnouncements,
+        });
       }
       this.adjRibOut.set(runtime.configuration.address, desired);
+      this.vpnv4AdjRibOut.set(runtime.configuration.address, vpnDesired);
     }
   }
 
   private prefixKey(network: Ipv4, prefixLength: number): string {
     return `${network}/${prefixLength}`;
+  }
+
+  private vpnPrefixKey(routeDistinguisher: string, network: Ipv4, prefixLength: number): string {
+    return `${routeDistinguisher}:${network}/${prefixLength}`;
   }
 
   private reevaluatePolicies(): void {
