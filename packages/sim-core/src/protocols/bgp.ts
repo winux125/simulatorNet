@@ -10,6 +10,7 @@ import {
   type BgpPathAttributes,
   type BgpUnicastAddressFamily,
   type Vpnv4Nlri,
+  type Vpnv6Nlri,
 } from "../packets/bgp";
 import type { TcpApplicationPayload } from "../packets/tcp";
 import { TcpState, type TcpConnection, type TcpConnectionHandlers } from "../transport/tcp";
@@ -176,9 +177,10 @@ export interface BgpRoute {
   readonly clusterList: readonly string[];
 }
 
-export interface Vpnv4Route extends Vpnv4Nlri {
+/** Runtime state shared by both VPN families. */
+export interface VpnRoutePathState {
   readonly source: "local" | "ebgp" | "ibgp";
-  readonly neighborAddress?: Ipv4;
+  readonly neighborAddress?: IpAddress;
   readonly neighborAs?: number;
   readonly neighborRouterId?: Ipv4;
   readonly learnedAtNs: number;
@@ -191,6 +193,15 @@ export interface Vpnv4Route extends Vpnv4Nlri {
   readonly originatorId?: Ipv4;
   readonly clusterList: readonly string[];
 }
+
+export interface Vpnv4Route extends Vpnv4Nlri, VpnRoutePathState {}
+
+/**
+ * A VPNv6 route. `nextHop` is the advertising PE's IPv4 loopback: the transport
+ * LSP is resolved by the IPv4 OSPF/LDP core, which is the deliberate
+ * simplification of this educational model.
+ */
+export interface Vpnv6Route extends Vpnv6Nlri, VpnRoutePathState {}
 
 export interface BgpRibEntry extends BgpRoute {
   readonly best: boolean;
@@ -235,6 +246,8 @@ export interface BgpHost {
   bgpRoutesChanged(family: BgpUnicastAddressFamily): void;
   bgpVpnv4Exports(): readonly Vpnv4Route[];
   bgpVpnv4RoutesChanged(routes: readonly Vpnv4Route[]): void;
+  bgpVpnv6Exports(): readonly Vpnv6Route[];
+  bgpVpnv6RoutesChanged(routes: readonly Vpnv6Route[]): void;
 }
 
 interface NeighborRuntime {
@@ -294,7 +307,12 @@ export function compareVpnv4Paths(left: Vpnv4Route, right: Vpnv4Route): number {
   return compareBgpPaths(vpnComparable(left), vpnComparable(right));
 }
 
-function vpnComparable(route: Vpnv4Route): BgpRoute {
+/** The same deterministic comparator; only the prefix family differs. */
+export function compareVpnv6Paths(left: Vpnv6Route, right: Vpnv6Route): number {
+  return compareBgpPaths(vpnComparable(left), vpnComparable(right));
+}
+
+function vpnComparable(route: Vpnv4Route | Vpnv6Route): BgpRoute {
   return {
     addressFamily: "ipv4-unicast",
     network: route.network,
@@ -362,6 +380,9 @@ export class BgpProcess {
   private readonly vpnv4AdjRibIn = new Map<IpAddress, Map<string, Vpnv4Route>>();
   private readonly vpnv4LocRib = new Map<string, Vpnv4Route>();
   private readonly vpnv4AdjRibOut = new Map<IpAddress, Map<string, Vpnv4Route>>();
+  private readonly vpnv6AdjRibIn = new Map<IpAddress, Map<string, Vpnv6Route>>();
+  private readonly vpnv6LocRib = new Map<string, Vpnv6Route>();
+  private readonly vpnv6AdjRibOut = new Map<IpAddress, Map<string, Vpnv6Route>>();
   /** Aggregates that currently have a contributing route, for change tracing. */
   private readonly activeAggregates = new Set<string>();
   private listening = false;
@@ -522,7 +543,11 @@ export class BgpProcess {
     this.vpnv4AdjRibIn.clear();
     this.vpnv4LocRib.clear();
     this.vpnv4AdjRibOut.clear();
+    this.vpnv6AdjRibIn.clear();
+    this.vpnv6LocRib.clear();
+    this.vpnv6AdjRibOut.clear();
     this.host.bgpVpnv4RoutesChanged([]);
+    this.host.bgpVpnv6RoutesChanged([]);
   }
 
   start(): void {
@@ -646,6 +671,28 @@ export class BgpProcess {
       || a.routeId.localeCompare(b.routeId));
   }
 
+  vpnv6Routes(): Vpnv6Route[] {
+    this.expireHoldTimers();
+    const all = new Map<string, Vpnv6Route>();
+    for (const route of this.host.bgpVpnv6Exports()) all.set(route.routeId, route);
+    for (const rib of this.vpnv6AdjRibIn.values()) {
+      for (const route of rib.values()) all.set(`${route.routeId}|${route.neighborAddress ?? ""}`, route);
+    }
+    return [...all.values()].map((route) => ({
+      ...route,
+      best: this.vpnv6LocRib.get(this.vpnPrefixKey(route.routeDistinguisher, route.network, route.prefixLength))?.routeId === route.routeId,
+    })).sort((a, b) => a.routeDistinguisher.localeCompare(b.routeDistinguisher)
+      || compareBgpAddresses(a.network, b.network)
+      || compareVpnv6Paths(a, b));
+  }
+
+  selectedVpnv6Routes(): Vpnv6Route[] {
+    return [...this.vpnv6LocRib.values()].sort((a, b) =>
+      a.routeDistinguisher.localeCompare(b.routeDistinguisher)
+      || compareBgpAddresses(a.network, b.network)
+      || a.routeId.localeCompare(b.routeId));
+  }
+
   adjRibInEntries(address?: IpAddress, family: BgpUnicastAddressFamily = "ipv4-unicast"): BgpRoute[] {
     this.expireHoldTimers();
     const rib = this.unicast[family].adjIn;
@@ -670,6 +717,7 @@ export class BgpProcess {
     if (!this.configuration) return;
     for (const family of UNICAST_FAMILIES) this.recomputeLocRib(family);
     this.recomputeVpnv4LocRib();
+    this.recomputeVpnv6LocRib();
     this.advertiseRoutes();
   }
 
@@ -953,6 +1001,9 @@ export class BgpProcess {
     const vpnInboundChanged = this.vpnv4AdjRibIn.delete(address);
     const vpnOutboundChanged = this.vpnv4AdjRibOut.delete(address);
     if (vpnInboundChanged || vpnOutboundChanged) this.recomputeVpnv4LocRib();
+    const vpn6InboundChanged = this.vpnv6AdjRibIn.delete(address);
+    const vpn6OutboundChanged = this.vpnv6AdjRibOut.delete(address);
+    if (vpn6InboundChanged || vpn6OutboundChanged) this.recomputeVpnv6LocRib();
   }
 
   private transition(runtime: NeighborRuntime, state: BgpSessionState, reason?: string): void {
@@ -1036,6 +1087,7 @@ export class BgpProcess {
       this.applyUnicastUpdate(runtime, "ipv6-unicast", message.ipv6Withdrawn ?? [], message.ipv6Nlri ?? []);
     }
     this.applyVpnv4Update(runtime, message);
+    this.applyVpnv6Update(runtime, message);
     this.advertiseRoutes();
   }
 
@@ -1282,6 +1334,75 @@ export class BgpProcess {
     this.trace("bgp-best-path-changed", { addressFamily: family, routes: ribs.loc.size });
   }
 
+  /**
+   * VPNv6 reuses the whole VPNv4 inbound path — AS-loop check, reflection loop
+   * prevention, RD keying and next-hop metric — because the only difference is
+   * that the customer prefix is IPv6. The transport next hop stays IPv4.
+   */
+  private applyVpnv6Update(runtime: NeighborRuntime, message: Extract<BgpMessage, { kind: "bgp-update" }>): void {
+    if (!this.familyNegotiated(runtime, "vpnv6-unicast")) return;
+    const rib = this.vpnv6AdjRibIn.get(runtime.configuration.address) ?? new Map<string, Vpnv6Route>();
+    for (const withdrawn of message.vpnv6Withdrawn ?? []) {
+      rib.delete(this.vpnPrefixKey(withdrawn.routeDistinguisher, withdrawn.network, withdrawn.prefixLength));
+    }
+    for (const nlri of message.vpnv6Nlri ?? []) {
+      if (nlri.prefixLength < 0 || nlri.prefixLength > 128 || nlri.path.asPath.length > 256) continue;
+      if (this.configuration && nlri.path.asPath.includes(this.configuration.localAs)) continue;
+      if (this.rejectReflectionLoop(runtime, nlri.routeId, nlri.path, "vpnv6-unicast")) continue;
+      const metric = this.host.bgpIgpMetric(nlri.nextHop);
+      const route: Vpnv6Route = {
+        ...nlri,
+        network: ipv6Network(nlri.network, nlri.prefixLength),
+        routeTargets: [...nlri.routeTargets],
+        path: { ...nlri.path, asPath: [...nlri.path.asPath] },
+        communities: normalizeBgpCommunities(nlri.path.communities),
+        originatorId: nlri.path.originatorId,
+        clusterList: [...(nlri.path.clusterList ?? [])],
+        source: runtime.configuration.remoteAs === this.configuration?.localAs ? "ibgp" : "ebgp",
+        neighborAddress: runtime.configuration.address,
+        neighborAs: runtime.configuration.remoteAs,
+        neighborRouterId: runtime.remoteRouterId,
+        learnedAtNs: this.host.engine.now(),
+        localPreference: nlri.path.localPreference ?? 100,
+        med: nlri.path.med ?? 0,
+        weight: 0,
+        igpMetric: metric ?? Number.MAX_SAFE_INTEGER,
+      };
+      rib.set(this.vpnPrefixKey(route.routeDistinguisher, route.network, route.prefixLength), route);
+      this.trace("bgp-vpnv6-route-received", {
+        neighbor: runtime.configuration.address,
+        addressFamily: "vpnv6-unicast",
+        rd: route.routeDistinguisher,
+        prefix: `${route.network}/${route.prefixLength}`,
+        routeTargets: route.routeTargets,
+        vpnLabel: route.vpnLabel,
+      });
+    }
+    this.vpnv6AdjRibIn.set(runtime.configuration.address, rib);
+    this.recomputeVpnv6LocRib();
+  }
+
+  private recomputeVpnv6LocRib(): void {
+    const groups = new Map<string, Vpnv6Route[]>();
+    for (const route of [...this.host.bgpVpnv6Exports(), ...[...this.vpnv6AdjRibIn.values()].flatMap((rib) => [...rib.values()])]) {
+      if (route.source !== "local" && this.host.bgpIgpMetric(route.nextHop) === undefined) continue;
+      const key = this.vpnPrefixKey(route.routeDistinguisher, route.network, route.prefixLength);
+      const list = groups.get(key) ?? [];
+      list.push({ ...route, igpMetric: route.source === "local" ? 0 : (this.host.bgpIgpMetric(route.nextHop) ?? route.igpMetric) });
+      groups.set(key, list);
+    }
+    const next = new Map<string, Vpnv6Route>();
+    for (const [key, candidates] of groups) {
+      const best = [...candidates].sort(compareVpnv6Paths)[0];
+      if (best) next.set(key, best);
+    }
+    if (JSON.stringify([...next]) === JSON.stringify([...this.vpnv6LocRib])) return;
+    this.vpnv6LocRib.clear();
+    for (const [key, route] of next) this.vpnv6LocRib.set(key, route);
+    this.host.bgpVpnv6RoutesChanged([...next.values()].filter((route) => route.source !== "local"));
+    this.trace("bgp-vpnv6-best-path-changed", { addressFamily: "vpnv6-unicast", routes: next.size });
+  }
+
   private applyVpnv4Update(runtime: NeighborRuntime, message: Extract<BgpMessage, { kind: "bgp-update" }>): void {
     const negotiated = runtime.configuration.vpnv4Activated === true
       && runtime.remoteAddressFamilies?.includes("vpnv4-unicast") === true;
@@ -1419,9 +1540,11 @@ export class BgpProcess {
           network: route.network,
           prefixLength: route.prefixLength,
         }));
+      const vpn6 = this.advertiseVpnv6(runtime, peerIsIbgp, sendsCommunities);
       const carries = ipv4.announcements.length || ipv4.withdrawn.length
         || ipv6.announcements.length || ipv6.withdrawn.length
-        || vpnAnnouncements.length || vpnWithdrawn.length;
+        || vpnAnnouncements.length || vpnWithdrawn.length
+        || vpn6.announcements.length || vpn6.withdrawn.length;
       if (carries) {
         this.send(runtime, {
           kind: "bgp-update",
@@ -1431,10 +1554,89 @@ export class BgpProcess {
           ipv6Nlri: ipv6.announcements,
           vpnv4Withdrawn: vpnWithdrawn,
           vpnv4Nlri: vpnAnnouncements,
+          vpnv6Withdrawn: vpn6.withdrawn,
+          vpnv6Nlri: vpn6.announcements,
         });
       }
       this.vpnv4AdjRibOut.set(runtime.configuration.address, vpnDesired);
     }
+  }
+
+  /**
+   * The VPNv6 outbound path. It mirrors VPNv4 exactly — reflection, extended
+   * communities gated on `send-community extended`, and an unchanged PE next
+   * hop — because reflection and route targets are family-independent.
+   */
+  private advertiseVpnv6(
+    runtime: NeighborRuntime,
+    peerIsIbgp: boolean,
+    sendsCommunities: boolean,
+  ): { announcements: Vpnv6Nlri[]; withdrawn: Array<Pick<Vpnv6Nlri, "routeDistinguisher" | "network" | "prefixLength">> } {
+    const previous = this.vpnv6AdjRibOut.get(runtime.configuration.address) ?? new Map<string, Vpnv6Route>();
+    const desired = new Map<string, Vpnv6Route>();
+    const announcements: Vpnv6Nlri[] = [];
+    if (this.configuration && this.familyNegotiated(runtime, "vpnv6-unicast")) {
+      for (const route of this.vpnv6LocRib.values()) {
+        if (route.neighborAddress === runtime.configuration.address) continue;
+        const reflection = this.reflectionDecision(route, runtime, peerIsIbgp);
+        if (!reflection.advertise) continue;
+        if (communityBlocksAdvertisement(route.communities, peerIsIbgp) !== undefined) continue;
+        const reflectedAttributes = this.reflectAttributes(route, reflection.reflect, peerIsIbgp);
+        if (reflectedAttributes === undefined) continue;
+        const key = this.vpnPrefixKey(route.routeDistinguisher, route.network, route.prefixLength);
+        const advertised: Vpnv6Route = {
+          ...route,
+          ...reflectedAttributes,
+          communities: sendsCommunities ? [...route.communities] : [],
+          routeTargets: runtime.configuration.sendCommunityExtended ? [...route.routeTargets] : [],
+          path: {
+            ...route.path,
+            asPath: peerIsIbgp ? [...route.path.asPath] : [this.configuration.localAs, ...route.path.asPath],
+            localPreference: peerIsIbgp ? route.localPreference : undefined,
+            communities: sendsCommunities && route.communities.length ? [...route.communities] : undefined,
+            originatorId: reflectedAttributes.originatorId,
+            clusterList: reflectedAttributes.clusterList.length ? [...reflectedAttributes.clusterList] : undefined,
+            reflected: reflection.reflect ? true : undefined,
+          },
+          routeId: `${this.configuration.routerId ?? this.host.id}:vpnv6:${key}`,
+        };
+        if (reflection.reflect) {
+          this.host.engine.controlProtocolBudget.consume("bgpReflectedUpdates", this.host.id);
+          this.trace("bgp-route-reflected", {
+            neighbor: runtime.configuration.address,
+            direction: "out",
+            addressFamily: "vpnv6-unicast",
+            rd: route.routeDistinguisher,
+            prefix: `${route.network}/${route.prefixLength}`,
+            originatorId: advertised.originatorId,
+            clusterList: advertised.clusterList,
+          });
+        }
+        desired.set(key, advertised);
+        if (JSON.stringify(previous.get(key)) !== JSON.stringify(advertised)) {
+          announcements.push({
+            routeDistinguisher: advertised.routeDistinguisher,
+            network: advertised.network,
+            prefixLength: advertised.prefixLength,
+            routeTargets: advertised.routeTargets,
+            vpnLabel: advertised.vpnLabel,
+            nextHop: advertised.nextHop,
+            sourceVrfId: advertised.sourceVrfId,
+            path: advertised.path,
+            routeId: advertised.routeId,
+          });
+        }
+      }
+    }
+    const withdrawn = [...previous.entries()]
+      .filter(([key]) => !desired.has(key))
+      .map(([, route]) => ({
+        routeDistinguisher: route.routeDistinguisher,
+        network: route.network,
+        prefixLength: route.prefixLength,
+      }));
+    this.vpnv6AdjRibOut.set(runtime.configuration.address, desired);
+    return { announcements, withdrawn };
   }
 
   /**

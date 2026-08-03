@@ -55,7 +55,7 @@ import {
   Ospfv3Process,
   type Ospfv3InterfaceDescriptor,
 } from "../protocols/ospfv3";
-import { BgpProcess, type Vpnv4Route } from "../protocols/bgp";
+import { BgpProcess, type Vpnv4Route, type Vpnv6Route } from "../protocols/bgp";
 import {
   LdpProcess,
   type LdpFecRoute,
@@ -3095,7 +3095,64 @@ export class Router extends Device {
     });
   }
 
-  /** One label per VRF and address family, so IPv4 and IPv6 stay separable. */
+  /**
+   * The VPNv6 routes this PE originates. `redistribute connected|static` under
+   * `address-family ipv6 vrf <name>` decides which VRF IPv6 routes leave, the
+   * VRF's export route targets travel with them, and the VPN label is the
+   * deterministic per-VRF IPv6 label. The next hop is this PE's IPv4 loopback,
+   * because the transport LSP is resolved by the IPv4 core.
+   */
+  bgpVpnv6Exports(): readonly Vpnv6Route[] {
+    const bgp = this.bgp.configurationSnapshot();
+    const nextHop = bgp?.routerId ?? this.ldp.routerId();
+    if (!bgp || !nextHop) return [];
+    const routes: Vpnv6Route[] = [];
+    for (const family of [...(bgp.vrfAddressFamilies ?? [])].sort((a, b) => a.vrfId.localeCompare(b.vrfId))) {
+      const vrf = this.vrfs.configuration(family.vrfId);
+      if (!vrf?.addressFamilyIpv6) continue;
+      const candidates = this.vrfIpv6RoutingTable(vrf.id).filter((route) =>
+        (route.source === "connected" && family.redistributeConnectedIpv6)
+        || (route.source === "static" && family.redistributeStaticIpv6));
+      for (const route of candidates) {
+        routes.push({
+          routeDistinguisher: vrf.routeDistinguisher,
+          network: route.network,
+          prefixLength: route.prefixLength,
+          routeTargets: [...vrf.exportRouteTargets],
+          vpnLabel: this.vrfs.vpnLabel(vrf.id, "ipv6"),
+          nextHop,
+          sourceVrfId: vrf.id,
+          path: { origin: "igp", asPath: [], nextHop, localPreference: 100, med: 0 },
+          routeId: `local-vpnv6:${vrf.routeDistinguisher}:${route.network}/${route.prefixLength}`,
+          source: "local",
+          neighborRouterId: bgp.routerId,
+          learnedAtNs: 0,
+          localPreference: 100,
+          med: 0,
+          weight: 32_768,
+          igpMetric: 0,
+          communities: [],
+          clusterList: [],
+        });
+      }
+    }
+    return routes.sort((a, b) => a.routeDistinguisher.localeCompare(b.routeDistinguisher)
+      || a.network.localeCompare(b.network)
+      || b.prefixLength - a.prefixLength);
+  }
+
+  bgpVpnv6RoutesChanged(routes: readonly Vpnv6Route[]): void {
+    this.replaceImportedVpnv6Routes(routes.map((route) => ({
+      routeDistinguisher: route.routeDistinguisher,
+      network: route.network,
+      prefixLength: route.prefixLength,
+      routeTargets: [...route.routeTargets],
+      vpnLabel: route.vpnLabel,
+      nextHop: route.nextHop,
+      metric: route.igpMetric,
+    })));
+  }
+
   /**
    * Install the VPNv6 routes the control plane selected into their VRFs. Route
    * targets decide the import, exactly as they do for VPNv4, and the result is
@@ -3112,6 +3169,7 @@ export class Router extends Device {
     });
   }
 
+  /** One label per VRF and address family, so IPv4 and IPv6 stay separable. */
   vpnLabelBindings(): ReadonlyArray<{ label: number; vrfId: string; addressFamily: "ipv4" | "ipv6" }> {
     return this.vrfs.configurationsSnapshot()
       .flatMap((vrf) => [
