@@ -223,13 +223,14 @@ export interface TunnelSummary {
 /** Outer IPv4 header plus the GRE header a tunnel adds to every packet. */
 const WIRE_SIZE_GRE_OVERHEAD_BYTES = 24;
 
-export type RouteSource = "connected" | "static" | "ospf";
+export type RouteSource = "connected" | "static" | "ospf" | "bgp";
 
 /** Cisco-like administrative distances for the sources this release models. */
 export const ROUTE_ADMINISTRATIVE_DISTANCE: Readonly<Record<RouteSource, number>> = Object.freeze({
   connected: 0,
   static: 1,
   ospf: OSPF_ADMINISTRATIVE_DISTANCE,
+  bgp: 20,
 });
 
 export interface RouteRow {
@@ -253,6 +254,8 @@ interface StaticRoute {
 interface ResolvedRoute {
   egress: L3Interface;
   nextHopIp: Ipv4;
+  metric: number;
+  administrativeDistance: number;
 }
 
 export type Ipv6RouteSource = "connected" | "static" | "ospfv3";
@@ -1216,6 +1219,7 @@ export class Router extends Device {
     iface.ip = ip;
     iface.maskInt = maskToInt(mask);
     this.ospf.arm();
+    this.bgp.refreshRoutes();
   }
 
   setIpv6ForwardingEnabled(enabled: boolean): void {
@@ -1349,11 +1353,13 @@ export class Router extends Device {
       prefixLen: popcount(maskInt),
       nextHop,
     });
+    this.bgp.refreshRoutes();
   }
 
   /** Drop every configured static route (used when a composed plane is re-armed). */
   clearStaticRoutes(): void {
     this.staticRoutes.length = 0;
+    this.bgp.refreshRoutes();
   }
 
   addDhcpPool(config: DhcpPoolConfig): void {
@@ -1551,6 +1557,19 @@ export class Router extends Device {
         egressName: route.interfaceId,
         administrativeDistance: ROUTE_ADMINISTRATIVE_DISTANCE.ospf,
         metric: route.cost,
+      });
+    }
+    for (const route of this.bgp.selectedRoutes()) {
+      if (route.source === "local") continue;
+      const underlay = this.resolve(route.nextHop, false, false);
+      rows.push({
+        kind: "bgp",
+        network: route.network,
+        maskInt: maskToInt(route.prefixLength),
+        viaIp: route.nextHop,
+        egressName: underlay?.egress.name ?? "",
+        administrativeDistance: route.source === "ebgp" ? 20 : 200,
+        metric: route.igpMetric,
       });
     }
     return rows;
@@ -2440,7 +2459,29 @@ export class Router extends Device {
   }
 
   bgpRouteReachable(address: Ipv4): boolean {
-    return this.resolve(address) !== undefined;
+    return this.resolve(address, false, false) !== undefined;
+  }
+
+  bgpExactRouteExists(network: Ipv4, prefixLength: number): boolean {
+    const maskInt = maskToInt(prefixLength);
+    return this.routingTable().some((route) =>
+      route.kind !== "bgp"
+      && route.maskInt === maskInt
+      && ((ipToInt(route.network) & maskInt) >>> 0) === ipToInt(network)
+      && (route.kind === "connected" || route.egressName !== ""));
+  }
+
+  bgpIgpMetric(address: Ipv4): number | undefined {
+    return this.resolve(address, false, false)?.metric;
+  }
+
+  bgpRoutesChanged(): void {
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "bgp-routing-table-changed",
+      device: this.id,
+      detail: { routes: this.bgp.selectedRoutes().length },
+    });
   }
 
   private sendManagement(
@@ -2531,7 +2572,7 @@ export class Router extends Device {
    * distance, then the lowest metric, then a stable tie-break on the next hop
    * and egress name so two engines always choose the same path.
    */
-  private resolve(dst: Ipv4, ignoreTunnelState = false): ResolvedRoute | undefined {
+  private resolve(dst: Ipv4, ignoreTunnelState = false, includeBgp = true): ResolvedRoute | undefined {
     const dstInt = ipToInt(dst);
     interface Candidate {
       prefixLen: number;
@@ -2603,7 +2644,29 @@ export class Router extends Device {
       }
     }
 
-    return best ? { egress: best.egress, nextHopIp: best.nextHopIp } : undefined;
+    if (includeBgp) {
+      for (const route of this.bgp.selectedRoutes()) {
+        if (route.source === "local") continue;
+        const maskInt = maskToInt(route.prefixLength);
+        if (((dstInt & maskInt) >>> 0) !== ipToInt(route.network)) continue;
+        const underlay = this.resolve(route.nextHop, ignoreTunnelState, false);
+        if (!underlay) continue;
+        consider({
+          prefixLen: route.prefixLength,
+          distance: route.source === "ebgp" ? 20 : 200,
+          metric: route.igpMetric,
+          egress: underlay.egress,
+          nextHopIp: route.nextHop,
+        });
+      }
+    }
+
+    return best ? {
+      egress: best.egress,
+      nextHopIp: best.nextHopIp,
+      metric: best.metric,
+      administrativeDistance: best.distance,
+    } : undefined;
   }
 
   private resolveIpv6(destinationInput: Ipv6): ResolvedIpv6Route | undefined {

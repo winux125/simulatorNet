@@ -10,7 +10,7 @@ import type { TcpApplicationPayload } from "../packets/tcp";
 import { TcpState, type TcpConnection, type TcpConnectionHandlers } from "../transport/tcp";
 import type { HostTransportStack } from "../transport/host-transport";
 import type { Ipv4 } from "../util/ipv4";
-import { ipToInt } from "../util/ipv4";
+import { intToIp, ipToInt, maskToInt } from "../util/ipv4";
 import { ControlProtocolConfigurationError, enforceStructuralLimit } from "./limits";
 
 export const DEFAULT_BGP_KEEPALIVE_SECONDS = 60;
@@ -31,6 +31,12 @@ export interface BgpNeighborConfiguration {
   readonly updateSource?: string;
   readonly ebgpMultihop?: number;
   readonly enabled?: boolean;
+  readonly nextHopSelf?: boolean;
+}
+
+export interface BgpNetworkStatement {
+  readonly network: Ipv4;
+  readonly prefixLength: number;
 }
 
 export interface BgpConfiguration {
@@ -39,6 +45,33 @@ export interface BgpConfiguration {
   readonly keepaliveSeconds?: number;
   readonly holdTimeSeconds?: number;
   readonly neighbors?: readonly BgpNeighborConfiguration[];
+  readonly networks?: readonly BgpNetworkStatement[];
+}
+
+export type BgpRouteSource = "local" | "ebgp" | "ibgp";
+
+export interface BgpRoute {
+  readonly network: Ipv4;
+  readonly prefixLength: number;
+  readonly origin: "igp" | "egp" | "incomplete";
+  readonly asPath: readonly number[];
+  readonly nextHop: Ipv4;
+  readonly localPreference: number;
+  readonly med: number;
+  readonly weight: number;
+  readonly source: BgpRouteSource;
+  readonly neighborAddress?: Ipv4;
+  readonly neighborAs?: number;
+  readonly neighborRouterId?: Ipv4;
+  readonly learnedAtNs: number;
+  readonly routeId: string;
+  readonly igpMetric: number;
+}
+
+export interface BgpRibEntry extends BgpRoute {
+  readonly best: boolean;
+  readonly valid: boolean;
+  readonly rejectionReason?: string;
 }
 
 export interface BgpNeighborSummary {
@@ -60,6 +93,9 @@ export interface BgpHost {
   bgpSourceAddress(remoteAddress: Ipv4, updateSource?: string): Ipv4 | undefined;
   bgpOwnsAddress(address: Ipv4): boolean;
   bgpRouteReachable(address: Ipv4): boolean;
+  bgpExactRouteExists(network: Ipv4, prefixLength: number): boolean;
+  bgpIgpMetric(address: Ipv4): number | undefined;
+  bgpRoutesChanged(): void;
 }
 
 interface NeighborRuntime {
@@ -73,6 +109,32 @@ interface NeighborRuntime {
   messagesSent: number;
   messagesReceived: number;
   generation: number;
+  remoteRouterId?: Ipv4;
+}
+
+const ORIGIN_ORDER: Readonly<Record<BgpRoute["origin"], number>> = Object.freeze({ igp: 0, egp: 1, incomplete: 2 });
+
+/** Cisco-like deterministic educational best-path ordering. */
+export function compareBgpPaths(left: BgpRoute, right: BgpRoute): number {
+  if (left.weight !== right.weight) return right.weight - left.weight;
+  if (left.localPreference !== right.localPreference) return right.localPreference - left.localPreference;
+  if ((left.source === "local") !== (right.source === "local")) return left.source === "local" ? -1 : 1;
+  if (left.asPath.length !== right.asPath.length) return left.asPath.length - right.asPath.length;
+  if (ORIGIN_ORDER[left.origin] !== ORIGIN_ORDER[right.origin]) return ORIGIN_ORDER[left.origin] - ORIGIN_ORDER[right.origin];
+  if (left.neighborAs !== undefined && left.neighborAs === right.neighborAs && left.med !== right.med) {
+    return left.med - right.med;
+  }
+  if ((left.source === "ebgp") !== (right.source === "ebgp")) return left.source === "ebgp" ? -1 : 1;
+  if (left.igpMetric !== right.igpMetric) return left.igpMetric - right.igpMetric;
+  if (left.learnedAtNs !== right.learnedAtNs) return left.learnedAtNs - right.learnedAtNs;
+  const routerId = ipToInt(left.neighborRouterId ?? "0.0.0.0") - ipToInt(right.neighborRouterId ?? "0.0.0.0");
+  if (routerId !== 0) return routerId;
+  const neighbor = ipToInt(left.neighborAddress ?? "0.0.0.0") - ipToInt(right.neighborAddress ?? "0.0.0.0");
+  return neighbor || left.routeId.localeCompare(right.routeId);
+}
+
+export function selectBestBgpPath(routes: readonly BgpRoute[]): BgpRoute | undefined {
+  return [...routes].sort(compareBgpPaths)[0];
 }
 
 function validateAsn(value: number, field: string): void {
@@ -96,6 +158,10 @@ function validateTimer(value: number, field: string, maximum: number): void {
 export class BgpProcess {
   private configuration: BgpConfiguration | undefined;
   private readonly neighbors = new Map<Ipv4, NeighborRuntime>();
+  private readonly adjRibIn = new Map<Ipv4, Map<string, BgpRoute>>();
+  private readonly locRib = new Map<string, BgpRoute>();
+  private readonly adjRibOut = new Map<Ipv4, Map<string, BgpRoute>>();
+  private readonly ribFailures = new Map<string, string>();
   private listening = false;
 
   constructor(private readonly host: BgpHost) {}
@@ -136,8 +202,18 @@ export class BgpProcess {
         throw new ControlProtocolConfigurationError("eBGP multihop TTL must be between 1 and 255", "ebgpMultihop");
       }
     }
+    const networks = [...(configuration.networks ?? [])];
+    for (const network of networks) {
+      if (!Number.isInteger(network.prefixLength) || network.prefixLength < 0 || network.prefixLength > 32) {
+        throw new ControlProtocolConfigurationError("BGP network prefix length must be between 0 and 32", "networks");
+      }
+      const mask = maskToInt(network.prefixLength);
+      if (((ipToInt(network.network) & mask) >>> 0) !== ipToInt(network.network)) {
+        throw new ControlProtocolConfigurationError("BGP network statement must use a canonical network address", "networks");
+      }
+    }
     this.resetRuntime(false);
-    this.configuration = { ...configuration, keepaliveSeconds, holdTimeSeconds, neighbors: configured };
+    this.configuration = { ...configuration, keepaliveSeconds, holdTimeSeconds, neighbors: configured, networks };
     this.neighbors.clear();
     for (const neighbor of configured.sort((a, b) => ipToInt(a.address) - ipToInt(b.address))) {
       this.neighbors.set(neighbor.address, {
@@ -148,6 +224,7 @@ export class BgpProcess {
         generation: 0,
       });
     }
+    this.refreshRoutes();
     this.start();
   }
 
@@ -155,6 +232,10 @@ export class BgpProcess {
     this.resetRuntime(true);
     this.configuration = undefined;
     this.neighbors.clear();
+    this.adjRibIn.clear();
+    this.locRib.clear();
+    this.adjRibOut.clear();
+    this.ribFailures.clear();
   }
 
   start(): void {
@@ -201,12 +282,70 @@ export class BgpProcess {
       .sort((a, b) => ipToInt(a.address) - ipToInt(b.address));
   }
 
+  routes(): BgpRibEntry[] {
+    const all = new Map<string, BgpRoute>();
+    for (const routes of this.adjRibIn.values()) {
+      for (const route of routes.values()) all.set(`${route.routeId}\u0000${route.neighborAddress ?? ""}`, route);
+    }
+    for (const route of this.localCandidates()) all.set(route.routeId, route);
+    return [...all.values()].map((route) => ({
+      ...route,
+      best: this.locRib.get(this.prefixKey(route.network, route.prefixLength))?.routeId === route.routeId,
+      valid: this.ribFailures.get(route.routeId) === undefined,
+      rejectionReason: this.ribFailures.get(route.routeId),
+    })).sort((a, b) => a.network.localeCompare(b.network) || a.prefixLength - b.prefixLength || compareBgpPaths(a, b));
+  }
+
+  selectedRoutes(): BgpRoute[] {
+    return [...this.locRib.values()].sort((a, b) =>
+      ipToInt(a.network) - ipToInt(b.network) || b.prefixLength - a.prefixLength || a.routeId.localeCompare(b.routeId));
+  }
+
+  adjRibInEntries(address?: Ipv4): BgpRoute[] {
+    const entries = address === undefined ? [...this.adjRibIn.values()] : [this.adjRibIn.get(address) ?? new Map()];
+    return entries.flatMap((rib) => [...rib.values()]).sort((a, b) => a.routeId.localeCompare(b.routeId));
+  }
+
+  adjRibOutEntries(address?: Ipv4): BgpRoute[] {
+    const entries = address === undefined ? [...this.adjRibOut.values()] : [this.adjRibOut.get(address) ?? new Map()];
+    return entries.flatMap((rib) => [...rib.values()]).sort((a, b) => a.routeId.localeCompare(b.routeId));
+  }
+
+  ribFailureSummaries(): Array<{ routeId: string; reason: string }> {
+    return [...this.ribFailures.entries()].map(([routeId, reason]) => ({ routeId, reason }))
+      .sort((a, b) => a.routeId.localeCompare(b.routeId));
+  }
+
+  refreshRoutes(): void {
+    if (!this.configuration) return;
+    this.recomputeLocRib();
+    this.advertiseRoutes();
+  }
+
   configurationSnapshot(): BgpConfiguration | undefined {
     if (!this.configuration) return undefined;
     return {
       ...this.configuration,
       neighbors: [...(this.configuration.neighbors ?? [])].map((neighbor) => ({ ...neighbor })),
+      networks: [...(this.configuration.networks ?? [])].map((network) => ({ ...network })),
     };
+  }
+
+  setNetworks(networks: readonly BgpNetworkStatement[]): void {
+    if (!this.configuration) {
+      throw new ControlProtocolConfigurationError("BGP process is not configured", "networks");
+    }
+    for (const network of networks) {
+      if (!Number.isInteger(network.prefixLength) || network.prefixLength < 0 || network.prefixLength > 32) {
+        throw new ControlProtocolConfigurationError("BGP network prefix length must be between 0 and 32", "networks");
+      }
+      const mask = maskToInt(network.prefixLength);
+      if (((ipToInt(network.network) & mask) >>> 0) !== ipToInt(network.network)) {
+        throw new ControlProtocolConfigurationError("BGP network statement must use a canonical network address", "networks");
+      }
+    }
+    this.configuration = { ...this.configuration, networks: networks.map((network) => ({ ...network })) };
+    this.refreshRoutes();
   }
 
   outboundTtl(remoteAddress: Ipv4): number | undefined {
@@ -327,6 +466,7 @@ export class BgpProcess {
       }
       const localHold = this.configuration?.holdTimeSeconds ?? DEFAULT_BGP_HOLD_SECONDS;
       runtime.negotiatedHoldTimeSeconds = Math.min(localHold, message.holdTimeSeconds);
+      runtime.remoteRouterId = message.bgpIdentifier;
       this.transition(runtime, "open-confirm");
       this.send(runtime, { kind: "bgp-keepalive" });
       return;
@@ -335,6 +475,7 @@ export class BgpProcess {
       if (runtime.state === "open-confirm") {
         this.transition(runtime, "established");
         this.trace("bgp-session-established", { neighbor: runtime.configuration.address });
+        this.refreshRoutes();
       }
       return;
     }
@@ -346,6 +487,7 @@ export class BgpProcess {
       this.notifyAndFail(runtime, "update-message", "unexpected-update", "UPDATE received before Established");
       return;
     }
+    this.applyUpdate(runtime, message);
     this.trace("bgp-update-received", {
       neighbor: runtime.configuration.address,
       announced: message.nlri.length,
@@ -361,6 +503,7 @@ export class BgpProcess {
     this.trace(message.kind === "bgp-update" ? "bgp-update-sent" : "bgp-message-sent", {
       neighbor: runtime.configuration.address,
       messageType: message.kind,
+      ...(message.kind === "bgp-update" ? { announced: message.nlri.length, withdrawn: message.withdrawn.length } : {}),
     });
   }
 
@@ -378,6 +521,9 @@ export class BgpProcess {
   private onTcpClosed(runtime: NeighborRuntime, reason: string): void {
     if (!runtime.connection) return;
     runtime.connection = undefined;
+    this.adjRibIn.delete(runtime.configuration.address);
+    this.adjRibOut.delete(runtime.configuration.address);
+    this.recomputeLocRib();
     this.fail(runtime, reason, false);
   }
 
@@ -411,6 +557,144 @@ export class BgpProcess {
       this.host.management.tcp.unlisten(BGP_TCP_PORT);
       this.listening = false;
     }
+  }
+
+  private applyUpdate(runtime: NeighborRuntime, message: Extract<BgpMessage, { kind: "bgp-update" }>): void {
+    if (!this.configuration) return;
+    const rib = this.adjRibIn.get(runtime.configuration.address) ?? new Map<string, BgpRoute>();
+    for (const withdrawn of message.withdrawn) rib.delete(this.prefixKey(withdrawn.network, withdrawn.prefixLength));
+    enforceStructuralLimit("maximumBgpPrefixesPerPeer", rib.size + message.nlri.length);
+    for (const nlri of message.nlri) {
+      if (nlri.prefixLength < 0 || nlri.prefixLength > 32 || nlri.path.asPath.length > 256) {
+        this.trace("bgp-route-rejected", { neighbor: runtime.configuration.address, routeId: nlri.routeId, reason: "malformed NLRI" });
+        continue;
+      }
+      if (nlri.path.asPath.includes(this.configuration.localAs)) {
+        this.trace("bgp-loop-rejected", { neighbor: runtime.configuration.address, routeId: nlri.routeId });
+        continue;
+      }
+      const igpMetric = this.host.bgpIgpMetric(nlri.path.nextHop);
+      const route: BgpRoute = {
+        network: intToIp((ipToInt(nlri.network) & maskToInt(nlri.prefixLength)) >>> 0),
+        prefixLength: nlri.prefixLength,
+        origin: nlri.path.origin,
+        asPath: [...nlri.path.asPath],
+        nextHop: nlri.path.nextHop,
+        localPreference: nlri.path.localPreference ?? 100,
+        med: nlri.path.med ?? 0,
+        weight: 0,
+        source: runtime.configuration.remoteAs === this.configuration.localAs ? "ibgp" : "ebgp",
+        neighborAddress: runtime.configuration.address,
+        neighborAs: runtime.configuration.remoteAs,
+        neighborRouterId: runtime.remoteRouterId,
+        learnedAtNs: this.host.engine.now(),
+        routeId: nlri.routeId,
+        igpMetric: igpMetric ?? Number.MAX_SAFE_INTEGER,
+      };
+      rib.set(this.prefixKey(route.network, route.prefixLength), route);
+    }
+    this.adjRibIn.set(runtime.configuration.address, rib);
+    this.recomputeLocRib();
+    this.advertiseRoutes();
+  }
+
+  private localCandidates(): BgpRoute[] {
+    if (!this.configuration) return [];
+    const routerId = this.configuration.routerId ?? "0.0.0.0";
+    return [...(this.configuration.networks ?? [])]
+      .filter((network) => this.host.bgpExactRouteExists(network.network, network.prefixLength))
+      .map((network) => ({
+        network: network.network,
+        prefixLength: network.prefixLength,
+        origin: "igp" as const,
+        asPath: [],
+        nextHop: "0.0.0.0",
+        localPreference: 100,
+        med: 0,
+        weight: 32_768,
+        source: "local" as const,
+        neighborRouterId: routerId,
+        learnedAtNs: 0,
+        routeId: `local:${network.network}/${network.prefixLength}`,
+        igpMetric: 0,
+      }));
+  }
+
+  private recomputeLocRib(): void {
+    const candidates = [...this.localCandidates(), ...this.adjRibInEntries()];
+    const groups = new Map<string, BgpRoute[]>();
+    this.ribFailures.clear();
+    for (const route of candidates) {
+      if (route.source !== "local" && this.host.bgpIgpMetric(route.nextHop) === undefined) {
+        this.ribFailures.set(route.routeId, `next hop ${route.nextHop} is unreachable`);
+        continue;
+      }
+      const key = this.prefixKey(route.network, route.prefixLength);
+      const group = groups.get(key) ?? [];
+      group.push({ ...route, igpMetric: route.source === "local" ? 0 : (this.host.bgpIgpMetric(route.nextHop) ?? route.igpMetric) });
+      groups.set(key, group);
+    }
+    const next = new Map<string, BgpRoute>();
+    for (const [key, routes] of groups) {
+      const best = selectBestBgpPath(routes);
+      if (best) next.set(key, best);
+    }
+    const before = JSON.stringify([...this.locRib.entries()]);
+    const after = JSON.stringify([...next.entries()]);
+    if (before === after) return;
+    this.locRib.clear();
+    for (const [key, route] of next) this.locRib.set(key, route);
+    this.host.bgpRoutesChanged();
+    this.trace("bgp-best-path-changed", { routes: this.locRib.size });
+  }
+
+  private advertiseRoutes(): void {
+    if (!this.configuration) return;
+    for (const runtime of this.neighbors.values()) {
+      if (runtime.state !== "established" || !runtime.localAddress) continue;
+      const previous = this.adjRibOut.get(runtime.configuration.address) ?? new Map<string, BgpRoute>();
+      const desired = new Map<string, BgpRoute>();
+      const announcements: import("../packets/bgp").BgpNlri[] = [];
+      for (const route of this.locRib.values()) {
+        if (route.neighborAddress === runtime.configuration.address) continue;
+        const peerIsIbgp = runtime.configuration.remoteAs === this.configuration.localAs;
+        if (peerIsIbgp && route.source === "ibgp") continue;
+        const advertised: BgpRoute = {
+          ...route,
+          asPath: peerIsIbgp ? [...route.asPath] : [this.configuration.localAs, ...route.asPath],
+          nextHop: (!peerIsIbgp || runtime.configuration.nextHopSelf || route.source === "local")
+            ? runtime.localAddress
+            : route.nextHop,
+          routeId: `${this.configuration.routerId ?? this.host.id}:${route.network}/${route.prefixLength}`,
+        };
+        desired.set(this.prefixKey(route.network, route.prefixLength), advertised);
+        if (JSON.stringify(previous.get(this.prefixKey(route.network, route.prefixLength))) !== JSON.stringify(advertised)) {
+          announcements.push({
+            network: advertised.network,
+            prefixLength: advertised.prefixLength,
+            routeId: advertised.routeId,
+            path: {
+              origin: advertised.origin,
+              asPath: advertised.asPath,
+              nextHop: advertised.nextHop,
+              localPreference: peerIsIbgp ? advertised.localPreference : undefined,
+              med: advertised.med,
+            },
+          });
+        }
+      }
+      const withdrawn = [...previous.entries()]
+        .filter(([key]) => !desired.has(key))
+        .map(([, route]) => ({ network: route.network, prefixLength: route.prefixLength }));
+      if (announcements.length || withdrawn.length) {
+        this.send(runtime, { kind: "bgp-update", withdrawn, nlri: announcements });
+      }
+      this.adjRibOut.set(runtime.configuration.address, desired);
+    }
+  }
+
+  private prefixKey(network: Ipv4, prefixLength: number): string {
+    return `${network}/${prefixLength}`;
   }
 
   private trace(type: string, detail: Readonly<Record<string, unknown>>): void {
