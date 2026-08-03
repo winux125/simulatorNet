@@ -106,6 +106,10 @@ function isPacketTraceEvent(event: SimulationTraceEvent): boolean {
     || ipv6PacketPrefixes.some((prefix) => type.startsWith(prefix))
     || managementPacketPrefixes.some((prefix) => type.startsWith(prefix))
     || vpnPacketPrefixes.some((prefix) => type.startsWith(prefix))
+    || type.startsWith("bgp-")
+    || type.startsWith("prefix-list-")
+    || type.startsWith("route-map-")
+    || type.startsWith("route-policy-")
     || type.startsWith("wireless-");
 }
 
@@ -115,6 +119,7 @@ export const TRACE_PROTOCOL_FILTERS = [
   "ACL", "NAT", "FIREWALL", "CLOUD", "TRAFFIC",
   "QoS", "Classification", "Marking", "Queue", "Policing", "Shaping",
   "STP", "RSTP", "LACP", "PAGP", "CDP", "LLDP", "OSPF",
+  "BGP", "BGP Session", "BGP Updates", "Route Policy",
   "IPv6", "ICMPv6", "NDP", "SLAAC", "DHCPv6", "OSPFv3", "IPv6 ACL",
   "Wireless", "Beacon", "Probe", "Authentication", "Association", "Roaming",
   "Telnet", "SSH", "AAA", "RADIUS", "TACACS+", "SNMP",
@@ -321,6 +326,8 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
     // "VPN" is the whole site-to-site family; GRE, IKE, IPsec and ESP each
     // select one stage of it.
     if (filter === "VPN") return isVpnTraceEvent(event.type);
+    if (filter === "BGP") return event.type.startsWith("bgp-")
+      || event.type.startsWith("prefix-list-") || event.type.startsWith("route-map-") || event.type.startsWith("route-policy-");
     return protocol === filter;
   });
   return <div className="dock-table-wrap"><div className="trace-filter"><label>Protocol filter <select aria-label="Packet trace protocol filter" value={filter} onChange={(event) => setFilter(event.target.value)}>{TRACE_PROTOCOL_FILTERS.map((protocol) => <option key={protocol}>{protocol}</option>)}</select></label><span>{visible.length} records</span></div><table className="data-table packet-table"><thead><tr><th>Time</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Ports</th><th>Event</th><th>QoS</th><th>Result</th></tr></thead><tbody>{visible.slice(-300).reverse().map((event, index) => {
@@ -361,6 +368,15 @@ function traceProtocol(event: SimulationTraceEvent): string {
   if (type.startsWith("tacacs-")) return "TACACS+";
   if (type.startsWith("snmp-")) return "SNMP";
   if (type === "aaa-accounting") return "AAA";
+  if (type.startsWith("prefix-list-") || type.startsWith("route-map-") || type.startsWith("route-policy-")
+    || type.startsWith("bgp-policy-")
+    || type === "bgp-attribute-modified") return "Route Policy";
+  if (type.startsWith("bgp-update-") || type.startsWith("bgp-route-") || type === "bgp-best-path-selected"
+    || type === "bgp-next-hop-unreachable" || type === "bgp-as-loop-rejected") return "BGP Updates";
+  if (type.startsWith("bgp-tcp-") || type.startsWith("bgp-state-") || type.startsWith("bgp-open-")
+    || type.startsWith("bgp-keepalive-") || type.startsWith("bgp-session-") || type.startsWith("bgp-notification")
+    || type.startsWith("bgp-hold-")) return "BGP Session";
+  if (type.startsWith("bgp-")) return "BGP";
   // Control protocols next: their event names are unambiguous prefixes.
   if (type === "wireless-roamed") return "Roaming";
   if (type.startsWith("wireless-beacon-")) return "Beacon";

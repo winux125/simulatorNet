@@ -93,6 +93,7 @@ import type {
   VpnSecurityAssociationView,
   VpnTunnelView,
   LinkPerformanceView,
+  BgpStateView,
   Ospfv3View,
   RemoteSessionsView,
   SnmpOperationView,
@@ -434,6 +435,26 @@ export class SimulationWorkerRuntime {
         this.requireOspf(deviceId).ospfv3.restart();
         this.runProtocolConvergence();
         return this.ospfv3State(deviceId);
+      }
+      case "GET_BGP_STATE":
+      case "GET_BGP_OVERVIEW":
+      case "GET_BGP_SUMMARY":
+      case "GET_BGP_NEIGHBORS":
+      case "GET_BGP_TABLE":
+      case "GET_BGP_ROUTE":
+      case "GET_PREFIX_LIST_STATUS":
+      case "GET_ROUTE_MAP_STATUS":
+        return this.bgpState(requireString(request, "deviceId"));
+      case "RESET_BGP_SESSION":
+      case "RESET_BGP_NEIGHBOR":
+      case "RESET_BGP_PROCESS": {
+        const deviceId = requireString(request, "deviceId");
+        const neighbor = type === "RESET_BGP_PROCESS"
+          ? undefined
+          : typeof request.neighbor === "string" ? request.neighbor : undefined;
+        this.requireOspf(deviceId).bgp.restart(neighbor);
+        this.runProtocolConvergence();
+        return this.bgpState(deviceId);
       }
       case "GET_REMOTE_SESSIONS":
         return this.remoteSessions(requireString(request, "deviceId"));
@@ -1756,6 +1777,18 @@ export class SimulationWorkerRuntime {
       // rather than thrown mid-packet, so a lab keeps running while it explains
       // what is wrong.
       if (device instanceof Router || device instanceof Layer3Switch) {
+        for (const neighbor of device.bgp.summaries()) {
+          if (neighbor.lastError) warnings.push({
+            code: "bgp",
+            message: `${device.name} BGP neighbor ${neighbor.address}: ${neighbor.lastError}.`,
+            deviceIds: [device.id],
+          });
+        }
+        for (const failure of device.bgp.ribFailureSummaries()) warnings.push({
+          code: "bgp",
+          message: `${device.name} rejected BGP route ${failure.routeId}: ${failure.reason}.`,
+          deviceIds: [device.id],
+        });
         for (const problem of device.qosProblems()) {
           warnings.push({ code: "qos-policy", message: problem.message, deviceIds: [device.id] });
         }
@@ -2157,6 +2190,25 @@ export class SimulationWorkerRuntime {
       neighbors: ospfv3.neighborSummaries(),
       database: ospfv3.database(),
       routes: ospfv3.routeTable(),
+    };
+  }
+
+  private bgpState(deviceId: string): BgpStateView {
+    const bgp = this.requireOspf(deviceId).bgp;
+    const configuration = bgp.configurationSnapshot();
+    return {
+      deviceId,
+      configuration: configuration === undefined ? undefined : {
+        ...configuration,
+        neighbors: [...(configuration.neighbors ?? [])],
+        networks: [...(configuration.networks ?? [])],
+      },
+      neighbors: bgp.summaries(),
+      routes: bgp.routes(),
+      adjRibIn: bgp.adjRibInEntries(),
+      adjRibOut: bgp.adjRibOutEntries(),
+      ribFailures: bgp.ribFailureSummaries(),
+      policyCounters: bgp.routingPolicy.counterSummaries(),
     };
   }
 

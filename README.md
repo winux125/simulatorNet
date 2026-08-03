@@ -1211,3 +1211,33 @@ behaviour. Its simulated ESP/IKE implementation does not provide real
 cryptographic protection.** There is no encryption, no key exchange, no
 certificate handling, no IKEv1, no remote-access VPN and no NAT traversal. See
 [docs/vpn-tunnels.md](docs/vpn-tunnels.md).
+
+### M10.10 — deterministic BGP and multi-AS routing
+
+M10.10 adds an educational IPv4-unicast BGP process to Router and to L3 Switch
+when `ip routing` is enabled. Peers use the shared simulated TCP stack on port
+179, so underlay reachability, interface state, ACL/firewall policy and virtual
+link behavior genuinely control whether a session establishes. OPEN,
+KEEPALIVE, UPDATE and NOTIFICATION remain structured deterministic messages;
+bounded retry and timer activity always lets Auto mode and the verifier drain
+their event queues.
+
+Adj-RIB-In, Loc-RIB and Adj-RIB-Out are separate runtime tables. Exact `network`
+statements originate existing routes, eBGP and iBGP apply their documented AS
+path and next-hop rules, and the selected route is installed in the IPv4 RIB
+with administrative distance 20 or 200. Best-path selection has a stable,
+documented tie-break order and withdrawals propagate after link or policy
+changes.
+
+Ordered IPv4 prefix lists and route maps provide inbound and outbound policy
+without executable code or unrestricted regular expressions. Policy edits
+re-evaluate the stored raw inbound RIB without resetting the TCP session.
+Configuration persists canonically; peer state, learned RIBs, message counters
+and policy counters do not.
+
+The managed device window adds BGP within the existing Routing Config and
+Monitor navigation, Packet Trace adds BGP Session / Updates / Route Policy
+filters, and three explicit demos cover eBGP, dual-ISP best-path failover, and
+iBGP policy. Eleven server-side grading checks rebuild and inspect the same
+deterministic process without trusting browser routes, trace, session state or
+score. See [docs/routing-bgp.md](docs/routing-bgp.md).

@@ -14,6 +14,7 @@ export type CliMode =
   | "config-ikev2-proposal" // IKEv2 proposal: Router(config-ikev2-proposal)#
   | "config-ikev2-peer" // IKEv2 peer: Router(config-ikev2-peer)#
   | "config-ipsec-profile" // IPsec profile: Router(ipsec-profile)#
+  | "config-route-map" // route-map sequence configuration
   | "config-router"; // routing process config: Router(config-router)#
 
 /** The prompt suffix for a mode, appended after the device hostname. */
@@ -47,6 +48,8 @@ export function promptSuffix(mode: CliMode): string {
       return "(config-ikev2-peer)#";
     case "config-ipsec-profile":
       return "(ipsec-profile)#";
+    case "config-route-map":
+      return "(config-route-map)#";
     case "config-router":
       return "(config-router)#";
   }

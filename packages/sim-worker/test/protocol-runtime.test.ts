@@ -11,6 +11,7 @@ import type {
   OspfOverviewView,
   SimWorkerRequest,
   SpanningTreeView,
+  BgpStateView,
 } from "../src/protocol";
 
 const switchPorts = (count: number) =>
@@ -86,6 +87,26 @@ function labWithRouters(): LabDocument {
     configurations: {
       r1: ospf("R1", "1.1.1.1", "10.0.12.1"),
       r2: ospf("R2", "2.2.2.2", "10.0.12.2"),
+    },
+  } as unknown as LabDocument);
+}
+
+function labWithBgpRouters(): LabDocument {
+  const router = (hostname: string, address: string, localAs: number, remoteAddress: string, remoteAs: number, prefix: string) => ({
+    kind: "router" as const, hostname,
+    interfaces: [{ id: "Gi0/0", routed: true, shutdown: false, ipv4: { address, prefixLength: 30 } }],
+    loopbacks: [{ id: 0, shutdown: false, ipv4: { address: `${prefix}.1`, prefixLength: 24 } }],
+    bgp: { localAs, routerId: localAs === 65_001 ? "1.1.1.1" : "2.2.2.2", neighbors: [{ address: remoteAddress, remoteAs, enabled: true }], networks: [{ network: `${prefix}.0`, prefixLength: 24 }] },
+  });
+  return canonicalizeLabDocument({
+    schemaVersion: 1, id: "worker-bgp", title: "Worker BGP", simulation: { seed: 101 },
+    topology: { schemaVersion: 1, nodes: [
+      { id: "r1", kind: "router", name: "R1", interfaces: [{ id: "Gi0/0" }] },
+      { id: "r2", kind: "router", name: "R2", interfaces: [{ id: "Gi0/0" }] },
+    ], links: [{ id: "r1-r2", a: { node: "r1", iface: "Gi0/0" }, b: { node: "r2", iface: "Gi0/0" } }] },
+    configurations: {
+      r1: router("R1", "192.0.2.1", 65_001, "192.0.2.2", 65_002, "10.1.0"),
+      r2: router("R2", "192.0.2.2", 65_002, "192.0.2.1", 65_001, "10.2.0"),
     },
   } as unknown as LabDocument);
 }
@@ -205,6 +226,41 @@ describe("Worker OSPF views", () => {
     const response = runtime.handleRequest({ type: "GET_OSPF_OVERVIEW", requestId: "r2", deviceId: "sw1" });
     expect(response.type).toBe("REQUEST_FAILED");
     if (response.type === "REQUEST_FAILED") expect(response.error.code).toBe("ospf-not-supported");
+  });
+});
+
+describe("Worker BGP inspection and actions", () => {
+  it("returns plain-JSON summary, RIBs and policy counters", () => {
+    const { send } = runtimeFor(labWithBgpRouters());
+    const state = send<BgpStateView>({ type: "GET_BGP_STATE", deviceId: "r1" } as never);
+    expect(state.configuration?.localAs).toBe(65_001);
+    expect(state.neighbors[0]).toMatchObject({ address: "192.0.2.2", state: "established" });
+    expect(state.adjRibIn.some((route) => route.network === "10.2.0.0")).toBe(true);
+    expect(JSON.parse(JSON.stringify(state))).toEqual(state);
+  });
+
+  it("supports the typed overview/table/policy adapter requests", () => {
+    const { send } = runtimeFor(labWithBgpRouters());
+    for (const type of ["GET_BGP_OVERVIEW", "GET_BGP_SUMMARY", "GET_BGP_NEIGHBORS", "GET_BGP_TABLE", "GET_PREFIX_LIST_STATUS", "GET_ROUTE_MAP_STATUS"] as const) {
+      expect(send<BgpStateView>({ type, deviceId: "r1" } as never).deviceId).toBe("r1");
+    }
+  });
+
+  it("resets one neighbor or the whole process without changing configuration", () => {
+    const { send } = runtimeFor(labWithBgpRouters());
+    const neighbor = send<BgpStateView>({ type: "RESET_BGP_NEIGHBOR", deviceId: "r1", neighbor: "192.0.2.2" } as never);
+    expect(neighbor.neighbors[0]?.state).toBe("established");
+    const process = send<BgpStateView>({ type: "RESET_BGP_PROCESS", deviceId: "r1" } as never);
+    expect(process.configuration?.neighbors).toHaveLength(1);
+    expect(process.neighbors[0]?.state).toBe("established");
+  });
+
+  it("serializes configuration but excludes sessions and learned RIB state", () => {
+    const { send } = runtimeFor(labWithBgpRouters());
+    const document = send<LabDocument>({ type: "SERIALIZE_LAB" } as never);
+    const text = JSON.stringify(document);
+    expect(document.configurations.r1 && "bgp" in document.configurations.r1 ? document.configurations.r1.bgp?.localAs : undefined).toBe(65_001);
+    expect(text).not.toMatch(/adjRib|locRib|established|messagesReceived|policyCounters/i);
   });
 });
 

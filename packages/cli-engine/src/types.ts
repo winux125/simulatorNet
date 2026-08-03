@@ -59,7 +59,13 @@ export interface AclContext {
 /** The `router ospf <process-id>` configuration context. */
 export interface RouterProcessContext {
   processId: number;
-  family: "ipv4" | "ipv6";
+  family: "ipv4" | "ipv6" | "bgp";
+}
+
+export interface RouteMapContext {
+  id: string;
+  sequence: number;
+  action: "permit" | "deny";
 }
 
 /** The `line vty <first> <last>` configuration context. */
@@ -111,6 +117,7 @@ export interface SessionApi {
   classMapCtx: QosClassMapContext | undefined;
   policyMapCtx: QosPolicyMapContext | undefined;
   cryptoCtx: CryptoContext | undefined;
+  routeMapCtx: RouteMapContext | undefined;
   /** Transition to another mode (clears context as appropriate). */
   enter(mode: CliMode): void;
   /**

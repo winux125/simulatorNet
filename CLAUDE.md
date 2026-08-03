@@ -244,6 +244,28 @@ secondary navigation inside the reusable panel, as with QoS. A VPN
 canvas overlay is derived presentation like a wireless association: never a
 link, never a cable workflow. NAT-T is not modelled. See `docs/vpn-tunnels.md`.
 
+### BGP and multi-AS routing
+
+BGP is an IPv4-unicast control-plane process for Router and L3 Switch with
+`ip routing`; Firewall and Cloud / ISP do not speak BGP. It uses the shared
+simulated TCP stack on port 179, so reachability, ACL/firewall policy and link
+state remain part of the session. Structured OPEN, KEEPALIVE, UPDATE and
+NOTIFICATION messages run through a bounded activity window: Auto and verifier
+execution must always drain, while explicit virtual-time advancement can expire
+the Hold timer.
+
+Keep raw Adj-RIB-In, policy-filtered Adj-RIB-In, Loc-RIB and Adj-RIB-Out
+separate. The one routing-policy engine evaluates ordered prefix lists and route
+maps for both inbound and outbound paths; no executable policy or unrestricted
+regular expression is allowed. The documented stable best-path comparator is
+the single selection implementation used by routing, UI and grading.
+
+`LabDocument` stores the BGP process, peers, exact network statements, prefix
+lists, route maps and bindings. It must never store TCP/FSM state, learned RIBs,
+message counters, policy counters or browser execution mode. The verifier
+rebuilds these from structured configuration and ignores client-provided routes,
+trace and score. See `docs/routing-bgp.md`.
+
 ### Management plane
 
 Remote management is a real path through the simulated network. A Telnet or SSH

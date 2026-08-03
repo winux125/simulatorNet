@@ -14,6 +14,7 @@ import type {
   NeighborDiscoveryConfig,
   OspfProcessConfig,
   Ospfv3ProcessConfig,
+  BgpProcessConfig,
   QosConfiguration,
   SpanningTreeConfig,
   VpnConfiguration,
@@ -237,6 +238,15 @@ function ospfv3From(applied: ImportedDeviceConfiguration): Ospfv3ProcessConfig |
   };
 }
 
+function bgpFrom(applied: ImportedDeviceConfiguration): BgpProcessConfig | undefined {
+  if (!applied.bgp) return undefined;
+  return {
+    ...applied.bgp,
+    neighbors: [...applied.bgp.neighbors].sort((left, right) => left.address.localeCompare(right.address)),
+    networks: [...applied.bgp.networks].sort((left, right) => left.network.localeCompare(right.network) || left.prefixLength - right.prefixLength),
+  };
+}
+
 function ipv6BindingsFrom(applied: ImportedDeviceConfiguration) {
   return applied.interfaces.flatMap((iface) =>
     (iface.ipv6TrafficFilters ?? []).map((binding) => ({
@@ -387,6 +397,8 @@ export function buildDeviceConfigFromIos(
       natInterfaceRoles: [],
       discovery: discoveryFrom(applied),
       loopbacks: loopbacksFrom(applied),
+      prefixLists: applied.prefixLists,
+      routeMaps: applied.routeMaps,
     };
     if (deviceType === "firewall") {
       // A firewall is not an OSPF speaker in this release; the process lines
@@ -398,7 +410,7 @@ export function buildDeviceConfigFromIos(
     }
     return {
       droppedRoutes,
-      config: { kind: "router", ...routed, ospf: ospfFrom(applied), ospfv3: ospfv3From(applied) },
+      config: { kind: "router", ...routed, ospf: ospfFrom(applied), ospfv3: ospfv3From(applied), bgp: bgpFrom(applied) },
     };
   }
 
@@ -452,6 +464,9 @@ export function buildDeviceConfigFromIos(
         loopbacks: loopbacksFrom(applied),
         ospf: ospfFrom(applied),
         ospfv3: ospfv3From(applied),
+        bgp: bgpFrom(applied),
+        prefixLists: applied.prefixLists,
+        routeMaps: applied.routeMaps,
         acls: [],
         aclBindings: [],
       },

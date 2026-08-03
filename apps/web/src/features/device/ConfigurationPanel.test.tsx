@@ -116,14 +116,14 @@ describe("device configuration workspace", () => {
     await user.paste([
       "hostname PASTED-SW",
       "enable secret Cisco123",
-      "router bgp 65000",
+      "router eigrp 100",
     ].join("\n"));
     await user.click(screen.getByRole("button", { name: "Parse" }));
 
     const report = await screen.findByText("Parse report");
     const container = report.parentElement!;
     expect(container.textContent).toContain("unsupported line(s)");
-    expect(container.textContent).toContain("router bgp 65000");
+    expect(container.textContent).toContain("router eigrp 100");
     expect(container.textContent).not.toContain("Cisco123");
     expect(container.textContent).toContain("enable secret <redacted>");
 

@@ -816,6 +816,113 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
         expectedNeighbor: check.configuration.expectedNeighborId,
       });
     }
+    case "bgp-neighbor-state": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "BGP-capable device was not found");
+      const neighbor = device.bgp.summaries().find((entry) => entry.address === check.configuration.neighborAddress);
+      const actual = neighbor?.state ?? "idle";
+      return result(check, actual === check.configuration.expectedState, `BGP neighbor ${check.configuration.neighborAddress} is ${actual}`, {
+        actualState: actual,
+        expectedState: check.configuration.expectedState,
+        lastError: neighbor?.lastError,
+      });
+    }
+    case "bgp-local-as": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "BGP-capable device was not found");
+      const actual = device.bgp.localAs;
+      return result(check, actual === check.configuration.expectedLocalAs, `${device.name} local AS is ${actual ?? "not configured"}`, {
+        actualLocalAs: actual,
+        expectedLocalAs: check.configuration.expectedLocalAs,
+      });
+    }
+    case "bgp-network": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "BGP-capable device was not found");
+      const found = device.bgp.configurationSnapshot()?.networks?.some((entry) =>
+        entry.network === check.configuration.network && entry.prefixLength === check.configuration.prefixLength) ?? false;
+      return result(check, found, `BGP network ${check.configuration.network}/${check.configuration.prefixLength} ${found ? "is configured" : "is missing"}`, { found });
+    }
+    case "bgp-route": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "BGP-capable device was not found");
+      const route = device.routingTable().find((entry) => entry.kind === "bgp"
+        && entry.network === check.configuration.network
+        && entry.maskInt === maskToInt(check.configuration.prefixLength));
+      const passed = route !== undefined
+        && (check.configuration.expectedNextHop === undefined || route.viaIp === check.configuration.expectedNextHop)
+        && (check.configuration.expectedAdministrativeDistance === undefined
+          || route.administrativeDistance === check.configuration.expectedAdministrativeDistance);
+      return result(check, passed, `BGP route ${check.configuration.network}/${check.configuration.prefixLength} ${route ? "is installed" : "is missing"}`, {
+        found: route !== undefined,
+        actualNextHop: route?.viaIp,
+        actualAdministrativeDistance: route?.administrativeDistance,
+      });
+    }
+    case "bgp-best-path":
+    case "bgp-next-hop": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "BGP-capable device was not found");
+      const route = device.bgp.routes().find((entry) => entry.best
+        && entry.network === check.configuration.network
+        && entry.prefixLength === check.configuration.prefixLength);
+      const passed = check.type === "bgp-next-hop"
+        ? route?.nextHop === check.configuration.expectedNextHop
+        : route !== undefined
+          && (check.configuration.expectedNeighborAddress === undefined || route.neighborAddress === check.configuration.expectedNeighborAddress)
+          && (check.configuration.expectedAsPath === undefined
+            || JSON.stringify(route.asPath) === JSON.stringify(check.configuration.expectedAsPath));
+      return result(check, passed, `Best BGP path for ${check.configuration.network}/${check.configuration.prefixLength} ${route ? `uses ${route.nextHop}` : "is missing"}`, {
+        found: route !== undefined,
+        nextHop: route?.nextHop,
+        neighborAddress: route?.neighborAddress,
+        asPath: route?.asPath,
+      });
+    }
+    case "prefix-list-entry": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "BGP-capable device was not found");
+      const entry = device.bgp.routingPolicy.prefixListConfigurations()
+        .find((list) => list.id === check.configuration.prefixListId)?.entries
+        .find((candidate) => candidate.sequence === check.configuration.sequence);
+      const passed = entry?.action === check.configuration.expectedAction;
+      return result(check, passed, `Prefix-list ${check.configuration.prefixListId} sequence ${check.configuration.sequence} is ${entry?.action ?? "missing"}`, {
+        actualAction: entry?.action,
+        expectedAction: check.configuration.expectedAction,
+      });
+    }
+    case "route-map-sequence": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "BGP-capable device was not found");
+      const sequence = device.bgp.routingPolicy.routeMapConfigurations()
+        .find((map) => map.id === check.configuration.routeMapId)?.sequences
+        .find((candidate) => candidate.sequence === check.configuration.sequence);
+      const passed = sequence?.action === check.configuration.expectedAction;
+      return result(check, passed, `Route-map ${check.configuration.routeMapId} sequence ${check.configuration.sequence} is ${sequence?.action ?? "missing"}`, {
+        actualAction: sequence?.action,
+        expectedAction: check.configuration.expectedAction,
+      });
+    }
+    case "route-policy-result":
+    case "bgp-advertised-route":
+    case "bgp-received-route": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "BGP-capable device was not found");
+      const direction = check.type === "bgp-advertised-route" ? "out"
+        : check.type === "bgp-received-route" ? "in"
+          : check.configuration.direction;
+      const entries = direction === "out"
+        ? device.bgp.adjRibOutEntries(check.configuration.neighborAddress)
+        : device.bgp.adjRibInEntries(check.configuration.neighborAddress);
+      const found = entries.some((entry) => entry.network === check.configuration.network
+        && entry.prefixLength === check.configuration.prefixLength);
+      const expected = check.type === "route-policy-result" ? check.configuration.expected === "permitted" : true;
+      return result(check, found === expected, `${direction === "out" ? "Advertised" : "Received"} BGP route ${check.configuration.network}/${check.configuration.prefixLength} ${found ? "is present" : "is absent"}`, {
+        found,
+        direction,
+        neighborAddress: check.configuration.neighborAddress,
+      });
+    }
     case "ospf-router-id": {
       const device = ospfDeviceOf(built, check.configuration.deviceId);
       if (!device) return errorResult(check, "OSPF-capable device was not found");

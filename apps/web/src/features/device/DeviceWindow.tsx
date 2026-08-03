@@ -5,7 +5,7 @@ import {
   type DeviceHardwareProfileId,
   type LabDocument,
 } from "@sim/contracts";
-import type { DeviceInspection, LabUiNode, Ospfv3View } from "@sim/sim-worker";
+import type { BgpStateView, DeviceInspection, LabUiNode, Ospfv3View } from "@sim/sim-worker";
 import {
   AlertTriangle, Clock3, FileDown, Globe2, Network, ScrollText,
   Settings2, TerminalSquare, X, type LucideIcon,
@@ -220,6 +220,7 @@ function ConfigSection(props: DeviceWindowProps & { section: DeviceWindowSection
     onError={props.onError}
   />;
   if (section === "interfaces-config") return <Interfaces node={props.node} />;
+  if (section === "bgp-config") return <BgpConfigurationPanel document={props.document} deviceId={props.node.id} />;
   if (section === "configuration-files") return <ConfigurationPanel
     client={props.client}
     deviceId={props.node.id}
@@ -355,6 +356,9 @@ function MonitorSection(props: DeviceWindowProps & { section: DeviceWindowSectio
         onConfigurationChanged={props.onConfigurationChanged}
         onError={props.onError}
       />
+    : <DraftRuntimeNotice />;
+  if (section === "bgp-runtime") return props.runtimeAvailable
+    ? <BgpRuntimePanel client={props.client} deviceId={props.node.id} onError={props.onError} />
     : <DraftRuntimeNotice />;
   if (section === "protocols-runtime") return props.runtimeAvailable
     ? <Ipv6RuntimePanel
@@ -508,6 +512,41 @@ function redactCredentialMaterial(value: unknown): unknown {
 
 function Interfaces({ node }: { node: LabUiNode }) {
   return <div className="device-window-table"><table className="data-table"><thead><tr><th>Interface</th><th>Admin</th><th>Operational</th><th>Address</th><th>Mode</th></tr></thead><tbody>{node.interfaces.map((iface) => <tr key={iface.id}><td><code>{iface.id}</code></td><td>{iface.adminUp ? "up" : "shutdown"}</td><td>{iface.operationalUp ? "up" : "down"}</td><td><code>{iface.ipAddress ?? "—"}</code></td><td>{iface.mode ?? "—"}</td></tr>)}</tbody></table></div>;
+}
+
+function BgpConfigurationPanel({ document, deviceId }: { document: LabDocument; deviceId: string }) {
+  const configuration = document.configurations[deviceId];
+  const bgp = configuration && "bgp" in configuration ? configuration.bgp : undefined;
+  const prefixLists = configuration && "prefixLists" in configuration ? configuration.prefixLists ?? [] : [];
+  const routeMaps = configuration && "routeMaps" in configuration ? configuration.routeMaps ?? [] : [];
+  if (!bgp) return <div className="device-window-section"><p className="section-eyebrow">Routing · BGP</p><h3>BGP is not configured</h3><p>Use the CLI command <code>router bgp &lt;asn&gt;</code> to create the educational IPv4-unicast process.</p></div>;
+  return <div className="device-window-section">
+    <p className="section-eyebrow">Routing · BGP configuration</p>
+    <h3>Overview</h3><p>Local AS <strong>{bgp.localAs}</strong> · Router ID <code>{bgp.routerId ?? "automatic"}</code> · Keepalive {bgp.keepaliveSeconds ?? 60}s · Hold {bgp.holdTimeSeconds ?? 180}s</p>
+    <h3>Neighbors</h3>
+    <table className="data-table"><thead><tr><th>Address</th><th>Remote AS</th><th>Update source</th><th>Multihop</th><th>Policies</th></tr></thead><tbody>
+      {bgp.neighbors.map((neighbor) => <tr key={neighbor.address}><td><code>{neighbor.address}</code></td><td>{neighbor.remoteAs}</td><td>{neighbor.updateSource ?? "—"}</td><td>{neighbor.ebgpMultihop ?? 1}</td><td>{[neighbor.prefixListIn && `${neighbor.prefixListIn} in`, neighbor.prefixListOut && `${neighbor.prefixListOut} out`, neighbor.routeMapIn && `${neighbor.routeMapIn} in`, neighbor.routeMapOut && `${neighbor.routeMapOut} out`].filter(Boolean).join(", ") || "—"}</td></tr>)}
+    </tbody></table>
+    <h3>Networks</h3><p>{bgp.networks.length ? bgp.networks.map((network) => `${network.network}/${network.prefixLength}`).join(", ") : "No network statements."}</p>
+    <h3>Policies</h3><p>{prefixLists.length} prefix list(s) · {routeMaps.length} route map(s)</p>
+    <PropertyTree value={{ prefixLists, routeMaps }} />
+  </div>;
+}
+
+function BgpRuntimePanel({ client, deviceId, onError }: { client: SimulatorClient; deviceId: string; onError(message: string): void }) {
+  const [state, setState] = useState<BgpStateView>();
+  const load = () => client.request({ type: "GET_BGP_STATE", deviceId }).then(setState).catch((error) => onError(error instanceof Error ? error.message : "Unable to inspect BGP runtime"));
+  useEffect(() => { let active = true; void client.request({ type: "GET_BGP_STATE", deviceId }).then((next) => { if (active) setState(next); }).catch((error) => { if (active) onError(error instanceof Error ? error.message : "Unable to inspect BGP runtime"); }); return () => { active = false; }; }, [client, deviceId, onError]);
+  if (!state) return <div className="device-window-section">Loading BGP runtime…</div>;
+  return <div className="device-window-section">
+    <p className="section-eyebrow">BGP monitor</p><h3>Summary</h3>
+    <p>{state.configuration ? `Local AS ${state.configuration.localAs} · ${state.neighbors.filter((neighbor) => neighbor.state === "established").length}/${state.neighbors.length} Established` : "BGP is not configured."}</p>
+    <div className="toolbar-row"><button type="button" onClick={() => void client.request({ type: "RESET_BGP_PROCESS", deviceId }).then(setState).catch((error) => onError(error instanceof Error ? error.message : "Unable to reset BGP"))}>Reset process</button><button type="button" onClick={() => void load()}>Refresh</button></div>
+    <h3>Neighbors</h3><table className="data-table"><thead><tr><th>Neighbor</th><th>AS</th><th>State</th><th>Prefixes</th><th>Action</th></tr></thead><tbody>{state.neighbors.map((neighbor) => <tr key={neighbor.address}><td><code>{neighbor.address}</code></td><td>{neighbor.remoteAs}</td><td>{neighbor.state}</td><td>{state.adjRibIn.filter((route) => route.neighborAddress === neighbor.address).length}</td><td><button type="button" onClick={() => void client.request({ type: "RESET_BGP_NEIGHBOR", deviceId, neighbor: neighbor.address }).then(setState).catch((error) => onError(error instanceof Error ? error.message : "Unable to reset neighbor"))}>Reset</button></td></tr>)}</tbody></table>
+    <h3>BGP Table</h3><table className="data-table"><thead><tr><th>Best</th><th>Prefix</th><th>Next hop</th><th>Weight</th><th>Local pref</th><th>MED</th><th>AS path</th></tr></thead><tbody>{state.routes.map((route) => <tr key={`${route.routeId}:${route.neighborAddress ?? "local"}`}><td>{route.best ? "✓" : ""}</td><td><code>{route.network}/{route.prefixLength}</code></td><td><code>{route.nextHop}</code></td><td>{route.weight}</td><td>{route.localPreference}</td><td>{route.med}</td><td>{route.asPath.join(" ") || "local"}</td></tr>)}</tbody></table>
+    <h3>Advertised / Received</h3><p>{state.adjRibOut.length} advertised · {state.adjRibIn.length} received · {state.ribFailures.length} RIB failure(s)</p>
+    <h3>Policy Counters</h3><table className="data-table"><thead><tr><th>Policy</th><th>Sequence</th><th>Matches</th><th>Permit</th><th>Deny</th></tr></thead><tbody>{state.policyCounters.map((counter) => <tr key={`${counter.policyType}:${counter.policyId}:${counter.sequence}`}><td>{counter.policyType} {counter.policyId}</td><td>{counter.sequence}</td><td>{counter.matches}</td><td>{counter.permits}</td><td>{counter.denies}</td></tr>)}</tbody></table>
+  </div>;
 }
 
 function Ipv6RuntimePanel({

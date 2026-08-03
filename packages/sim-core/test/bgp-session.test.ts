@@ -83,6 +83,32 @@ describe("BGP session transport and FSM", () => {
     });
   });
 
+  it("fails to establish when an interface ACL blocks simulated TCP 179", () => {
+    const { engine, r1, r2 } = connectedPair();
+    r2.defineAcl({
+      id: "block-bgp",
+      type: "extended",
+      rules: [
+        {
+          sequence: 10,
+          action: "deny",
+          protocol: 6,
+          source: { kind: "any" },
+          destination: { kind: "any" },
+          destinationPort: { kind: "eq", port: BGP_TCP_PORT },
+        },
+        { sequence: 20, action: "permit", protocol: "ip", source: { kind: "any" }, destination: { kind: "any" } },
+      ],
+    });
+    r2.applyAcl("Gi0/0", "in", "block-bgp");
+    engine.runUntilIdle();
+
+    expect(r1.bgp.summaries()[0]?.state).not.toBe("established");
+    expect(engine.traceLog.some((entry) => entry.type === "acl-denied"
+      && entry.detail?.interface === "Gi0/0"
+      && entry.detail?.sequence === 10)).toBe(true);
+  });
+
   it("uses one-hop eBGP and bounded multihop TTL configuration", () => {
     const { r1 } = connectedPair();
     expect(r1.bgp.outboundTtl("10.0.12.2")).toBe(1);
@@ -94,7 +120,16 @@ describe("BGP session transport and FSM", () => {
   });
 
   it("does not leave an unbounded periodic event stream", () => {
-    const { engine } = connectedPair();
+    const { engine, r1 } = connectedPair();
+    expect(() => engine.runUntilIdle()).not.toThrow();
+    expect(engine.pendingEventCount()).toBe(0);
+
+    engine.advanceTo(engine.now() + 31_000_000_000);
+    expect(r1.bgp.summaries()[0]).toMatchObject({
+      state: "idle",
+      lastError: "BGP hold timer expired after 30 seconds",
+    });
+    expect(engine.traceLog.some((entry) => entry.type === "bgp-hold-expired")).toBe(true);
     expect(() => engine.runUntilIdle()).not.toThrow();
     expect(engine.pendingEventCount()).toBe(0);
   });

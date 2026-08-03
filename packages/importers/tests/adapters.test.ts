@@ -54,9 +54,11 @@ describe("PNETLab / EVE UNL adapter", () => {
     // The supported OSPF subset is applied ...
     expect(router.ospf).toMatchObject({ processId: 1, routerId: "1.1.1.1" });
     expect(router.ospf?.networks).toEqual([{ network: "10.0.0.0", wildcard: "0.0.0.255", area: 0 }]);
-    // ... while BGP stays unsupported: preserved and reported, never applied.
+    // The bounded IPv4-unicast BGP subset is now structured and applied. The
+    // source artifact remains diagnostic input, not runtime configuration.
+    expect(router.bgp).toMatchObject({ localAs: 65_000 });
     expect(sourceArtifacts.find((artifact) => artifact.nodeId === "n1")?.text).toContain("router bgp 65000");
-    expect(report.entries.some((entry) => entry.code === "config-unparsed" && entry.nodeId === "n1")).toBe(true);
+    expect(report.entries.some((entry) => entry.code === "config-unparsed" && entry.nodeId === "n1")).toBe(false);
     expect(report.entries.some((entry) => entry.code === "config-applied" && entry.nodeId === "n1")).toBe(true);
   });
 

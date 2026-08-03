@@ -108,6 +108,14 @@ describe("BGP RIB and forwarding", () => {
       kind: "bgp",
       administrativeDistance: 20,
     });
+
+    r1.getInterface("Gi0/0")!.shutdown();
+    engine.runUntilIdle();
+    expect(r1.bgp.summaries()[0]).toMatchObject({
+      state: "active",
+      lastError: "neighbor is not reachable through the IPv4 routing table",
+    });
+    expect(r1.bgp.selectedRoutes().some((entry) => entry.network === "192.168.3.0")).toBe(false);
   });
 
   it("forwards routed ICMP over a BGP-learned path", () => {

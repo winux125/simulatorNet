@@ -180,6 +180,77 @@ export const Ospfv3ProcessConfigSchema = z.object({
 }).strict();
 export type Ospfv3ProcessConfig = z.infer<typeof Ospfv3ProcessConfigSchema>;
 
+// --- BGPv4 and reusable route policy -------------------------------------
+
+export const BgpAsnSchema = z.number().int().min(1).max(4_294_967_295);
+export const BgpNetworkStatementSchema = z.object({
+  network: Ipv4Schema,
+  prefixLength: z.number().int().min(0).max(32),
+}).strict();
+
+export const BgpNeighborConfigSchema = z.object({
+  address: Ipv4Schema,
+  remoteAs: BgpAsnSchema,
+  description: z.string().max(256).optional(),
+  updateSource: z.string().min(1).max(64).optional(),
+  ebgpMultihop: z.number().int().min(1).max(255).optional(),
+  enabled: z.boolean().optional(),
+  nextHopSelf: z.boolean().optional(),
+  prefixListIn: z.string().min(1).max(64).optional(),
+  prefixListOut: z.string().min(1).max(64).optional(),
+  routeMapIn: z.string().min(1).max(64).optional(),
+  routeMapOut: z.string().min(1).max(64).optional(),
+}).strict();
+export type BgpNeighborConfig = z.infer<typeof BgpNeighborConfigSchema>;
+
+export const BgpProcessConfigSchema = z.object({
+  localAs: BgpAsnSchema,
+  routerId: Ipv4Schema.optional(),
+  keepaliveSeconds: z.number().int().min(0).max(65_535).optional(),
+  holdTimeSeconds: z.number().int().min(0).max(65_535).optional(),
+  neighbors: z.array(BgpNeighborConfigSchema).max(64).default([]),
+  networks: z.array(BgpNetworkStatementSchema).max(4_096).default([]),
+}).strict();
+export type BgpProcessConfig = z.infer<typeof BgpProcessConfigSchema>;
+
+export const PrefixListEntryConfigSchema = z.object({
+  sequence: z.number().int().min(1).max(4_294_967_295),
+  action: z.enum(["permit", "deny"]),
+  prefix: Ipv4Schema,
+  prefixLength: z.number().int().min(0).max(32),
+  ge: z.number().int().min(0).max(32).optional(),
+  le: z.number().int().min(0).max(32).optional(),
+}).strict();
+export const PrefixListConfigSchema = z.object({
+  id: z.string().min(1).max(64),
+  entries: z.array(PrefixListEntryConfigSchema).max(512).default([]),
+}).strict();
+export type PrefixListConfig = z.infer<typeof PrefixListConfigSchema>;
+
+export const RouteMapSequenceConfigSchema = z.object({
+  sequence: z.number().int().min(1).max(4_294_967_295),
+  action: z.enum(["permit", "deny"]),
+  match: z.object({
+    prefixListIds: z.array(z.string().min(1).max(64)).max(16).optional(),
+    neighbor: Ipv4Schema.optional(),
+    maximumAsPathLength: z.number().int().min(0).max(256).optional(),
+    source: z.enum(["local", "ebgp", "ibgp"]).optional(),
+  }).strict().optional(),
+  set: z.object({
+    localPreference: z.number().int().min(0).max(4_294_967_295).optional(),
+    med: z.number().int().min(0).max(4_294_967_295).optional(),
+    weight: z.number().int().min(0).max(4_294_967_295).optional(),
+    prependLocalAs: z.number().int().min(1).max(10).optional(),
+    origin: z.enum(["igp", "egp", "incomplete"]).optional(),
+  }).strict().optional(),
+}).strict();
+export type RouteMapSequenceConfig = z.infer<typeof RouteMapSequenceConfigSchema>;
+export const RouteMapConfigSchema = z.object({
+  id: z.string().min(1).max(64),
+  sequences: z.array(RouteMapSequenceConfigSchema).max(512).default([]),
+}).strict();
+export type RouteMapConfig = z.infer<typeof RouteMapConfigSchema>;
+
 /**
  * Layer-2 control protocols shared by the L2 and L3 switch.
  *
@@ -199,6 +270,9 @@ export const RoutedControlProtocolShape = {
   loopbacks: z.array(LoopbackInterfaceConfigSchema).max(32).optional(),
   ospf: OspfProcessConfigSchema.optional(),
   ospfv3: Ospfv3ProcessConfigSchema.optional(),
+  bgp: BgpProcessConfigSchema.optional(),
+  prefixLists: z.array(PrefixListConfigSchema).max(128).optional(),
+  routeMaps: z.array(RouteMapConfigSchema).max(128).optional(),
 };
 
 /** Canonical defaults applied when a document omits a protocol block. */

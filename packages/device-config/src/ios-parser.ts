@@ -13,6 +13,10 @@ import {
   MINIMUM_TUNNEL_MTU,
   MINIMUM_VPN_LIFETIME_SECONDS,
   type Ipv6AclConfig,
+  type BgpProcessConfig,
+  type PrefixListConfig,
+  type RouteMapConfig,
+  type RouteMapSequenceConfig,
   type Ospfv3ProcessConfig,
   type QosClassMapConfig,
   type QosConfiguration,
@@ -163,6 +167,9 @@ export interface ImportedDeviceConfiguration {
   lldpEnabled?: boolean;
   ospf?: ImportedOspfConfig;
   ospfv3?: Ospfv3ProcessConfig;
+  bgp?: BgpProcessConfig;
+  prefixLists: PrefixListConfig[];
+  routeMaps: RouteMapConfig[];
   /**
    * The recognised MQC subset: class-map, match, policy-map, class, set dscp,
    * priority/bandwidth percent, police, shape average. Anything else stays in
@@ -496,6 +503,8 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     ipv6StaticRoutes: [],
     ipv6Acls: [],
     ipv6AclBindings: [],
+    prefixLists: [],
+    routeMaps: [],
     vlans: [],
     spanningTreeVlanPriorities: [],
     qos: { classMaps: [], policyMaps: [], servicePolicies: [] },
@@ -512,6 +521,9 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
   let currentVlan: number | undefined;
   let inOspf = false;
   let inOspfv3 = false;
+  let inBgp = false;
+  let currentRouteMap: RouteMapSequenceConfig | undefined;
+  let currentRouteMapId: string | undefined;
   let currentIpv6Acl: Ipv6AclConfig | undefined;
   let currentClassMap: QosClassMapConfig | undefined;
   let currentPolicyMap: QosPolicyMapConfig | undefined;
@@ -560,6 +572,12 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       currentVlan = undefined;
       inOspf = false;
       inOspfv3 = false;
+      inBgp = false;
+      currentRouteMap = undefined;
+      currentRouteMapId = undefined;
+      inBgp = false;
+      currentRouteMap = undefined;
+      currentRouteMapId = undefined;
       currentIpv6Acl = undefined;
       clearQosContext();
       clearCryptoContext();
@@ -575,6 +593,12 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       currentVlan = undefined;
       inOspf = false;
       inOspfv3 = false;
+      inBgp = false;
+      currentRouteMap = undefined;
+      currentRouteMapId = undefined;
+      inBgp = false;
+      currentRouteMap = undefined;
+      currentRouteMapId = undefined;
       currentIpv6Acl = undefined;
       clearQosContext();
       clearCryptoContext();
@@ -618,6 +642,9 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       currentIpv6Acl = undefined;
       inOspf = false;
       inOspfv3 = false;
+      inBgp = false;
+      currentRouteMap = undefined;
+      currentRouteMapId = undefined;
       currentPolicyMap = undefined;
       currentPolicyClass = undefined;
       currentClassMap = result.qos.classMaps.find((map) => map.id === name)
@@ -633,6 +660,9 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       currentIpv6Acl = undefined;
       inOspf = false;
       inOspfv3 = false;
+      inBgp = false;
+      currentRouteMap = undefined;
+      currentRouteMapId = undefined;
       currentClassMap = undefined;
       currentPolicyClass = undefined;
       currentPolicyMap = result.qos.policyMaps.find((map) => map.id === tokens[1])
@@ -691,6 +721,7 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       inOspfv3 = false;
       current = undefined;
       currentLoopback = undefined;
+      clearQosContext();
       applied(line);
       continue;
     }
@@ -731,10 +762,98 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     if (head === "no" && tokens[1]?.toLowerCase() === "lldp" && tokens[2]?.toLowerCase() === "run" && !isIndented) {
       result.lldpEnabled = false; applied(line); continue;
     }
+    if (head === "ip" && tokens[1]?.toLowerCase() === "prefix-list" && tokens[2]
+      && tokens[3]?.toLowerCase() === "seq" && /^\d+$/u.test(tokens[4] ?? "")
+      && (tokens[5]?.toLowerCase() === "permit" || tokens[5]?.toLowerCase() === "deny")) {
+      const [prefixAddress, prefixLengthText, extra] = (tokens[6] ?? "").split("/");
+      const prefixLength = Number(prefixLengthText);
+      const sequence = Number(tokens[4]);
+      const geIndex = tokens.findIndex((token) => token.toLowerCase() === "ge");
+      const leIndex = tokens.findIndex((token) => token.toLowerCase() === "le");
+      const ge = geIndex >= 0 ? Number(tokens[geIndex + 1]) : undefined;
+      const le = leIndex >= 0 ? Number(tokens[leIndex + 1]) : undefined;
+      if (extra === undefined && isIpv4(prefixAddress) && Number.isInteger(prefixLength)
+        && prefixLength >= 0 && prefixLength <= 32
+        && (ge === undefined || Number.isInteger(ge)) && (le === undefined || Number.isInteger(le))) {
+        const list = result.prefixLists.find((entry) => entry.id === tokens[2]) ?? { id: tokens[2]!, entries: [] };
+        if (!result.prefixLists.includes(list)) result.prefixLists.push(list);
+        list.entries.push({ sequence, action: tokens[5]!.toLowerCase() as "permit" | "deny", prefix: prefixAddress, prefixLength, ge, le });
+        applied(line);
+      } else unparsed(line);
+      continue;
+    }
+    if (head === "route-map" && tokens[1]
+      && (tokens[2]?.toLowerCase() === "permit" || tokens[2]?.toLowerCase() === "deny")
+      && /^\d+$/u.test(tokens[3] ?? "")) {
+      const map = result.routeMaps.find((entry) => entry.id === tokens[1]) ?? { id: tokens[1]!, sequences: [] };
+      if (!result.routeMaps.includes(map)) result.routeMaps.push(map);
+      currentRouteMap = {
+        sequence: Number(tokens[3]),
+        action: tokens[2]!.toLowerCase() as "permit" | "deny",
+      };
+      map.sequences.push(currentRouteMap);
+      currentRouteMapId = map.id;
+      inBgp = false;
+      inOspf = false;
+      inOspfv3 = false;
+      current = undefined;
+      currentLoopback = undefined;
+      clearQosContext();
+      applied(line);
+      continue;
+    }
+    if (currentRouteMap && currentRouteMapId && isIndented) {
+      if (head === "match" && tokens[1]?.toLowerCase() === "ip" && tokens[2]?.toLowerCase() === "address"
+        && tokens[3]?.toLowerCase() === "prefix-list" && tokens[4]) {
+        currentRouteMap.match = { ...currentRouteMap.match, prefixListIds: tokens.slice(4) };
+        applied(line); continue;
+      }
+      if (head === "set" && tokens[1]?.toLowerCase() === "local-preference" && /^\d+$/u.test(tokens[2] ?? "")) {
+        currentRouteMap.set = { ...currentRouteMap.set, localPreference: Number(tokens[2]) }; applied(line); continue;
+      }
+      if (head === "set" && tokens[1]?.toLowerCase() === "metric" && /^\d+$/u.test(tokens[2] ?? "")) {
+        currentRouteMap.set = { ...currentRouteMap.set, med: Number(tokens[2]) }; applied(line); continue;
+      }
+      if (head === "set" && tokens[1]?.toLowerCase() === "weight" && /^\d+$/u.test(tokens[2] ?? "")) {
+        currentRouteMap.set = { ...currentRouteMap.set, weight: Number(tokens[2]) }; applied(line); continue;
+      }
+      if (head === "set" && tokens[1]?.toLowerCase() === "origin"
+        && (tokens[2]?.toLowerCase() === "igp" || tokens[2]?.toLowerCase() === "incomplete")) {
+        currentRouteMap.set = { ...currentRouteMap.set, origin: tokens[2]!.toLowerCase() as "igp" | "incomplete" }; applied(line); continue;
+      }
+      if (head === "set" && tokens[1]?.toLowerCase() === "as-path" && tokens[2]?.toLowerCase() === "prepend"
+        && result.bgp && tokens.slice(3).length > 0) {
+        const values = tokens.slice(3).map(Number);
+        const count = values.length === 1 && Number.isInteger(values[0]) && values[0]! >= 1 && values[0]! <= 10
+          ? values[0]
+          : values.every((asn) => asn === result.bgp!.localAs) ? values.length : undefined;
+        if (count !== undefined && count <= 10) {
+          currentRouteMap.set = { ...currentRouteMap.set, prependLocalAs: count }; applied(line); continue;
+        }
+      }
+      unparsed(line); continue;
+    }
+    if (head === "router" && tokens[1]?.toLowerCase() === "bgp" && /^\d+$/u.test(tokens[2] ?? "")) {
+      const localAs = Number(tokens[2]);
+      if (localAs < 1 || localAs > 4_294_967_295) { unparsed(line); continue; }
+      result.bgp = { localAs, neighbors: [], networks: [] };
+      inBgp = true;
+      inOspf = false;
+      inOspfv3 = false;
+      currentRouteMap = undefined;
+      currentRouteMapId = undefined;
+      currentIpv6Acl = undefined;
+      current = undefined;
+      currentLoopback = undefined;
+      clearQosContext();
+      applied(line);
+      continue;
+    }
     if (head === "router" && tokens[1]?.toLowerCase() === "ospf" && /^\d+$/u.test(tokens[2] ?? "")) {
       result.ospf = { processId: Number(tokens[2]), networks: [], passiveInterfaces: [] };
       inOspf = true;
       inOspfv3 = false;
+      inBgp = false;
       currentIpv6Acl = undefined;
       current = undefined;
       currentLoopback = undefined;
@@ -743,6 +862,50 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     }
     // Other routing protocols stay unparsed and are reported honestly.
     if (head === "router") { inOspf = false; current = undefined; unparsed(line); continue; }
+
+    if (inBgp && result.bgp && isIndented) {
+      if (head === "address-family") { inBgp = false; unparsed(line); continue; }
+      if (head === "bgp" && tokens[1]?.toLowerCase() === "router-id" && isIpv4(tokens[2])) {
+        result.bgp.routerId = tokens[2]; applied(line); continue;
+      }
+      if (head === "network" && isIpv4(tokens[1]) && tokens[2]?.toLowerCase() === "mask") {
+        const length = maskToPrefix(tokens[3]);
+        if (length !== undefined) { result.bgp.networks.push({ network: tokens[1], prefixLength: length }); applied(line); }
+        else unparsed(line);
+        continue;
+      }
+      if (head === "neighbor" && isIpv4(tokens[1])) {
+        const address = tokens[1];
+        const existing = result.bgp.neighbors.find((neighbor) => neighbor.address === address);
+        if (tokens[2]?.toLowerCase() === "remote-as" && /^\d+$/u.test(tokens[3] ?? "")) {
+          const remoteAs = Number(tokens[3]);
+          if (remoteAs < 1 || remoteAs > 4_294_967_295) { unparsed(line); continue; }
+          if (existing) existing.remoteAs = remoteAs;
+          else result.bgp.neighbors.push({ address, remoteAs, enabled: true });
+          applied(line); continue;
+        }
+        if (!existing) { unparsed(line); continue; }
+        if (tokens[2]?.toLowerCase() === "description" && tokens[3]) {
+          existing.description = tokens.slice(3).join(" "); applied(line); continue;
+        }
+        if (tokens[2]?.toLowerCase() === "update-source" && tokens[3]) {
+          const actual = resolve.get(normalizeInterfaceName(tokens[3]))
+            ?? (/^lo(?:opback)?\d+$/u.test(normalizeInterfaceName(tokens[3])) ? `Loopback${/(\d+)$/u.exec(tokens[3])?.[1]}` : undefined);
+          if (actual) { existing.updateSource = actual; applied(line); } else unparsed(line);
+          continue;
+        }
+        if (tokens[2]?.toLowerCase() === "ebgp-multihop" && /^\d+$/u.test(tokens[3] ?? "")) {
+          existing.ebgpMultihop = Number(tokens[3]); applied(line); continue;
+        }
+        if (tokens[2]?.toLowerCase() === "next-hop-self") { existing.nextHopSelf = true; applied(line); continue; }
+        if ((tokens[2]?.toLowerCase() === "prefix-list" || tokens[2]?.toLowerCase() === "route-map")
+          && tokens[3] && (tokens[4]?.toLowerCase() === "in" || tokens[4]?.toLowerCase() === "out")) {
+          const key = `${tokens[2]!.toLowerCase() === "prefix-list" ? "prefixList" : "routeMap"}${tokens[4]!.toLowerCase() === "in" ? "In" : "Out"}` as "prefixListIn" | "prefixListOut" | "routeMapIn" | "routeMapOut";
+          existing[key] = tokens[3]; applied(line); continue;
+        }
+      }
+      unparsed(line); continue;
+    }
 
     if (inOspfv3 && result.ospfv3 && isIndented) {
       if (head === "router-id" && isIpv4(tokens[1])) {

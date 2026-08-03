@@ -117,7 +117,7 @@ export const navigationCommands: CommandSpec[] = [
     pattern: "exit",
     modes: [
       "config-if", "config-vlan", "config-acl", "config-line", "config-aaa-server",
-      "config-cmap", "config-pmap", "config-router",
+      "config-cmap", "config-pmap", "config-router", "config-route-map",
       "config-ikev2-proposal", "config-ikev2-peer", "config-ipsec-profile",
     ],
     device: "network",
@@ -134,7 +134,7 @@ export const navigationCommands: CommandSpec[] = [
     pattern: "end",
     modes: [
       "config", "config-if", "config-vlan", "config-acl", "config-line", "config-aaa-server",
-      "config-cmap", "config-pmap", "config-pmap-c", "config-router",
+      "config-cmap", "config-pmap", "config-pmap-c", "config-router", "config-route-map",
       "config-ikev2-proposal", "config-ikev2-peer", "config-ipsec-profile",
     ],
     device: "network",
@@ -232,6 +232,47 @@ export const navigationCommands: CommandSpec[] = [
         label: resolved.subLabel,
       });
       s.enter("config-if");
+    },
+  },
+  {
+    pattern: "router bgp {asn}",
+    usage: "router bgp <1-4294967295>",
+    modes: ["config"],
+    device: "ospf",
+    capabilities: ["ipv4-routing"],
+    run: (s, p) => {
+      const asn = Number(p.asn!);
+      if (!Number.isInteger(asn) || asn < 1 || asn > 4_294_967_295) {
+        throw new ValidationError("BGP autonomous system number must be between 1 and 4294967295.");
+      }
+      if (!isOspfDevice(s.device)) throw new InvalidModeError("BGP requires a Router or an L3 Switch");
+      if (isLayer3Switch(s.device) && !s.device.ipRoutingEnabled) {
+        throw new ValidationError("Enable 'ip routing' before configuring BGP on an L3 Switch.");
+      }
+      const current = s.device.bgp.configurationSnapshot();
+      s.device.bgp.configure({ ...(current ?? { neighbors: [], networks: [] }), localAs: asn });
+      s.routerCtx = { processId: asn, family: "bgp" };
+      s.enter("config-router");
+    },
+  },
+  {
+    pattern: "no router bgp {asn}",
+    modes: ["config"],
+    device: "ospf",
+    run: (s) => { if (isOspfDevice(s.device)) s.device.bgp.disable(); },
+  },
+  {
+    pattern: "route-map {name} {action} {sequence}",
+    usage: "route-map <name> permit|deny <sequence>",
+    modes: ["config"],
+    device: "ospf",
+    run: (s, p) => {
+      const action = p.action?.toLowerCase();
+      const sequence = Number(p.sequence);
+      if (action !== "permit" && action !== "deny") throw new ValidationError("Route-map action must be permit or deny.");
+      if (!Number.isInteger(sequence) || sequence < 1) throw new ValidationError("Route-map sequence must be a positive integer.");
+      s.routeMapCtx = { id: p.name!, sequence, action };
+      s.enter("config-route-map");
     },
   },
   {
@@ -343,6 +384,12 @@ export const navigationCommands: CommandSpec[] = [
     modes: ["config"],
     device: "l3-switch",
     capabilities: ["ipv4-routing"],
-    run: (s) => { if (isLayer3Switch(s.device)) s.device.setIpRouting(false); },
+    run: (s) => {
+      if (!isLayer3Switch(s.device)) return;
+      if (s.device.bgp.enabled) {
+        throw new ValidationError("Remove the BGP process before disabling IP routing.");
+      }
+      s.device.setIpRouting(false);
+    },
   },
 ];

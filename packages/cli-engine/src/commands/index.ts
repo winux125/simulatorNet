@@ -10,6 +10,7 @@ import { protocolCommands } from "./protocols";
 import { qosCommands } from "./qos";
 import { securityCommands } from "./security";
 import { vpnCommands } from "./vpn";
+import { bgpCommands } from "./bgp";
 
 /** Every command the CLI understands, across all modes. */
 export const allCommands: CommandSpec[] = [
@@ -22,6 +23,7 @@ export const allCommands: CommandSpec[] = [
   ...securityCommands,
   ...qosCommands,
   ...vpnCommands,
+  ...bgpCommands,
   ...protocolCommands,
   ...managementCommands,
 ];

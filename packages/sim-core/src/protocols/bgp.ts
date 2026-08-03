@@ -1,4 +1,5 @@
 import type { SimulationEngine } from "../engine/simulation-engine";
+import { NS_PER_S } from "../engine/constants";
 import {
   BGP_TCP_PORT,
   BGP_VERSION,
@@ -12,10 +13,14 @@ import type { HostTransportStack } from "../transport/host-transport";
 import type { Ipv4 } from "../util/ipv4";
 import { intToIp, ipToInt, maskToInt } from "../util/ipv4";
 import { ControlProtocolConfigurationError, enforceStructuralLimit } from "./limits";
+import { ProtocolActivity } from "./protocol-activity";
 import { RoutingPolicyEngine, type RoutePolicyBinding } from "../routing/route-policy";
 
 export const DEFAULT_BGP_KEEPALIVE_SECONDS = 60;
 export const DEFAULT_BGP_HOLD_SECONDS = 180;
+export const BGP_ACTIVITY_QUIESCENCE_ROUNDS = 4;
+export const BGP_MAXIMUM_ACTIVITY_TICKS = 64;
+export const BGP_ACTIVITY_WINDOW_SECONDS = 30;
 
 export type BgpSessionState =
   | "idle"
@@ -170,6 +175,9 @@ export class BgpProcess {
   private readonly adjRibOut = new Map<Ipv4, Map<string, BgpRoute>>();
   private readonly ribFailures = new Map<string, string>();
   private listening = false;
+  private activity: ProtocolActivity | undefined;
+  private activityRounds = 1;
+  private activityRound = 0;
 
   constructor(private readonly host: BgpHost) {}
 
@@ -221,6 +229,20 @@ export class BgpProcess {
     }
     this.resetRuntime(false);
     this.configuration = { ...configuration, keepaliveSeconds, holdTimeSeconds, neighbors: configured, networks };
+    this.activityRounds = Math.max(
+      1,
+      Math.min(BGP_ACTIVITY_QUIESCENCE_ROUNDS, Math.floor(BGP_ACTIVITY_WINDOW_SECONDS / Math.max(1, keepaliveSeconds))),
+    );
+    this.activity = new ProtocolActivity(
+      () => this.host.engine,
+      {
+        name: "bgp",
+        intervalNs: Math.max(1, keepaliveSeconds) * NS_PER_S,
+        quiescenceRounds: this.activityRounds,
+        maximumTicks: BGP_MAXIMUM_ACTIVITY_TICKS,
+      },
+      () => this.tick(),
+    );
     this.neighbors.clear();
     for (const neighbor of configured.sort((a, b) => ipToInt(a.address) - ipToInt(b.address))) {
       this.neighbors.set(neighbor.address, {
@@ -250,11 +272,13 @@ export class BgpProcess {
     if (!this.configuration) return;
     this.ensureListener();
     for (const runtime of this.neighbors.values()) this.tryConnect(runtime);
+    this.activity?.arm();
   }
 
   restart(address?: Ipv4): void {
     const selected = address === undefined ? [...this.neighbors.values()] : [this.requireNeighbor(address)];
     for (const runtime of selected) {
+      this.trace("bgp-session-reset", { neighbor: runtime.configuration.address, reason: "administrative reset" });
       runtime.connection?.abort();
       runtime.connection = undefined;
       runtime.lastError = undefined;
@@ -275,6 +299,7 @@ export class BgpProcess {
   }
 
   summaries(): BgpNeighborSummary[] {
+    this.expireHoldTimers();
     return [...this.neighbors.values()]
       .map((runtime) => ({
         address: runtime.configuration.address,
@@ -291,6 +316,7 @@ export class BgpProcess {
   }
 
   routes(): BgpRibEntry[] {
+    this.expireHoldTimers();
     const all = new Map<string, BgpRoute>();
     for (const routes of this.adjRibIn.values()) {
       for (const route of routes.values()) all.set(`${route.routeId}\u0000${route.neighborAddress ?? ""}`, route);
@@ -305,21 +331,25 @@ export class BgpProcess {
   }
 
   selectedRoutes(): BgpRoute[] {
+    this.expireHoldTimers();
     return [...this.locRib.values()].sort((a, b) =>
       ipToInt(a.network) - ipToInt(b.network) || b.prefixLength - a.prefixLength || a.routeId.localeCompare(b.routeId));
   }
 
   adjRibInEntries(address?: Ipv4): BgpRoute[] {
+    this.expireHoldTimers();
     const entries = address === undefined ? [...this.adjRibIn.values()] : [this.adjRibIn.get(address) ?? new Map()];
     return entries.flatMap((rib) => [...rib.values()]).sort((a, b) => a.routeId.localeCompare(b.routeId));
   }
 
   adjRibOutEntries(address?: Ipv4): BgpRoute[] {
+    this.expireHoldTimers();
     const entries = address === undefined ? [...this.adjRibOut.values()] : [this.adjRibOut.get(address) ?? new Map()];
     return entries.flatMap((rib) => [...rib.values()]).sort((a, b) => a.routeId.localeCompare(b.routeId));
   }
 
   ribFailureSummaries(): Array<{ routeId: string; reason: string }> {
+    this.expireHoldTimers();
     return [...this.ribFailures.entries()].map(([routeId, reason]) => ({ routeId, reason }))
       .sort((a, b) => a.routeId.localeCompare(b.routeId));
   }
@@ -397,6 +427,11 @@ export class BgpProcess {
       return;
     }
     this.transition(runtime, "connect");
+    this.trace("bgp-tcp-connect-started", {
+      neighbor: runtime.configuration.address,
+      localAddress,
+      destinationPort: BGP_TCP_PORT,
+    });
     const handlers = this.handlers(runtime);
     try {
       runtime.connection = this.host.management.tcp.connect(
@@ -481,6 +516,7 @@ export class BgpProcess {
     }
     if (message.kind === "bgp-keepalive") {
       if (runtime.state === "open-confirm") {
+        runtime.lastError = undefined;
         this.transition(runtime, "established");
         this.trace("bgp-session-established", { neighbor: runtime.configuration.address });
         this.refreshRoutes();
@@ -508,7 +544,14 @@ export class BgpProcess {
     this.host.engine.controlProtocolBudget.consume("bgpMessages", this.host.id);
     runtime.connection.send({ kind: "tcp-application", protocol: "bgp", data: message });
     runtime.messagesSent++;
-    this.trace(message.kind === "bgp-update" ? "bgp-update-sent" : "bgp-message-sent", {
+    const traceType = message.kind === "bgp-update"
+      ? "bgp-update-sent"
+      : message.kind === "bgp-open"
+        ? "bgp-open-sent"
+        : message.kind === "bgp-keepalive"
+          ? "bgp-keepalive-sent"
+          : "bgp-message-sent";
+    this.trace(traceType, {
       neighbor: runtime.configuration.address,
       messageType: message.kind,
       ...(message.kind === "bgp-update" ? { announced: message.nlri.length, withdrawn: message.withdrawn.length } : {}),
@@ -529,16 +572,13 @@ export class BgpProcess {
   private onTcpClosed(runtime: NeighborRuntime, reason: string): void {
     if (!runtime.connection) return;
     runtime.connection = undefined;
-    this.rawAdjRibIn.delete(runtime.configuration.address);
-    this.adjRibIn.delete(runtime.configuration.address);
-    this.adjRibOut.delete(runtime.configuration.address);
-    this.recomputeLocRib();
     this.fail(runtime, reason, false);
   }
 
   private fail(runtime: NeighborRuntime, reason: string, abort = true): void {
     const connection = runtime.connection;
     runtime.connection = undefined;
+    this.withdrawNeighborRoutes(runtime.configuration.address);
     runtime.lastError = reason;
     runtime.generation++;
     if (abort) connection?.abort();
@@ -546,12 +586,22 @@ export class BgpProcess {
     this.trace("bgp-session-failed", { neighbor: runtime.configuration.address, reason });
   }
 
+  private withdrawNeighborRoutes(address: Ipv4): void {
+    const rawChanged = this.rawAdjRibIn.delete(address);
+    const inboundChanged = this.adjRibIn.delete(address);
+    const outboundChanged = this.adjRibOut.delete(address);
+    const changed = rawChanged || inboundChanged || outboundChanged;
+    if (changed) this.recomputeLocRib();
+  }
+
   private transition(runtime: NeighborRuntime, state: BgpSessionState, reason?: string): void {
     if (runtime.state === state) return;
     const previous = runtime.state;
     this.host.engine.controlProtocolBudget.consume("bgpStateTransitions", this.host.id);
     runtime.state = state;
+    this.activityRound = 0;
     this.trace("bgp-state-changed", { neighbor: runtime.configuration.address, previous, state, reason });
+    this.activity?.arm();
   }
 
   private requireNeighbor(address: Ipv4): NeighborRuntime {
@@ -561,10 +611,60 @@ export class BgpProcess {
   }
 
   private resetRuntime(removeListener: boolean): void {
+    this.activity?.quiesce();
+    this.activity?.resetBudget();
     for (const runtime of this.neighbors.values()) runtime.connection?.abort();
     if (removeListener && this.listening) {
       this.host.management.tcp.unlisten(BGP_TCP_PORT);
       this.listening = false;
+    }
+  }
+
+  /**
+   * BGP periodic work is deliberately bounded. Four quiet KEEPALIVE rounds
+   * are enough to expose timer behavior in Step mode, after which the process
+   * goes quiescent so Auto execution and headless verification can drain.
+   * A configuration, link or session transition re-opens this window.
+   */
+  private tick(): void {
+    if (!this.configuration) return;
+    for (const runtime of this.neighbors.values()) {
+      if (runtime.state === "established") {
+        if ((runtime.negotiatedHoldTimeSeconds ?? 0) > 0) {
+          this.send(runtime, { kind: "bgp-keepalive" });
+        }
+      } else {
+        this.tryConnect(runtime);
+      }
+    }
+    this.activityRound++;
+    if (this.activityRound >= this.activityRounds) {
+      // The control plane now enters quiescence. Freeze the baseline at the
+      // end of the finite activity window; only a later explicit virtual-time
+      // jump is inactivity rather than an artifact of another peer's window.
+      const now = this.host.engine.now();
+      for (const runtime of this.neighbors.values()) {
+        if (runtime.state === "established") runtime.lastReceivedAtNs = now;
+      }
+    }
+  }
+
+  /**
+   * Quiescent control protocols leave no future events in the engine queue.
+   * Inspection and route lookup therefore perform the same deterministic lazy
+   * expiry used by other bounded runtime caches after an explicit clock jump.
+   */
+  private expireHoldTimers(): void {
+    const now = this.host.engine.now();
+    for (const runtime of this.neighbors.values()) {
+      const holdSeconds = runtime.negotiatedHoldTimeSeconds;
+      if (runtime.state !== "established" || !holdSeconds || runtime.lastReceivedAtNs === undefined) continue;
+      if (now - runtime.lastReceivedAtNs < holdSeconds * NS_PER_S) continue;
+      this.trace("bgp-hold-expired", {
+        neighbor: runtime.configuration.address,
+        holdTimeSeconds: holdSeconds,
+      });
+      this.fail(runtime, `BGP hold timer expired after ${holdSeconds} seconds`);
     }
   }
 

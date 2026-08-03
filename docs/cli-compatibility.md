@@ -394,12 +394,46 @@ that is never mistaken.
 `show running-config` renders a stored key as `pre-shared-key <configured>`; the
 key and its verifier are never printed. See [`vpn-tunnels.md`](vpn-tunnels.md).
 
+## BGP and route policy (M10.10)
+
+Router and an L3 Switch with `ip routing` support one educational IPv4-unicast
+BGP process. The commands below configure the same structured process used by
+the browser worker and verifier; they are not a claim of full IOS parity.
+
+| Command | Mode | Notes |
+| --- | --- | --- |
+| `router bgp <1-4294967295>` | config | Enters the single BGP process |
+| `bgp router-id <ipv4>` | config-router | Optional stable router ID |
+| `neighbor <ipv4> remote-as <asn>` | config-router | Defines or updates a peer |
+| `neighbor <ipv4> description <text>` | config-router | |
+| `neighbor <ipv4> update-source <interface>` | config-router | Physical, SVI or Loopback source |
+| `neighbor <ipv4> ebgp-multihop <1-255>` | config-router | eBGP otherwise uses TTL 1 |
+| `neighbor <ipv4> next-hop-self` | config-router | Primarily for iBGP |
+| `neighbor <ipv4> prefix-list <name> in\|out` | config-router | Ordered prefix policy |
+| `neighbor <ipv4> route-map <name> in\|out` | config-router | Ordered attribute policy |
+| `network <network> mask <mask>` | config-router | Requires an exact route in the IPv4 RIB |
+| `ip prefix-list <name> seq <n> permit\|deny <prefix> [ge <n>] [le <n>]` | config | No regex matching |
+| `route-map <name> permit\|deny <sequence>` | config | Enters `config-route-map` |
+| `match ip address prefix-list <name>` | config-route-map | |
+| `match neighbor <ipv4>` / `match route-source local\|ebgp\|ibgp` | config-route-map | |
+| `match as-path length <n>` | config-route-map | Bounded length test, not an AS-path regex |
+| `set local-preference <n>` / `set metric <n>` / `set weight <n>` | config-route-map | |
+| `set as-path prepend <count>` / `set origin igp\|incomplete` | config-route-map | Prepends the local AS |
+| `show ip bgp` / `show ip bgp <prefix>` | exec/privileged | BGP RIB and path detail |
+| `show ip bgp summary` / `show ip bgp neighbors [peer]` | exec/privileged | FSM/TCP state and counters |
+| `show ip route bgp` / `show ip bgp rib-failure` | exec/privileged | Installed routes and rejected candidates |
+| `show ip prefix-list` / `show route-map` | exec/privileged | Structured policy configuration |
+| `clear ip bgp *` / `clear ip bgp <peer>` | privileged | Confirmation required; configuration remains |
+
+See [`routing-bgp.md`](routing-bgp.md) for the exact best-path order, bounded
+timer model, persistence boundary and limitations.
+
 ## Deliberate omissions
 
 The following familiar IOS operations are not implemented and are omitted from
 contextual help: `no ip address`, `no ip route`, `copy` to or from a network
 server or flash (only `copy running-config startup-config` exists),
-EIGRP/BGP/IS-IS, multi-area OSPF, OSPF
+EIGRP/IS-IS, multi-area OSPF, OSPF
 authentication and redistribution, MSTP and MST regions, Loop Guard, Root Guard,
 UDLD, UplinkFast/BackboneFast/Flex Links, multi-chassis EtherChannel, LACP fast
 rate, PAgP silent modes, LLDP-MED, port security, reflexive/time-based ACLs, NAT
@@ -410,6 +444,10 @@ model. There
 is no Tab completion, fuzzy matching, network-device
 `traceroute`, arbitrary command scripting, real DNS/network access or full Cisco
 contextual-help parity.
+
+BGP deliberately omits MP-BGP/IPv6 address families, route reflectors,
+confederations, communities, aggregation, redistribution, authentication/MD5,
+graceful restart, add-path, peer groups, ECMP and AS-path regular expressions.
 
 The management plane omits, deliberately: real SSH cryptography, key exchange,
 packet encryption, public-key user authentication, SCP/SFTP, tunnelling, port

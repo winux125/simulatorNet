@@ -1523,8 +1523,9 @@ export class Router extends Device {
     const rows: RouteRow[] = [];
     for (const iface of this.l3.values()) {
       if (iface.ip === undefined) continue;
-      // `show ip route` shows what the router would actually use, so a down
-      // tunnel contributes no connected overlay route here either.
+      // Preserve the educational configured-route view for ordinary physical
+      // interfaces. A down tunnel is different: its overlay route cannot exist
+      // without a usable underlay and would otherwise recurse into itself.
       if (isTunnelInterface(iface.physical) && !iface.physical.operationalUp) continue;
       rows.push({
         kind: "connected",
@@ -2600,9 +2601,11 @@ export class Router extends Device {
     // Connected routes: directly reachable, next hop is the destination itself.
     for (const iface of this.l3.values()) {
       if (iface.ip === undefined) continue;
-      // A tunnel's connected overlay route only exists while the tunnel is up,
-      // so a down tunnel never black-holes traffic a physical path could carry.
-      if (!ignoreTunnelState && isTunnelInterface(iface.physical) && !iface.physical.operationalUp) continue;
+      // A physical connected route disappears with link/admin down. The
+      // underlay-only tunnel resolver may intentionally inspect a down tunnel,
+      // but that exception never makes a down physical port reachable.
+      if (!iface.physical.operationalUp
+        && (!ignoreTunnelState || !isTunnelInterface(iface.physical))) continue;
       const network = (ipToInt(iface.ip) & iface.maskInt) >>> 0;
       if (((dstInt & iface.maskInt) >>> 0) !== network) continue;
       consider({
@@ -2633,7 +2636,7 @@ export class Router extends Device {
       for (const route of this.ospf.routeTable()) {
         if (((dstInt & route.maskInt) >>> 0) !== ((ipToInt(route.network) & route.maskInt) >>> 0)) continue;
         const egress = this.l3.get(route.interfaceId);
-        if (!egress || route.nextHop === undefined) continue;
+        if (!egress?.physical.operationalUp || route.nextHop === undefined) continue;
         consider({
           prefixLen: popcount(route.maskInt),
           distance: ROUTE_ADMINISTRATIVE_DISTANCE.ospf,
@@ -2761,7 +2764,8 @@ export class Router extends Device {
     const ipInt = ipToInt(ip);
     for (const iface of this.l3.values()) {
       if (iface.ip === undefined) continue;
-      if (!ignoreTunnelState && isTunnelInterface(iface.physical) && !iface.physical.operationalUp) continue;
+      if (!iface.physical.operationalUp
+        && (!ignoreTunnelState || !isTunnelInterface(iface.physical))) continue;
       const network = (ipToInt(iface.ip) & iface.maskInt) >>> 0;
       if (((ipInt & iface.maskInt) >>> 0) === network) return iface;
     }

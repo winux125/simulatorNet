@@ -35,6 +35,9 @@ import {
   type NeighborDiscoveryConfig,
   type OspfProcessConfig,
   type Ospfv3ProcessConfig,
+  type BgpProcessConfig,
+  type PrefixListConfig,
+  type RouteMapConfig,
   type QosConfiguration,
   type RemoteAccessConfiguration,
   type RouterDeviceConfig,
@@ -388,6 +391,55 @@ function ospfv3ProcessLines(ospfv3: Ospfv3ProcessConfig | undefined): string[] {
   return out;
 }
 
+function routePolicyLines(prefixLists: readonly PrefixListConfig[] | undefined, routeMaps: readonly RouteMapConfig[] | undefined): string[] {
+  const out: string[] = [];
+  for (const list of sorted(prefixLists, byId)) {
+    for (const entry of sorted(list.entries, bySequence)) {
+      out.push(`ip prefix-list ${list.id} seq ${entry.sequence} ${entry.action} ${entry.prefix}/${entry.prefixLength}`
+        + `${entry.ge === undefined ? "" : ` ge ${entry.ge}`}${entry.le === undefined ? "" : ` le ${entry.le}`}`);
+    }
+  }
+  for (const map of sorted(routeMaps, byId)) {
+    for (const sequence of sorted(map.sequences, bySequence)) {
+      out.push(`route-map ${map.id} ${sequence.action} ${sequence.sequence}`);
+      if (sequence.match?.prefixListIds?.length) out.push(` match ip address prefix-list ${sequence.match.prefixListIds.join(" ")}`);
+      if (sequence.match?.neighbor) out.push(` match neighbor ${sequence.match.neighbor}`);
+      if (sequence.match?.maximumAsPathLength !== undefined) out.push(` match as-path length ${sequence.match.maximumAsPathLength}`);
+      if (sequence.match?.source) out.push(` match route-source ${sequence.match.source}`);
+      if (sequence.set?.localPreference !== undefined) out.push(` set local-preference ${sequence.set.localPreference}`);
+      if (sequence.set?.med !== undefined) out.push(` set metric ${sequence.set.med}`);
+      if (sequence.set?.weight !== undefined) out.push(` set weight ${sequence.set.weight}`);
+      if (sequence.set?.prependLocalAs !== undefined) out.push(` set as-path prepend ${sequence.set.prependLocalAs}`);
+      if (sequence.set?.origin !== undefined) out.push(` set origin ${sequence.set.origin}`);
+      out.push("!");
+    }
+  }
+  return out;
+}
+
+function bgpProcessLines(bgp: BgpProcessConfig | undefined): string[] {
+  if (!bgp) return [];
+  const out = [`router bgp ${bgp.localAs}`];
+  if (bgp.routerId) out.push(` bgp router-id ${bgp.routerId}`);
+  for (const neighbor of sorted(bgp.neighbors, (a, b) => byString(a.address, b.address))) {
+    out.push(` neighbor ${neighbor.address} remote-as ${neighbor.remoteAs}`);
+    if (neighbor.description) out.push(` neighbor ${neighbor.address} description ${neighbor.description}`);
+    if (neighbor.updateSource) out.push(` neighbor ${neighbor.address} update-source ${neighbor.updateSource}`);
+    if (neighbor.ebgpMultihop !== undefined) out.push(` neighbor ${neighbor.address} ebgp-multihop ${neighbor.ebgpMultihop}`);
+    if (neighbor.nextHopSelf) out.push(` neighbor ${neighbor.address} next-hop-self`);
+    if (neighbor.prefixListIn) out.push(` neighbor ${neighbor.address} prefix-list ${neighbor.prefixListIn} in`);
+    if (neighbor.prefixListOut) out.push(` neighbor ${neighbor.address} prefix-list ${neighbor.prefixListOut} out`);
+    if (neighbor.routeMapIn) out.push(` neighbor ${neighbor.address} route-map ${neighbor.routeMapIn} in`);
+    if (neighbor.routeMapOut) out.push(` neighbor ${neighbor.address} route-map ${neighbor.routeMapOut} out`);
+    if (neighbor.enabled === false) out.push(` neighbor ${neighbor.address} shutdown`);
+  }
+  for (const network of sorted(bgp.networks, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength)) {
+    out.push(` network ${network.network} mask ${maskFromPrefixLength(network.prefixLength)}`);
+  }
+  out.push("!");
+  return out;
+}
+
 function aclLines(acls: readonly Ipv4AclConfig[] | undefined): string[] {
   const out: string[] = [];
   for (const acl of sorted(acls, byId)) {
@@ -619,6 +671,8 @@ function renderRoutedDevice(config: RouterDeviceConfig | FirewallDeviceConfig | 
   }
   out.push(...ospfProcessLines(config.ospf));
   out.push(...ospfv3ProcessLines(config.ospfv3));
+  out.push(...routePolicyLines(config.prefixLists, config.routeMaps));
+  out.push(...bgpProcessLines(config.bgp));
   for (const route of sorted(config.staticRoutes, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength)) {
     out.push(`ip route ${route.network} ${maskFromPrefixLength(route.prefixLength)} ${route.nextHop}`);
   }
@@ -795,6 +849,8 @@ function renderLayer3Switch(config: Layer3SwitchDeviceConfig): string[] {
   out.push(...loopbackLines(config.loopbacks));
   out.push(...ospfProcessLines(config.ospf));
   out.push(...ospfv3ProcessLines(config.ospfv3));
+  out.push(...routePolicyLines(config.prefixLists, config.routeMaps));
+  out.push(...bgpProcessLines(config.bgp));
   for (const route of sorted(config.staticRoutes, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength)) {
     out.push(`ip route ${route.network} ${maskFromPrefixLength(route.prefixLength)} ${route.nextHop}`);
   }

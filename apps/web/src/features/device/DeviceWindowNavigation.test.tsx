@@ -26,10 +26,10 @@ describe("device window information architecture", () => {
       "ACL", "NAT", "QoS", "VPN", "AAA", "SNMP", "Sessions",
     ]));
     expect(definition.configSections.map(({ label }) => label)).toEqual(expect.arrayContaining([
-      "ACL", "NAT", "QoS", "VPN", "Console Access", "Remote Access", "AAA", "SNMP",
+      "BGP", "ACL", "NAT", "QoS", "VPN", "Console Access", "Remote Access", "AAA", "SNMP",
     ]));
     expect(definition.monitorSections.map(({ label }) => label)).toEqual(expect.arrayContaining([
-      "Sessions", "NAT Translations", "QoS Queues & Counters", "VPN Sessions",
+      "BGP", "Sessions", "NAT Translations", "QoS Queues & Counters", "VPN Sessions",
     ]));
   });
 

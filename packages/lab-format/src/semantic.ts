@@ -367,6 +367,9 @@ function validateLayer3Switch(config: Layer3SwitchDeviceConfig, node: NodeSpec, 
   ]);
   validateAclConfiguration(config, l3Interfaces, path);
   validateSwitchProtocols(config, node, path, true);
+  if (config.bgp && !config.ipRoutingEnabled) {
+    fail("bgp-requires-ip-routing", `${path}.bgp`, "BGP on an L3 Switch requires 'ip routing'");
+  }
   validateRoutedProtocols(config, node, path, l3Interfaces, true);
 }
 
@@ -692,9 +695,77 @@ function validateDiscovery(
   });
 }
 
-/** Loopback interfaces and the single area-0 OSPF process. */
+function validateBgpConfiguration(
+  config: Pick<RouterDeviceConfig, "bgp" | "prefixLists" | "routeMaps">,
+  node: NodeSpec,
+  path: string,
+  interfaceNames: ReadonlySet<string>,
+  bgpCapable: boolean,
+): void {
+  const prefixLists = config.prefixLists ?? [];
+  const routeMaps = config.routeMaps ?? [];
+  requireUnique(prefixLists.map((list) => list.id), `${path}.prefixLists`, "prefix-list name");
+  requireUnique(routeMaps.map((map) => map.id), `${path}.routeMaps`, "route-map name");
+  const prefixListIds = new Set(prefixLists.map((list) => list.id));
+  const routeMapIds = new Set(routeMaps.map((map) => map.id));
+  prefixLists.forEach((list, listIndex) => {
+    requireUnique(list.entries.map((entry) => String(entry.sequence)), `${path}.prefixLists[${listIndex}].entries`, "prefix-list sequence");
+    list.entries.forEach((entry, entryIndex) => {
+      const entryPath = `${path}.prefixLists[${listIndex}].entries[${entryIndex}]`;
+      if (((ipToInt(entry.prefix) & maskToInt(entry.prefixLength)) >>> 0) !== ipToInt(entry.prefix)) {
+        fail("invalid-prefix-list-network", `${entryPath}.prefix`, "Prefix-list entry must use a canonical network address");
+      }
+      if (entry.ge !== undefined && entry.ge < entry.prefixLength) {
+        fail("invalid-prefix-list-range", `${entryPath}.ge`, "Prefix-list ge cannot be shorter than its prefix length");
+      }
+      if (entry.le !== undefined && entry.le < (entry.ge ?? entry.prefixLength)) {
+        fail("invalid-prefix-list-range", `${entryPath}.le`, "Prefix-list le cannot be shorter than ge or the prefix length");
+      }
+    });
+  });
+  routeMaps.forEach((map, mapIndex) => {
+    requireUnique(map.sequences.map((sequence) => String(sequence.sequence)), `${path}.routeMaps[${mapIndex}].sequences`, "route-map sequence");
+    map.sequences.forEach((sequence, sequenceIndex) => {
+      sequence.match?.prefixListIds?.forEach((id, idIndex) => {
+        if (!prefixListIds.has(id)) {
+          fail("unknown-prefix-list", `${path}.routeMaps[${mapIndex}].sequences[${sequenceIndex}].match.prefixListIds[${idIndex}]`, `Unknown prefix-list '${id}'`);
+        }
+      });
+    });
+  });
+  const bgp = config.bgp;
+  if (!bgp) return;
+  if (!bgpCapable) fail("bgp-unsupported", `${path}.bgp`, `${node.kind} does not support BGP in this release`);
+  if (bgp.holdTimeSeconds !== undefined && bgp.holdTimeSeconds !== 0
+    && (bgp.keepaliveSeconds ?? 60) * 3 > bgp.holdTimeSeconds) {
+    fail("invalid-bgp-timers", `${path}.bgp.holdTimeSeconds`, "BGP hold time must be zero or at least three times the keepalive time");
+  }
+  requireUnique(bgp.neighbors.map((neighbor) => neighbor.address), `${path}.bgp.neighbors`, "BGP neighbor");
+  requireUnique(bgp.networks.map((network) => `${network.network}/${network.prefixLength}`), `${path}.bgp.networks`, "BGP network statement");
+  bgp.networks.forEach((network, index) => {
+    if (((ipToInt(network.network) & maskToInt(network.prefixLength)) >>> 0) !== ipToInt(network.network)) {
+      fail("invalid-bgp-network", `${path}.bgp.networks[${index}].network`, "BGP network statement must use a canonical network address");
+    }
+  });
+  bgp.neighbors.forEach((neighbor, index) => {
+    const neighborPath = `${path}.bgp.neighbors[${index}]`;
+    if (neighbor.updateSource !== undefined && !interfaceNames.has(neighbor.updateSource)) {
+      fail("unknown-bgp-update-source", `${neighborPath}.updateSource`, `Unknown BGP update-source interface '${neighbor.updateSource}'`);
+    }
+    for (const [field, id, known] of [
+      ["prefixListIn", neighbor.prefixListIn, prefixListIds],
+      ["prefixListOut", neighbor.prefixListOut, prefixListIds],
+      ["routeMapIn", neighbor.routeMapIn, routeMapIds],
+      ["routeMapOut", neighbor.routeMapOut, routeMapIds],
+    ] as const) {
+      if (id !== undefined && !known.has(id)) fail("unknown-bgp-policy", `${neighborPath}.${field}`, `Unknown BGP policy '${id}'`);
+    }
+  });
+}
+
+/** Loopback interfaces and the single area-0 OSPF/BGP process. */
 function validateRoutedProtocols(
-  config: Pick<RouterDeviceConfig, "loopbacks" | "ospf">,
+  config: Pick<RouterDeviceConfig, "loopbacks" | "ospf" | "bgp" | "prefixLists" | "routeMaps">,
   node: NodeSpec,
   path: string,
   l3Interfaces: ReadonlySet<string>,
@@ -703,6 +774,8 @@ function validateRoutedProtocols(
   const loopbacks = config.loopbacks ?? [];
   requireUnique(loopbacks.map((loopback) => String(loopback.id)), `${path}.loopbacks`, "loopback id");
   const loopbackNames = new Set(loopbacks.map((loopback) => `Loopback${loopback.id}`));
+
+  validateBgpConfiguration(config, node, path, new Set([...l3Interfaces, ...loopbackNames]), ospfCapable);
 
   const ospf = config.ospf;
   if (ospf === undefined) return;

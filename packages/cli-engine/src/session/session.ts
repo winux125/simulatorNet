@@ -25,6 +25,7 @@ import type {
   QosClassMapContext,
   QosPolicyMapContext,
   RouterProcessContext,
+  RouteMapContext,
   SessionApi,
   VtyLineContext,
 } from "../types";
@@ -50,6 +51,7 @@ export class CliSession implements SessionApi {
   vlanId: number | undefined;
   aclCtx: AclContext | undefined;
   routerCtx: RouterProcessContext | undefined;
+  routeMapCtx: RouteMapContext | undefined;
   lineCtx: VtyLineContext | undefined;
   aaaServerCtx: AaaServerContext | undefined;
   classMapCtx: QosClassMapContext | undefined;
@@ -169,6 +171,7 @@ export class CliSession implements SessionApi {
     if (mode !== "config-vlan") this.vlanId = undefined;
     if (mode !== "config-acl") this.aclCtx = undefined;
     if (mode !== "config-router") this.routerCtx = undefined;
+    if (mode !== "config-route-map") this.routeMapCtx = undefined;
     if (mode !== "config-line") this.lineCtx = undefined;
     if (mode !== "config-aaa-server") this.aaaServerCtx = undefined;
     if (mode !== "config-cmap") this.classMapCtx = undefined;

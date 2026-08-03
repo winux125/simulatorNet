@@ -70,14 +70,14 @@ describe("configuration text plan", () => {
   });
 
   it("reports an unsupported line rather than dropping it", () => {
-    const plan = inspect(`${SUPPORTED}\nrouter bgp 65000\n`);
+    const plan = inspect(`${SUPPORTED}\nrouter eigrp 100\n`);
     expect(plan.unsupportedCount).toBe(1);
     const unsupported = plan.lines.find((line) => line.outcome === "unsupported");
-    expect(unsupported).toMatchObject({ number: 7, text: "router bgp 65000" });
+    expect(unsupported).toMatchObject({ number: 7, text: "router eigrp 100" });
   });
 
   it("applies atomically and only after unsupported lines are acknowledged", () => {
-    const plan = inspect(`${SUPPORTED}\nrouter bgp 65000\n`);
+    const plan = inspect(`${SUPPORTED}\nrouter eigrp 100\n`);
     const refused = applyDeviceConfigurationPlan(plan, { current: CURRENT });
     expect(refused.status).toBe("requires-confirmation");
     expect(refused.configuration).toBeUndefined();
@@ -88,7 +88,7 @@ describe("configuration text plan", () => {
   });
 
   it("rejects a plan that recognised nothing", () => {
-    const plan = inspect("router bgp 65000\nneighbor 10.0.0.1 remote-as 65001\n");
+    const plan = inspect("router eigrp 100\nnetwork 10.0.0.0\n");
     expect(plan.problems[0]?.code).toBe("no-recognised-configuration");
     const result = applyDeviceConfigurationPlan(plan, { current: CURRENT });
     expect(result.status).toBe("rejected");

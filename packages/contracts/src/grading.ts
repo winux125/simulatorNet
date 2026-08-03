@@ -963,6 +963,96 @@ export const VpnRouteGradingCheckSchema = CheckIdentitySchema.extend({
   }).strict(),
 }).strict();
 
+const BgpPrefixExpectationSchema = z.object({
+  network: Ipv4Schema,
+  prefixLength: PrefixLengthSchema,
+});
+
+export const BgpNeighborStateGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-neighbor-state"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    neighborAddress: Ipv4Schema,
+    expectedState: z.enum(["idle", "connect", "active", "open-sent", "open-confirm", "established"]),
+  }).strict(),
+}).strict();
+
+export const BgpLocalAsGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-local-as"),
+  configuration: z.object({ deviceId: z.string().min(1), expectedLocalAs: z.number().int().min(1).max(4_294_967_295) }).strict(),
+}).strict();
+
+export const BgpNetworkGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-network"),
+  configuration: z.object({ deviceId: z.string().min(1) }).merge(BgpPrefixExpectationSchema).strict(),
+}).strict();
+
+export const BgpRouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-route"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    expectedNextHop: Ipv4Schema.optional(),
+    expectedAdministrativeDistance: z.union([z.literal(20), z.literal(200)]).optional(),
+  }).merge(BgpPrefixExpectationSchema).strict(),
+}).strict();
+
+export const BgpBestPathGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-best-path"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    expectedNeighborAddress: Ipv4Schema.optional(),
+    expectedAsPath: z.array(z.number().int().min(1).max(4_294_967_295)).optional(),
+  }).merge(BgpPrefixExpectationSchema).strict(),
+}).strict();
+
+export const BgpNextHopGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-next-hop"),
+  configuration: z.object({ deviceId: z.string().min(1), expectedNextHop: Ipv4Schema })
+    .merge(BgpPrefixExpectationSchema).strict(),
+}).strict();
+
+export const PrefixListEntryGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("prefix-list-entry"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    prefixListId: z.string().min(1),
+    sequence: z.number().int().min(1),
+    expectedAction: z.enum(["permit", "deny"]),
+  }).strict(),
+}).strict();
+
+export const RouteMapSequenceGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("route-map-sequence"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    routeMapId: z.string().min(1),
+    sequence: z.number().int().min(1),
+    expectedAction: z.enum(["permit", "deny"]),
+  }).strict(),
+}).strict();
+
+export const RoutePolicyResultGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("route-policy-result"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    neighborAddress: Ipv4Schema,
+    direction: z.enum(["in", "out"]),
+    expected: z.enum(["permitted", "denied"]),
+  }).merge(BgpPrefixExpectationSchema).strict(),
+}).strict();
+
+export const BgpAdvertisedRouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-advertised-route"),
+  configuration: z.object({ deviceId: z.string().min(1), neighborAddress: Ipv4Schema })
+    .merge(BgpPrefixExpectationSchema).strict(),
+}).strict();
+
+export const BgpReceivedRouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-received-route"),
+  configuration: z.object({ deviceId: z.string().min(1), neighborAddress: Ipv4Schema })
+    .merge(BgpPrefixExpectationSchema).strict(),
+}).strict();
+
 /**
  * `copy running-config startup-config` was actually run on this device.
  *
@@ -975,6 +1065,17 @@ export const ConfigurationSavedGradingCheckSchema = CheckIdentitySchema.extend({
 }).strict();
 
 export const GradingCheckSchema = z.discriminatedUnion("type", [
+  BgpNeighborStateGradingCheckSchema,
+  BgpLocalAsGradingCheckSchema,
+  BgpNetworkGradingCheckSchema,
+  BgpRouteGradingCheckSchema,
+  BgpBestPathGradingCheckSchema,
+  BgpNextHopGradingCheckSchema,
+  PrefixListEntryGradingCheckSchema,
+  RouteMapSequenceGradingCheckSchema,
+  RoutePolicyResultGradingCheckSchema,
+  BgpAdvertisedRouteGradingCheckSchema,
+  BgpReceivedRouteGradingCheckSchema,
   ConfigurationSavedGradingCheckSchema,
   GreTunnelConfiguredGradingCheckSchema,
   GreTunnelOperationalGradingCheckSchema,

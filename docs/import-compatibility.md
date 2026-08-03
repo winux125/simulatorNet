@@ -161,13 +161,34 @@ The IOS-like startup-config subset now also recognises:
 
 Deliberately **not** imported, and reported as unparsed rather than silently
 applied: MST and MST regions, a non-zero OSPF area, OSPF authentication,
-redistribution, other routing protocols (EIGRP, BGP, IS-IS), advanced
+redistribution, unsupported routing protocols (EIGRP and IS-IS), advanced
 EtherChannel features and vendor-specific extensions. A firewall is not an OSPF
 speaker in this release, so its OSPF lines are preserved and reported too.
 
 Import safety is unchanged: nothing is executed, unknown lines are preserved as
 bounded redacted artifacts, and every recognised-but-unsupported construct is
 listed honestly in the import report.
+
+## BGP and route-policy configuration (M10.10)
+
+The IOS-like importer recognizes the bounded IPv4-unicast subset:
+
+- `router bgp <asn>`, `bgp router-id`, `neighbor … remote-as`, description,
+  update-source, eBGP multihop, next-hop-self, prefix-list and route-map
+  bindings;
+- exact `network <network> mask <mask>` statements;
+- ordered `ip prefix-list` entries with `permit`/`deny`, `ge` and `le`;
+- ordered `route-map` sequences, supported `match` clauses, and local
+  preference, MED, weight, origin and bounded local-AS prepend actions.
+
+Configuration maps only to Router and L3 Switch (`ip routing`) domain models.
+A Firewall, Cloud / ISP or ambiguous external appliance does not become a BGP
+speaker. Runtime sessions, learned RIBs and counters are never imported.
+
+Address families, MP-BGP, IPv6 BGP, peer groups, route reflectors,
+confederations, communities, aggregation, redistribution, authentication,
+graceful restart and arbitrary AS-path regular expressions stay in the bounded
+import report as unsupported lines. They are never silently approximated.
 
 ## Management, AAA and SNMP configuration (M10.7)
 

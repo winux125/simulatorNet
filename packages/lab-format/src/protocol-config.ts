@@ -6,6 +6,9 @@ import type {
   Ospfv3ProcessConfig,
   SpanningTreeConfig,
   VpnConfiguration,
+  BgpProcessConfig,
+  PrefixListConfig,
+  RouteMapConfig,
 } from "@sim/contracts";
 import {
   DEFAULT_STP_PORT_PRIORITY_VALUE,
@@ -251,6 +254,17 @@ export function applyOspfv3Configuration(device: Router | Layer3Switch, config: 
   for (const passive of config.passiveInterfaces) device.ospfv3.setPassiveInterface(passive, true);
 }
 
+export function applyBgpConfiguration(
+  device: Router | Layer3Switch,
+  bgp: BgpProcessConfig | undefined,
+  prefixLists: readonly PrefixListConfig[] = [],
+  routeMaps: readonly RouteMapConfig[] = [],
+): void {
+  device.bgp.routingPolicy.setPrefixLists(prefixLists);
+  device.bgp.routingPolicy.setRouteMaps(routeMaps);
+  if (bgp) device.bgp.configure(bgp);
+}
+
 // --- serialize -------------------------------------------------------------
 
 export function serializeSpanningTreeConfiguration(device: L2Switch): SpanningTreeConfig {
@@ -385,6 +399,20 @@ export function serializeOspfv3Configuration(device: Router | Layer3Switch): Osp
       enabled: iface.configuration.enabled,
     })),
   };
+}
+
+export function serializeBgpConfiguration(device: Router | Layer3Switch): BgpProcessConfig | undefined {
+  return device.bgp.configurationSnapshot() as BgpProcessConfig | undefined;
+}
+
+export function serializePrefixLists(device: Router | Layer3Switch): PrefixListConfig[] | undefined {
+  const lists = device.bgp.routingPolicy.prefixListConfigurations() as PrefixListConfig[];
+  return lists.length ? lists : undefined;
+}
+
+export function serializeRouteMaps(device: Router | Layer3Switch): RouteMapConfig[] | undefined {
+  const maps = device.bgp.routingPolicy.routeMapConfigurations() as RouteMapConfig[];
+  return maps.length ? maps : undefined;
 }
 
 function prefixLength(maskInt: number): number {

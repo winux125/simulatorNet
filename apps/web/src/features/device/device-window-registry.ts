@@ -30,6 +30,7 @@ export type DeviceWindowSectionId =
   | "stp-config"
   | "etherchannel-config"
   | "ospf-config"
+  | "bgp-config"
   | "acl-config"
   | "nat-config"
   | "zones-config"
@@ -49,6 +50,7 @@ export type DeviceWindowSectionId =
   | "neighbors-runtime"
   | "mac-runtime"
   | "protocols-runtime"
+  | "bgp-runtime"
   | "sessions-runtime"
   | "nat-runtime"
   | "firewall-runtime"
@@ -153,7 +155,8 @@ function configSections(type: DeviceType): DeviceWindowSectionDefinition[] {
     sections.push({ id: "routing-config", label: "Routing" });
   }
   if (type === "router" || type === "l3-switch") {
-    sections.push({ id: "ospf-config", label: "OSPF" });
+    sections.push({ id: "ospf-config", label: "OSPFv2 & OSPFv3", group: "Routing" });
+    sections.push({ id: "bgp-config", label: "BGP", group: "Routing" });
   }
   if (deviceTypeHasCapability(type, "packet-policy")) {
     sections.push({ id: "acl-config", label: "ACL", group: "Security" });
@@ -194,6 +197,7 @@ function monitorSections(type: DeviceType): DeviceWindowSectionDefinition[] {
     sections.push({ id: "routes-runtime", label: "Routes" });
     sections.push({ id: "neighbors-runtime", label: "ARP / NDP" });
     sections.push({ id: "protocols-runtime", label: "Protocol Neighbors" });
+    if (type === "router" || type === "l3-switch") sections.push({ id: "bgp-runtime", label: "BGP" });
   }
   if (deviceTypeHasCapability(type, "layer2-switching")) {
     sections.push({ id: "mac-runtime", label: "MAC Table" });

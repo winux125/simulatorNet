@@ -49,6 +49,10 @@ import type {
   TrafficFlowResult,
   QosClassCounter,
   QosProblem,
+  BgpNeighborSummary,
+  BgpRoute,
+  BgpRibEntry,
+  RoutePolicyCounter,
 } from "@sim/sim-core";
 export type { ServerServiceRuntimeSnapshot } from "@sim/sim-core";
 
@@ -189,7 +193,7 @@ export interface DeviceInspection {
   capabilities: DeviceCapability[];
   macEntries: Array<{ vlan?: number; macAddress: string; interfaceId: string }>;
   routes: Array<{
-    kind: "connected" | "static" | "ospf";
+    kind: "connected" | "static" | "ospf" | "bgp";
     network: string;
     prefixLength: number;
     nextHop?: string;
@@ -292,7 +296,8 @@ export interface HostNetworkWarning {
     | "management-plane"
     | "qos-policy"
     | "qos-queue-overflow"
-    | "qos-policer-drop";
+    | "qos-policer-drop"
+    | "bgp";
   message: string;
   address?: string;
   deviceIds: readonly string[];
@@ -595,6 +600,17 @@ export interface Ospfv3View {
   routes: Ospfv3Route[];
 }
 
+export interface BgpStateView {
+  deviceId: string;
+  configuration?: import("@sim/contracts").BgpProcessConfig;
+  neighbors: BgpNeighborSummary[];
+  routes: BgpRibEntry[];
+  adjRibIn: BgpRoute[];
+  adjRibOut: BgpRoute[];
+  ribFailures: Array<{ routeId: string; reason: string }>;
+  policyCounters: RoutePolicyCounter[];
+}
+
 /**
  * Read-only management views. Everything here is runtime state recomputed from
  * the engine on demand: it never reaches a `LabDocument`, a submission or the
@@ -764,6 +780,17 @@ export type SimWorkerRequest =
   | { type: "RESTART_OSPF_PROCESS"; requestId: string; deviceId: string }
   | { type: "GET_OSPFV3_STATE"; requestId: string; deviceId: string }
   | { type: "RESTART_OSPFV3_PROCESS"; requestId: string; deviceId: string }
+  | { type: "GET_BGP_STATE"; requestId: string; deviceId: string }
+  | { type: "RESET_BGP_SESSION"; requestId: string; deviceId: string; neighbor?: string }
+  | { type: "GET_BGP_OVERVIEW"; requestId: string; deviceId: string }
+  | { type: "GET_BGP_SUMMARY"; requestId: string; deviceId: string }
+  | { type: "GET_BGP_NEIGHBORS"; requestId: string; deviceId: string }
+  | { type: "GET_BGP_TABLE"; requestId: string; deviceId: string }
+  | { type: "GET_BGP_ROUTE"; requestId: string; deviceId: string; network: string; prefixLength: number }
+  | { type: "GET_PREFIX_LIST_STATUS"; requestId: string; deviceId: string }
+  | { type: "GET_ROUTE_MAP_STATUS"; requestId: string; deviceId: string }
+  | { type: "RESET_BGP_NEIGHBOR"; requestId: string; deviceId: string; neighbor: string }
+  | { type: "RESET_BGP_PROCESS"; requestId: string; deviceId: string }
   // --- M10.7 management plane (inspection + bounded runtime actions) ---
   | { type: "GET_REMOTE_SESSIONS"; requestId: string; deviceId: string }
   | { type: "CLEAR_REMOTE_LINE"; requestId: string; deviceId: string; line: number }
@@ -820,6 +847,7 @@ export type SimWorkerPayload =
   | OspfInterfacesView
   | OspfDatabaseView
   | Ospfv3View
+  | BgpStateView
   | RemoteSessionsView
   | AaaStatusResponse
   | SnmpAgentStatusView
@@ -916,6 +944,17 @@ export interface SimWorkerPayloadByType {
   RESTART_OSPF_PROCESS: OspfOverviewView;
   GET_OSPFV3_STATE: Ospfv3View;
   RESTART_OSPFV3_PROCESS: Ospfv3View;
+  GET_BGP_STATE: BgpStateView;
+  RESET_BGP_SESSION: BgpStateView;
+  GET_BGP_OVERVIEW: BgpStateView;
+  GET_BGP_SUMMARY: BgpStateView;
+  GET_BGP_NEIGHBORS: BgpStateView;
+  GET_BGP_TABLE: BgpStateView;
+  GET_BGP_ROUTE: BgpStateView;
+  GET_PREFIX_LIST_STATUS: BgpStateView;
+  GET_ROUTE_MAP_STATUS: BgpStateView;
+  RESET_BGP_NEIGHBOR: BgpStateView;
+  RESET_BGP_PROCESS: BgpStateView;
   GET_REMOTE_SESSIONS: RemoteSessionsView;
   CLEAR_REMOTE_LINE: RemoteSessionsView;
   GET_AAA_STATUS: AaaStatusResponse;

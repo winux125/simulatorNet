@@ -61,6 +61,7 @@ import {
   applyLoopbackConfiguration,
   applyOspfConfiguration,
   applyOspfv3Configuration,
+  applyBgpConfiguration,
   applySpanningTreeConfiguration,
   applyVpnConfiguration,
   serializeDiscoveryConfiguration,
@@ -68,6 +69,9 @@ import {
   serializeLoopbackConfiguration,
   serializeOspfConfiguration,
   serializeOspfv3Configuration,
+  serializeBgpConfiguration,
+  serializePrefixLists,
+  serializeRouteMaps,
   serializeSpanningTreeConfiguration,
   serializeVpnConfiguration,
 } from "./protocol-config";
@@ -386,7 +390,7 @@ function applyHostIpv6(device: EndHost, config: DeviceConfig & { ipv6?: {
   device.setIpv6Mode(config.ipv6.mode);
 }
 
-function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec): void {
+function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec, deferBgp = false): void {
   device.rename(config.hostname ?? device.name);
   if (device instanceof Laptop && config.kind === "laptop") {
     device.configureWirelessInterface(
@@ -502,7 +506,7 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
     return;
   }
   if (device instanceof Layer3Switch && config.kind === "l3-switch") {
-    applyLayer3SwitchConfiguration(device, config);
+    applyLayer3SwitchConfiguration(device, config, deferBgp);
     return;
   }
   if (device instanceof L2Switch && config.kind === "l2-switch") {
@@ -616,6 +620,9 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
     applyDiscoveryConfiguration(device, config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG);
     if (config.ospf) applyOspfConfiguration(device, config.ospf);
     if (config.ospfv3) applyOspfv3Configuration(device, config.ospfv3);
+    if (!deferBgp && config.kind === "router") {
+      applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps);
+    }
   }
 }
 
@@ -656,7 +663,7 @@ function applyManagementSvi(device: L2Switch, config: SwitchDeviceConfig): void 
   }
 }
 
-function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3SwitchDeviceConfig): void {
+function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3SwitchDeviceConfig, deferBgp = false): void {
   device.remoteAccess.configure(config.remoteAccess);
   device.aaa.configure(config.aaa);
   device.snmp.configure(config.snmp);
@@ -724,6 +731,16 @@ function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3Swit
   applyLoopbackConfiguration(device, config.loopbacks ?? []);
   if (config.ospf) applyOspfConfiguration(device, config.ospf);
   if (config.ospfv3) applyOspfv3Configuration(device, config.ospfv3);
+  if (!deferBgp) applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps);
+}
+
+/** Apply the TCP-based routing process only after the complete underlay exists. */
+export function applyPostLinkRoutingConfiguration(device: Device, config: DeviceConfig): void {
+  if (device instanceof Layer3Switch && config.kind === "l3-switch") {
+    applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps);
+  } else if (device instanceof Router && config.kind === "router") {
+    applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps);
+  }
 }
 
 /**
@@ -739,6 +756,7 @@ export function createDeviceInstance(
   node: NodeSpec,
   config: DeviceConfig,
   engine: SimulationEngine,
+  deferBgp = false,
 ): Device {
   const device = createDevice(node, config, engine);
   const interfaceTemplates = resolveDeviceInterfaceTemplates(node.kind, node.hardwareProfileId);
@@ -748,7 +766,7 @@ export function createDeviceInstance(
     if (template?.media === "wireless") continue;
     device.addInterface(iface.id, iface.mac as Mac);
   }
-  applyConfiguration(device, config, node);
+  applyConfiguration(device, config, node, deferBgp);
   return device;
 }
 
@@ -776,6 +794,7 @@ export function buildLabFromDocument(document: LabDocument): BuiltLab {
       devices.get(asDeviceId(node.id))!,
       canonical.configurations[node.id]!,
       node,
+      true,
     );
   }
   for (const link of canonical.topology.links) {
@@ -784,6 +803,14 @@ export function buildLabFromDocument(document: LabDocument): BuiltLab {
       capacityBps: link.capacityBps,
       queueLimitPackets: link.queueLimitPackets,
     });
+  }
+  // BGP owns a real simulated TCP session. Restore it only after every cable is
+  // attached so the first SYN and its ARP resolution use the complete underlay.
+  for (const node of canonical.topology.nodes) {
+    applyPostLinkRoutingConfiguration(
+      devices.get(asDeviceId(node.id))!,
+      canonical.configurations[node.id]!,
+    );
   }
   // Queue structure needs the cabled capacity, so output policies are installed
   // once the links exist rather than while configuration is still being applied.
@@ -1119,6 +1146,9 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       loopbacks: serializeLoopbackConfiguration(device),
       ospf: serializeOspfConfiguration(device),
       ospfv3: serializeOspfv3Configuration(device),
+      bgp: serializeBgpConfiguration(device),
+      prefixLists: serializePrefixLists(device),
+      routeMaps: serializeRouteMaps(device),
       consoleAccess: device.consoleAccess.snapshot(),
       remoteAccess: serializeRemoteAccess(device.remoteAccess),
       aaa: serializeAaa(device.aaa),
@@ -1240,6 +1270,9 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
     loopbacks: serializeLoopbackConfiguration(device),
     ospf: serializeOspfConfiguration(device),
     ospfv3: serializeOspfv3Configuration(device),
+    bgp: serializeBgpConfiguration(device),
+    prefixLists: serializePrefixLists(device),
+    routeMaps: serializeRouteMaps(device),
     consoleAccess: device instanceof IspCloud ? undefined : device.consoleAccess.snapshot(),
     remoteAccess: device instanceof IspCloud ? undefined : serializeRemoteAccess(device.remoteAccess),
     aaa: device instanceof IspCloud ? undefined : serializeAaa(device.aaa),

@@ -24,7 +24,12 @@ import {
   type DeviceStartupState,
 } from "@sim/device-config";
 import { Layer3Switch, Router, type Device } from "@sim/sim-core";
-import { createDeviceInstance, serializeDeviceConfiguration, type BuiltLab } from "./build";
+import {
+  applyPostLinkRoutingConfiguration,
+  createDeviceInstance,
+  serializeDeviceConfiguration,
+  type BuiltLab,
+} from "./build";
 import { canonicalizeDeviceConfiguration } from "./canonical";
 import { LabSemanticError } from "./errors";
 
@@ -151,7 +156,7 @@ export function reloadDevice(
 
   built.management.closeForDevice(deviceId, "cleared-by-administrator");
   built.engine.remove(deviceId);
-  const replacement = createDeviceInstance(node, configuration, built.engine);
+  const replacement = createDeviceInstance(node, configuration, built.engine, true);
   built.replaceDevice(deviceId, replacement);
 
   for (const link of cables) {
@@ -161,6 +166,7 @@ export function reloadDevice(
       queueLimitPackets: link.queueLimitPackets,
     });
   }
+  applyPostLinkRoutingConfiguration(replacement, configuration);
   // Egress queue structure needs the cabled capacity, exactly as at build time.
   if (replacement instanceof Router || replacement instanceof Layer3Switch) {
     replacement.refreshEgressQueues();

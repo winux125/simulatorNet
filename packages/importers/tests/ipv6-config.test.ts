@@ -21,7 +21,7 @@ router bgp 65000
 `;
 
 describe("IOS IPv6 config import", () => {
-  it("parses the supported IPv6, OSPFv3 and ACL subset and preserves unsupported lines", () => {
+  it("parses the supported IPv6, OSPFv3, ACL and BGP subset", () => {
     const parsed = parseIosConfig(IOS_IPV6, ["Gi0/0", "Gi0/1"]);
     expect(parsed.ipv6StaticRoutes, JSON.stringify(parsed.unparsedLines)).toEqual([
       { network: "2001:db8:20::", prefixLength: 64, nextHop: "2001:db8:10::2" },
@@ -38,7 +38,8 @@ describe("IOS IPv6 config import", () => {
       ipv6TrafficFilters: [{ aclId: "WEB6", direction: "in" }],
     });
     expect(parsed.ipv6Acls[0]?.rules).toHaveLength(2);
-    expect(parsed.unparsedLines).toContain("router bgp 65000");
+    expect(parsed.bgp).toMatchObject({ localAs: 65_000 });
+    expect(parsed.unparsedLines).toEqual([]);
   });
 
   it("builds canonical Router and L3 Switch configuration without executing source text", () => {

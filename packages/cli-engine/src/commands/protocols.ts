@@ -286,7 +286,11 @@ export const protocolCommands: CommandSpec[] = [
     run: (s, p) => {
       const device = requireOspfDevice(s);
       const routerId = parseIpv4(p.id!);
-      if (s.routerCtx?.family === "ipv6") device.ospfv3.setRouterId(routerId);
+      if (s.routerCtx?.family === "bgp") {
+        const configuration = device.bgp.configurationSnapshot();
+        if (!configuration) throw new InvalidModeError("BGP is not running");
+        device.bgp.configure({ ...configuration, routerId });
+      } else if (s.routerCtx?.family === "ipv6") device.ospfv3.setRouterId(routerId);
       else device.ospf.setRouterId(routerId);
     },
   },

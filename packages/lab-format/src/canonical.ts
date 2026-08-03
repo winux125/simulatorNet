@@ -314,7 +314,7 @@ function canonicalDiscovery(discovery: NeighborDiscoveryConfig | undefined): Nei
 
 /** Loopbacks by numeric id, OSPF networks by network then wildcard. */
 function canonicalRoutedProtocols(
-  config: Partial<Pick<RouterDeviceConfig, "loopbacks" | "ospf" | "ospfv3">> | undefined,
+  config: Partial<Pick<RouterDeviceConfig, "loopbacks" | "ospf" | "ospfv3" | "bgp" | "prefixLists" | "routeMaps">> | undefined,
 ) {
   return {
     loopbacks: [...(config?.loopbacks ?? [])]
@@ -346,6 +346,23 @@ function canonicalRoutedProtocols(
             .sort((a, b) => a.interfaceId.localeCompare(b.interfaceId))
             .map((iface) => ({ ...iface })),
         },
+    bgp: config?.bgp === undefined ? undefined : {
+      ...config.bgp,
+      neighbors: [...config.bgp.neighbors].sort((a, b) => ipToInt(a.address) - ipToInt(b.address)).map((neighbor) => ({ ...neighbor })),
+      networks: [...config.bgp.networks]
+        .sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || a.prefixLength - b.prefixLength)
+        .map((network) => ({ ...network })),
+    },
+    prefixLists: [...(config?.prefixLists ?? [])]
+      .sort(byId)
+      .map((list) => ({ ...list, entries: [...list.entries].sort((a, b) => a.sequence - b.sequence).map((entry) => ({ ...entry })) })),
+    routeMaps: [...(config?.routeMaps ?? [])]
+      .sort(byId)
+      .map((map) => ({ ...map, sequences: [...map.sequences].sort((a, b) => a.sequence - b.sequence).map((sequence) => ({
+        ...sequence,
+        match: sequence.match ? { ...sequence.match, prefixListIds: sequence.match.prefixListIds ? [...sequence.match.prefixListIds].sort() : undefined } : undefined,
+        set: sequence.set ? { ...sequence.set } : undefined,
+      })) })),
   };
 }
 
