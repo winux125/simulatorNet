@@ -1,5 +1,7 @@
 import type { BgpProcessConfig, LabDocument, PrefixListConfig, RouteMapConfig } from "@sim/contracts";
 
+type DemoBgpConfig = Omit<BgpProcessConfig, "vrfAddressFamilies"> & Partial<Pick<BgpProcessConfig, "vrfAddressFamilies">>;
+
 const routerNode = (id: string, name: string, x: number, y: number, ports: number) => ({
   id, kind: "router" as const, name, position: { x, y },
   interfaces: Array.from({ length: ports }, (_, index) => ({ id: `Gi0/${index}` })),
@@ -8,7 +10,7 @@ const routerNode = (id: string, name: string, x: number, y: number, ports: numbe
 const routerConfig = (
   hostname: string,
   addresses: readonly string[],
-  bgp: BgpProcessConfig,
+  bgp: DemoBgpConfig,
   options: { loopback?: string; prefixLists?: PrefixListConfig[]; routeMaps?: RouteMapConfig[] } = {},
 ) => ({
   kind: "router" as const,
@@ -20,7 +22,8 @@ const routerConfig = (
   subinterfaces: [], staticRoutes: [], dhcpPools: [], acls: [], aclBindings: [],
   natPools: [], natRules: [], natInterfaceRoles: [],
   loopbacks: options.loopback ? [{ id: 0, shutdown: false, ipv4: { address: options.loopback, prefixLength: 24 } }] : [],
-  prefixLists: options.prefixLists ?? [], routeMaps: options.routeMaps ?? [], bgp,
+  prefixLists: options.prefixLists ?? [], routeMaps: options.routeMaps ?? [],
+  bgp: { ...bgp, vrfAddressFamilies: bgp.vrfAddressFamilies ?? [] },
 });
 
 const pcConfig = (hostname: string, address: string, gateway: string) => ({

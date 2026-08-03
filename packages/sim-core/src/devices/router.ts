@@ -1264,6 +1264,10 @@ export class Router extends Device {
     return this.vrfs.configurationsSnapshot();
   }
 
+  vrfStaticRouteConfigurations(vrfId: string): readonly VrfRoute[] {
+    return this.vrfs.staticRouteConfigurations(vrfId);
+  }
+
   assignInterfaceVrf(interfaceName: string, vrfId: string | undefined): void {
     const iface = this.l3.get(interfaceName) ?? this.getOrCreateInterface(interfaceName);
     if (this.isLoopback(interfaceName) || isTunnelInterface(iface.physical)) {
@@ -1290,7 +1294,11 @@ export class Router extends Device {
   }
 
   addVrfStaticRoute(vrfId: string, network: Ipv4, prefixLength: number, nextHop: Ipv4): void {
-    if (!this.connectedVrfInterfaceFor(vrfId, nextHop)) {
+    // This is configuration validation, so the next hop only needs to belong
+    // to a configured interface subnet. Link/admin operational state is a
+    // runtime forwarding concern and links are attached after configuration
+    // during LabDocument rebuild.
+    if (!this.connectedVrfInterfaceFor(vrfId, nextHop, false)) {
       throw new Error(`VRF ${vrfId} next hop ${nextHop} is not reachable in the same VRF.`);
     }
     this.vrfs.addStaticRoute(vrfId, network, prefixLength, nextHop);
@@ -2802,6 +2810,14 @@ export class Router extends Device {
     return this.vrfs.configurationsSnapshot().map((vrf) => ({ label: this.vrfs.vpnLabel(vrf.id), vrfId: vrf.id }));
   }
 
+  /** Clear derived MPLS/LDP state while preserving every structured setting. */
+  resetMplsRuntime(): void {
+    this.ldp.resetRuntime();
+    this.mpls.clearRuntime();
+    this.rebuildVpnLabelBindings();
+    this.ldp.arm();
+  }
+
   private rebuildVpnLabelBindings(): void {
     this.mpls.removeBySource("vpn");
     for (const vrf of this.vrfs.configurationsSnapshot()) {
@@ -3195,11 +3211,11 @@ export class Router extends Device {
       }));
   }
 
-  private connectedVrfInterfaceFor(vrfId: string, address: Ipv4): L3Interface | undefined {
+  private connectedVrfInterfaceFor(vrfId: string, address: Ipv4, requireOperational = true): L3Interface | undefined {
     const value = ipToInt(address);
     return [...this.l3.values()]
       .filter((iface): iface is L3Interface & { ip: Ipv4 } =>
-        iface.vrfId === vrfId && iface.ip !== undefined && iface.physical.operationalUp)
+        iface.vrfId === vrfId && iface.ip !== undefined && (!requireOperational || iface.physical.operationalUp))
       .sort((a, b) => b.name.localeCompare(a.name))
       .find((iface) => ((value & iface.maskInt) >>> 0) === ((ipToInt(iface.ip) & iface.maskInt) >>> 0));
   }

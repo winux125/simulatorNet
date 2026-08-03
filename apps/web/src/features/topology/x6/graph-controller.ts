@@ -42,6 +42,11 @@ import {
   vpnTunnelEdgeId,
   type VpnTunnelOverlayView,
 } from "./vpn-tunnel-overlay";
+import {
+  l3VpnEdgeAppearance,
+  l3VpnEdgeId,
+  type L3VpnRelationView,
+} from "./l3vpn-overlay";
 
 export interface CreateControllerOptions {
   container: HTMLElement;
@@ -699,6 +704,7 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       ...(state.view.wirelessAssociations ?? []).map((association) =>
         wirelessAssociationEdgeId(association.id)),
       ...(state.view.vpnTunnels ?? []).map((tunnel) => vpnTunnelEdgeId(tunnel.id)),
+      ...(state.view.l3VpnRelations ?? []).map((relation) => l3VpnEdgeId(relation.id)),
       ...annotations
         .filter((annotation) => annotation.type === "line" || annotation.type === "arrow")
         .map((annotation) => annotationCellId(annotation.id)),
@@ -717,9 +723,88 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     for (const tunnel of state.view.vpnTunnels ?? []) {
       renderVpnTunnel(tunnel);
     }
+    for (const relation of state.view.l3VpnRelations ?? []) {
+      renderL3VpnRelation(relation);
+    }
     for (const cell of graph.getEdges()) {
       if (!linkIds.has(cell.id)) graph.removeCell(cell);
     }
+  }
+
+  /** Presentation-only logical VPN relation; never a physical X6 port edge. */
+  function renderL3VpnRelation(relation: L3VpnRelationView): void {
+    if (!graph.getCellById(relation.localDeviceId) || !graph.getCellById(relation.remoteDeviceId)) return;
+    const appearance = l3VpnEdgeAppearance(relation);
+    const endpoint = (cell: string) => ({
+      cell,
+      anchor: { name: "center" },
+      connectionPoint: { name: "boundary" },
+    });
+    const attrs = {
+      line: {
+        stroke: appearance.stroke,
+        strokeWidth: 2,
+        strokeDasharray: appearance.dashArray,
+        sourceMarker: null,
+        targetMarker: null,
+        pointerEvents: "none",
+        "data-l3vpn-relation": relation.id,
+        "data-l3vpn-state": relation.state,
+      },
+      wrap: { stroke: "transparent", strokeWidth: 0, pointerEvents: "none" },
+    };
+    const labels = [{
+      attrs: {
+        label: {
+          text: appearance.label,
+          fill: "var(--color-text-muted, #52657a)",
+          fontSize: 10,
+          fontWeight: 600,
+          pointerEvents: "none",
+        },
+        body: {
+          fill: "var(--color-surface-raised, #f4f7fa)",
+          stroke: appearance.stroke,
+          strokeWidth: 1,
+          rx: 4,
+          ry: 4,
+          ref: "label",
+          refWidth: "120%",
+          refHeight: "150%",
+          refX: "-10%",
+          refY: "-25%",
+          pointerEvents: "none",
+        },
+      },
+      position: { distance: 0.5, offset: 18 },
+    }];
+    const metadata = {
+      kind: "l3vpn-relation",
+      localDeviceId: relation.localDeviceId,
+      remoteDeviceId: relation.remoteDeviceId,
+      state: relation.state,
+    };
+    const existing = graph.getCellById(appearance.id);
+    if (existing?.isEdge()) {
+      existing.setSource(endpoint(relation.localDeviceId));
+      existing.setTarget(endpoint(relation.remoteDeviceId));
+      existing.setData(metadata, { overwrite: true });
+      existing.setAttrs(attrs);
+      existing.setLabels(labels);
+      existing.setConnector("smooth");
+      existing.setZIndex(TOPOLOGY_EDGE_Z_INDEX - 3);
+      return;
+    }
+    graph.addEdge({
+      id: appearance.id,
+      source: endpoint(relation.localDeviceId),
+      target: endpoint(relation.remoteDeviceId),
+      data: metadata,
+      attrs,
+      labels,
+      connector: { name: "smooth" },
+      zIndex: TOPOLOGY_EDGE_Z_INDEX - 3,
+    });
   }
 
   /**

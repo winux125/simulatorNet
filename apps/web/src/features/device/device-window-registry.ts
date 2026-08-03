@@ -31,6 +31,9 @@ export type DeviceWindowSectionId =
   | "etherchannel-config"
   | "ospf-config"
   | "bgp-config"
+  | "mpls-config"
+  | "vrfs-config"
+  | "l3vpn-config"
   | "acl-config"
   | "nat-config"
   | "zones-config"
@@ -51,6 +54,11 @@ export type DeviceWindowSectionId =
   | "mac-runtime"
   | "protocols-runtime"
   | "bgp-runtime"
+  | "mpls-runtime"
+  | "ldp-runtime"
+  | "vrf-runtime"
+  | "vpnv4-runtime"
+  | "vpn-label-runtime"
   | "sessions-runtime"
   | "nat-runtime"
   | "firewall-runtime"
@@ -158,6 +166,11 @@ function configSections(type: DeviceType): DeviceWindowSectionDefinition[] {
     sections.push({ id: "ospf-config", label: "OSPFv2 & OSPFv3", group: "Routing" });
     sections.push({ id: "bgp-config", label: "BGP", group: "Routing" });
   }
+  if (type === "router") {
+    sections.push({ id: "mpls-config", label: "MPLS & LDP", group: "Routing" });
+    sections.push({ id: "vrfs-config", label: "VRFs", group: "Routing" });
+    sections.push({ id: "l3vpn-config", label: "L3VPN", group: "Routing" });
+  }
   if (deviceTypeHasCapability(type, "packet-policy")) {
     sections.push({ id: "acl-config", label: "ACL", group: "Security" });
   }
@@ -198,6 +211,13 @@ function monitorSections(type: DeviceType): DeviceWindowSectionDefinition[] {
     sections.push({ id: "neighbors-runtime", label: "ARP / NDP" });
     sections.push({ id: "protocols-runtime", label: "Protocol Neighbors" });
     if (type === "router" || type === "l3-switch") sections.push({ id: "bgp-runtime", label: "BGP" });
+    if (type === "router") {
+      sections.push({ id: "mpls-runtime", label: "MPLS Forwarding", group: "MPLS & L3VPN" });
+      sections.push({ id: "ldp-runtime", label: "LDP Neighbors & Bindings", group: "MPLS & L3VPN" });
+      sections.push({ id: "vrf-runtime", label: "VRF Routes", group: "MPLS & L3VPN" });
+      sections.push({ id: "vpnv4-runtime", label: "VPNv4 Routes", group: "MPLS & L3VPN" });
+      sections.push({ id: "vpn-label-runtime", label: "VPN Labels", group: "MPLS & L3VPN" });
+    }
   }
   if (deviceTypeHasCapability(type, "layer2-switching")) {
     sections.push({ id: "mac-runtime", label: "MAC Table" });

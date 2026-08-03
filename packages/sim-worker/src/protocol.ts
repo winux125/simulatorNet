@@ -53,6 +53,11 @@ import type {
   BgpRoute,
   BgpRibEntry,
   RoutePolicyCounter,
+  MplsForwardingEntry,
+  LdpNeighborSummary,
+  LdpLabelBinding,
+  Vpnv4Route,
+  VrfRoute,
 } from "@sim/sim-core";
 export type { ServerServiceRuntimeSnapshot } from "@sim/sim-core";
 
@@ -116,6 +121,24 @@ export interface LabUiVpnTunnel {
   state: "gre" | "protected" | "negotiating" | "failed";
 }
 
+/** Runtime-derived label operations shown on physical topology links. */
+export interface LabUiMplsLinkLabel {
+  linkId: string;
+  label: string;
+}
+
+/**
+ * Logical PE-to-PE L3VPN relation. This is a presentation overlay only: it is
+ * not a physical link and carries no interface identity.
+ */
+export interface LabUiL3VpnRelation {
+  id: string;
+  localDeviceId: string;
+  remoteDeviceId: string;
+  label: string;
+  state: "operational" | "control-plane-only" | "unavailable";
+}
+
 export interface LabUiSnapshot {
   labId: string;
   title: string;
@@ -126,6 +149,8 @@ export interface LabUiSnapshot {
   links: LabUiLink[];
   wirelessAssociations?: LabUiWirelessAssociation[];
   vpnTunnels?: LabUiVpnTunnel[];
+  mplsLinkLabels?: LabUiMplsLinkLabel[];
+  l3VpnRelations?: LabUiL3VpnRelation[];
 }
 
 export interface SimulationTraceEvent {
@@ -297,6 +322,10 @@ export interface HostNetworkWarning {
     | "qos-policy"
     | "qos-queue-overflow"
     | "qos-policer-drop"
+    | "mpls-interface-down"
+    | "ldp-router-id-unavailable"
+    | "vpnv4-extended-community-disabled"
+    | "l3vpn-transport-label-unavailable"
     | "bgp";
   message: string;
   address?: string;
@@ -611,6 +640,26 @@ export interface BgpStateView {
   policyCounters: RoutePolicyCounter[];
 }
 
+/** Router-only MPLS/LDP/L3VPN inspection. Runtime tables are never persisted. */
+export interface MplsL3VpnView {
+  deviceId: string;
+  interfaces: Array<{ interfaceId: string; enabled: boolean; operational: boolean }>;
+  forwardingTable: MplsForwardingEntry[];
+  ldpRouterId?: string;
+  ldpNeighbors: LdpNeighborSummary[];
+  ldpBindings: LdpLabelBinding[];
+  vrfs: Array<{
+    id: string;
+    name: string;
+    routeDistinguisher: string;
+    importRouteTargets: string[];
+    exportRouteTargets: string[];
+  }>;
+  vrfRoutes: Record<string, VrfRoute[]>;
+  vpnv4Routes: Vpnv4Route[];
+  vpnLabelBindings: Array<{ label: number; vrfId: string }>;
+}
+
 /**
  * Read-only management views. Everything here is runtime state recomputed from
  * the engine on demand: it never reaches a `LabDocument`, a submission or the
@@ -791,6 +840,17 @@ export type SimWorkerRequest =
   | { type: "GET_ROUTE_MAP_STATUS"; requestId: string; deviceId: string }
   | { type: "RESET_BGP_NEIGHBOR"; requestId: string; deviceId: string; neighbor: string }
   | { type: "RESET_BGP_PROCESS"; requestId: string; deviceId: string }
+  // --- M10.11 Router-only MPLS, LDP and L3VPN inspection ---
+  | { type: "GET_MPLS_INTERFACES"; requestId: string; deviceId: string }
+  | { type: "GET_MPLS_FORWARDING_TABLE"; requestId: string; deviceId: string }
+  | { type: "GET_LDP_NEIGHBORS"; requestId: string; deviceId: string }
+  | { type: "GET_LDP_BINDINGS"; requestId: string; deviceId: string }
+  | { type: "GET_VRFS"; requestId: string; deviceId: string }
+  | { type: "GET_VRF_ROUTES"; requestId: string; deviceId: string; vrfId?: string }
+  | { type: "GET_VPNV4_TABLE"; requestId: string; deviceId: string }
+  | { type: "GET_VPN_LABEL_BINDINGS"; requestId: string; deviceId: string }
+  | { type: "RESTART_LDP"; requestId: string; deviceId: string }
+  | { type: "RESET_MPLS_RUNTIME"; requestId: string; deviceId: string }
   // --- M10.7 management plane (inspection + bounded runtime actions) ---
   | { type: "GET_REMOTE_SESSIONS"; requestId: string; deviceId: string }
   | { type: "CLEAR_REMOTE_LINE"; requestId: string; deviceId: string; line: number }
@@ -848,6 +908,7 @@ export type SimWorkerPayload =
   | OspfDatabaseView
   | Ospfv3View
   | BgpStateView
+  | MplsL3VpnView
   | RemoteSessionsView
   | AaaStatusResponse
   | SnmpAgentStatusView
@@ -955,6 +1016,16 @@ export interface SimWorkerPayloadByType {
   GET_ROUTE_MAP_STATUS: BgpStateView;
   RESET_BGP_NEIGHBOR: BgpStateView;
   RESET_BGP_PROCESS: BgpStateView;
+  GET_MPLS_INTERFACES: MplsL3VpnView;
+  GET_MPLS_FORWARDING_TABLE: MplsL3VpnView;
+  GET_LDP_NEIGHBORS: MplsL3VpnView;
+  GET_LDP_BINDINGS: MplsL3VpnView;
+  GET_VRFS: MplsL3VpnView;
+  GET_VRF_ROUTES: MplsL3VpnView;
+  GET_VPNV4_TABLE: MplsL3VpnView;
+  GET_VPN_LABEL_BINDINGS: MplsL3VpnView;
+  RESTART_LDP: MplsL3VpnView;
+  RESET_MPLS_RUNTIME: MplsL3VpnView;
   GET_REMOTE_SESSIONS: RemoteSessionsView;
   CLEAR_REMOTE_LINE: RemoteSessionsView;
   GET_AAA_STATUS: AaaStatusResponse;

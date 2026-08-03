@@ -86,6 +86,16 @@ function labels(view: LinkView | undefined, anchors: AdaptiveLinkAnchors | undef
       },
     });
   }
+  if (view.mplsLabel) {
+    result.push({
+      attrs: edgeLabelAttrs(view.mplsLabel, "diagram"),
+      position: {
+        distance: view.diagramLabel?.text ? 0.62 : 0.5,
+        offset: view.diagramLabel?.text ? 14 : -12,
+        options: { keepGradient: true, ensureLegibility: true },
+      },
+    });
+  }
   if (view.targetLabel) {
     result.push({
       attrs: edgeLabelAttrs(view.targetLabel),

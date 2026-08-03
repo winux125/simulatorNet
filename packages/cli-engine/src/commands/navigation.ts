@@ -118,10 +118,23 @@ export const navigationCommands: CommandSpec[] = [
     modes: [
       "config-if", "config-vlan", "config-acl", "config-line", "config-aaa-server",
       "config-cmap", "config-pmap", "config-router", "config-route-map",
+      "config-vrf",
       "config-ikev2-proposal", "config-ikev2-peer", "config-ipsec-profile",
     ],
     device: "network",
     run: (s) => s.enter("config"),
+  },
+  {
+    pattern: "exit-address-family",
+    modes: ["config-router"],
+    device: "router",
+    run: (s) => {
+      if (s.routerCtx?.family !== "bgp" || s.routerCtx.addressFamily === undefined) {
+        throw new InvalidModeError("No BGP address-family is selected");
+      }
+      s.routerCtx.addressFamily = undefined;
+      s.routerCtx.vrfId = undefined;
+    },
   },
   // A policy-map class exits back into its policy map, not to global config.
   {
@@ -135,6 +148,7 @@ export const navigationCommands: CommandSpec[] = [
     modes: [
       "config", "config-if", "config-vlan", "config-acl", "config-line", "config-aaa-server",
       "config-cmap", "config-pmap", "config-pmap-c", "config-router", "config-route-map",
+      "config-vrf",
       "config-ikev2-proposal", "config-ikev2-peer", "config-ipsec-profile",
     ],
     device: "network",
@@ -142,6 +156,22 @@ export const navigationCommands: CommandSpec[] = [
   },
 
   // --- global configuration ---
+  {
+    pattern: "vrf definition {name}",
+    usage: "vrf definition <name>",
+    modes: ["config"],
+    device: "router",
+    run: (s, p) => {
+      if (!isRouter(s.device)) throw new InvalidModeError("VRF configuration is supported only on a Router");
+      const existing = s.device.vrfConfigurations().find((vrf) => vrf.name === p.name || vrf.id === p.name);
+      s.vrfCtx = {
+        id: existing?.id ?? p.name!,
+        name: existing?.name ?? p.name!,
+        routeDistinguisher: existing?.routeDistinguisher,
+      };
+      s.enter("config-vrf");
+    },
+  },
   {
     pattern: "hostname {name}",
     modes: ["config"],

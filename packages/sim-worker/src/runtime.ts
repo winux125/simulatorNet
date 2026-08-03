@@ -75,6 +75,8 @@ import type {
   LabUiInterface,
   LabUiNode,
   LabUiSnapshot,
+  LabUiL3VpnRelation,
+  LabUiMplsLinkLabel,
   LabUiVpnTunnel,
   PacketExecutionMode,
   SimWorkerEvent,
@@ -94,6 +96,7 @@ import type {
   VpnTunnelView,
   LinkPerformanceView,
   BgpStateView,
+  MplsL3VpnView,
   Ospfv3View,
   RemoteSessionsView,
   SnmpOperationView,
@@ -455,6 +458,30 @@ export class SimulationWorkerRuntime {
         this.requireOspf(deviceId).bgp.restart(neighbor);
         this.runProtocolConvergence();
         return this.bgpState(deviceId);
+      }
+      case "GET_MPLS_INTERFACES":
+      case "GET_MPLS_FORWARDING_TABLE":
+      case "GET_LDP_NEIGHBORS":
+      case "GET_LDP_BINDINGS":
+      case "GET_VRFS":
+      case "GET_VRF_ROUTES":
+      case "GET_VPNV4_TABLE":
+      case "GET_VPN_LABEL_BINDINGS":
+        return this.mplsL3VpnState(requireString(request, "deviceId"));
+      case "RESTART_LDP": {
+        const deviceId = requireString(request, "deviceId");
+        const router = this.requireMplsRouter(deviceId);
+        router.ldp.resetRuntime();
+        router.ldp.arm();
+        this.runProtocolConvergence();
+        return this.mplsL3VpnState(deviceId);
+      }
+      case "RESET_MPLS_RUNTIME": {
+        const deviceId = requireString(request, "deviceId");
+        const router = this.requireMplsRouter(deviceId);
+        router.resetMplsRuntime();
+        this.runProtocolConvergence();
+        return this.mplsL3VpnState(deviceId);
       }
       case "GET_REMOTE_SESSIONS":
         return this.remoteSessions(requireString(request, "deviceId"));
@@ -1249,7 +1276,94 @@ export class SimulationWorkerRuntime {
         }];
       }),
       vpnTunnels: this.vpnTunnelOverlays(),
+      mplsLinkLabels: this.mplsLinkLabelOverlays(),
+      l3VpnRelations: this.l3VpnRelationOverlays(),
     };
+  }
+
+  /**
+   * Project the runtime LFIB onto the real physical links. The label text is
+   * presentation only; the link and interface identities remain those of the
+   * LabDocument.
+   */
+  private mplsLinkLabelOverlays(): LabUiMplsLinkLabel[] {
+    const built = this.requireBuiltLab();
+    const document = this.document;
+    if (!document) return [];
+    const result: LabUiMplsLinkLabel[] = [];
+    for (const link of [...document.topology.links].sort((a, b) => a.id.localeCompare(b.id))) {
+      const descriptions: string[] = [];
+      for (const endpoint of [link.a, link.b]) {
+        const device = built.getDevice(endpoint.node);
+        if (!(device instanceof Router) || device.deviceType !== "router") continue;
+        for (const entry of device.mpls.forwardingTable()) {
+          if (entry.outgoingInterfaceId !== endpoint.iface) continue;
+          const operation = entry.operation.type === "swap"
+            ? `swap ${entry.incomingLabel}\u2192${entry.operation.outgoingLabel}`
+            : entry.operation.type === "pop"
+              ? `pop ${entry.incomingLabel}`
+              : entry.operation.type === "push"
+                ? `push ${entry.operation.labels.join("/")}`
+                : undefined;
+          if (operation) descriptions.push(`${device.name} ${operation}`);
+        }
+      }
+      const unique = [...new Set(descriptions)].sort();
+      if (unique.length > 0) result.push({ linkId: link.id, label: unique.slice(0, 4).join(" \u00b7 ") });
+    }
+    return result;
+  }
+
+  /**
+   * Derive one logical overlay per VPNv4-enabled PE pair. It reports control
+   * plane state separately from LDP transport availability and never becomes a
+   * structural topology edge.
+   */
+  private l3VpnRelationOverlays(): LabUiL3VpnRelation[] {
+    const built = this.requireBuiltLab();
+    const owners = new Map<string, Router>();
+    for (const device of built.devices.values()) {
+      if (!(device instanceof Router) || device.deviceType !== "router") continue;
+      for (const row of device.interfaceSummaries()) {
+        if (row.ip !== undefined && !owners.has(row.ip)) owners.set(row.ip, device);
+      }
+    }
+    const result: LabUiL3VpnRelation[] = [];
+    const seen = new Set<string>();
+    for (const local of built.devices.values()) {
+      if (!(local instanceof Router) || local.deviceType !== "router") continue;
+      const configuration = local.bgp.configurationSnapshot();
+      const summaries = new Map(local.bgp.summaries().map((summary) => [summary.address, summary]));
+      for (const neighbor of configuration?.neighbors ?? []) {
+        if (!neighbor.vpnv4Activated) continue;
+        const remote = owners.get(neighbor.address);
+        if (!remote || remote.id === local.id) continue;
+        const key = [local.id, remote.id].sort().join("\u0000");
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const remoteVrfs = remote.vrfConfigurations();
+        const vrfNames = local.vrfConfigurations()
+          .filter((vrf) => remoteVrfs.some((candidate) =>
+            vrf.exportRouteTargets.some((target) => candidate.importRouteTargets.includes(target))
+            || candidate.exportRouteTargets.some((target) => vrf.importRouteTargets.includes(target))))
+          .map((vrf) => vrf.name)
+          .sort();
+        const established = summaries.get(neighbor.address)?.state === "established";
+        const transportAvailable = local.ldp.outgoingLabelFor(`${neighbor.address}/32`) !== undefined;
+        result.push({
+          id: `l3vpn:${key.replace("\u0000", ":")}`,
+          localDeviceId: local.id,
+          remoteDeviceId: remote.id,
+          label: vrfNames.length > 0 ? `L3VPN ${vrfNames.join(", ")}` : "L3VPN",
+          state: !established
+            ? "unavailable"
+            : transportAvailable
+              ? "operational"
+              : "control-plane-only",
+        });
+      }
+    }
+    return result.sort((left, right) => left.id.localeCompare(right.id));
   }
 
   /**
@@ -1792,6 +1906,41 @@ export class SimulationWorkerRuntime {
         for (const problem of device.qosProblems()) {
           warnings.push({ code: "qos-policy", message: problem.message, deviceIds: [device.id] });
         }
+        if (device instanceof Router && device.deviceType === "router") {
+          const mplsInterfaces = device.mplsInterfaceSummaries();
+          for (const iface of mplsInterfaces.filter((entry) => entry.enabled && !entry.operational)) {
+            warnings.push({
+              code: "mpls-interface-down",
+              message: `${device.name} MPLS interface ${iface.interfaceId} is not operational.`,
+              deviceIds: [device.id],
+            });
+          }
+          if (mplsInterfaces.some((entry) => entry.enabled) && device.ldp.routerId() === undefined) {
+            warnings.push({
+              code: "ldp-router-id-unavailable",
+              message: `${device.name} cannot start LDP because no router ID is available.`,
+              deviceIds: [device.id],
+            });
+          }
+          const bgp = device.bgp.configurationSnapshot();
+          const summaries = new Map(device.bgp.summaries().map((entry) => [entry.address, entry]));
+          for (const neighbor of bgp?.neighbors ?? []) {
+            if (!neighbor.vpnv4Activated) continue;
+            if (!neighbor.sendCommunityExtended) warnings.push({
+              code: "vpnv4-extended-community-disabled",
+              message: `${device.name} VPNv4 neighbor ${neighbor.address} is not sending extended communities; route targets cannot be imported.`,
+              deviceIds: [device.id],
+            });
+            if (
+              summaries.get(neighbor.address)?.state === "established"
+              && device.ldp.outgoingLabelFor(`${neighbor.address}/32`) === undefined
+            ) warnings.push({
+              code: "l3vpn-transport-label-unavailable",
+              message: `${device.name} has VPNv4 control-plane reachability to ${neighbor.address}, but no LDP transport label.`,
+              deviceIds: [device.id],
+            });
+          }
+        }
         for (const iface of device.interfaces.values()) {
           const snapshot = iface.egress.snapshot();
           const tailDrops = snapshot.dropsByReason["tail-drop"] ?? 0;
@@ -2202,6 +2351,7 @@ export class SimulationWorkerRuntime {
         ...configuration,
         neighbors: [...(configuration.neighbors ?? [])],
         networks: [...(configuration.networks ?? [])],
+        vrfAddressFamilies: [...(configuration.vrfAddressFamilies ?? [])],
       },
       neighbors: bgp.summaries(),
       routes: bgp.routes(),
@@ -2209,6 +2359,51 @@ export class SimulationWorkerRuntime {
       adjRibOut: bgp.adjRibOutEntries(),
       ribFailures: bgp.ribFailureSummaries(),
       policyCounters: bgp.routingPolicy.counterSummaries(),
+    };
+  }
+
+  private requireMplsRouter(deviceId: string): Router {
+    const device = this.requireBuiltLab().getDevice(deviceId);
+    if (device instanceof Router && device.deviceType === "router") return device;
+    throw new SimulationWorkerError("mpls-not-supported", `Device '${deviceId}' is not an MPLS Router`);
+  }
+
+  private mplsL3VpnState(deviceId: string): MplsL3VpnView {
+    const router = this.requireMplsRouter(deviceId);
+    const vrfs = router.vrfConfigurations();
+    return {
+      deviceId,
+      interfaces: router.mplsInterfaceSummaries().map((entry) => ({ ...entry })),
+      forwardingTable: router.mpls.forwardingTable().map((entry) => ({
+        ...entry,
+        operation: entry.operation.type === "push"
+          ? { ...entry.operation, labels: [...entry.operation.labels] }
+          : { ...entry.operation },
+      })),
+      ldpRouterId: router.ldp.routerId(),
+      ldpNeighbors: router.ldp.neighborSummaries().map((entry) => ({ ...entry })),
+      ldpBindings: router.ldp.labelBindings().map((entry) => ({
+        ...entry,
+        remoteLabels: { ...entry.remoteLabels },
+        implicitNullNeighborIds: [...entry.implicitNullNeighborIds],
+      })),
+      vrfs: vrfs.map((vrf) => ({
+        id: vrf.id,
+        name: vrf.name,
+        routeDistinguisher: vrf.routeDistinguisher,
+        importRouteTargets: [...vrf.importRouteTargets],
+        exportRouteTargets: [...vrf.exportRouteTargets],
+      })),
+      vrfRoutes: Object.fromEntries(vrfs.map((vrf) => [vrf.id, router.vrfRoutingTable(vrf.id).map((route) => ({
+        ...route,
+        routeTargets: route.routeTargets ? [...route.routeTargets] : undefined,
+      }))])),
+      vpnv4Routes: router.bgp.vpnv4Routes().map((route) => ({
+        ...route,
+        routeTargets: [...route.routeTargets],
+        path: { ...route.path, asPath: [...route.path.asPath] },
+      })),
+      vpnLabelBindings: router.vpnLabelBindings().map((entry) => ({ ...entry })),
     };
   }
 

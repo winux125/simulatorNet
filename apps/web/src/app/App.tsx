@@ -81,6 +81,8 @@ const BottomPanelStrip = lazy(() => import("../features/dock/BottomDock").then((
 const STEP_EXPLANATION_KEY = "simulatornet.stepModeExplained";
 const WIRELESS_ASSOCIATIONS_KEY = "simulatornet.wirelessAssociations";
 const VPN_TUNNEL_OVERLAY_KEY = "simulatornet.vpnTunnelOverlay";
+const MPLS_LABEL_OVERLAY_KEY = "simulatornet.mplsLabelOverlay";
+const L3VPN_OVERLAY_KEY = "simulatornet.l3VpnOverlay";
 
 interface AppProps { client: SimulatorClient }
 
@@ -234,6 +236,18 @@ export function App({ client }: AppProps) {
   const chooseVpnTunnels = (shown: boolean) => {
     window.localStorage.setItem(VPN_TUNNEL_OVERLAY_KEY, shown ? "show" : "hide");
     setVpnTunnelsShown(shown);
+  };
+  const [mplsLabelsShown, setMplsLabelsShown] = useState(() =>
+    window.localStorage.getItem(MPLS_LABEL_OVERLAY_KEY) === "show");
+  const chooseMplsLabels = (shown: boolean) => {
+    window.localStorage.setItem(MPLS_LABEL_OVERLAY_KEY, shown ? "show" : "hide");
+    setMplsLabelsShown(shown);
+  };
+  const [l3VpnShown, setL3VpnShown] = useState(() =>
+    window.localStorage.getItem(L3VPN_OVERLAY_KEY) === "show");
+  const chooseL3Vpn = (shown: boolean) => {
+    window.localStorage.setItem(L3VPN_OVERLAY_KEY, shown ? "show" : "hide");
+    setL3VpnShown(shown);
   };
   const chooseTerminalAppearance = (id: TerminalAppearance) => { applyTerminalAppearance(id); setTerminalAppearanceState(id); };
   // Local-only terminal preference: never part of LabDocument or a submission.
@@ -803,6 +817,14 @@ export function App({ client }: AppProps) {
           { id: "vpn-tunnels-show", label: "Show", checked: vpnTunnelsShown, onSelect: () => chooseVpnTunnels(true) },
           { id: "vpn-tunnels-hide", label: "Hide", checked: !vpnTunnelsShown, onSelect: () => chooseVpnTunnels(false) },
         ] },
+        { id: "view-mpls-labels", label: "MPLS Labels", submenu: [
+          { id: "mpls-labels-show", label: "Show", checked: mplsLabelsShown, onSelect: () => chooseMplsLabels(true) },
+          { id: "mpls-labels-hide", label: "Hide", checked: !mplsLabelsShown, onSelect: () => chooseMplsLabels(false) },
+        ] },
+        { id: "view-l3vpn", label: "L3VPN", submenu: [
+          { id: "l3vpn-show", label: "Show", checked: l3VpnShown, onSelect: () => chooseL3Vpn(true) },
+          { id: "l3vpn-hide", label: "Hide", checked: !l3VpnShown, onSelect: () => chooseL3Vpn(false) },
+        ] },
       ] },
       { id: "view-bottom-panel", label: "Bottom Panel", icon: <PanelBottom size={14} />, submenu: [
         { id: "bottom-panel-show", label: "Show", shortcut: "Ctrl J", checked: bottomPanelExpanded, disabled: !labOpen, onSelect: () => setBottomPanel("expanded") },
@@ -1261,6 +1283,8 @@ export function App({ client }: AppProps) {
       portLabelMode: workspace.portLabelMode,
       wirelessAssociationsShown,
       vpnTunnelsShown,
+      mplsLabelsShown,
+      l3VpnShown,
       fitRequest: workspace.fitRequest,
       zoomResetRequest: workspace.zoomResetRequest,
       zoomInRequest: workspace.zoomInRequest,

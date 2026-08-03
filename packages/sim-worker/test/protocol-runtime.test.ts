@@ -12,6 +12,7 @@ import type {
   SimWorkerRequest,
   SpanningTreeView,
   BgpStateView,
+  MplsL3VpnView,
 } from "../src/protocol";
 
 const switchPorts = (count: number) =>
@@ -122,6 +123,64 @@ function runtimeFor(document: LabDocument) {
   send({ type: "RUN_UNTIL_IDLE" } as Omit<SimWorkerRequest, "requestId">);
   return { runtime, send };
 }
+
+function labWithMplsRouters(): LabDocument {
+  const router = (hostname: string, routerId: string, address: string) => ({
+    kind: "router" as const,
+    hostname,
+    interfaces: [{ id: "Gi0/0", routed: true, shutdown: false, ipv4: { address, prefixLength: 30 }, mplsEnabled: true }],
+    loopbacks: [{ id: 0, shutdown: false, ipv4: { address: routerId, prefixLength: 32 } }],
+    ospf: {
+      processId: 1, routerId,
+      networks: [{ network: "0.0.0.0", wildcard: "255.255.255.255", area: 0 as const }],
+      passiveInterfaces: ["Loopback0"],
+      interfaces: [{ interfaceId: "Gi0/0", networkType: "point-to-point" as const }],
+    },
+    ldp: { routerIdInterface: "Loopback0" },
+  });
+  return canonicalizeLabDocument({
+    schemaVersion: 1, id: "worker-mpls", title: "Worker MPLS", simulation: { seed: 10_111 },
+    topology: {
+      schemaVersion: 1,
+      nodes: [
+        { id: "r1", kind: "router", name: "R1", interfaces: [{ id: "Gi0/0" }] },
+        { id: "r2", kind: "router", name: "R2", interfaces: [{ id: "Gi0/0" }] },
+      ],
+      links: [{ id: "core", a: { node: "r1", iface: "Gi0/0" }, b: { node: "r2", iface: "Gi0/0" } }],
+    },
+    configurations: { r1: router("R1", "1.1.1.1", "192.0.2.1"), r2: router("R2", "2.2.2.2", "192.0.2.2") },
+  } as unknown as LabDocument);
+}
+
+describe("Worker MPLS, LDP and L3VPN views", () => {
+  it("returns plain JSON inspection with Operational LDP and deterministic LFIB data", () => {
+    const { send } = runtimeFor(labWithMplsRouters());
+    const view = send<MplsL3VpnView>({ type: "GET_MPLS_FORWARDING_TABLE", deviceId: "r1" } as never);
+    expect(view.interfaces).toEqual([{ interfaceId: "Gi0/0", enabled: true, operational: true }]);
+    expect(view.ldpNeighbors).toEqual([expect.objectContaining({ routerId: "2.2.2.2", state: "operational" })]);
+    expect(view.ldpBindings.length).toBeGreaterThan(0);
+    expect(JSON.parse(JSON.stringify(view))).toEqual(view);
+  });
+
+  it("restarts LDP and reconstructs the same label bindings", () => {
+    const { send } = runtimeFor(labWithMplsRouters());
+    const before = send<MplsL3VpnView>({ type: "GET_LDP_BINDINGS", deviceId: "r1" } as never);
+    const after = send<MplsL3VpnView>({ type: "RESTART_LDP", deviceId: "r1" } as never);
+    expect(after.ldpNeighbors.map((entry) => entry.state)).toEqual(["operational"]);
+    expect(after.ldpBindings).toEqual(before.ldpBindings);
+    const reset = send<MplsL3VpnView>({ type: "RESET_MPLS_RUNTIME", deviceId: "r1" } as never);
+    expect(reset.ldpBindings).toEqual(before.ldpBindings);
+    expect(reset.forwardingTable).toEqual(after.forwardingTable);
+  });
+
+  it("rejects MPLS inspection for a non-Router with a stable typed error", () => {
+    const runtime = createSimulationWorkerRuntime();
+    const initialized = runtime.handleRequest({ type: "INITIALIZE_LAB", requestId: "init", document: labWithSwitches() });
+    expect(initialized.type).toBe("REQUEST_SUCCEEDED");
+    const response = runtime.handleRequest({ type: "GET_MPLS_INTERFACES", requestId: "inspect", deviceId: "sw1" });
+    expect(response).toMatchObject({ type: "REQUEST_FAILED", error: { code: "mpls-not-supported" } });
+  });
+});
 
 describe("Worker spanning-tree and EtherChannel views", () => {
   it("returns the spanning-tree state as plain JSON", () => {

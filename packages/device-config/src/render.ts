@@ -436,6 +436,21 @@ function bgpProcessLines(bgp: BgpProcessConfig | undefined): string[] {
   for (const network of sorted(bgp.networks, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength)) {
     out.push(` network ${network.network} mask ${maskFromPrefixLength(network.prefixLength)}`);
   }
+  const vpnNeighbors = sorted(bgp.neighbors?.filter((neighbor) => neighbor.vpnv4Activated || neighbor.sendCommunityExtended), (a, b) => byString(a.address, b.address));
+  if (vpnNeighbors.length > 0) {
+    out.push(" address-family vpnv4");
+    for (const neighbor of vpnNeighbors) {
+      if (neighbor.vpnv4Activated) out.push(`  neighbor ${neighbor.address} activate`);
+      if (neighbor.sendCommunityExtended) out.push(`  neighbor ${neighbor.address} send-community extended`);
+    }
+    out.push(" exit-address-family");
+  }
+  for (const family of sorted(bgp.vrfAddressFamilies, (a, b) => byString(a.vrfId, b.vrfId))) {
+    out.push(` address-family ipv4 vrf ${family.vrfId}`);
+    if (family.redistributeConnected) out.push("  redistribute connected");
+    if (family.redistributeStatic) out.push("  redistribute static");
+    out.push(" exit-address-family");
+  }
   out.push("!");
   return out;
 }
@@ -622,9 +637,22 @@ function renderRoutedDevice(config: RouterDeviceConfig | FirewallDeviceConfig | 
   out.push(...qosLines(config.qos));
   out.push(...vpnLines(config.vpn));
 
+  if (config.kind === "router") {
+    if (config.ldp?.routerIdInterface) out.push("mpls label protocol ldp", `mpls ldp router-id ${config.ldp.routerIdInterface} force`, "!");
+    for (const vrf of sorted(config.vrfs, byId)) {
+      out.push(`vrf definition ${vrf.name}`, ` rd ${vrf.routeDistinguisher}`);
+      for (const target of sorted(vrf.importRouteTargets, byString)) out.push(` route-target import ${target}`);
+      for (const target of sorted(vrf.exportRouteTargets, byString)) out.push(` route-target export ${target}`);
+      out.push("!");
+    }
+  }
+
   for (const iface of sorted(config.interfaces, byId)) {
     out.push(`interface ${iface.id}`);
     if (iface.description) out.push(` description ${iface.description}`);
+    // IOS removes an existing address when VRF forwarding is applied, so the
+    // canonical projection always renders VRF membership before addressing.
+    if (config.kind === "router" && iface.vrfId) out.push(` vrf forwarding ${iface.vrfId}`);
     if (iface.ipv4) out.push(` ip address ${iface.ipv4.address} ${maskFromPrefixLength(iface.ipv4.prefixLength)}`);
     else if (iface.routed) out.push(" no ip address");
     out.push(...ipv6Lines(iface.ipv6));
@@ -636,11 +664,13 @@ function renderRoutedDevice(config: RouterDeviceConfig | FirewallDeviceConfig | 
     out.push(...ospfv3InterfaceLines(config.ospfv3, iface.id));
     out.push(...servicePolicyLines(config.qos, iface.id));
     out.push(...discoveryInterfaceLines(config.discovery, iface.id));
+    if (config.kind === "router" && iface.mplsEnabled) out.push(" mpls ip");
     out.push(...adminStateLines(iface.shutdown), "!");
   }
   for (const sub of sorted(config.subinterfaces, byId)) {
     out.push(`interface ${sub.id}`,
       ` encapsulation dot1Q ${sub.vlan}${sub.native ? " native" : ""}`);
+    if (config.kind === "router" && sub.vrfId) out.push(` vrf forwarding ${sub.vrfId}`);
     if (sub.ipv4) out.push(` ip address ${sub.ipv4.address} ${maskFromPrefixLength(sub.ipv4.prefixLength)}`);
     out.push(...ipv6Lines(sub.ipv6));
     out.push(...aclBindingLines(config.aclBindings, sub.id, "ip access-group"));
@@ -675,6 +705,13 @@ function renderRoutedDevice(config: RouterDeviceConfig | FirewallDeviceConfig | 
   out.push(...bgpProcessLines(config.bgp));
   for (const route of sorted(config.staticRoutes, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength)) {
     out.push(`ip route ${route.network} ${maskFromPrefixLength(route.prefixLength)} ${route.nextHop}`);
+  }
+  if (config.kind === "router") {
+    for (const vrf of sorted(config.vrfs, byId)) {
+      for (const route of sorted(vrf.staticRoutes, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength)) {
+        out.push(`ip route vrf ${vrf.id} ${route.network} ${maskFromPrefixLength(route.prefixLength)} ${route.nextHop}`);
+      }
+    }
   }
   for (const route of sorted(config.ipv6StaticRoutes, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength)) {
     out.push(`ipv6 route ${route.network}/${route.prefixLength} ${route.nextHop}`);

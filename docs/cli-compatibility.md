@@ -65,6 +65,26 @@ same deterministic end-host stack.
 | standard/extended IPv4 ACL configuration | Yes | Yes | No | No |
 | `ip access-group`, `show access-lists`, `show ip interface` | Yes | Yes | No | No |
 | NAT/PAT configuration and show commands | Yes | No | No | No |
+| `mpls ip`, LDP and MPLS show commands | Yes | No | No | No |
+| `vrf definition`, `vrf forwarding`, `ip route vrf` | Yes | No | No | No |
+| BGP `address-family vpnv4` / `ipv4 vrf` | Yes | No | No | No |
+
+## MPLS, LDP and L3VPN subset (M10.11)
+
+Router configuration supports `mpls label protocol ldp`,
+`mpls ldp router-id <Loopback> force`, interface `mpls ip`, canonical
+`vrf definition` with `rd` and import/export `route-target`, interface
+`vrf forwarding`, and `ip route vrf`.
+
+The existing BGP process accepts `address-family vpnv4`, neighbor `activate`
+and `send-community extended`, plus `address-family ipv4 vrf <name>` with
+explicit `redistribute connected|static`. Inspection includes `show mpls
+interfaces`, `show mpls ldp neighbor|bindings`, `show mpls forwarding-table`,
+`show vrf`, `show ip route vrf` and `show bgp vpnv4 unicast`.
+
+This is an educational subset, not full IOS parity. Help does not advertise
+MPLS-TE, RSVP, xconnect/pseudowire, VPNv6, EVPN, Segment Routing, route
+reflectors, targeted LDP or PE-CE dynamic routing.
 
 ## Consolidated compatibility matrix
 

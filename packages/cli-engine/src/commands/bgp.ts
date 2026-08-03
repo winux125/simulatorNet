@@ -12,7 +12,7 @@ import {
 import { InvalidModeError, ValidationError } from "../errors/errors";
 import { table } from "../formatter/tables";
 import type { CommandSpec, SessionApi } from "../types";
-import { isOspfDevice, parseIpv4 } from "./helpers";
+import { isOspfDevice, isRouter, parseIpv4 } from "./helpers";
 
 function deviceOf(session: SessionApi): Router | Layer3Switch {
   if (!isOspfDevice(session.device)) throw new InvalidModeError("BGP requires a Router or an L3 Switch");
@@ -128,6 +128,67 @@ function showBgp(session: SessionApi): string {
 }
 
 export const bgpCommands: CommandSpec[] = [
+  {
+    pattern: "address-family vpnv4", modes: ["config-router"], device: "router",
+    run: (s) => {
+      bgpOf(s);
+      s.routerCtx!.addressFamily = "vpnv4-unicast";
+      s.routerCtx!.vrfId = undefined;
+    },
+  },
+  {
+    pattern: "address-family ipv4 vrf {name}", modes: ["config-router"], device: "router",
+    run: (s, p) => {
+      bgpOf(s);
+      if (!isRouter(s.device) || !s.device.vrfConfigurations().some((vrf) => vrf.id === p.name || vrf.name === p.name)) {
+        throw new ValidationError(`VRF '${p.name}' is not defined.`);
+      }
+      const vrf = s.device.vrfConfigurations().find((entry) => entry.id === p.name || entry.name === p.name)!;
+      s.routerCtx!.addressFamily = "ipv4-vrf";
+      s.routerCtx!.vrfId = vrf.id;
+    },
+  },
+  {
+    pattern: "neighbor {address} activate", modes: ["config-router"], device: "router",
+    run: (s, p) => {
+      if (s.routerCtx?.addressFamily !== "vpnv4-unicast") throw new InvalidModeError("Enter 'address-family vpnv4' first");
+      updateNeighbor(s, p.address!, (neighbor) => {
+        if (!neighbor) throw new ValidationError("Configure neighbor remote-as first.");
+        return { ...neighbor, vpnv4Activated: true };
+      });
+    },
+  },
+  {
+    pattern: "neighbor {address} send-community extended", modes: ["config-router"], device: "router",
+    run: (s, p) => {
+      if (s.routerCtx?.addressFamily !== "vpnv4-unicast") throw new InvalidModeError("Enter 'address-family vpnv4' first");
+      updateNeighbor(s, p.address!, (neighbor) => {
+        if (!neighbor) throw new ValidationError("Configure neighbor remote-as first.");
+        return { ...neighbor, sendCommunityExtended: true };
+      });
+    },
+  },
+  {
+    pattern: "redistribute {source}", modes: ["config-router"], device: "router",
+    run: (s, p) => {
+      if (s.routerCtx?.addressFamily !== "ipv4-vrf" || !s.routerCtx.vrfId) throw new InvalidModeError("Enter 'address-family ipv4 vrf <name>' first");
+      if (p.source !== "connected" && p.source !== "static") throw new ValidationError("Only connected and static VRF routes can be redistributed.");
+      updateBgp(s, (configuration) => {
+        const current = configuration.vrfAddressFamilies?.find((family) => family.vrfId === s.routerCtx!.vrfId);
+        return {
+          ...configuration,
+          vrfAddressFamilies: [
+            ...(configuration.vrfAddressFamilies ?? []).filter((family) => family.vrfId !== s.routerCtx!.vrfId),
+            {
+              vrfId: s.routerCtx!.vrfId!,
+              redistributeConnected: p.source === "connected" ? true : current?.redistributeConnected,
+              redistributeStatic: p.source === "static" ? true : current?.redistributeStatic,
+            },
+          ],
+        };
+      });
+    },
+  },
   {
     pattern: "bgp router-id {id}", modes: ["config-router"], device: "ospf",
     run: (s, p) => updateBgp(s, (configuration) => ({ ...configuration, routerId: parseIpv4(p.id!) })),

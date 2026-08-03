@@ -285,3 +285,17 @@ sets, `crypto pki` trustpoints and certificates, IKEv1, `tunnel mode ipsec ipv4`
 and any other tunnel mode, DMVPN/NHRP, GETVPN and NAT traversal — is preserved
 as unparsed warnings rather than approximated, because applying it would imply a
 capability SimulatorNet does not have. See [`vpn-tunnels.md`](vpn-tunnels.md).
+
+## MPLS and Layer 3 VPN configuration (M10.11)
+
+The IOS-like importer recognises Router `mpls ip`, `mpls ldp router-id`,
+`vrf definition`/`ip vrf`, `rd`, import/export `route-target`, interface
+`vrf forwarding`, `ip route vrf`, BGP `address-family vpnv4`, neighbor
+`activate`, `send-community extended`, and `address-family ipv4 vrf` with
+connected/static redistribution. The mapped output remains structured
+configuration; source LFIB, LDP neighbors, labels and learned VPN routes are
+never imported as trusted runtime.
+
+MPLS-TE/RSVP, xconnect/pseudowire/L2VPN, route-reflector commands, VPNv6, EVPN
+and Segment Routing remain in the import report as unsupported lines. They are
+not silently approximated into the M10.11 L3VPN model.

@@ -539,11 +539,16 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
       device.snmp.configure(config.snmp);
       device.consoleAccess.configure(config.consoleAccess);
     }
+    if (config.kind === "router") {
+      for (const vrf of config.vrfs ?? []) device.defineVrf(vrf);
+    }
     for (const iface of config.interfaces) {
       applyPhysical(device, iface);
-      if (iface.routed || iface.ipv4) {
+      if (iface.routed || iface.ipv4 || (config.kind === "router" && (iface.vrfId !== undefined || iface.mplsEnabled))) {
         device.getOrCreateInterface(iface.id);
+        if (config.kind === "router" && iface.vrfId !== undefined) device.assignInterfaceVrf(iface.id, iface.vrfId);
         if (iface.ipv4) device.setInterfaceIp(iface.id, iface.ipv4.address, iface.ipv4.prefixLength);
+        if (config.kind === "router" && iface.mplsEnabled) device.setMplsEnabled(iface.id, true);
       }
       if (iface.ipv6 && iface.ipv6.length > 0) {
         device.getOrCreateInterface(iface.id);
@@ -552,6 +557,7 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
     }
     for (const iface of config.subinterfaces) {
       device.getOrCreateSubinterface(iface.parentInterface, iface.vlan, iface.native);
+      if (config.kind === "router" && iface.vrfId !== undefined) device.assignInterfaceVrf(iface.id, iface.vrfId);
       if (iface.ipv4) device.setInterfaceIp(iface.id, iface.ipv4.address, iface.ipv4.prefixLength);
       for (const address of iface.ipv6 ?? []) {
         device.setInterfaceIpv6(iface.id, address.address, address.prefixLength);
@@ -559,6 +565,11 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
     }
     for (const route of config.staticRoutes) {
       device.addStaticRoute(route.network, route.prefixLength, route.nextHop);
+    }
+    if (config.kind === "router") {
+      for (const vrf of config.vrfs ?? []) {
+        for (const route of vrf.staticRoutes) device.addVrfStaticRoute(vrf.id, route.network, route.prefixLength, route.nextHop);
+      }
     }
     device.setIpv6ForwardingEnabled(config.ipv6UnicastRoutingEnabled ?? false);
     for (const route of config.ipv6StaticRoutes ?? []) {
@@ -614,6 +625,9 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
       device.validateInterfaceCount();
     }
     applyLoopbackConfiguration(device, config.loopbacks ?? []);
+    if (config.kind === "router" && config.ldp?.routerIdInterface !== undefined) {
+      device.configureLdpRouterId(config.ldp.routerIdInterface);
+    }
     // Tunnels need their underlay source addresses, so the VPN is applied after
     // interface addressing and before the routing protocols that may run over it.
     applyVpnConfiguration(device, config.vpn);
@@ -1223,6 +1237,8 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
         routed: l3 !== undefined,
         ipv4: l3?.ip === undefined ? undefined : { address: l3.ip, prefixLength: prefixLength(l3.maskInt) },
         ipv6: serializeStaticIpv6Addresses(ipv6Summaries.get(iface.id)),
+        mplsEnabled: device.deviceType === "router" ? device.mpls.interfaceEnabled(iface.id) || undefined : undefined,
+        vrfId: device.deviceType === "router" ? device.interfaceVrf(iface.id) : undefined,
       };
     }),
     subinterfaces: summaries
@@ -1234,6 +1250,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
         native: iface.native,
         ipv4: iface.ip === undefined ? undefined : { address: iface.ip, prefixLength: prefixLength(iface.maskInt) },
         ipv6: serializeStaticIpv6Addresses(ipv6Summaries.get(iface.name)),
+        vrfId: device.deviceType === "router" ? device.interfaceVrf(iface.name) : undefined,
       })),
     staticRoutes: device.staticRouteConfigurations().map((route) => ({
       network: route.network,
@@ -1265,6 +1282,21 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
         const role = device.natRole(iface.name);
         return role ? [{ interfaceName: iface.name, role }] : [];
       }),
+    ldp: device.deviceType === "router" && device.ldp.configuredRouterIdSource() !== undefined
+      ? { routerIdInterface: device.ldp.configuredRouterIdSource() }
+      : undefined,
+    vrfs: device.deviceType === "router"
+      ? device.vrfConfigurations().map((vrf) => ({
+          ...vrf,
+          importRouteTargets: [...vrf.importRouteTargets],
+          exportRouteTargets: [...vrf.exportRouteTargets],
+          staticRoutes: device.vrfStaticRouteConfigurations(vrf.id).map((route) => ({
+            network: route.network,
+            prefixLength: route.prefixLength,
+            nextHop: route.nextHop!,
+          })),
+        }))
+      : undefined,
     vpn: serializeVpnConfiguration(device),
     discovery: serializeDiscoveryConfiguration(device),
     loopbacks: serializeLoopbackConfiguration(device),

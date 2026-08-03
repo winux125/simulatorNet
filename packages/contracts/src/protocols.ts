@@ -200,6 +200,8 @@ export const BgpNeighborConfigSchema = z.object({
   prefixListOut: z.string().min(1).max(64).optional(),
   routeMapIn: z.string().min(1).max(64).optional(),
   routeMapOut: z.string().min(1).max(64).optional(),
+  vpnv4Activated: z.boolean().optional(),
+  sendCommunityExtended: z.boolean().optional(),
 }).strict();
 export type BgpNeighborConfig = z.infer<typeof BgpNeighborConfigSchema>;
 
@@ -210,8 +212,61 @@ export const BgpProcessConfigSchema = z.object({
   holdTimeSeconds: z.number().int().min(0).max(65_535).optional(),
   neighbors: z.array(BgpNeighborConfigSchema).max(64).default([]),
   networks: z.array(BgpNetworkStatementSchema).max(4_096).default([]),
+  vrfAddressFamilies: z.array(z.object({
+    vrfId: z.string().min(1).max(64),
+    redistributeConnected: z.boolean().optional(),
+    redistributeStatic: z.boolean().optional(),
+  }).strict()).max(256).default([]),
 }).strict();
 export type BgpProcessConfig = z.infer<typeof BgpProcessConfigSchema>;
+
+// --- MPLS, LDP and Layer 3 VPN ------------------------------------------
+
+function validRouteDistinguisher(value: string): boolean {
+  const separator = value.lastIndexOf(":");
+  if (separator <= 0 || separator === value.length - 1) return false;
+  const administrator = value.slice(0, separator);
+  const assignedText = value.slice(separator + 1);
+  if (!/^\d+$/.test(assignedText)) return false;
+  const assigned = Number(assignedText);
+  if (!Number.isSafeInteger(assigned) || assigned < 0 || assigned > 0xffff_ffff) return false;
+  if (administrator.includes(".")) {
+    const octets = administrator.split(".");
+    return octets.length === 4
+      && octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
+      && assigned <= 0xffff;
+  }
+  if (!/^\d+$/.test(administrator)) return false;
+  const asn = Number(administrator);
+  return Number.isSafeInteger(asn) && asn >= 0 && asn <= 0xffff_ffff;
+}
+
+export const RouteDistinguisherSchema = z.string().min(3).max(64).refine(
+  validRouteDistinguisher,
+  "Invalid route distinguisher",
+);
+export const RouteTargetSchema = RouteDistinguisherSchema;
+
+export const LdpConfigSchema = z.object({
+  routerIdInterface: z.string().min(1).max(64).optional(),
+}).strict();
+export type LdpConfig = z.infer<typeof LdpConfigSchema>;
+
+export const VrfStaticRouteConfigSchema = z.object({
+  network: Ipv4Schema,
+  prefixLength: z.number().int().min(0).max(32),
+  nextHop: Ipv4Schema,
+}).strict();
+
+export const VrfConfigSchema = z.object({
+  id: z.string().min(1).max(64),
+  name: z.string().min(1).max(64),
+  routeDistinguisher: RouteDistinguisherSchema,
+  importRouteTargets: z.array(RouteTargetSchema).max(64).default([]),
+  exportRouteTargets: z.array(RouteTargetSchema).max(64).default([]),
+  staticRoutes: z.array(VrfStaticRouteConfigSchema).max(4_096).default([]),
+}).strict();
+export type VrfConfig = z.infer<typeof VrfConfigSchema>;
 
 export const PrefixListEntryConfigSchema = z.object({
   sequence: z.number().int().min(1).max(4_294_967_295),

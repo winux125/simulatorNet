@@ -14,9 +14,11 @@ import {
   MINIMUM_VPN_LIFETIME_SECONDS,
   type Ipv6AclConfig,
   type BgpProcessConfig,
+  type LdpConfig,
   type PrefixListConfig,
   type RouteMapConfig,
   type RouteMapSequenceConfig,
+  type VrfConfig,
   type Ospfv3ProcessConfig,
   type QosClassMapConfig,
   type QosConfiguration,
@@ -33,6 +35,8 @@ export interface ImportedInterfaceConfig {
   ipv6?: Array<{ address: string; prefixLength: number }>;
   shutdown: boolean;
   description?: string;
+  mplsEnabled?: boolean;
+  vrfId?: string;
   switchportMode?: "access" | "trunk";
   accessVlan?: number;
   /** `spanning-tree portfast` / `spanning-tree bpduguard enable`. */
@@ -168,6 +172,8 @@ export interface ImportedDeviceConfiguration {
   ospf?: ImportedOspfConfig;
   ospfv3?: Ospfv3ProcessConfig;
   bgp?: BgpProcessConfig;
+  ldp?: LdpConfig;
+  vrfs: VrfConfig[];
   prefixLists: PrefixListConfig[];
   routeMaps: RouteMapConfig[];
   /**
@@ -505,6 +511,7 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     ipv6AclBindings: [],
     prefixLists: [],
     routeMaps: [],
+    vrfs: [],
     vlans: [],
     spanningTreeVlanPriorities: [],
     qos: { classMaps: [], policyMaps: [], servicePolicies: [] },
@@ -522,6 +529,8 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
   let inOspf = false;
   let inOspfv3 = false;
   let inBgp = false;
+  let currentBgpAddressFamily: { type: "vpnv4" } | { type: "ipv4-vrf"; vrfId: string } | undefined;
+  let currentVrf: VrfConfig | undefined;
   let currentRouteMap: RouteMapSequenceConfig | undefined;
   let currentRouteMapId: string | undefined;
   let currentIpv6Acl: Ipv6AclConfig | undefined;
@@ -573,6 +582,8 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       inOspf = false;
       inOspfv3 = false;
       inBgp = false;
+      currentBgpAddressFamily = undefined;
+      currentVrf = undefined;
       currentRouteMap = undefined;
       currentRouteMapId = undefined;
       inBgp = false;
@@ -588,6 +599,42 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     const isIndented = raw.startsWith(" ") || raw.startsWith("\t");
 
     if (head === "hostname" && tokens[1]) { result.hostname = tokens[1]; applied(line); current = undefined; continue; }
+    if ((head === "vrf" && tokens[1]?.toLowerCase() === "definition" && tokens[2])
+      || (head === "ip" && tokens[1]?.toLowerCase() === "vrf" && tokens[2])) {
+      const name = tokens[2]!;
+      currentVrf = result.vrfs.find((vrf) => vrf.id === name) ?? {
+        id: name,
+        name,
+        routeDistinguisher: "0:0",
+        importRouteTargets: [],
+        exportRouteTargets: [],
+        staticRoutes: [],
+      };
+      if (!result.vrfs.includes(currentVrf)) result.vrfs.push(currentVrf);
+      current = undefined;
+      inBgp = false;
+      applied(line);
+      continue;
+    }
+    if (currentVrf && isIndented) {
+      if (head === "rd" && tokens[1]) { currentVrf.routeDistinguisher = tokens[1]; applied(line); continue; }
+      if (head === "route-target" && (tokens[1] === "import" || tokens[1] === "export") && tokens[2]) {
+        const list = tokens[1] === "import" ? currentVrf.importRouteTargets : currentVrf.exportRouteTargets;
+        if (!list.includes(tokens[2])) list.push(tokens[2]);
+        applied(line);
+        continue;
+      }
+    }
+    if (head === "mpls" && tokens[1]?.toLowerCase() === "label" && tokens[2]?.toLowerCase() === "protocol" && tokens[3]?.toLowerCase() === "ldp") {
+      result.ldp ??= {};
+      applied(line);
+      continue;
+    }
+    if (head === "mpls" && tokens[1]?.toLowerCase() === "ldp" && tokens[2]?.toLowerCase() === "router-id" && tokens[3]) {
+      result.ldp = { routerIdInterface: tokens[3] };
+      applied(line);
+      continue;
+    }
     if (head === "interface") {
       const spec = tokens.slice(1).join("");
       currentVlan = undefined;
@@ -602,6 +649,7 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       currentIpv6Acl = undefined;
       clearQosContext();
       clearCryptoContext();
+      currentVrf = undefined;
       const loopbackMatch = /^lo(?:opback)?(\d+)$/u.exec(normalizeInterfaceName(spec));
       if (loopbackMatch) {
         const id = Number(loopbackMatch[1]);
@@ -836,8 +884,10 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     if (head === "router" && tokens[1]?.toLowerCase() === "bgp" && /^\d+$/u.test(tokens[2] ?? "")) {
       const localAs = Number(tokens[2]);
       if (localAs < 1 || localAs > 4_294_967_295) { unparsed(line); continue; }
-      result.bgp = { localAs, neighbors: [], networks: [] };
+      result.bgp = { localAs, neighbors: [], networks: [], vrfAddressFamilies: [] };
       inBgp = true;
+      currentBgpAddressFamily = undefined;
+      currentVrf = undefined;
       inOspf = false;
       inOspfv3 = false;
       currentRouteMap = undefined;
@@ -864,7 +914,20 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     if (head === "router") { inOspf = false; current = undefined; unparsed(line); continue; }
 
     if (inBgp && result.bgp && isIndented) {
-      if (head === "address-family") { inBgp = false; unparsed(line); continue; }
+      if (head === "address-family" && tokens[1]?.toLowerCase() === "vpnv4") {
+        currentBgpAddressFamily = { type: "vpnv4" };
+        applied(line);
+        continue;
+      }
+      if (head === "address-family" && tokens[1]?.toLowerCase() === "ipv4" && tokens[2]?.toLowerCase() === "vrf" && tokens[3]) {
+        currentBgpAddressFamily = { type: "ipv4-vrf", vrfId: tokens[3] };
+        if (!result.bgp.vrfAddressFamilies.some((family) => family.vrfId === tokens[3])) {
+          result.bgp.vrfAddressFamilies.push({ vrfId: tokens[3] });
+        }
+        applied(line);
+        continue;
+      }
+      if (head === "exit-address-family") { currentBgpAddressFamily = undefined; applied(line); continue; }
       if (head === "bgp" && tokens[1]?.toLowerCase() === "router-id" && isIpv4(tokens[2])) {
         result.bgp.routerId = tokens[2]; applied(line); continue;
       }
@@ -885,6 +948,12 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
           applied(line); continue;
         }
         if (!existing) { unparsed(line); continue; }
+        if (currentBgpAddressFamily?.type === "vpnv4" && tokens[2]?.toLowerCase() === "activate") {
+          existing.vpnv4Activated = true; applied(line); continue;
+        }
+        if (currentBgpAddressFamily?.type === "vpnv4" && tokens[2]?.toLowerCase() === "send-community" && tokens[3]?.toLowerCase() === "extended") {
+          existing.sendCommunityExtended = true; applied(line); continue;
+        }
         if (tokens[2]?.toLowerCase() === "description" && tokens[3]) {
           existing.description = tokens.slice(3).join(" "); applied(line); continue;
         }
@@ -903,6 +972,15 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
           const key = `${tokens[2]!.toLowerCase() === "prefix-list" ? "prefixList" : "routeMap"}${tokens[4]!.toLowerCase() === "in" ? "In" : "Out"}` as "prefixListIn" | "prefixListOut" | "routeMapIn" | "routeMapOut";
           existing[key] = tokens[3]; applied(line); continue;
         }
+      }
+      if (currentBgpAddressFamily?.type === "ipv4-vrf" && head === "redistribute"
+        && (tokens[1]?.toLowerCase() === "connected" || tokens[1]?.toLowerCase() === "static")) {
+        const vrfId = currentBgpAddressFamily.vrfId;
+        const family = result.bgp.vrfAddressFamilies.find((entry) => entry.vrfId === vrfId)!;
+        if (tokens[1]!.toLowerCase() === "connected") family.redistributeConnected = true;
+        else family.redistributeStatic = true;
+        applied(line);
+        continue;
       }
       unparsed(line); continue;
     }
@@ -1059,6 +1137,17 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       current = undefined;
       continue;
     }
+    if (head === "ip" && tokens[1]?.toLowerCase() === "route" && tokens[2]?.toLowerCase() === "vrf"
+      && tokens[3] && isIpv4(tokens[4]) && isIpv4(tokens[6])) {
+      const prefix = maskToPrefix(tokens[5]);
+      const vrf = result.vrfs.find((entry) => entry.id === tokens[3] || entry.name === tokens[3]);
+      if (prefix !== undefined && vrf) {
+        vrf.staticRoutes.push({ network: tokens[4], prefixLength: prefix, nextHop: tokens[6] });
+        applied(line);
+      } else unparsed(line);
+      current = undefined;
+      continue;
+    }
     if (head === "vlan" && /^\d+$/u.test(tokens[1] ?? "")) { currentVlan = Number(tokens[1]); current = undefined; applied(line); continue; }
     if (head === "name" && currentVlan !== undefined && tokens[1]) { vlanNames.set(currentVlan, tokens.slice(1).join(" ")); applied(line); continue; }
 
@@ -1098,6 +1187,13 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       if (head === "ip" && tokens[1]?.toLowerCase() === "address" && isIpv4(tokens[2])) {
         const prefix = maskToPrefix(tokens[3]);
         if (prefix !== undefined) { current.ipv4 = { address: tokens[2], prefixLength: prefix }; applied(line); continue; }
+      }
+      if (head === "mpls" && tokens[1]?.toLowerCase() === "ip") { current.mplsEnabled = true; applied(line); continue; }
+      if ((head === "vrf" && tokens[1]?.toLowerCase() === "forwarding" && tokens[2])
+        || (head === "ip" && tokens[1]?.toLowerCase() === "vrf" && tokens[2]?.toLowerCase() === "forwarding" && tokens[3])) {
+        current.vrfId = head === "vrf" ? tokens[2] : tokens[3];
+        applied(line);
+        continue;
       }
       if (head === "shutdown") { current.shutdown = true; applied(line); continue; }
       if (head === "no" && tokens[1]?.toLowerCase() === "shutdown") { current.shutdown = false; applied(line); continue; }

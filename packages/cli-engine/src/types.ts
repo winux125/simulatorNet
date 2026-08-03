@@ -60,6 +60,14 @@ export interface AclContext {
 export interface RouterProcessContext {
   processId: number;
   family: "ipv4" | "ipv6" | "bgp";
+  addressFamily?: "ipv4-unicast" | "vpnv4-unicast" | "ipv4-vrf";
+  vrfId?: string;
+}
+
+export interface VrfContext {
+  id: string;
+  name: string;
+  routeDistinguisher?: string;
 }
 
 export interface RouteMapContext {
@@ -112,6 +120,7 @@ export interface SessionApi {
   vlanId: number | undefined;
   aclCtx: AclContext | undefined;
   routerCtx: RouterProcessContext | undefined;
+  vrfCtx: VrfContext | undefined;
   lineCtx: VtyLineContext | undefined;
   aaaServerCtx: AaaServerContext | undefined;
   classMapCtx: QosClassMapContext | undefined;

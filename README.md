@@ -1241,3 +1241,24 @@ filters, and three explicit demos cover eBGP, dual-ISP best-path failover, and
 iBGP policy. Eleven server-side grading checks rebuild and inspect the same
 deterministic process without trusting browser routes, trace, session state or
 score. See [docs/routing-bgp.md](docs/routing-bgp.md).
+
+### M10.11 — deterministic MPLS, LDP and Layer 3 VPN
+
+M10.11 adds Router-only MPLS label forwarding with push/swap/pop, a uniform TTL
+model, deterministic label allocation and implicit-null PHP. Directly connected
+MPLS interfaces establish bounded LDP sessions and distribute connected/OSPF
+IPv4 FEC mappings; LFIB and bindings are runtime state and converge identically
+in the browser worker and server verifier.
+
+Router VRFs own isolated connected/static/imported route tables. The existing
+BGP TCP/179 FSM now negotiates a minimal VPNv4 address family carrying RD,
+route targets and a per-VRF VPN label. Ingress PEs impose VPN and transport
+labels, P routers swap/pop only the transport label, and egress PEs map the
+inner label back to the correct VRF. Overlapping customer prefixes remain
+isolated unless import/export RTs explicitly match.
+
+Router Config and Monitor navigation exposes MPLS/LDP, VRFs, L3VPN, LFIB,
+bindings and VPNv4 tables without adding top-level tabs. Packet Trace adds
+MPLS, LDP, VPNv4 and L3VPN filters. Three explicit demos cover an LDP core, one
+customer VPN and overlapping customer address space. See
+[docs/mpls-l3vpn.md](docs/mpls-l3vpn.md).

@@ -65,9 +65,9 @@ describe("BGP IOS-like import and render", () => {
     expect(renderDeviceConfiguration(config)).toBe(text);
   });
 
-  it("keeps unsupported address families and communities in the report", () => {
+  it("accepts VPNv4 while keeping unsupported community variants in the report", () => {
     const parsed = parseIosConfig(`${SOURCE}\n address-family vpnv4\n neighbor 192.0.2.2 send-community\n`, ["Gi0/0"]);
-    expect(parsed.unparsedLines).toContain("address-family vpnv4");
+    expect(parsed.appliedLines).toContain("address-family vpnv4");
     expect(parsed.unparsedLines).toContain("neighbor 192.0.2.2 send-community");
   });
 });

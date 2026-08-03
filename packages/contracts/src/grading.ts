@@ -3,6 +3,7 @@ import { DeviceCapabilitySchema, DeviceTypeSchema } from "./devices";
 import { WirelessSecurityModeSchema } from "./wireless";
 import { IpAddressSchema } from "./primitives";
 import { CosValueSchema, DscpValueSchema } from "./qos";
+import { RouteDistinguisherSchema, RouteTargetSchema } from "./protocols";
 import {
   Ipv4Schema,
   Ipv6CidrSchema,
@@ -1053,6 +1054,51 @@ export const BgpReceivedRouteGradingCheckSchema = CheckIdentitySchema.extend({
     .merge(BgpPrefixExpectationSchema).strict(),
 }).strict();
 
+// --- MPLS, LDP and Layer 3 VPN ------------------------------------------
+
+export const MplsInterfaceEnabledGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("mpls-interface-enabled"), deviceId: z.string().min(1), interfaceId: z.string().min(1),
+}).strict();
+export const LdpNeighborStateGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ldp-neighbor-state"), deviceId: z.string().min(1), neighborRouterId: Ipv4Schema, expectedState: z.literal("operational").default("operational"),
+}).strict();
+export const LdpBindingGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ldp-binding"), deviceId: z.string().min(1), fec: z.string().min(1), expectedRemoteLabel: z.number().int().min(3).max(1_048_575).optional(),
+}).strict();
+export const MplsLfibEntryGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("mpls-lfib-entry"), deviceId: z.string().min(1), fec: z.string().min(1), expectedOperation: z.enum(["push", "swap", "pop", "deliver", "drop"]).optional(),
+}).strict();
+export const MplsLabelOperationGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("mpls-label-operation"), deviceId: z.string().min(1), operation: z.enum(["push", "swap", "pop", "deliver"]),
+}).strict();
+export const VrfExistsGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("vrf-exists"), deviceId: z.string().min(1), vrfId: z.string().min(1),
+}).strict();
+export const VrfInterfaceGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("vrf-interface"), deviceId: z.string().min(1), vrfId: z.string().min(1), interfaceId: z.string().min(1),
+}).strict();
+export const VrfRouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("vrf-route"), deviceId: z.string().min(1), vrfId: z.string().min(1), network: Ipv4Schema, prefixLength: z.number().int().min(0).max(32), expectedSource: z.enum(["connected", "static", "bgp-vpn"]).optional(),
+}).strict();
+export const Vpnv4RouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("vpnv4-route"), deviceId: z.string().min(1), routeDistinguisher: RouteDistinguisherSchema, network: Ipv4Schema, prefixLength: z.number().int().min(0).max(32),
+}).strict();
+export const RouteTargetImportGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("route-target-import"), deviceId: z.string().min(1), vrfId: z.string().min(1), routeTarget: RouteTargetSchema,
+}).strict();
+export const RouteTargetExportGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("route-target-export"), deviceId: z.string().min(1), vrfId: z.string().min(1), routeTarget: RouteTargetSchema,
+}).strict();
+export const L3vpnConnectivityGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("l3vpn-connectivity"), sourceDeviceId: z.string().min(1), destinationIp: Ipv4Schema, expected: z.enum(["success", "failure"]).default("success"),
+}).strict();
+export const CustomerIsolationGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("customer-isolation"), deviceId: z.string().min(1), sourceVrfId: z.string().min(1), destinationVrfId: z.string().min(1), network: Ipv4Schema, prefixLength: z.number().int().min(0).max(32),
+}).strict();
+export const OverlappingPrefixIsolationGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("overlapping-prefix-isolation"), deviceId: z.string().min(1), firstVrfId: z.string().min(1), secondVrfId: z.string().min(1), network: Ipv4Schema, prefixLength: z.number().int().min(0).max(32),
+}).strict();
+
 /**
  * `copy running-config startup-config` was actually run on this device.
  *
@@ -1065,6 +1111,20 @@ export const ConfigurationSavedGradingCheckSchema = CheckIdentitySchema.extend({
 }).strict();
 
 export const GradingCheckSchema = z.discriminatedUnion("type", [
+  MplsInterfaceEnabledGradingCheckSchema,
+  LdpNeighborStateGradingCheckSchema,
+  LdpBindingGradingCheckSchema,
+  MplsLfibEntryGradingCheckSchema,
+  MplsLabelOperationGradingCheckSchema,
+  VrfExistsGradingCheckSchema,
+  VrfInterfaceGradingCheckSchema,
+  VrfRouteGradingCheckSchema,
+  Vpnv4RouteGradingCheckSchema,
+  RouteTargetImportGradingCheckSchema,
+  RouteTargetExportGradingCheckSchema,
+  L3vpnConnectivityGradingCheckSchema,
+  CustomerIsolationGradingCheckSchema,
+  OverlappingPrefixIsolationGradingCheckSchema,
   BgpNeighborStateGradingCheckSchema,
   BgpLocalAsGradingCheckSchema,
   BgpNetworkGradingCheckSchema,

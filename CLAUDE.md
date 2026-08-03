@@ -562,6 +562,21 @@ Both use deterministic virtual time. They are not performance speeds and Auto
 is not wall-clock realtime. Browser execution mode is local workspace state and
 the verifier ignores it.
 
+### MPLS and Layer 3 VPN boundary
+
+MPLS, LDP and VRF/L3VPN are Router-only capabilities. MPLS endpoints remain
+ordinary physical topology links; labels and logical VPN relations never
+become cables. The global RIB and every VRF RIB are explicit routing contexts.
+P routers must not learn customer prefixes. LDP distributes only connected and
+OSPF core FECs; MP-BGP distributes customer VPNv4 NLRI with RD/RT and a
+deterministic per-VRF label.
+
+Persist only configuration: MPLS-enabled interfaces, LDP router-ID source,
+VRF/RD/RT, VRF membership and static routes, redistribution flags and VPNv4
+neighbor settings. LFIB, LDP state/bindings, VPNv4 RIB and allocated labels are
+runtime-only and are rebuilt by both browser worker and verifier. See
+`docs/mpls-l3vpn.md`.
+
 ## TypeScript and code conventions
 
 - ESM packages use explicit, acyclic boundaries.

@@ -5,7 +5,7 @@ import {
   type DeviceHardwareProfileId,
   type LabDocument,
 } from "@sim/contracts";
-import type { BgpStateView, DeviceInspection, LabUiNode, Ospfv3View } from "@sim/sim-worker";
+import type { BgpStateView, DeviceInspection, LabUiNode, MplsL3VpnView, Ospfv3View } from "@sim/sim-worker";
 import {
   AlertTriangle, Clock3, FileDown, Globe2, Network, ScrollText,
   Settings2, TerminalSquare, X, type LucideIcon,
@@ -289,6 +289,9 @@ function ConfigSection(props: DeviceWindowProps & { section: DeviceWindowSection
     "stp-config": { title: "Spanning Tree", keys: ["spanningTree", "vlans"] },
     "etherchannel-config": { title: "EtherChannel", keys: ["etherChannels", "interfaces"] },
     "ospf-config": { title: "OSPF", keys: ["ospf", "ospfv3"] },
+    "mpls-config": { title: "MPLS & LDP", keys: ["interfaces", "ldp"] },
+    "vrfs-config": { title: "VRFs", keys: ["vrfs", "interfaces", "subinterfaces"] },
+    "l3vpn-config": { title: "Layer 3 VPN", keys: ["vrfs", "bgp"] },
     "remote-access-config": { title: "Remote Access", keys: ["remoteAccess", "vtyLines"] },
     "aaa-config": { title: "AAA", keys: ["aaa"] },
     "snmp-config": { title: "SNMP", keys: ["snmp"] },
@@ -359,6 +362,10 @@ function MonitorSection(props: DeviceWindowProps & { section: DeviceWindowSectio
     : <DraftRuntimeNotice />;
   if (section === "bgp-runtime") return props.runtimeAvailable
     ? <BgpRuntimePanel client={props.client} deviceId={props.node.id} onError={props.onError} />
+    : <DraftRuntimeNotice />;
+  if (section === "mpls-runtime" || section === "ldp-runtime" || section === "vrf-runtime"
+    || section === "vpnv4-runtime" || section === "vpn-label-runtime") return props.runtimeAvailable
+    ? <MplsL3VpnRuntimePanel client={props.client} deviceId={props.node.id} section={section} onError={props.onError} />
     : <DraftRuntimeNotice />;
   if (section === "protocols-runtime") return props.runtimeAvailable
     ? <Ipv6RuntimePanel
@@ -546,6 +553,48 @@ function BgpRuntimePanel({ client, deviceId, onError }: { client: SimulatorClien
     <h3>BGP Table</h3><table className="data-table"><thead><tr><th>Best</th><th>Prefix</th><th>Next hop</th><th>Weight</th><th>Local pref</th><th>MED</th><th>AS path</th></tr></thead><tbody>{state.routes.map((route) => <tr key={`${route.routeId}:${route.neighborAddress ?? "local"}`}><td>{route.best ? "✓" : ""}</td><td><code>{route.network}/{route.prefixLength}</code></td><td><code>{route.nextHop}</code></td><td>{route.weight}</td><td>{route.localPreference}</td><td>{route.med}</td><td>{route.asPath.join(" ") || "local"}</td></tr>)}</tbody></table>
     <h3>Advertised / Received</h3><p>{state.adjRibOut.length} advertised · {state.adjRibIn.length} received · {state.ribFailures.length} RIB failure(s)</p>
     <h3>Policy Counters</h3><table className="data-table"><thead><tr><th>Policy</th><th>Sequence</th><th>Matches</th><th>Permit</th><th>Deny</th></tr></thead><tbody>{state.policyCounters.map((counter) => <tr key={`${counter.policyType}:${counter.policyId}:${counter.sequence}`}><td>{counter.policyType} {counter.policyId}</td><td>{counter.sequence}</td><td>{counter.matches}</td><td>{counter.permits}</td><td>{counter.denies}</td></tr>)}</tbody></table>
+  </div>;
+}
+
+function MplsL3VpnRuntimePanel({
+  client,
+  deviceId,
+  section,
+  onError,
+}: {
+  client: SimulatorClient;
+  deviceId: string;
+  section: "mpls-runtime" | "ldp-runtime" | "vrf-runtime" | "vpnv4-runtime" | "vpn-label-runtime";
+  onError(message: string): void;
+}) {
+  const [state, setState] = useState<MplsL3VpnView>();
+  useEffect(() => {
+    let active = true;
+    void client.request({ type: "GET_MPLS_FORWARDING_TABLE", deviceId }).then((next) => {
+      if (active) setState(next);
+    }).catch((error) => {
+      if (active) onError(error instanceof Error ? error.message : "Unable to inspect MPLS runtime");
+    });
+    return () => { active = false; };
+  }, [client, deviceId, onError]);
+  if (!state) return <div className="device-window-section">Loading MPLS and L3VPN runtime…</div>;
+  const titles = {
+    "mpls-runtime": "MPLS Forwarding",
+    "ldp-runtime": "LDP Neighbors & Bindings",
+    "vrf-runtime": "VRF Routes",
+    "vpnv4-runtime": "VPNv4 Routes",
+    "vpn-label-runtime": "VPN Labels",
+  } as const;
+  const value = section === "mpls-runtime" ? { interfaces: state.interfaces, forwardingTable: state.forwardingTable }
+    : section === "ldp-runtime" ? { routerId: state.ldpRouterId, neighbors: state.ldpNeighbors, bindings: state.ldpBindings }
+      : section === "vrf-runtime" ? { vrfs: state.vrfs, routes: state.vrfRoutes }
+        : section === "vpnv4-runtime" ? state.vpnv4Routes
+          : state.vpnLabelBindings;
+  return <div className="device-window-section">
+    <p className="section-eyebrow">Deterministic provider runtime</p>
+    <h2>{titles[section]}</h2>
+    <p className="section-note">These tables are rebuilt from structured configuration and are not stored in the LabDocument.</p>
+    <PropertyTree value={value} />
   </div>;
 }
 

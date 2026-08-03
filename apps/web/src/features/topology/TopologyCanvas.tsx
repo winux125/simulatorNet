@@ -120,6 +120,10 @@ interface TopologyCanvasProps {
   wirelessAssociationsShown: boolean;
   /** View → Protocol Overlays → VPN Tunnels. Local workspace state only. */
   vpnTunnelsShown: boolean;
+  /** View → Protocol Overlays → MPLS Labels. Local workspace state only. */
+  mplsLabelsShown: boolean;
+  /** View → Protocol Overlays → L3VPN. Local workspace state only. */
+  l3VpnShown: boolean;
   fitRequest: number;
   zoomResetRequest: number;
   zoomInRequest: number;
@@ -426,6 +430,9 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
             state: tunnel.state,
           }))
         : [],
+      l3VpnRelations: props.l3VpnShown
+        ? props.snapshot?.l3VpnRelations?.map((relation) => ({ ...relation }))
+        : [],
     };
     if (!props.document) return result;
     for (const node of props.document.topology.nodes) {
@@ -492,6 +499,9 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
               followLink: diagramLabel.followLink,
               offset: diagramLabel.offset,
             }
+          : undefined,
+        mplsLabel: props.mplsLabelsShown
+          ? props.snapshot?.mplsLinkLabels?.find((entry) => entry.linkId === link.id)?.label
           : undefined,
       };
     }

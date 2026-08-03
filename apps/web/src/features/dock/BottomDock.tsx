@@ -110,7 +110,10 @@ function isPacketTraceEvent(event: SimulationTraceEvent): boolean {
     || type.startsWith("prefix-list-")
     || type.startsWith("route-map-")
     || type.startsWith("route-policy-")
-    || type.startsWith("wireless-");
+    || type.startsWith("wireless-")
+    || type.startsWith("mpls-")
+    || type.startsWith("ldp-")
+    || type.startsWith("l3vpn-");
 }
 
 /** Packet-trace protocol filters, in the order the dropdown lists them. */
@@ -120,6 +123,7 @@ export const TRACE_PROTOCOL_FILTERS = [
   "QoS", "Classification", "Marking", "Queue", "Policing", "Shaping",
   "STP", "RSTP", "LACP", "PAGP", "CDP", "LLDP", "OSPF",
   "BGP", "BGP Session", "BGP Updates", "Route Policy",
+  "MPLS", "LDP", "VPNv4", "L3VPN",
   "IPv6", "ICMPv6", "NDP", "SLAAC", "DHCPv6", "OSPFv3", "IPv6 ACL",
   "Wireless", "Beacon", "Probe", "Authentication", "Association", "Roaming",
   "Telnet", "SSH", "AAA", "RADIUS", "TACACS+", "SNMP",
@@ -368,6 +372,7 @@ function traceProtocol(event: SimulationTraceEvent): string {
   if (type.startsWith("tacacs-")) return "TACACS+";
   if (type.startsWith("snmp-")) return "SNMP";
   if (type === "aaa-accounting") return "AAA";
+  if (type.startsWith("bgp-vpnv4-")) return "VPNv4";
   if (type.startsWith("prefix-list-") || type.startsWith("route-map-") || type.startsWith("route-policy-")
     || type.startsWith("bgp-policy-")
     || type === "bgp-attribute-modified") return "Route Policy";
@@ -377,6 +382,9 @@ function traceProtocol(event: SimulationTraceEvent): string {
     || type.startsWith("bgp-keepalive-") || type.startsWith("bgp-session-") || type.startsWith("bgp-notification")
     || type.startsWith("bgp-hold-")) return "BGP Session";
   if (type.startsWith("bgp-")) return "BGP";
+  if (type.startsWith("ldp-")) return "LDP";
+  if (type.startsWith("l3vpn-")) return "L3VPN";
+  if (type.startsWith("mpls-")) return "MPLS";
   // Control protocols next: their event names are unambiguous prefixes.
   if (type === "wireless-roamed") return "Roaming";
   if (type.startsWith("wireless-beacon-")) return "Beacon";

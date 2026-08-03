@@ -379,6 +379,7 @@ export function buildDeviceConfigFromIos(
           routed: iface?.ipv4 !== undefined || (iface?.ipv6?.length ?? 0) > 0,
           ipv4: iface?.ipv4,
           ipv6: iface?.ipv6,
+          ...(deviceType === "router" ? { mplsEnabled: iface?.mplsEnabled, vrfId: iface?.vrfId } : {}),
         };
       }),
       subinterfaces: [],
@@ -410,7 +411,15 @@ export function buildDeviceConfigFromIos(
     }
     return {
       droppedRoutes,
-      config: { kind: "router", ...routed, ospf: ospfFrom(applied), ospfv3: ospfv3From(applied), bgp: bgpFrom(applied) },
+      config: {
+        kind: "router",
+        ...routed,
+        ospf: ospfFrom(applied),
+        ospfv3: ospfv3From(applied),
+        bgp: bgpFrom(applied),
+        ldp: applied.ldp,
+        vrfs: applied.vrfs,
+      },
     };
   }
 

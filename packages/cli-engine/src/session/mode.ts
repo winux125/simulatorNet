@@ -15,6 +15,7 @@ export type CliMode =
   | "config-ikev2-peer" // IKEv2 peer: Router(config-ikev2-peer)#
   | "config-ipsec-profile" // IPsec profile: Router(ipsec-profile)#
   | "config-route-map" // route-map sequence configuration
+  | "config-vrf" // VRF definition configuration
   | "config-router"; // routing process config: Router(config-router)#
 
 /** The prompt suffix for a mode, appended after the device hostname. */
@@ -50,6 +51,8 @@ export function promptSuffix(mode: CliMode): string {
       return "(ipsec-profile)#";
     case "config-route-map":
       return "(config-route-map)#";
+    case "config-vrf":
+      return "(config-vrf)#";
     case "config-router":
       return "(config-router)#";
   }

@@ -20,9 +20,11 @@ import {
   VlanIdSchema,
 } from "./primitives";
 import {
+  LdpConfigSchema,
   NeighborDiscoveryConfigSchema,
   RoutedControlProtocolShape,
   SwitchControlProtocolShape,
+  VrfConfigSchema,
 } from "./protocols";
 import {
   WirelessAccessPointConfigurationSchema,
@@ -248,6 +250,8 @@ export const RouterPhysicalInterfaceConfigSchema = PhysicalInterfaceConfigSchema
   routed: z.boolean().default(false),
   ipv4: Ipv4InterfaceConfigSchema.optional(),
   ipv6: z.array(Ipv6InterfaceAddressSchema).max(16).optional(),
+  mplsEnabled: z.boolean().optional(),
+  vrfId: z.string().min(1).max(64).optional(),
 });
 export type RouterPhysicalInterfaceConfig = z.infer<typeof RouterPhysicalInterfaceConfigSchema>;
 
@@ -258,6 +262,7 @@ export const RouterSubinterfaceConfigSchema = z.object({
   native: z.boolean().default(false),
   ipv4: Ipv4InterfaceConfigSchema.optional(),
   ipv6: z.array(Ipv6InterfaceAddressSchema).max(16).optional(),
+  vrfId: z.string().min(1).max(64).optional(),
 });
 export type RouterSubinterfaceConfig = z.infer<typeof RouterSubinterfaceConfigSchema>;
 
@@ -457,6 +462,8 @@ export const RouterDeviceConfigSchema = z.object({
   natPools: z.array(NatPoolConfigSchema).max(32).default([]),
   natRules: z.array(NatRuleConfigSchema).max(128).default([]),
   natInterfaceRoles: z.array(NatInterfaceRoleConfigSchema).max(64).default([]),
+  ldp: LdpConfigSchema.optional(),
+  vrfs: z.array(VrfConfigSchema).max(256).optional(),
   ...RoutedControlProtocolShape,
   discovery: NeighborDiscoveryConfigSchema.optional(),
   consoleAccess: ConsoleAccessConfigurationSchema.optional(),

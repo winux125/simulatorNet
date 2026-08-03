@@ -408,8 +408,8 @@ function validateRouter(config: RouterDeviceConfig, node: NodeSpec, path: string
   // counts: a loopback and a GRE tunnel overlay each produce a connected route,
   // so a static route through an overlay next hop is legitimate.
   const connected = [
-    ...config.interfaces.flatMap((iface) => (iface.ipv4 ? [iface.ipv4] : [])),
-    ...config.subinterfaces.flatMap((iface) => (iface.ipv4 ? [iface.ipv4] : [])),
+    ...config.interfaces.flatMap((iface) => (iface.ipv4 && iface.vrfId === undefined ? [iface.ipv4] : [])),
+    ...config.subinterfaces.flatMap((iface) => (iface.ipv4 && iface.vrfId === undefined ? [iface.ipv4] : [])),
     ...(config.loopbacks ?? []).flatMap((loopback) => (loopback.ipv4 ? [loopback.ipv4] : [])),
     ...(config.vpn?.tunnels ?? []).flatMap((tunnel) => (tunnel.ipv4 ? [tunnel.ipv4] : [])),
   ];
@@ -455,6 +455,60 @@ function validateRouter(config: RouterDeviceConfig, node: NodeSpec, path: string
     ...config.interfaces.filter((iface) => iface.routed || iface.ipv4 !== undefined).map((iface) => iface.id),
     ...config.subinterfaces.map((iface) => iface.id),
   ]);
+  const vrfs = config.vrfs ?? [];
+  if (node.kind !== "router" && (
+    vrfs.length > 0
+    || config.ldp !== undefined
+    || config.interfaces.some((iface) => iface.mplsEnabled || iface.vrfId !== undefined)
+    || config.subinterfaces.some((iface) => iface.vrfId !== undefined)
+  )) {
+    fail("mpls-vrf-unsupported", path, "MPLS, LDP and VRF configuration is supported only on Router devices");
+  }
+  requireUnique(vrfs.map((vrf) => vrf.id), `${path}.vrfs`, "VRF id");
+  requireUnique(vrfs.map((vrf) => vrf.name.toLowerCase()), `${path}.vrfs`, "VRF name");
+  requireUnique(vrfs.map((vrf) => vrf.routeDistinguisher), `${path}.vrfs`, "route distinguisher");
+  const vrfIds = new Set(vrfs.map((vrf) => vrf.id));
+  config.interfaces.forEach((iface, index) => {
+    if (iface.vrfId !== undefined && !vrfIds.has(iface.vrfId)) {
+      fail("unknown-vrf", `${path}.interfaces[${index}].vrfId`, `Unknown VRF '${iface.vrfId}'`);
+    }
+    if (iface.vrfId !== undefined && iface.mplsEnabled) {
+      fail("mpls-vrf-interface-conflict", `${path}.interfaces[${index}]`, "A customer VRF interface cannot also be an MPLS core interface");
+    }
+  });
+  config.subinterfaces.forEach((iface, index) => {
+    if (iface.vrfId !== undefined && !vrfIds.has(iface.vrfId)) {
+      fail("unknown-vrf", `${path}.subinterfaces[${index}].vrfId`, `Unknown VRF '${iface.vrfId}'`);
+    }
+  });
+  const loopbackNames = new Set((config.loopbacks ?? []).map((entry) => `Loopback${entry.id}`));
+  if (config.ldp?.routerIdInterface !== undefined
+    && !l3Interfaces.has(config.ldp.routerIdInterface)
+    && !loopbackNames.has(config.ldp.routerIdInterface)) {
+    fail("unknown-ldp-router-id", `${path}.ldp.routerIdInterface`, `Unknown LDP router-id source '${config.ldp.routerIdInterface}'`);
+  }
+  for (const [vrfIndex, vrf] of vrfs.entries()) {
+    requireUnique(vrf.importRouteTargets, `${path}.vrfs[${vrfIndex}].importRouteTargets`, "import route target");
+    requireUnique(vrf.exportRouteTargets, `${path}.vrfs[${vrfIndex}].exportRouteTargets`, "export route target");
+    const vrfConnected = [
+      ...config.interfaces.flatMap((iface) => iface.vrfId === vrf.id && iface.ipv4 ? [iface.ipv4] : []),
+      ...config.subinterfaces.flatMap((iface) => iface.vrfId === vrf.id && iface.ipv4 ? [iface.ipv4] : []),
+    ];
+    requireUnique(vrf.staticRoutes.map((route) => `${route.network}/${route.prefixLength}`), `${path}.vrfs[${vrfIndex}].staticRoutes`, "VRF static route");
+    vrf.staticRoutes.forEach((route, routeIndex) => {
+      if (((ipToInt(route.network) & maskToInt(route.prefixLength)) >>> 0) !== ipToInt(route.network)) {
+        fail("invalid-vrf-route-network", `${path}.vrfs[${vrfIndex}].staticRoutes[${routeIndex}].network`, "VRF static route must use a canonical network address");
+      }
+      if (!vrfConnected.some((iface) => inSubnet(route.nextHop, iface.address, iface.prefixLength))) {
+        fail("unreachable-vrf-next-hop", `${path}.vrfs[${vrfIndex}].staticRoutes[${routeIndex}].nextHop`, `VRF next hop '${route.nextHop}' is not reachable in VRF '${vrf.id}'`);
+      }
+    });
+  }
+  for (const [index, family] of (config.bgp?.vrfAddressFamilies ?? []).entries()) {
+    if (!vrfIds.has(family.vrfId)) {
+      fail("unknown-bgp-vrf", `${path}.bgp.vrfAddressFamilies[${index}].vrfId`, `Unknown BGP VRF '${family.vrfId}'`);
+    }
+  }
   validateAclConfiguration(config, l3Interfaces, path);
   requireUnique(config.natPools.map((pool) => pool.id), `${path}.natPools`, "NAT pool id");
   requireUnique(config.natRules.map((rule) => rule.id), `${path}.natRules`, "NAT rule id");

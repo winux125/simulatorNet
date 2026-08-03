@@ -280,6 +280,11 @@ function ospfDeviceOf(built: BuiltLab, deviceId: string): Router | Layer3Switch 
   return device instanceof Router && device.deviceType === "router" ? device : undefined;
 }
 
+function mplsRouterOf(built: BuiltLab, deviceId: string): Router | undefined {
+  const device = built.getDevice(deviceId);
+  return device instanceof Router && device.deviceType === "router" ? device : undefined;
+}
+
 function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCheckResult {
   const built = runtime.built;
   // The management plane drives real simulated sessions, so it gets the
@@ -921,6 +926,140 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
         found,
         direction,
         neighborAddress: check.configuration.neighborAddress,
+      });
+    }
+    case "mpls-interface-enabled": {
+      const router = mplsRouterOf(built, check.deviceId);
+      if (!router) return errorResult(check, "MPLS Router was not found");
+      const enabled = router.mpls.interfaceEnabled(check.interfaceId);
+      return result(check, enabled, `MPLS ${enabled ? "is" : "is not"} enabled on ${check.interfaceId}`, { enabled, interfaceId: check.interfaceId });
+    }
+    case "ldp-neighbor-state": {
+      const router = mplsRouterOf(built, check.deviceId);
+      if (!router) return errorResult(check, "LDP Router was not found");
+      const neighbor = router.ldp.neighborSummaries().find((entry) => entry.routerId === check.neighborRouterId);
+      const actual = neighbor?.state ?? "nonexistent";
+      return result(check, actual === check.expectedState, `LDP neighbor ${check.neighborRouterId} is ${actual}`, { actualState: actual, expectedState: check.expectedState });
+    }
+    case "ldp-binding": {
+      const router = mplsRouterOf(built, check.deviceId);
+      if (!router) return errorResult(check, "LDP Router was not found");
+      const binding = router.ldp.labelBindings().find((entry) => entry.fec === check.fec);
+      const remoteLabels = binding ? Object.values(binding.remoteLabels) : [];
+      const passed = binding !== undefined && (check.expectedRemoteLabel === undefined
+        || remoteLabels.includes(check.expectedRemoteLabel)
+        || (check.expectedRemoteLabel === 3 && binding.implicitNullNeighborIds.length > 0));
+      return result(check, passed, `LDP binding for ${check.fec} ${binding ? "is installed" : "is missing"}`, {
+        localLabel: binding?.localLabel,
+        remoteLabels,
+        implicitNullNeighbors: binding?.implicitNullNeighborIds,
+      });
+    }
+    case "mpls-lfib-entry": {
+      const router = mplsRouterOf(built, check.deviceId);
+      if (!router) return errorResult(check, "MPLS Router was not found");
+      const entry = router.mpls.forwardingTable().find((candidate) => candidate.fec === check.fec);
+      const passed = entry !== undefined && (check.expectedOperation === undefined || entry.operation.type === check.expectedOperation);
+      return result(check, passed, `LFIB entry for ${check.fec} ${entry ? `uses ${entry.operation.type}` : "is missing"}`, {
+        operation: entry?.operation.type,
+        incomingLabel: entry?.incomingLabel,
+        nextHop: entry?.nextHop,
+      });
+    }
+    case "mpls-label-operation": {
+      const router = mplsRouterOf(built, check.deviceId);
+      if (!router) return errorResult(check, "MPLS Router was not found");
+      const traceType = check.operation === "push" ? "mpls-label-imposed"
+        : check.operation === "swap" ? "mpls-label-swapped"
+          : check.operation === "pop" ? "mpls-label-popped" : "mpls-packet-delivered";
+      const traced = built.engine.traceLog.some((entry) => entry.device === check.deviceId && entry.type === traceType);
+      const installed = router.mpls.forwardingTable().some((entry) => entry.operation.type === check.operation);
+      return result(check, traced || installed, `MPLS ${check.operation} ${traced ? "was observed" : installed ? "is installed" : "was not observed"}`, { traceType, traced, installed });
+    }
+    case "vrf-exists": {
+      const router = mplsRouterOf(built, check.deviceId);
+      if (!router) return errorResult(check, "VRF Router was not found");
+      const found = router.vrfConfigurations().some((vrf) => vrf.id === check.vrfId);
+      return result(check, found, `VRF ${check.vrfId} ${found ? "exists" : "is missing"}`, { found });
+    }
+    case "vrf-interface": {
+      const router = mplsRouterOf(built, check.deviceId);
+      if (!router) return errorResult(check, "VRF Router was not found");
+      const actual = router.interfaceVrf(check.interfaceId);
+      return result(check, actual === check.vrfId, `${check.interfaceId} belongs to ${actual ?? "global routing"}`, { actualVrfId: actual, expectedVrfId: check.vrfId });
+    }
+    case "vrf-route": {
+      const router = mplsRouterOf(built, check.deviceId);
+      if (!router) return errorResult(check, "VRF Router was not found");
+      let routes;
+      try { routes = router.vrfRoutingTable(check.vrfId); } catch { return errorResult(check, `VRF '${check.vrfId}' was not found`); }
+      const route = routes.find((entry) => entry.network === check.network && entry.prefixLength === check.prefixLength);
+      const passed = route !== undefined && (check.expectedSource === undefined || route.source === check.expectedSource);
+      return result(check, passed, `VRF route ${check.network}/${check.prefixLength} ${route ? `is ${route.source}` : "is missing"}`, { source: route?.source, nextHop: route?.nextHop, vpnLabel: route?.vpnLabel });
+    }
+    case "vpnv4-route": {
+      const router = mplsRouterOf(built, check.deviceId);
+      if (!router) return errorResult(check, "VPNv4 Router was not found");
+      const route = router.bgp.vpnv4Routes().find((entry) => entry.routeDistinguisher === check.routeDistinguisher
+        && entry.network === check.network && entry.prefixLength === check.prefixLength);
+      return result(check, !!route, `VPNv4 route ${check.routeDistinguisher}:${check.network}/${check.prefixLength} ${route ? "exists" : "is missing"}`, {
+        found: !!route,
+        routeTargets: route?.routeTargets,
+        vpnLabel: route?.vpnLabel,
+        nextHop: route?.nextHop,
+      });
+    }
+    case "route-target-import":
+    case "route-target-export": {
+      const router = mplsRouterOf(built, check.deviceId);
+      if (!router) return errorResult(check, "VRF Router was not found");
+      const vrf = router.vrfConfigurations().find((entry) => entry.id === check.vrfId);
+      const values = check.type === "route-target-import" ? vrf?.importRouteTargets : vrf?.exportRouteTargets;
+      const found = values?.includes(check.routeTarget) ?? false;
+      return result(check, found, `${check.type === "route-target-import" ? "Import" : "Export"} route target ${check.routeTarget} ${found ? "is configured" : "is missing"}`, { found });
+    }
+    case "l3vpn-connectivity": {
+      const outcome = executePing(runtime, check.sourceDeviceId, check.destinationIp);
+      if (!outcome) return errorResult(check, `Ping-capable device '${check.sourceDeviceId}' was not found`);
+      const passed = check.expected === "success" ? outcome.success : !outcome.success;
+      const labelEvents = outcome.trace.filter((entry) => entry.type.startsWith("mpls-") || entry.type.startsWith("l3vpn-"));
+      return result(check, passed, `${outcome.source.name} ${outcome.success ? "reached" : "did not reach"} ${check.destinationIp} through L3VPN`, {
+        actual: outcome.success ? "success" : "failure",
+        expected: check.expected,
+        labelEvents: labelEvents.map((entry) => entry.type),
+        failure: outcome.failure,
+      });
+    }
+    case "customer-isolation": {
+      const router = mplsRouterOf(built, check.deviceId);
+      if (!router) return errorResult(check, "VRF Router was not found");
+      const destination = router.vrfConfigurations().find((vrf) => vrf.id === check.destinationVrfId);
+      if (!destination) return errorResult(check, `VRF '${check.destinationVrfId}' was not found`);
+      let sourceRoutes;
+      try { sourceRoutes = router.vrfRoutingTable(check.sourceVrfId); } catch { return errorResult(check, `VRF '${check.sourceVrfId}' was not found`); }
+      const leaked = sourceRoutes.find((route) => route.network === check.network && route.prefixLength === check.prefixLength
+        && route.routeDistinguisher === destination.routeDistinguisher);
+      return result(check, !leaked, `Customer VRFs ${leaked ? "share an unintended route" : "remain isolated"}`, { leakedRouteDistinguisher: leaked?.routeDistinguisher });
+    }
+    case "overlapping-prefix-isolation": {
+      const router = mplsRouterOf(built, check.deviceId);
+      if (!router) return errorResult(check, "VRF Router was not found");
+      const first = router.vrfConfigurations().find((vrf) => vrf.id === check.firstVrfId);
+      const second = router.vrfConfigurations().find((vrf) => vrf.id === check.secondVrfId);
+      if (!first || !second) return errorResult(check, "One or both VRFs were not found");
+      const firstRoutes = router.vrfRoutingTable(first.id).filter((route) => route.network === check.network && route.prefixLength === check.prefixLength);
+      const secondRoutes = router.vrfRoutingTable(second.id).filter((route) => route.network === check.network && route.prefixLength === check.prefixLength);
+      const crossed = firstRoutes.some((route) => route.routeDistinguisher === second.routeDistinguisher)
+        || secondRoutes.some((route) => route.routeDistinguisher === first.routeDistinguisher);
+      const distinctPolicy = first.routeDistinguisher !== second.routeDistinguisher
+        && !first.importRouteTargets.some((target) => second.exportRouteTargets.includes(target))
+        && !second.importRouteTargets.some((target) => first.exportRouteTargets.includes(target));
+      const passed = firstRoutes.length > 0 && secondRoutes.length > 0 && distinctPolicy && !crossed;
+      return result(check, passed, `Overlapping ${check.network}/${check.prefixLength} ${passed ? "is isolated by VRF" : "is not safely isolated"}`, {
+        firstRouteCount: firstRoutes.length,
+        secondRouteCount: secondRoutes.length,
+        distinctPolicy,
+        crossed,
       });
     }
     case "ospf-router-id": {

@@ -27,6 +27,7 @@ import type {
   RouterProcessContext,
   RouteMapContext,
   SessionApi,
+  VrfContext,
   VtyLineContext,
 } from "../types";
 import type { DeviceConfigurationService } from "./configuration";
@@ -51,6 +52,7 @@ export class CliSession implements SessionApi {
   vlanId: number | undefined;
   aclCtx: AclContext | undefined;
   routerCtx: RouterProcessContext | undefined;
+  vrfCtx: VrfContext | undefined;
   routeMapCtx: RouteMapContext | undefined;
   lineCtx: VtyLineContext | undefined;
   aaaServerCtx: AaaServerContext | undefined;
@@ -171,6 +173,7 @@ export class CliSession implements SessionApi {
     if (mode !== "config-vlan") this.vlanId = undefined;
     if (mode !== "config-acl") this.aclCtx = undefined;
     if (mode !== "config-router") this.routerCtx = undefined;
+    if (mode !== "config-vrf") this.vrfCtx = undefined;
     if (mode !== "config-route-map") this.routeMapCtx = undefined;
     if (mode !== "config-line") this.lineCtx = undefined;
     if (mode !== "config-aaa-server") this.aaaServerCtx = undefined;

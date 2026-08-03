@@ -49,6 +49,8 @@ export interface LinkView {
     followLink: boolean;
     offset: number;
   };
+  /** Runtime MPLS operations rendered near the physical link midpoint. */
+  mplsLabel?: string;
 }
 
 export interface TopologyView {
@@ -79,6 +81,14 @@ export interface TopologyView {
     remoteDeviceId: string;
     label: string;
     state: "gre" | "protected" | "negotiating" | "failed";
+  }>;
+  /** Logical PE-to-PE L3VPN relations derived from worker runtime. */
+  l3VpnRelations?: Array<{
+    id: string;
+    localDeviceId: string;
+    remoteDeviceId: string;
+    label: string;
+    state: "operational" | "control-plane-only" | "unavailable";
   }>;
   /** `editing` blanks the rendered text while the inline editor draws it live. */
   annotations?: Record<string, { selected: boolean; editing?: boolean }>;

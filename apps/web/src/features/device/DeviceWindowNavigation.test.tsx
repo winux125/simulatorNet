@@ -33,6 +33,15 @@ describe("device window information architecture", () => {
     ]));
   });
 
+  it("keeps Router-only MPLS/LDP/VRF/L3VPN inside Config and Monitor", () => {
+    const router = getDeviceWindowDefinition("router");
+    expect(router.configSections.map(({ label }) => label)).toEqual(expect.arrayContaining(["MPLS & LDP", "VRFs", "L3VPN"]));
+    expect(router.monitorSections.map(({ label }) => label)).toEqual(expect.arrayContaining([
+      "MPLS Forwarding", "LDP Neighbors & Bindings", "VRF Routes", "VPNv4 Routes", "VPN Labels",
+    ]));
+    expect(getDeviceWindowDefinition("l3-switch").configSections.map(({ label }) => label)).not.toEqual(expect.arrayContaining(["MPLS & LDP", "VRFs", "L3VPN"]));
+  });
+
   it("hides unsupported capability sections", () => {
     const l2 = getDeviceWindowDefinition("l2-switch").configSections.map(({ label }) => label);
     expect(l2).toEqual(expect.arrayContaining(["VLANs", "Spanning Tree", "EtherChannel"]));

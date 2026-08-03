@@ -352,6 +352,9 @@ function canonicalRoutedProtocols(
       networks: [...config.bgp.networks]
         .sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || a.prefixLength - b.prefixLength)
         .map((network) => ({ ...network })),
+      vrfAddressFamilies: [...config.bgp.vrfAddressFamilies]
+        .sort((a, b) => a.vrfId.localeCompare(b.vrfId))
+        .map((family) => ({ ...family })),
     },
     prefixLists: [...(config?.prefixLists ?? [])]
       .sort(byId)
@@ -582,6 +585,8 @@ function routerConfiguration(node: NodeSpec, config: RouterDeviceConfig | undefi
         routed: current?.routed ?? false,
         ipv4: current?.ipv4,
         ipv6: current?.ipv6?.map((address) => ({ ...address, address: normalizeIpv6(address.address) })),
+        mplsEnabled: current?.mplsEnabled,
+        vrfId: current?.vrfId,
       };
     }),
     subinterfaces: [...(config?.subinterfaces ?? [])].sort(byId).map((iface) => ({
@@ -597,6 +602,17 @@ function routerConfiguration(node: NodeSpec, config: RouterDeviceConfig | undefi
     qos: canonicalQos(config?.qos),
     vpn: canonicalVpn(config?.vpn),
     ...canonicalNat(config),
+    ldp: config?.ldp === undefined ? undefined : { ...config.ldp },
+    vrfs: [...(config?.vrfs ?? [])]
+      .sort(byId)
+      .map((vrf) => ({
+        ...vrf,
+        importRouteTargets: [...vrf.importRouteTargets].sort(),
+        exportRouteTargets: [...vrf.exportRouteTargets].sort(),
+        staticRoutes: [...vrf.staticRoutes]
+          .sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || a.prefixLength - b.prefixLength || a.nextHop.localeCompare(b.nextHop))
+          .map((route) => ({ ...route })),
+      })),
     ...canonicalRoutedProtocols(config),
     discovery: canonicalDiscovery(config?.discovery),
     consoleAccess: canonicalConsoleAccess(config),
