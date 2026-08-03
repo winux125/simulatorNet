@@ -40,7 +40,10 @@ const EMPTY_FIELDS: HostIpFormFields = { address: "", subnetMask: "255.255.255.0
 
 export function HostIpConfigurationPanel(props: HostIpConfigurationPanelProps) {
   const [family, setFamily] = useState<"ipv4" | "ipv6">("ipv4");
-  return <div>
+  // The panel is a fixed work area: the family tabs and the form's footer stay
+  // put, and only the form body scrolls. Without that the device window — which
+  // clips its own overflow — would cut the Apply action off entirely.
+  return <div className="host-ip-panel">
     <nav className="device-window__tabs" role="tablist" aria-label="IP version">
       <button type="button" role="tab" aria-selected={family === "ipv4"} className={family === "ipv4" ? "is-active" : ""} onClick={() => setFamily("ipv4")}>IPv4</button>
       <button type="button" role="tab" aria-selected={family === "ipv6"} className={family === "ipv6" ? "is-active" : ""} onClick={() => setFamily("ipv6")}>IPv6</button>
@@ -177,21 +180,23 @@ function HostIpv4ConfigurationPanel(props: HostIpConfigurationPanelProps) {
           subnetMask: "255.255.255.0",
         }))}>Use Example</Button>
       </header>
-      <fieldset className="host-ip-config__modes">
-        <legend>Address assignment</legend>
-        <label><input type="radio" name={`host-mode-${props.node.id}`} checked={mode === "dhcp"} onChange={() => setMode("dhcp")} /> DHCP</label>
-        <label><input type="radio" name={`host-mode-${props.node.id}`} checked={mode === "static"} onChange={() => setMode("static")} /> Static</label>
-      </fieldset>
-      <div className="host-ip-config__fields">
-        <IpField label="IPv4 Address" value={fields.address} disabled={mode === "dhcp"} error={errors.address} onChange={(value) => setField("address", value)} />
-        <IpField label="Subnet Mask" value={fields.subnetMask} disabled={mode === "dhcp"} error={errors.subnetMask} onChange={(value) => setField("subnetMask", value)} />
-        <IpField label="Default Gateway" value={fields.defaultGateway} disabled={mode === "dhcp"} error={errors.defaultGateway} onChange={(value) => setField("defaultGateway", value)} />
-        <IpField label="DNS Server" value={fields.dnsServer} disabled={mode === "dhcp"} error={errors.dnsServer} onChange={(value) => setField("dnsServer", value)} />
+      <div className="host-ip-config__body">
+        <fieldset className="host-ip-config__modes">
+          <legend>Address assignment</legend>
+          <label><input type="radio" name={`host-mode-${props.node.id}`} checked={mode === "dhcp"} onChange={() => setMode("dhcp")} /> DHCP</label>
+          <label><input type="radio" name={`host-mode-${props.node.id}`} checked={mode === "static"} onChange={() => setMode("static")} /> Static</label>
+        </fieldset>
+        <div className="host-ip-config__fields">
+          <IpField label="IPv4 Address" value={fields.address} disabled={mode === "dhcp"} error={errors.address} onChange={(value) => setField("address", value)} />
+          <IpField label="Subnet Mask" value={fields.subnetMask} disabled={mode === "dhcp"} error={errors.subnetMask} onChange={(value) => setField("subnetMask", value)} />
+          <IpField label="Default Gateway" value={fields.defaultGateway} disabled={mode === "dhcp"} error={errors.defaultGateway} onChange={(value) => setField("defaultGateway", value)} />
+          <IpField label="DNS Server" value={fields.dnsServer} disabled={mode === "dhcp"} error={errors.dnsServer} onChange={(value) => setField("dnsServer", value)} />
+        </div>
+        {mode === "dhcp" && !running && <p className="host-ip-config__notice"><Info size={15} /> DHCP will start when the lab is started.</p>}
+        {status?.guidance && <pre className="host-ip-config__guidance">{status.guidance}</pre>}
+        {status?.warnings.map((warning) => <p className="host-ip-config__warning" key={`${warning.code}:${warning.deviceIds.join(":")}`}><AlertTriangle size={15} /> {warning.message}</p>)}
+        <p className="host-ip-config__hint"><Info size={15} /> Devices in the same subnet can communicate through an L2 switch without a router.<br />A DHCP server is required only for automatic address assignment.</p>
       </div>
-      {mode === "dhcp" && !running && <p className="host-ip-config__notice"><Info size={15} /> DHCP will start when the lab is started.</p>}
-      {status?.guidance && <pre className="host-ip-config__guidance">{status.guidance}</pre>}
-      {status?.warnings.map((warning) => <p className="host-ip-config__warning" key={`${warning.code}:${warning.deviceIds.join(":")}`}><AlertTriangle size={15} /> {warning.message}</p>)}
-      <p className="host-ip-config__hint"><Info size={15} /> Devices in the same subnet can communicate through an L2 switch without a router.<br />A DHCP server is required only for automatic address assignment.</p>
       <footer>
         {mode === "dhcp" && <div>
           <Button type="button" size="sm" disabled={!running || busy} icon={<RefreshCw size={13} />} onClick={() => void dhcpAction("renew")}>Renew</Button>
@@ -347,26 +352,28 @@ function HostIpv6ConfigurationPanel(props: HostIpConfigurationPanelProps) {
 
   return <form className="host-ip-config" onSubmit={(event) => { event.preventDefault(); void apply(); }}>
     <header><div><p className="section-eyebrow">Desktop utility</p><h3>IPv6 Configuration</h3></div></header>
-    <fieldset className="host-ip-config__modes">
-      <legend>Address assignment</legend>
-      {(["static", "slaac", "dhcpv6"] as const).map((entry) =>
-        <label key={entry}><input type="radio" name={`host-ipv6-mode-${props.node.id}`} checked={mode === entry} onChange={() => setMode(entry)} /> {entry === "static" ? "Static" : entry === "slaac" ? "SLAAC" : "DHCPv6"}</label>)}
-    </fieldset>
-    <div className="host-ip-config__fields">
-      <IpField label="IPv6 Address" value={fields.address} disabled={mode !== "static"} error={errors.address} onChange={(value) => setField("address", value)} />
-      <IpField label="Prefix Length" value={fields.prefixLength} disabled={mode !== "static"} error={errors.prefixLength} onChange={(value) => setField("prefixLength", value)} />
-      <IpField label="Default Router" value={fields.defaultRouter} disabled={mode !== "static"} error={errors.defaultRouter} onChange={(value) => setField("defaultRouter", value)} />
-      <IpField label="DNS Server" value={fields.dnsServer} disabled={mode !== "static"} error={errors.dnsServer} onChange={(value) => setField("dnsServer", value)} />
+    <div className="host-ip-config__body">
+      <fieldset className="host-ip-config__modes">
+        <legend>Address assignment</legend>
+        {(["static", "slaac", "dhcpv6"] as const).map((entry) =>
+          <label key={entry}><input type="radio" name={`host-ipv6-mode-${props.node.id}`} checked={mode === entry} onChange={() => setMode(entry)} /> {entry === "static" ? "Static" : entry === "slaac" ? "SLAAC" : "DHCPv6"}</label>)}
+      </fieldset>
+      <div className="host-ip-config__fields">
+        <IpField label="IPv6 Address" value={fields.address} disabled={mode !== "static"} error={errors.address} onChange={(value) => setField("address", value)} />
+        <IpField label="Prefix Length" value={fields.prefixLength} disabled={mode !== "static"} error={errors.prefixLength} onChange={(value) => setField("prefixLength", value)} />
+        <IpField label="Default Router" value={fields.defaultRouter} disabled={mode !== "static"} error={errors.defaultRouter} onChange={(value) => setField("defaultRouter", value)} />
+        <IpField label="DNS Server" value={fields.dnsServer} disabled={mode !== "static"} error={errors.dnsServer} onChange={(value) => setField("dnsServer", value)} />
+      </div>
+      {mode !== "static" && !running && <p className="host-ip-config__notice"><Info size={15} /> {mode === "slaac" ? "SLAAC" : "DHCPv6"} will start when the lab is started.</p>}
+      {status?.runtime.problems.map((problem) =>
+        <p className="host-ip-config__warning" key={problem}><AlertTriangle size={15} /> {problem}</p>)}
+      <p className="host-ip-config__hint"><Info size={15} /> SLAAC uses Router Advertisements. DHCPv6 supplies managed addresses and DNS options. NDP resolves IPv6 neighbors.</p>
+      {status && <div className="dock-table-wrap">
+        <table className="data-table"><thead><tr><th>Address</th><th>Prefix</th><th>Source</th><th>DAD state</th></tr></thead><tbody>
+          {status.runtime.addresses.map((address) => <tr key={address.address}><td><code>{address.address}</code></td><td>{address.prefixLength}</td><td>{address.source}</td><td>{address.state}</td></tr>)}
+        </tbody></table>
+      </div>}
     </div>
-    {mode !== "static" && !running && <p className="host-ip-config__notice"><Info size={15} /> {mode === "slaac" ? "SLAAC" : "DHCPv6"} will start when the lab is started.</p>}
-    {status?.runtime.problems.map((problem) =>
-      <p className="host-ip-config__warning" key={problem}><AlertTriangle size={15} /> {problem}</p>)}
-    <p className="host-ip-config__hint"><Info size={15} /> SLAAC uses Router Advertisements. DHCPv6 supplies managed addresses and DNS options. NDP resolves IPv6 neighbors.</p>
-    {status && <div className="dock-table-wrap">
-      <table className="data-table"><thead><tr><th>Address</th><th>Prefix</th><th>Source</th><th>DAD state</th></tr></thead><tbody>
-        {status.runtime.addresses.map((address) => <tr key={address.address}><td><code>{address.address}</code></td><td>{address.prefixLength}</td><td>{address.source}</td><td>{address.state}</td></tr>)}
-      </tbody></table>
-    </div>}
     <footer>
       {mode === "dhcpv6" && <div>
         <Button type="button" size="sm" disabled={!running || busy} icon={<RefreshCw size={13} />} onClick={() => void dhcpv6Action("renew")}>Renew</Button>

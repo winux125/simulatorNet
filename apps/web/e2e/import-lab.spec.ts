@@ -152,14 +152,31 @@ test("workspace scroll ownership stays on the narrow content regions", async ({ 
   expect(pageGeometry.bodyOverflow).toBe("hidden");
   expect(pageGeometry.bodyHeight).toBeLessThanOrEqual(pageGeometry.viewportHeight);
 
+  // IP Configuration lives under Config; its footer actions must stay on screen
+  // at 1280x720 while the form body — not an ancestor — owns the scrolling.
   await page.getByRole("button", { name: "Select PC1" }).dblclick();
   const pcWindow = page.getByRole("dialog", { name: "PC1 device window" });
+  await pcWindow.getByRole("tab", { name: "Config", exact: true }).click();
   const ipFooter = pcWindow.locator(".host-ip-config > footer");
   await expect(ipFooter).toBeVisible();
+  await expect(ipFooter.getByRole("button", { name: "Apply" })).toBeVisible();
+  await expect(pcWindow.locator(".host-ip-config__body")).toHaveCSS("overflow-y", "auto");
   const [windowBounds, footerBounds] = await Promise.all([pcWindow.boundingBox(), ipFooter.boundingBox()]);
   expect(windowBounds).not.toBeNull();
   expect(footerBounds).not.toBeNull();
   expect(footerBounds!.y + footerBounds!.height).toBeLessThanOrEqual(windowBounds!.y + windowBounds!.height);
+  expect(footerBounds!.y + footerBounds!.height).toBeLessThanOrEqual(720);
+  const ipScrollOwners = await pcWindow.locator(".host-ip-config__body").evaluate((leaf) => {
+    const owners: string[] = [];
+    let element: HTMLElement | null = leaf as HTMLElement;
+    while (element) {
+      if (/(auto|scroll)/.test(getComputedStyle(element).overflowY)) owners.push(element.className);
+      if (element.getAttribute("role") === "dialog") break;
+      element = element.parentElement;
+    }
+    return owners;
+  });
+  expect(ipScrollOwners).toEqual(["host-ip-config__body"]);
   await pcWindow.getByRole("button", { name: "Close device window" }).click();
 
   await page.getByRole("button", { name: "Select PC1" }).click({ button: "right" });

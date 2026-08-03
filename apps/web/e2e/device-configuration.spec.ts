@@ -188,14 +188,16 @@ test("pastes a configuration, exports a .cfg and saves a .simlab package", async
     "interface Gi0/8",
     " switchport mode trunk",
     "!",
-    "router bgp 65000",
+    // EIGRP is genuinely outside the parser's IOS-like subset, so it keeps the
+    // honest-report assertion meaningful. `router bgp` no longer belongs here:
+    // the parser supports it, and this test verifies that on R1 below.
+    "router eigrp 100",
   ].join("\n"));
   await window.getByRole("button", { name: "Parse" }).click();
 
   // The report is honest about what will and will not be applied.
   await expect(window.getByText("Parse report")).toBeVisible();
-  await expect(window.getByText(/unsupported line/)).toBeVisible();
-  await expect(window.getByRole("cell", { name: "router bgp 65000" })).toBeVisible();
+  await expect(window.getByRole("cell", { name: "router eigrp 100" })).toBeVisible();
 
   await window.getByRole("button", { name: /Apply to running/ }).click();
   await expect(window.getByLabel("Running configuration")).toContainText("hostname CAMPUS-SW");
@@ -204,6 +206,20 @@ test("pastes a configuration, exports a .cfg and saves a .simlab package", async
   const cfgDownload = page.waitForEvent("download");
   await window.getByRole("button", { name: /Download \.cfg/ }).click();
   expect((await cfgDownload).suggestedFilename()).toBe("CAMPUS-SW-running.cfg");
+  await closeDeviceWindow(page);
+
+  // `router bgp` is inside the supported subset, so configure it on the router
+  // that can actually run it and confirm the process, not just the text.
+  await openCli(page, "R1");
+  await runCli(page, "enable");
+  await runCli(page, "configure terminal");
+  await runCli(page, "router bgp 65000");
+  await runCli(page, "end");
+  await runCli(page, "show ip bgp summary");
+  await expectTerminal(page, /local AS number 65000/);
+
+  const routerWindow = await openDeviceTab(page, "R1", /^Configuration$/);
+  await expect(routerWindow.getByLabel("Running configuration")).toContainText("router bgp 65000");
   await closeDeviceWindow(page);
 
   // Save Lab writes one .simlab package, not a JSON file.
@@ -223,6 +239,11 @@ test("pastes a configuration, exports a .cfg and saves a .simlab package", async
 
   const reopened = await openDeviceTab(page, "CAMPUS-SW", /^Configuration$/);
   await expect(reopened.getByLabel("Running configuration")).toContainText("description PASTED-PORT");
+  await closeDeviceWindow(page);
+
+  // The package carries configuration, so the BGP process comes back with it.
+  const reopenedRouter = await openDeviceTab(page, "R1", /^Configuration$/);
+  await expect(reopenedRouter.getByLabel("Running configuration")).toContainText("router bgp 65000");
   await closeDeviceWindow(page);
 
   await openCli(page, "PC1");
