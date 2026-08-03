@@ -6,6 +6,7 @@ import {
   isBgpMessage,
   type BgpMessage,
   type BgpNotificationMessage,
+  type BgpPathAttributes,
   type Vpnv4Nlri,
 } from "../packets/bgp";
 import type { TcpApplicationPayload } from "../packets/tcp";
@@ -13,9 +14,14 @@ import { TcpState, type TcpConnection, type TcpConnectionHandlers } from "../tra
 import type { HostTransportStack } from "../transport/host-transport";
 import type { Ipv4 } from "../util/ipv4";
 import { intToIp, ipToInt, maskToInt } from "../util/ipv4";
-import { ControlProtocolConfigurationError, enforceStructuralLimit } from "./limits";
+import {
+  ControlProtocolConfigurationError,
+  DEFAULT_CONTROL_PROTOCOL_LIMITS,
+  enforceStructuralLimit,
+} from "./limits";
 import { ProtocolActivity } from "./protocol-activity";
 import { RoutingPolicyEngine, type RoutePolicyBinding } from "../routing/route-policy";
+import { communityBlocksAdvertisement, normalizeBgpCommunities } from "../routing/bgp-community";
 
 export const DEFAULT_BGP_KEEPALIVE_SECONDS = 60;
 export const DEFAULT_BGP_HOLD_SECONDS = 180;
@@ -45,6 +51,10 @@ export interface BgpNeighborConfiguration {
   readonly routeMapOut?: string;
   readonly vpnv4Activated?: boolean;
   readonly sendCommunityExtended?: boolean;
+  /** `neighbor <a> send-community`: standard communities may leave this device. */
+  readonly sendCommunityStandard?: boolean;
+  /** iBGP peer this device reflects for; invalid on an eBGP neighbor. */
+  readonly routeReflectorClient?: boolean;
 }
 
 export interface BgpNetworkStatement {
@@ -57,6 +67,8 @@ export interface BgpConfiguration {
   readonly routerId?: Ipv4;
   readonly keepaliveSeconds?: number;
   readonly holdTimeSeconds?: number;
+  /** Reflection cluster identity; falls back to the BGP router ID. */
+  readonly clusterId?: Ipv4;
   readonly neighbors?: readonly BgpNeighborConfiguration[];
   readonly networks?: readonly BgpNetworkStatement[];
   readonly vrfAddressFamilies?: readonly BgpVrfAddressFamilyConfiguration[];
@@ -86,6 +98,12 @@ export interface BgpRoute {
   readonly learnedAtNs: number;
   readonly routeId: string;
   readonly igpMetric: number;
+  /** Canonical standard communities; never route-target extended communities. */
+  readonly communities: readonly string[];
+  /** Set once a route reflector forwards an iBGP route. */
+  readonly originatorId?: Ipv4;
+  /** Cluster IDs already traversed; empty on a route that was never reflected. */
+  readonly clusterList: readonly string[];
 }
 
 export interface Vpnv4Route extends Vpnv4Nlri {
@@ -99,6 +117,9 @@ export interface Vpnv4Route extends Vpnv4Nlri {
   readonly weight: number;
   readonly igpMetric: number;
   readonly best?: boolean;
+  readonly communities: readonly string[];
+  readonly originatorId?: Ipv4;
+  readonly clusterList: readonly string[];
 }
 
 export interface BgpRibEntry extends BgpRoute {
@@ -194,6 +215,9 @@ function vpnComparable(route: Vpnv4Route): BgpRoute {
     learnedAtNs: route.learnedAtNs,
     routeId: route.routeId,
     igpMetric: route.igpMetric,
+    communities: route.communities,
+    originatorId: route.originatorId,
+    clusterList: route.clusterList,
   };
 }
 
@@ -255,9 +279,11 @@ export class BgpProcess {
       );
     }
     if (configuration.routerId !== undefined) ipToInt(configuration.routerId);
+    if (configuration.clusterId !== undefined) ipToInt(configuration.clusterId);
     const configured = [...(configuration.neighbors ?? [])];
     enforceStructuralLimit("maximumBgpPeersPerDevice", configured.length);
     const seen = new Set<string>();
+    let clients = 0;
     for (const neighbor of configured) {
       ipToInt(neighbor.address);
       validateAsn(neighbor.remoteAs, "remoteAs");
@@ -269,7 +295,19 @@ export class BgpProcess {
         && (!Number.isInteger(neighbor.ebgpMultihop) || neighbor.ebgpMultihop < 1 || neighbor.ebgpMultihop > 255)) {
         throw new ControlProtocolConfigurationError("eBGP multihop TTL must be between 1 and 255", "ebgpMultihop");
       }
+      if (neighbor.routeReflectorClient) {
+        // Reflection only has meaning inside one AS; an eBGP peer already
+        // receives every path, so accepting it would teach the wrong rule.
+        if (neighbor.remoteAs !== configuration.localAs) {
+          throw new ControlProtocolConfigurationError(
+            `Route-reflector-client requires an iBGP neighbor; ${neighbor.address} is in AS ${neighbor.remoteAs}`,
+            "routeReflectorClient",
+          );
+        }
+        clients++;
+      }
     }
+    enforceStructuralLimit("maximumBgpRouteReflectorClientsPerDevice", clients);
     const networks = [...(configuration.networks ?? [])];
     for (const network of networks) {
       if (!Number.isInteger(network.prefixLength) || network.prefixLength < 0 || network.prefixLength > 32) {
@@ -783,6 +821,7 @@ export class BgpProcess {
         this.trace("bgp-loop-rejected", { neighbor: runtime.configuration.address, routeId: nlri.routeId });
         continue;
       }
+      if (this.rejectReflectionLoop(runtime, nlri.routeId, nlri.path)) continue;
       const igpMetric = this.host.bgpIgpMetric(nlri.path.nextHop);
       const route: BgpRoute = {
         network: intToIp((ipToInt(nlri.network) & maskToInt(nlri.prefixLength)) >>> 0),
@@ -800,7 +839,19 @@ export class BgpProcess {
         learnedAtNs: this.host.engine.now(),
         routeId: nlri.routeId,
         igpMetric: igpMetric ?? Number.MAX_SAFE_INTEGER,
+        communities: normalizeBgpCommunities(nlri.path.communities),
+        originatorId: nlri.path.originatorId,
+        clusterList: [...(nlri.path.clusterList ?? [])],
       };
+      if (nlri.path.reflected) {
+        this.trace("bgp-route-reflected", {
+          neighbor: runtime.configuration.address,
+          direction: "in",
+          routeId: route.routeId,
+          originatorId: route.originatorId,
+          clusterList: route.clusterList,
+        });
+      }
       rawRib.set(this.prefixKey(route.network, route.prefixLength), route);
     }
     this.rawAdjRibIn.set(runtime.configuration.address, rawRib);
@@ -829,6 +880,8 @@ export class BgpProcess {
         learnedAtNs: 0,
         routeId: `local:${network.network}/${network.prefixLength}`,
         igpMetric: 0,
+        communities: [],
+        clusterList: [],
       }));
   }
 
@@ -871,11 +924,15 @@ export class BgpProcess {
     for (const nlri of message.vpnv4Nlri ?? []) {
       if (nlri.prefixLength < 0 || nlri.prefixLength > 32 || nlri.path.asPath.length > 256) continue;
       if (this.configuration && nlri.path.asPath.includes(this.configuration.localAs)) continue;
+      if (this.rejectReflectionLoop(runtime, nlri.routeId, nlri.path, "vpnv4")) continue;
       const metric = this.host.bgpIgpMetric(nlri.nextHop);
       const route: Vpnv4Route = {
         ...nlri,
         routeTargets: [...nlri.routeTargets],
         path: { ...nlri.path, asPath: [...nlri.path.asPath] },
+        communities: normalizeBgpCommunities(nlri.path.communities),
+        originatorId: nlri.path.originatorId,
+        clusterList: [...(nlri.path.clusterList ?? [])],
         source: runtime.configuration.remoteAs === this.configuration?.localAs ? "ibgp" : "ebgp",
         neighborAddress: runtime.configuration.address,
         neighborAs: runtime.configuration.remoteAs,
@@ -929,16 +986,37 @@ export class BgpProcess {
       const vpnPrevious = this.vpnv4AdjRibOut.get(runtime.configuration.address) ?? new Map<string, Vpnv4Route>();
       const vpnDesired = new Map<string, Vpnv4Route>();
       const vpnAnnouncements: Vpnv4Nlri[] = [];
+      const peerIsIbgp = runtime.configuration.remoteAs === this.configuration.localAs;
+      const sendsCommunities = runtime.configuration.sendCommunityStandard === true;
       for (const route of this.locRib.values()) {
         if (route.neighborAddress === runtime.configuration.address) continue;
-        const peerIsIbgp = runtime.configuration.remoteAs === this.configuration.localAs;
-        if (peerIsIbgp && route.source === "ibgp") continue;
+        const reflection = this.reflectionDecision(route, runtime, peerIsIbgp);
+        if (!reflection.advertise) continue;
+        const blocked = communityBlocksAdvertisement(route.communities, peerIsIbgp);
+        if (blocked !== undefined) {
+          this.trace("bgp-community-suppressed-advertisement", {
+            neighbor: runtime.configuration.address,
+            prefix: `${route.network}/${route.prefixLength}`,
+            community: blocked,
+          });
+          continue;
+        }
+        const reflectedAttributes = this.reflectAttributes(route, reflection.reflect, peerIsIbgp);
+        if (reflectedAttributes === undefined) {
+          this.trace("bgp-route-reflection-rejected", {
+            neighbor: runtime.configuration.address,
+            prefix: `${route.network}/${route.prefixLength}`,
+            reason: `cluster list exceeds ${DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumBgpClusterListLength} entries`,
+          });
+          continue;
+        }
         const advertised: BgpRoute = {
           ...route,
           asPath: peerIsIbgp ? [...route.asPath] : [this.configuration.localAs, ...route.asPath],
           nextHop: (!peerIsIbgp || runtime.configuration.nextHopSelf || route.source === "local")
             ? runtime.localAddress
             : route.nextHop,
+          ...reflectedAttributes,
           routeId: `${this.configuration.routerId ?? this.host.id}:${route.network}/${route.prefixLength}`,
         };
         const decision = this.routingPolicy.evaluate(advertised, this.outboundBinding(runtime.configuration), this.configuration.localAs);
@@ -948,8 +1026,25 @@ export class BgpProcess {
           routeId: advertised.routeId,
           reason: decision.reason,
         });
+        this.traceCommunityChanges(decision, "out", runtime.configuration.address);
         if (decision.action === "deny") continue;
-        const permitted = decision.route;
+        // Adj-RIB-Out stores exactly what leaves this device: without
+        // `send-community` the peer never learns the attribute, so the
+        // advertised-routes view must not pretend otherwise.
+        const permitted: BgpRoute = {
+          ...decision.route,
+          communities: sendsCommunities ? decision.route.communities : [],
+        };
+        if (reflection.reflect) {
+          this.host.engine.controlProtocolBudget.consume("bgpReflectedUpdates", this.host.id);
+          this.trace("bgp-route-reflected", {
+            neighbor: runtime.configuration.address,
+            direction: "out",
+            prefix: `${permitted.network}/${permitted.prefixLength}`,
+            originatorId: permitted.originatorId,
+            clusterList: permitted.clusterList,
+          });
+        }
         desired.set(this.prefixKey(route.network, route.prefixLength), permitted);
         if (JSON.stringify(previous.get(this.prefixKey(route.network, route.prefixLength))) !== JSON.stringify(permitted)) {
           announcements.push({
@@ -962,6 +1057,10 @@ export class BgpProcess {
               nextHop: permitted.nextHop,
               localPreference: peerIsIbgp ? permitted.localPreference : undefined,
               med: permitted.med,
+              communities: permitted.communities.length ? permitted.communities : undefined,
+              originatorId: permitted.originatorId,
+              clusterList: permitted.clusterList.length ? permitted.clusterList : undefined,
+              reflected: reflection.reflect ? true : undefined,
             },
           });
         }
@@ -974,19 +1073,40 @@ export class BgpProcess {
       if (vpnNegotiated) {
         for (const route of this.vpnv4LocRib.values()) {
           if (route.neighborAddress === runtime.configuration.address) continue;
-          const peerIsIbgp = runtime.configuration.remoteAs === this.configuration.localAs;
-          if (peerIsIbgp && route.source === "ibgp") continue;
+          const reflection = this.reflectionDecision(route, runtime, peerIsIbgp);
+          if (!reflection.advertise) continue;
+          if (communityBlocksAdvertisement(route.communities, peerIsIbgp) !== undefined) continue;
+          const reflectedAttributes = this.reflectAttributes(route, reflection.reflect, peerIsIbgp);
+          if (reflectedAttributes === undefined) continue;
           const key = this.vpnPrefixKey(route.routeDistinguisher, route.network, route.prefixLength);
           const advertised: Vpnv4Route = {
             ...route,
+            ...reflectedAttributes,
+            communities: sendsCommunities ? [...route.communities] : [],
             routeTargets: runtime.configuration.sendCommunityExtended ? [...route.routeTargets] : [],
             path: {
               ...route.path,
               asPath: peerIsIbgp ? [...route.path.asPath] : [this.configuration.localAs, ...route.path.asPath],
               localPreference: peerIsIbgp ? route.localPreference : undefined,
+              communities: sendsCommunities && route.communities.length ? [...route.communities] : undefined,
+              originatorId: reflectedAttributes.originatorId,
+              clusterList: reflectedAttributes.clusterList.length ? [...reflectedAttributes.clusterList] : undefined,
+              reflected: reflection.reflect ? true : undefined,
             },
             routeId: `${this.configuration.routerId ?? this.host.id}:vpnv4:${key}`,
           };
+          if (reflection.reflect) {
+            this.host.engine.controlProtocolBudget.consume("bgpReflectedUpdates", this.host.id);
+            this.trace("bgp-route-reflected", {
+              neighbor: runtime.configuration.address,
+              direction: "out",
+              family: "vpnv4-unicast",
+              rd: route.routeDistinguisher,
+              prefix: `${route.network}/${route.prefixLength}`,
+              originatorId: advertised.originatorId,
+              clusterList: advertised.clusterList,
+            });
+          }
           vpnDesired.set(key, advertised);
           if (JSON.stringify(vpnPrevious.get(key)) !== JSON.stringify(advertised)) {
             vpnAnnouncements.push({
@@ -1024,6 +1144,103 @@ export class BgpProcess {
     }
   }
 
+  private traceCommunityChanges(
+    decision: { route: BgpRoute; communitiesAdded?: readonly string[]; communitiesRemoved?: readonly string[] },
+    direction: "in" | "out",
+    neighbor: Ipv4,
+  ): void {
+    const detail = { direction, neighbor, routeId: decision.route.routeId };
+    if (decision.communitiesAdded?.length) {
+      this.trace("bgp-community-added", { ...detail, communities: decision.communitiesAdded });
+    }
+    if (decision.communitiesRemoved?.length) {
+      this.trace("bgp-community-removed", { ...detail, communities: decision.communitiesRemoved });
+    }
+  }
+
+  /** Reflection cluster identity; an unconfigured cluster ID is the router ID. */
+  get clusterIdentity(): Ipv4 {
+    return this.configuration?.clusterId ?? this.configuration?.routerId ?? "0.0.0.0";
+  }
+
+  /** `true` when at least one neighbor is configured as a reflector client. */
+  get routeReflector(): boolean {
+    return [...this.neighbors.values()].some((runtime) => runtime.configuration.routeReflectorClient === true);
+  }
+
+  routeReflectorClients(): Ipv4[] {
+    return [...this.neighbors.values()]
+      .filter((runtime) => runtime.configuration.routeReflectorClient === true)
+      .map((runtime) => runtime.configuration.address)
+      .sort((a, b) => ipToInt(a) - ipToInt(b));
+  }
+
+  /**
+   * The documented reflection rule set.
+   *
+   * A plain iBGP speaker never passes an iBGP-learned path on, which is the
+   * pre-M10.12 split-horizon behaviour. A reflector adds exactly two
+   * exceptions: a client's path may go to anyone, and a non-client's path may
+   * go to a client. Everything else — including eBGP — is unchanged.
+   */
+  private reflectionDecision(
+    route: Pick<BgpRoute, "source" | "neighborAddress">,
+    runtime: NeighborRuntime,
+    peerIsIbgp: boolean,
+  ): { advertise: boolean; reflect: boolean } {
+    if (!peerIsIbgp || route.source !== "ibgp") return { advertise: true, reflect: false };
+    const peerIsClient = runtime.configuration.routeReflectorClient === true;
+    const learnedFromClient = route.neighborAddress !== undefined
+      && this.neighbors.get(route.neighborAddress)?.configuration.routeReflectorClient === true;
+    if (!learnedFromClient && !peerIsClient) return { advertise: false, reflect: false };
+    return { advertise: true, reflect: true };
+  }
+
+  /**
+   * ORIGINATOR_ID and CLUSTER_LIST for one advertisement, or `undefined` when
+   * the cluster list would exceed its finite bound. Both attributes are iBGP
+   * only, so an eBGP advertisement always drops them.
+   */
+  private reflectAttributes(
+    route: Pick<BgpRoute, "originatorId" | "clusterList" | "neighborRouterId">,
+    reflect: boolean,
+    peerIsIbgp: boolean,
+  ): { originatorId: Ipv4 | undefined; clusterList: readonly string[] } | undefined {
+    if (!peerIsIbgp) return { originatorId: undefined, clusterList: [] };
+    if (!reflect) return { originatorId: route.originatorId, clusterList: [...route.clusterList] };
+    const clusterList = [this.clusterIdentity, ...route.clusterList];
+    if (clusterList.length > DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumBgpClusterListLength) return undefined;
+    return { originatorId: route.originatorId ?? route.neighborRouterId, clusterList };
+  }
+
+  /** ORIGINATOR_ID/CLUSTER_LIST loop prevention for one received NLRI. */
+  private rejectReflectionLoop(
+    runtime: NeighborRuntime,
+    routeId: string,
+    path: BgpPathAttributes,
+    family: "ipv4-unicast" | "vpnv4" = "ipv4-unicast",
+  ): boolean {
+    const clusterList = path.clusterList ?? [];
+    const detail = { neighbor: runtime.configuration.address, routeId, family };
+    const routerId = this.configuration?.routerId;
+    if (path.originatorId !== undefined && routerId !== undefined && path.originatorId === routerId) {
+      this.trace("bgp-originator-loop-rejected", { ...detail, originatorId: path.originatorId });
+      return true;
+    }
+    if (this.clusterIdentity !== "0.0.0.0" && clusterList.includes(this.clusterIdentity)) {
+      this.trace("bgp-cluster-loop-rejected", { ...detail, clusterId: this.clusterIdentity, clusterList });
+      return true;
+    }
+    if (clusterList.length > DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumBgpClusterListLength) {
+      this.trace("bgp-route-reflection-rejected", {
+        ...detail,
+        reason: `cluster list exceeds ${DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumBgpClusterListLength} entries`,
+      });
+      return true;
+    }
+    return false;
+  }
+
   private prefixKey(network: Ipv4, prefixLength: number): string {
     return `${network}/${prefixLength}`;
   }
@@ -1054,6 +1271,7 @@ export class BgpProcess {
         matchedPrefixListSequence: decision.matchedPrefixListSequence,
         matchedRouteMapSequence: decision.matchedRouteMapSequence,
       });
+      this.traceCommunityChanges(decision, "in", runtime.configuration.address);
       if (decision.action === "permit") evaluated.set(key, decision.route);
     }
     this.adjRibIn.set(runtime.configuration.address, evaluated);

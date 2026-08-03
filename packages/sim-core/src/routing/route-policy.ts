@@ -2,6 +2,7 @@ import type { BgpRoute, BgpRouteSource } from "../protocols/bgp";
 import type { Ipv4 } from "../util/ipv4";
 import { ipToInt, maskToInt } from "../util/ipv4";
 import { ControlProtocolConfigurationError } from "../protocols/limits";
+import { normalizeBgpCommunities } from "./bgp-community";
 
 export type RoutePolicyAction = "permit" | "deny";
 
@@ -32,6 +33,11 @@ export interface RouteSetAction {
   readonly weight?: number;
   readonly prependLocalAs?: number;
   readonly origin?: BgpRoute["origin"];
+  /** `set community <value>...`; replaces the set unless `communityAdditive`. */
+  readonly communities?: readonly string[];
+  readonly communityAdditive?: boolean;
+  /** `set community none`: clears standard communities, never route targets. */
+  readonly communityNone?: boolean;
 }
 
 export interface RouteMapSequence {
@@ -57,6 +63,13 @@ export interface RoutePolicyDecision {
   readonly matchedPrefixListSequence?: number;
   readonly matchedRouteMapSequence?: number;
   readonly reason: string;
+  /**
+   * Communities the matched sequence added and removed. The engine stays pure,
+   * so the BGP process — which owns the engine clock — turns this into the
+   * `bgp-community-added` / `bgp-community-removed` trace events.
+   */
+  readonly communitiesAdded?: readonly string[];
+  readonly communitiesRemoved?: readonly string[];
 }
 
 export interface RoutePolicyCounter {
@@ -86,6 +99,21 @@ function prefixMatches(route: BgpRoute, entry: PrefixListEntry): boolean {
   const minimum = entry.ge ?? entry.prefixLength;
   const maximum = entry.le ?? (entry.ge === undefined ? entry.prefixLength : 32);
   return route.prefixLength >= minimum && route.prefixLength <= maximum;
+}
+
+/**
+ * `set community` semantics. Without `additive` the standard community set is
+ * replaced; with it the new values are merged, deduplicated and re-sorted into
+ * the one canonical order. Route-target extended communities live in a
+ * different attribute and are deliberately out of reach here.
+ */
+export function applyCommunitySet(
+  current: readonly string[],
+  set: Pick<RouteSetAction, "communities" | "communityAdditive" | "communityNone">,
+): readonly string[] {
+  if (set.communityNone) return [];
+  if (!set.communities) return current;
+  return normalizeBgpCommunities(set.communityAdditive ? [...current, ...set.communities] : set.communities);
 }
 
 interface MutableCounter {
@@ -155,6 +183,10 @@ export class RoutingPolicyEngine {
         if (prepend !== undefined && (!Number.isInteger(prepend) || prepend < 1 || prepend > 10)) {
           throw new ControlProtocolConfigurationError("AS prepend count must be between 1 and 10", "routeMap.prependLocalAs");
         }
+        if (sequence.set?.communities !== undefined) normalizeBgpCommunities(sequence.set.communities, "routeMap.communities");
+        if (sequence.set?.communityNone && sequence.set.communities?.length) {
+          throw new ControlProtocolConfigurationError("'set community none' cannot be combined with community values", "routeMap.communityNone");
+        }
         const maxPath = sequence.match?.maximumAsPathLength;
         if (maxPath !== undefined && (!Number.isInteger(maxPath) || maxPath < 0 || maxPath > 256)) {
           throw new ControlProtocolConfigurationError("AS path length match must be between 0 and 256", "routeMap.maximumAsPathLength");
@@ -194,6 +226,7 @@ export class RoutingPolicyEngine {
           reason: `route-map ${map.id} sequence ${sequence.sequence} denied the route`,
         };
       }
+      const before = current.communities;
       current = this.applySet(current, sequence.set, localAs);
       return {
         action: "permit",
@@ -201,6 +234,8 @@ export class RoutingPolicyEngine {
         matchedPrefixListSequence,
         matchedRouteMapSequence: sequence.sequence,
         reason: `route-map ${map.id} sequence ${sequence.sequence} permitted the route`,
+        communitiesAdded: current.communities.filter((value) => !before.includes(value)),
+        communitiesRemoved: before.filter((value) => !current.communities.includes(value)),
       };
     }
     return { action: "deny", route: current, matchedPrefixListSequence, reason: `route-map ${map.id} implicit deny` };
@@ -216,7 +251,11 @@ export class RoutingPolicyEngine {
       sequences: map.sequences.map((sequence) => ({
         ...sequence,
         match: sequence.match ? { ...sequence.match, prefixListIds: sequence.match.prefixListIds ? [...sequence.match.prefixListIds] : undefined } : undefined,
-        set: sequence.set ? { ...sequence.set } : undefined,
+        // Never introduce a key with an `undefined` value: a canonical
+        // LabDocument is validated with strict schemas that count it as set.
+        set: sequence.set
+          ? (sequence.set.communities ? { ...sequence.set, communities: [...sequence.set.communities] } : { ...sequence.set })
+          : undefined,
       })),
     }));
   }
@@ -256,6 +295,7 @@ export class RoutingPolicyEngine {
     if (!set) return route;
     return {
       ...route,
+      communities: applyCommunitySet(route.communities, set),
       localPreference: set.localPreference ?? route.localPreference,
       med: set.med ?? route.med,
       weight: set.weight ?? route.weight,

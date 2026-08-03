@@ -22,6 +22,20 @@ export interface BgpPathAttributes {
   readonly nextHop: Ipv4;
   readonly localPreference?: number;
   readonly med?: number;
+  /**
+   * Standard communities, canonical and sorted. They only cross the wire when
+   * the sending neighbor has `send-community`, which is exactly why the field
+   * is optional rather than always populated.
+   */
+  readonly communities?: readonly string[];
+  /** Router ID of the iBGP speaker that first announced the route. */
+  readonly originatorId?: Ipv4;
+  /** Cluster IDs of every reflector the route has already traversed. */
+  readonly clusterList?: readonly string[];
+  /** `true` when a route reflector, not the originator, sent this NLRI. */
+  readonly reflected?: boolean;
+  /** Contributing ASNs of an `as-set` aggregate, deterministic and sorted. */
+  readonly aggregatorAsSet?: readonly number[];
 }
 
 export interface BgpNlri {

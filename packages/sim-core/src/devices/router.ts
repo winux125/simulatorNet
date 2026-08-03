@@ -2778,6 +2778,8 @@ export class Router extends Device {
           med: 0,
           weight: 32_768,
           igpMetric: 0,
+          communities: [],
+          clusterList: [],
         });
       }
     }

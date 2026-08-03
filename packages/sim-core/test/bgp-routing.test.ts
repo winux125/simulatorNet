@@ -25,6 +25,8 @@ function candidate(overrides: Partial<BgpRoute> = {}): BgpRoute {
     learnedAtNs: 100,
     routeId: "route-a",
     igpMetric: 10,
+    communities: [],
+    clusterList: [],
     ...overrides,
   };
 }

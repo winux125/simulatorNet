@@ -57,6 +57,16 @@ export const DEFAULT_CONTROL_PROTOCOL_LIMITS = Object.freeze({
   maximumBgpStateTransitionsPerOperation: 4_096,
   maximumBgpPrefixesPerPeer: 4_096,
   maximumBgpAsPathLength: 256,
+  maximumBgpRouteReflectorClientsPerDevice: 64,
+  maximumBgpClusterListLength: 16,
+  maximumBgpCommunitiesPerRoute: 32,
+  maximumBgpReflectedUpdatesPerOperation: 20_000,
+  maximumBgpCommunityListsPerDevice: 128,
+  maximumBgpCommunityListEntriesPerList: 128,
+  maximumBgpAsPathListsPerDevice: 128,
+  maximumBgpAsPathListEntriesPerList: 128,
+  maximumBgpAggregatesPerDevice: 64,
+  maximumBgpAsPathPrependLength: 10,
 
   // --- MPLS / LDP ------------------------------------------------------
   maximumLdpNeighborsPerDevice: 64,
@@ -84,6 +94,7 @@ export type ControlProtocolBudgetKey =
   | "ospfEvents"
   | "bgpMessages"
   | "bgpStateTransitions"
+  | "bgpReflectedUpdates"
   | "ldpEvents"
   | "ldpStateTransitions";
 
@@ -103,6 +114,7 @@ const BUDGET_LIMIT_KEYS: Readonly<Record<ControlProtocolBudgetKey, keyof Control
   ospfEvents: "maximumOspfEventsPerOperation",
   bgpMessages: "maximumBgpMessagesPerOperation",
   bgpStateTransitions: "maximumBgpStateTransitionsPerOperation",
+  bgpReflectedUpdates: "maximumBgpReflectedUpdatesPerOperation",
   ldpEvents: "maximumLdpEventsPerOperation",
   ldpStateTransitions: "maximumLdpStateTransitionsPerOperation",
 });
