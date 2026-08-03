@@ -63,11 +63,16 @@ import {
   type LdpPeerDescriptor,
 } from "../protocols/ldp";
 import type { Ipv4Packet } from "../packets/ipv4";
-import type { MplsPacket } from "../packets/mpls";
+import {
+  MPLS_IMPLICIT_NULL_LABEL,
+  MPLS_LABEL_STACK_ENTRY_BYTES,
+  type MplsPacket,
+} from "../packets/mpls";
 import {
   MplsForwardingPlane,
   type MplsForwardingEntry,
 } from "../mpls/label-forwarding";
+import { MPLS_CORE_MTU_BYTES } from "../mpls/limits";
 import { ESP_OVERHEAD_BYTES } from "../packets/esp";
 import type { GrePacket } from "../packets/gre";
 import { IKE_PORT, type IkeMessage } from "../packets/ike";
@@ -137,8 +142,10 @@ import {
 } from "../policy/nat-engine";
 import {
   VrfRoutingTable,
+  type ImportedVpnIpv6Route,
   type ImportedVpnRoute,
   type VrfConfiguration,
+  type VrfIpv6Route,
   type VrfRoute,
 } from "../routing/vrf";
 import {
@@ -1268,6 +1275,10 @@ export class Router extends Device {
     return this.vrfs.staticRouteConfigurations(vrfId);
   }
 
+  vrfIpv6StaticRouteConfigurations(vrfId: string): readonly VrfIpv6Route[] {
+    return this.vrfs.ipv6StaticRouteConfigurations(vrfId);
+  }
+
   assignInterfaceVrf(interfaceName: string, vrfId: string | undefined): void {
     const iface = this.l3.get(interfaceName) ?? this.getOrCreateInterface(interfaceName);
     if (this.isLoopback(interfaceName) || isTunnelInterface(iface.physical)) {
@@ -1281,6 +1292,14 @@ export class Router extends Device {
       const duplicate = [...this.l3.values()].find((candidate) =>
         candidate !== iface && candidate.vrfId === vrfId && candidate.ip === iface.ip);
       if (duplicate) throw new Error(`Duplicate IPv4 address ${iface.ip} in ${vrfId ? `VRF ${vrfId}` : "global routing"}.`);
+    }
+    for (const assignment of iface.ipv6.summaries()) {
+      if (assignment.source === "link-local") continue;
+      const duplicate = [...this.l3.values()].find((candidate) =>
+        candidate !== iface && candidate.vrfId === vrfId && candidate.ipv6.owns(assignment.address, true));
+      if (duplicate) {
+        throw new Error(`Duplicate IPv6 address ${assignment.address} in ${vrfId ? `VRF ${vrfId}` : "global routing"}.`);
+      }
     }
     iface.vrfId = vrfId;
     this.ospf.arm();
@@ -1305,8 +1324,22 @@ export class Router extends Device {
     this.bgp.refreshRoutes();
   }
 
+  addVrfIpv6StaticRoute(vrfId: string, network: Ipv6, prefixLength: number, nextHop: Ipv6): void {
+    // As with IPv4, this is configuration validation: the next hop only has to
+    // sit inside a configured prefix of the same VRF, not on an up link yet.
+    if (!this.connectedVrfIpv6InterfaceFor(vrfId, nextHop, false)) {
+      throw new Error(`VRF ${vrfId} next hop ${nextHop} is not reachable in the same VRF.`);
+    }
+    this.vrfs.addIpv6StaticRoute(vrfId, network, prefixLength, nextHop);
+    this.bgp.refreshRoutes();
+  }
+
   vrfRoutingTable(vrfId: string): readonly VrfRoute[] {
     return this.vrfs.routes(vrfId, this.connectedVrfRoutes(vrfId));
+  }
+
+  vrfIpv6RoutingTable(vrfId: string): readonly VrfIpv6Route[] {
+    return this.vrfs.ipv6Routes(vrfId, this.connectedVrfIpv6Routes(vrfId));
   }
 
   /** `encapsulation dot1Q <vlan> [native]`: ensure the subinterface exists. */
@@ -1368,10 +1401,20 @@ export class Router extends Device {
   setInterfaceIpv6(name: string, addressInput: Ipv6, prefixLength: number): void {
     const iface = this.l3.get(name);
     if (!iface) throw new Error(`Router ${this.id} has no L3 interface ${name}`);
-    this.enableInterfaceIpv6(name);
     const address = normalizeIpv6(addressInput);
+    // The same customer prefix may exist in several VRFs, so a duplicate is
+    // only a conflict inside one routing context. This is a configuration
+    // check, so a still-tentative address already counts — DAD answers the
+    // different question of whether someone else on the wire holds it.
+    const duplicate = [...this.l3.values()].find((candidate) =>
+      candidate !== iface && candidate.vrfId === iface.vrfId && candidate.ipv6.owns(address, true));
+    if (duplicate) {
+      throw new Error(`Duplicate IPv6 address ${address} in ${iface.vrfId ? `VRF ${iface.vrfId}` : "global routing"}.`);
+    }
+    this.enableInterfaceIpv6(name);
     iface.ipv6.add({ address, prefixLength, source: "static", state: "tentative" });
     this.ipv6Discovery(iface).beginDad(address);
+    this.bgp.refreshRoutes();
   }
 
   addIpv6StaticRoute(network: Ipv6, prefixLength: number, nextHop: Ipv6): void {
@@ -1593,9 +1636,11 @@ export class Router extends Device {
         left.interfaceName.localeCompare(right.interfaceName) || left.address.localeCompare(right.address));
   }
 
+  /** `show ipv6 route`: the global table only. A VRF owns a separate one. */
   ipv6RoutingTable(): Ipv6RouteRow[] {
     const rows: Ipv6RouteRow[] = [];
     for (const iface of this.l3.values()) {
+      if (iface.vrfId !== undefined) continue;
       if (isTunnelInterface(iface.physical) && !iface.physical.operationalUp) continue;
       for (const assignment of iface.ipv6.summaries()) {
         if (assignment.state === "duplicate" || assignment.state === "tentative") continue;
@@ -1821,9 +1866,11 @@ export class Router extends Device {
       this.traceMpls("mpls-packet-delivered", {
         incomingLabel: decision.entry.incomingLabel,
         vrfId: decision.vrfId,
+        family: decision.packet.kind === "ipv6" ? "ipv6" : "ipv4",
         before,
       });
-      this.receiveMplsIpv4(decision.packet, ingress, decision.vrfId);
+      if (decision.packet.kind === "ipv6") this.receiveMplsIpv6(decision.packet, ingress, decision.vrfId);
+      else this.receiveMplsIpv4(decision.packet, ingress, decision.vrfId);
       return;
     }
     const egressId = decision.entry.outgoingInterfaceId;
@@ -1834,6 +1881,17 @@ export class Router extends Device {
         reason: "mpls-egress-unavailable",
         incomingLabel: decision.entry.incomingLabel,
         egress: egressId,
+      });
+      return;
+    }
+    // LDP distributes IPv4 core FECs only, so a fully popped stack must leave an
+    // IPv4 payload. A bare IPv6 packet here would have no IPv6 core next hop:
+    // it is reported rather than sent to an address of the wrong family.
+    if (decision.kind === "ipv6") {
+      this.traceMpls("mpls-packet-dropped", {
+        reason: "ipv6-payload-without-vpn-label",
+        incomingLabel: decision.entry.incomingLabel,
+        fec: decision.entry.fec,
       });
       return;
     }
@@ -1872,6 +1930,24 @@ export class Router extends Device {
     }
     if (this.isOwnIp(packet.dst)) this.deliverLocal(packet);
     else this.forwardAfterMpls(packet, ingress);
+  }
+
+  /**
+   * Egress-PE delivery of an IPv6 payload. The VPN label already named the VRF
+   * and its address family, so the packet re-enters the ordinary IPv6 stack
+   * inside that customer context and never touches the global table.
+   */
+  protected receiveMplsIpv6(packet: Ipv6Packet, ingress: L3Interface, vrfId?: string): void {
+    if (vrfId === undefined) {
+      this.traceMpls("mpls-packet-dropped", { reason: "ipv6-payload-without-vrf", family: "ipv6" });
+      return;
+    }
+    if (!this.vrfs.configuration(vrfId)) {
+      this.traceMpls("mpls-packet-dropped", { reason: "vrf-reference-missing", family: "ipv6", vrfId });
+      return;
+    }
+    if (this.isOwnIpv6InContext(packet.dst, vrfId)) this.deliverLocalIpv6(packet, vrfId);
+    else this.forwardVrfIpv6(packet, ingress, vrfId, false);
   }
 
   private forwardAfterMpls(packet: Ipv4Packet, ingress: L3Interface): void {
@@ -1914,10 +1990,13 @@ export class Router extends Device {
         this.traceMpls("l3vpn-packet-dropped", { reason: "mpls-egress-unavailable", vrfId, egress: transport.outgoingInterfaceId });
         return;
       }
-      const labels = transport.label === 3 ? [route.vpnLabel] : [transport.label, route.vpnLabel];
+      const labels = transport.label === MPLS_IMPLICIT_NULL_LABEL
+        ? [route.vpnLabel]
+        : [transport.label, route.vpnLabel];
+      if (!this.fitsMplsMtu(outbound, labels.length, egress, vrfId)) return;
       const labelled = this.mpls.impose(outbound, labels);
-      this.traceMpls("mpls-label-imposed", { vrfId, labels, remotePe: route.remotePe, destination: packet.dst });
-      this.traceMpls("l3vpn-packet-forwarded", { vrfId, labels, remotePe: route.remotePe });
+      this.traceMpls("mpls-label-imposed", { vrfId, family: "ipv4", labels, remotePe: route.remotePe, destination: packet.dst });
+      this.traceMpls("l3vpn-packet-forwarded", { vrfId, family: "ipv4", labels, remotePe: route.remotePe });
       this.sendResolvedPayload(labelled, EtherType.MPLS, egress, transport.nextHop);
       return;
     }
@@ -2256,15 +2335,16 @@ export class Router extends Device {
       this.handleDhcpv6(packet.payload.payload, ingress, packet.src);
       return;
     }
-    if (this.isOwnIpv6(packet.dst)) {
-      this.deliverLocalIpv6(packet);
+    if (this.isOwnIpv6InContext(packet.dst, ingress.vrfId)) {
+      this.deliverLocalIpv6(packet, ingress.vrfId);
       return;
     }
     if (isIpv6Multicast(packet.dst)) return;
-    this.forwardIpv6(packet, ingress);
+    if (ingress.vrfId !== undefined) this.forwardVrfIpv6(packet, ingress, ingress.vrfId, true);
+    else this.forwardIpv6(packet, ingress);
   }
 
-  private deliverLocalIpv6(packet: Ipv6Packet): void {
+  private deliverLocalIpv6(packet: Ipv6Packet, vrfId?: string): void {
     if (packet.nextHeader === Ipv6NextHeader.UDP && packet.payload.kind === "udp") {
       this.management.receiveUdp(packet.src, packet.dst, packet.payload, false);
       return;
@@ -2303,7 +2383,128 @@ export class Router extends Device {
         identifier: message.identifier,
         sequence: message.sequence,
       },
+    }, vrfId);
+  }
+
+  /**
+   * Customer IPv6 forwarding inside one VRF. An imported VPNv6 route leaves
+   * through the MPLS core with the VPN label under the LDP transport label; a
+   * connected or static route leaves through an interface of the same VRF.
+   * There is no fallback to the global IPv6 table in either case.
+   */
+  private forwardVrfIpv6(packet: Ipv6Packet, ingress: L3Interface, vrfId: string, decrementHopLimit: boolean): void {
+    if (!this.ipv6ForwardingEnabled) return;
+    const hopLimit = decrementHopLimit ? packet.hopLimit - 1 : packet.hopLimit;
+    if (hopLimit <= 0) {
+      this.sendIcmpv6Error(Icmpv6Type.TimeExceeded, packet, ingress);
+      return;
+    }
+    const route = this.vrfs.lookupIpv6(vrfId, packet.dst, this.connectedVrfIpv6Routes(vrfId));
+    if (!route) {
+      this.traceMpls("l3vpn-packet-dropped", { reason: "no-vrf-route", family: "ipv6", vrfId, destination: packet.dst });
+      this.sendIcmpv6Error(Icmpv6Type.DestinationUnreachable, packet, ingress);
+      return;
+    }
+    const outbound = { ...packet, hopLimit };
+    if (route.source === "bgp-vpn") {
+      this.forwardVpnv6(outbound, vrfId, route);
+      return;
+    }
+    const nextHop = route.nextHop ?? packet.dst;
+    const egress = route.outgoingInterfaceId
+      ? this.l3.get(route.outgoingInterfaceId)
+      : this.connectedVrfIpv6InterfaceFor(vrfId, nextHop);
+    if (!egress?.physical.operationalUp) return;
+    if (!this.permitByIpv6Acl(outbound, egress, "out")) return;
+    this.ipv6Discovery(egress).send(outbound, nextHop);
+  }
+
+  /** Ingress-PE label imposition for an IPv6 payload: VPN label then transport. */
+  private forwardVpnv6(packet: Ipv6Packet, vrfId: string, route: VrfIpv6Route): void {
+    if (!route.remotePe || route.vpnLabel === undefined) {
+      this.traceMpls("l3vpn-packet-dropped", { reason: "vpn-label-unavailable", family: "ipv6", vrfId, destination: packet.dst });
+      return;
+    }
+    const transport = this.ldp.outgoingLabelFor(`${route.remotePe}/32`);
+    if (!transport) {
+      this.traceMpls("l3vpn-packet-dropped", { reason: "transport-label-unavailable", family: "ipv6", vrfId, remotePe: route.remotePe });
+      return;
+    }
+    const egress = this.l3.get(transport.outgoingInterfaceId);
+    if (!egress?.physical.operationalUp || !this.mpls.interfaceEnabled(egress.name)) {
+      this.traceMpls("l3vpn-packet-dropped", { reason: "mpls-egress-unavailable", family: "ipv6", vrfId, egress: transport.outgoingInterfaceId });
+      return;
+    }
+    const labels = transport.label === MPLS_IMPLICIT_NULL_LABEL ? [route.vpnLabel] : [transport.label, route.vpnLabel];
+    if (!this.fitsMplsMtu(packet, labels.length, egress, vrfId)) return;
+    const labelled = this.mpls.impose(packet, labels);
+    this.traceMpls("mpls-label-imposed", { vrfId, family: "ipv6", labels, remotePe: route.remotePe, destination: packet.dst });
+    this.traceMpls("l3vpn-packet-forwarded", { vrfId, family: "ipv6", labels, remotePe: route.remotePe });
+    this.sendResolvedPayload(labelled, EtherType.MPLS, egress, transport.nextHop);
+  }
+
+  /**
+   * MPLS adds a shim per label, so a payload that already fills the core MTU no
+   * longer fits once it is labelled. It is reported and dropped — never
+   * fragmented — and IPv6 gets the Packet Too Big its path-MTU model expects.
+   */
+  private fitsMplsMtu(
+    packet: Ipv4Packet | Ipv6Packet,
+    labelCount: number,
+    egress: L3Interface,
+    vrfId: string,
+  ): boolean {
+    const overhead = labelCount * MPLS_LABEL_STACK_ENTRY_BYTES;
+    const size = estimateIpPacketSizeBytes(packet) + overhead;
+    if (size <= MPLS_CORE_MTU_BYTES) return true;
+    this.traceMpls("mpls-packet-too-big", {
+      vrfId,
+      family: packet.kind === "ipv6" ? "ipv6" : "ipv4",
+      bytes: size,
+      mtu: MPLS_CORE_MTU_BYTES,
+      egress: egress.name,
     });
+    this.reportMplsTooBig(packet, MPLS_CORE_MTU_BYTES - overhead, vrfId);
+    return false;
+  }
+
+  /**
+   * The oversized-payload report leaves through the customer VRF the packet
+   * arrived on, so a CE sees an answer from its own provider edge rather than
+   * from the global routing context.
+   */
+  private reportMplsTooBig(packet: Ipv4Packet | Ipv6Packet, mtu: number, vrfId: string): void {
+    if (packet.kind === "ipv6") {
+      const egress = this.connectedVrfIpv6InterfaceFor(vrfId, packet.src);
+      const source = egress ? this.sourceIpv6Address(egress, packet.src) : undefined;
+      if (!source) return;
+      this.originateIpv6({
+        kind: "ipv6",
+        src: source,
+        dst: packet.src,
+        nextHeader: Ipv6NextHeader.ICMPv6,
+        hopLimit: DEFAULT_IPV6_HOP_LIMIT,
+        payload: { kind: "icmpv6", type: Icmpv6Type.PacketTooBig, code: 0, mtu, reason: "packet-too-big" },
+      }, vrfId);
+      return;
+    }
+    const egress = this.connectedVrfInterfaceFor(vrfId, packet.src);
+    if (!egress?.ip) return;
+    this.egressSend({
+      kind: "ipv4",
+      src: egress.ip,
+      dst: packet.src,
+      protocol: IpProtocol.ICMP,
+      ttl: DEFAULT_IP_TTL,
+      payload: {
+        kind: "icmp",
+        type: IcmpType.DestinationUnreachable,
+        code: IcmpCode.FragmentationNeeded,
+        identifier: 0,
+        sequence: 0,
+        nextHopMtu: mtu,
+      },
+    }, egress, packet.src);
   }
 
   private forwardIpv6(packet: Ipv6Packet, ingress: L3Interface): void {
@@ -2326,10 +2527,30 @@ export class Router extends Device {
     this.sendIpv6ThroughEgress({ ...packet, hopLimit: packet.hopLimit - 1 }, route.egress, route.nextHopIp);
   }
 
-  private originateIpv6(packet: Ipv6Packet): void {
+  /**
+   * Locally sourced IPv6. A `vrfId` keeps the packet inside that customer
+   * context; without one it uses the global table, and neither can fall back
+   * to the other.
+   */
+  private originateIpv6(packet: Ipv6Packet, vrfId?: string): void {
     if (isIpv6Multicast(packet.dst)) {
       const iface = [...this.l3.values()].find((entry) => entry.ipv6.owns(packet.src));
       if (iface) this.ipv6Discovery(iface).send(packet, packet.dst);
+      return;
+    }
+    if (vrfId !== undefined) {
+      const route = this.vrfs.lookupIpv6(vrfId, packet.dst, this.connectedVrfIpv6Routes(vrfId));
+      if (!route) return;
+      if (route.source === "bgp-vpn") {
+        this.forwardVpnv6(packet, vrfId, route);
+        return;
+      }
+      const nextHop = route.nextHop ?? packet.dst;
+      const egress = route.outgoingInterfaceId
+        ? this.l3.get(route.outgoingInterfaceId)
+        : this.connectedVrfIpv6InterfaceFor(vrfId, nextHop);
+      if (!egress?.physical.operationalUp) return;
+      this.ipv6Discovery(egress).send(packet, nextHop);
       return;
     }
     const route = this.resolveIpv6(packet.dst);
@@ -2368,7 +2589,7 @@ export class Router extends Device {
       nextHeader: Ipv6NextHeader.ICMPv6,
       hopLimit: DEFAULT_IPV6_HOP_LIMIT,
       payload,
-    });
+    }, ingress.vrfId);
   }
 
   private sendRouterAdvertisement(iface: L3Interface, requester: Ipv6): void {
@@ -2808,8 +3029,32 @@ export class Router extends Device {
     });
   }
 
-  vpnLabelBindings(): ReadonlyArray<{ label: number; vrfId: string }> {
-    return this.vrfs.configurationsSnapshot().map((vrf) => ({ label: this.vrfs.vpnLabel(vrf.id), vrfId: vrf.id }));
+  /** One label per VRF and address family, so IPv4 and IPv6 stay separable. */
+  /**
+   * Install the VPNv6 routes the control plane selected into their VRFs. Route
+   * targets decide the import, exactly as they do for VPNv4, and the result is
+   * runtime state that both the browser worker and the verifier rebuild.
+   */
+  replaceImportedVpnv6Routes(routes: readonly ImportedVpnIpv6Route[]): void {
+    this.vrfs.replaceImportedIpv6(routes);
+    this.rebuildVpnLabelBindings();
+    this.engine.trace({
+      time: this.engine.now(),
+      type: "bgp-vpnv6-routing-table-changed",
+      device: this.id,
+      detail: { routes: routes.length },
+    });
+  }
+
+  vpnLabelBindings(): ReadonlyArray<{ label: number; vrfId: string; addressFamily: "ipv4" | "ipv6" }> {
+    return this.vrfs.configurationsSnapshot()
+      .flatMap((vrf) => [
+        { label: this.vrfs.vpnLabel(vrf.id, "ipv4"), vrfId: vrf.id, addressFamily: "ipv4" as const },
+        ...(vrf.addressFamilyIpv6
+          ? [{ label: this.vrfs.vpnLabel(vrf.id, "ipv6"), vrfId: vrf.id, addressFamily: "ipv6" as const }]
+          : []),
+      ])
+      .sort((left, right) => left.label - right.label);
   }
 
   /** Clear derived MPLS/LDP state while preserving every structured setting. */
@@ -2824,8 +3069,15 @@ export class Router extends Device {
     this.mpls.removeBySource("vpn");
     for (const vrf of this.vrfs.configurationsSnapshot()) {
       this.mpls.install({
-        incomingLabel: this.vrfs.vpnLabel(vrf.id),
-        fec: `${vrf.routeDistinguisher}:vrf`,
+        incomingLabel: this.vrfs.vpnLabel(vrf.id, "ipv4"),
+        fec: `${vrf.routeDistinguisher}:vrf:ipv4`,
+        operation: { type: "deliver", vrfId: vrf.id },
+        source: "vpn",
+      });
+      if (!vrf.addressFamilyIpv6) continue;
+      this.mpls.install({
+        incomingLabel: this.vrfs.vpnLabel(vrf.id, "ipv6"),
+        fec: `${vrf.routeDistinguisher}:vrf:ipv6`,
         operation: { type: "deliver", vrfId: vrf.id },
         source: "vpn",
       });
@@ -3123,7 +3375,7 @@ export class Router extends Device {
     };
 
     for (const iface of this.l3.values()) {
-      if (!iface.physical.operationalUp) continue;
+      if (iface.vrfId !== undefined || !iface.physical.operationalUp) continue;
       for (const assignment of iface.ipv6.summaries()) {
         if (assignment.state === "tentative" || assignment.state === "duplicate") continue;
         if (!ipv6InPrefix(destination, assignment.address, assignment.prefixLength)) continue;
@@ -3167,7 +3419,7 @@ export class Router extends Device {
 
   private connectedIpv6InterfaceFor(address: Ipv6): L3Interface | undefined {
     for (const iface of this.l3.values()) {
-      if (!iface.physical.operationalUp) continue;
+      if (iface.vrfId !== undefined || !iface.physical.operationalUp) continue;
       for (const assignment of iface.ipv6.summaries()) {
         if (assignment.state === "tentative" || assignment.state === "duplicate") continue;
         if (ipv6InPrefix(address, assignment.address, assignment.prefixLength)) return iface;
@@ -3181,10 +3433,60 @@ export class Router extends Device {
   }
 
   private isOwnIpv6(address: Ipv6): boolean {
+    return this.isOwnIpv6InContext(address, undefined);
+  }
+
+  /**
+   * Address ownership inside one routing context. Overlapping customer prefixes
+   * are legal across VRFs, so an address only belongs to the device when the
+   * interface holding it sits in the same context the packet arrived on.
+   */
+  private isOwnIpv6InContext(address: Ipv6, vrfId: string | undefined): boolean {
     for (const iface of this.l3.values()) {
-      if (iface.ipv6.owns(address)) return true;
+      if (iface.vrfId === vrfId && iface.ipv6.owns(address)) return true;
     }
     return false;
+  }
+
+  private connectedVrfIpv6Routes(vrfId: string): VrfIpv6Route[] {
+    const routes: VrfIpv6Route[] = [];
+    for (const iface of this.l3.values()) {
+      if (iface.vrfId !== vrfId || !iface.physical.operationalUp) continue;
+      for (const assignment of iface.ipv6.summaries()) {
+        if (assignment.state === "duplicate" || assignment.state === "tentative") continue;
+        if (assignment.source === "link-local") continue;
+        routes.push({
+          network: ipv6Network(assignment.address, assignment.prefixLength),
+          prefixLength: assignment.prefixLength,
+          source: "connected",
+          outgoingInterfaceId: iface.name,
+          administrativeDistance: 0,
+          metric: 0,
+        });
+      }
+    }
+    return routes;
+  }
+
+  /**
+   * `requireOperational` separates the two questions this answers. Forwarding
+   * needs a usable interface; configuration validation only needs the address
+   * to sit inside a configured prefix, because links are attached and DAD runs
+   * after a `LabDocument` rebuild has applied the configuration.
+   */
+  private connectedVrfIpv6InterfaceFor(
+    vrfId: string,
+    address: Ipv6,
+    requireOperational = true,
+  ): L3Interface | undefined {
+    const target = normalizeIpv6(address);
+    return [...this.l3.values()]
+      .filter((iface) => iface.vrfId === vrfId && (!requireOperational || iface.physical.operationalUp))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .find((iface) => iface.ipv6.summaries().some((assignment) =>
+        assignment.state !== "duplicate"
+        && (!requireOperational || assignment.state !== "tentative")
+        && ipv6InPrefix(target, assignment.address, assignment.prefixLength)));
   }
 
   private connectedInterfaceFor(ip: Ipv4, ignoreTunnelState = false): L3Interface | undefined {

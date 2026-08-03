@@ -98,4 +98,33 @@ describe("MPLS and L3VPN LabDocument persistence", () => {
     if (config?.kind === "router") config.interfaces[1]!.vrfId = "missing";
     expect(() => validateLabSemantics(parseLabDocument(invalid))).toThrow(/Unknown VRF/u);
   });
+
+  it("round-trips the VRF IPv6 address family and its static routes", () => {
+    const ipv6Document = structuredClone(document);
+    const config = ipv6Document.configurations.pe1;
+    if (config?.kind === "router") {
+      config.interfaces[1]!.ipv6 = [{ address: "2001:db8:a:1::1", prefixLength: 64 }];
+      config.vrfs![0]!.addressFamilyIpv6 = true;
+      config.vrfs![0]!.ipv6StaticRoutes = [{ network: "2001:db8:a:2::", prefixLength: 64, nextHop: "2001:db8:a:1::2" }];
+    }
+    const canonical = canonicalizeLabDocument(ipv6Document);
+    const serialized = serializeLabDocument(buildLabFromDocument(canonical), canonical);
+    expect(serialized.configurations.pe1).toMatchObject({
+      vrfs: [expect.objectContaining({
+        addressFamilyIpv6: true,
+        ipv6StaticRoutes: [{ network: "2001:db8:a:2::", prefixLength: 64, nextHop: "2001:db8:a:1::2" }],
+      })],
+    });
+    const rebuilt = buildLabFromDocument(serialized);
+    expect(canonicalizeLabDocument(serializeLabDocument(rebuilt, serialized))).toEqual(canonicalizeLabDocument(serialized));
+  });
+
+  it("keeps an IPv4-only VRF byte-identical to its pre-M10.13 shape", () => {
+    const canonical = canonicalizeLabDocument(document);
+    const serialized = serializeLabDocument(buildLabFromDocument(canonical), canonical);
+    const vrf = serialized.configurations.pe1?.kind === "router" ? serialized.configurations.pe1.vrfs?.[0] : undefined;
+    expect(vrf).toBeDefined();
+    expect("addressFamilyIpv6" in vrf!).toBe(false);
+    expect(vrf!.ipv6StaticRoutes).toBeUndefined();
+  });
 });

@@ -644,6 +644,19 @@ function routerConfiguration(node: NodeSpec, config: RouterDeviceConfig | undefi
         staticRoutes: [...vrf.staticRoutes]
           .sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || a.prefixLength - b.prefixLength || a.nextHop.localeCompare(b.nextHop))
           .map((route) => ({ ...route })),
+        // Omitted rather than emitted empty, so an IPv4-only VRF serializes
+        // exactly as it did before M10.13.
+        ipv6StaticRoutes: vrf.ipv6StaticRoutes === undefined
+          ? undefined
+          : [...vrf.ipv6StaticRoutes]
+            .map((route) => ({
+              ...route,
+              network: normalizeIpv6(route.network),
+              nextHop: normalizeIpv6(route.nextHop),
+            }))
+            .sort((a, b) => a.network.localeCompare(b.network)
+              || a.prefixLength - b.prefixLength
+              || a.nextHop.localeCompare(b.nextHop)),
       })),
     ...canonicalRoutedProtocols(config),
     discovery: canonicalDiscovery(config?.discovery),

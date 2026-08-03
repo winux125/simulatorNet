@@ -697,6 +697,8 @@ function renderRoutedDevice(config: RouterDeviceConfig | FirewallDeviceConfig | 
       out.push(`vrf definition ${vrf.name}`, ` rd ${vrf.routeDistinguisher}`);
       for (const target of sorted(vrf.importRouteTargets, byString)) out.push(` route-target import ${target}`);
       for (const target of sorted(vrf.exportRouteTargets, byString)) out.push(` route-target export ${target}`);
+      // IPv4 is implicit inside a VRF; only a second address family is declared.
+      if (vrf.addressFamilyIpv6) out.push(" address-family ipv6", " exit-address-family");
       out.push("!");
     }
   }
@@ -770,7 +772,16 @@ function renderRoutedDevice(config: RouterDeviceConfig | FirewallDeviceConfig | 
   for (const route of sorted(config.ipv6StaticRoutes, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength)) {
     out.push(`ipv6 route ${route.network}/${route.prefixLength} ${route.nextHop}`);
   }
-  if (config.staticRoutes.length > 0 || (config.ipv6StaticRoutes?.length ?? 0) > 0) out.push("!");
+  let vrfIpv6Routes = 0;
+  if (config.kind === "router") {
+    for (const vrf of sorted(config.vrfs, byId)) {
+      for (const route of sorted(vrf.ipv6StaticRoutes, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength)) {
+        out.push(`ipv6 route vrf ${vrf.id} ${route.network}/${route.prefixLength} ${route.nextHop}`);
+        vrfIpv6Routes++;
+      }
+    }
+  }
+  if (config.staticRoutes.length > 0 || (config.ipv6StaticRoutes?.length ?? 0) > 0 || vrfIpv6Routes > 0) out.push("!");
   out.push(...aclLines(config.acls));
   out.push(...ipv6AclLines(config.ipv6Acls));
   out.push(...natLines(config));

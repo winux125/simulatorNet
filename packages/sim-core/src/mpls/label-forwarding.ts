@@ -3,10 +3,15 @@ import {
   MPLS_FIRST_DYNAMIC_LABEL,
   MPLS_IMPLICIT_NULL_LABEL,
   MPLS_MAX_LABEL,
+  mplsPayloadTrafficClass,
+  mplsPayloadTtl,
+  withMplsPayloadTtl,
   type MplsLabelEntry,
   type MplsPacket,
+  type MplsPayload,
 } from "../packets/mpls";
 import type { Ipv4Packet } from "../packets/ipv4";
+import type { Ipv6Packet } from "../packets/ipv6";
 import { DEFAULT_MPLS_LIMITS, MplsConfigurationError, MplsLimitError, type MplsLimits } from "./limits";
 
 export type MplsLabelOperation =
@@ -28,7 +33,8 @@ export interface MplsForwardingEntry {
 export type MplsForwardingDecision =
   | { readonly kind: "mpls"; readonly packet: MplsPacket; readonly entry: MplsForwardingEntry }
   | { readonly kind: "ipv4"; readonly packet: Ipv4Packet; readonly entry: MplsForwardingEntry }
-  | { readonly kind: "deliver"; readonly packet: Ipv4Packet; readonly vrfId?: string; readonly entry: MplsForwardingEntry }
+  | { readonly kind: "ipv6"; readonly packet: Ipv6Packet; readonly entry: MplsForwardingEntry }
+  | { readonly kind: "deliver"; readonly packet: MplsPayload; readonly vrfId?: string; readonly entry: MplsForwardingEntry }
   | { readonly kind: "drop"; readonly reason: "empty-label-stack" | "unknown-label" | "ttl-exceeded" | "configured-drop"; readonly detail: string; readonly incomingLabel?: number };
 
 /**
@@ -119,20 +125,25 @@ export class MplsForwardingPlane {
       .map(freezeEntry);
   }
 
-  impose(payload: Ipv4Packet, labels: readonly number[]): MplsPacket {
+  /**
+   * The uniform model copies the payload's own hop count into every imposed
+   * label, so an IPv6 payload behaves exactly like an IPv4 one across the core.
+   */
+  impose(payload: MplsPayload, labels: readonly number[]): MplsPacket {
     if (labels.length === 0) throw new MplsConfigurationError("An MPLS label stack cannot be empty.");
     if (labels.length > this.limits.maximumLabelStackDepth) {
       throw new MplsLimitError("maximumLabelStackDepth", labels.length, this.limits.maximumLabelStackDepth);
     }
     labels.forEach((label) => validateDynamicLabel(label, "imposed label"));
-    const trafficClass = Math.min(7, Math.max(0, Math.floor((payload.dscp ?? 0) / 8)));
+    const trafficClass = mplsPayloadTrafficClass(payload);
+    const ttl = mplsPayloadTtl(payload);
     return {
       kind: "mpls",
       labels: labels.map((label, index): MplsLabelEntry => ({
         label,
         trafficClass,
         bottomOfStack: index === labels.length - 1,
-        ttl: payload.ttl,
+        ttl,
       })),
       payload,
     };
@@ -182,13 +193,16 @@ export class MplsForwardingPlane {
       case "deliver":
         return {
           kind: "deliver",
-          packet: { ...packet.payload, ttl: decremented.ttl },
+          packet: withMplsPayloadTtl(packet.payload, decremented.ttl),
           vrfId: entry.operation.vrfId,
           entry,
         };
     }
     if (labels.length === 0) {
-      return { kind: "ipv4", packet: { ...packet.payload, ttl: decremented.ttl }, entry };
+      const payload = withMplsPayloadTtl(packet.payload, decremented.ttl);
+      return payload.kind === "ipv4"
+        ? { kind: "ipv4", packet: payload, entry }
+        : { kind: "ipv6", packet: payload, entry };
     }
     return { kind: "mpls", packet: { ...packet, labels }, entry };
   }

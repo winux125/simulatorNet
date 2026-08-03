@@ -2,7 +2,7 @@ import { type Router, ipToInt, maskToInt } from "@sim/sim-core";
 import { InvalidModeError, ValidationError } from "../errors/errors";
 import { table } from "../formatter/tables";
 import type { CommandSpec, SessionApi } from "../types";
-import { isRouter, parseIpv4 } from "./helpers";
+import { isRouter, parseIpv4, parseIpv6, parseIpv6Prefix } from "./helpers";
 
 function routerOf(session: SessionApi): Router {
   if (!isRouter(session.device)) throw new InvalidModeError("MPLS, LDP and VRF are supported only on a Router");
@@ -34,6 +34,7 @@ function updateVrf(session: SessionApi, mutate: (current: ReturnType<Router["vrf
   routeDistinguisher: string;
   importRouteTargets: readonly string[];
   exportRouteTargets: readonly string[];
+  addressFamilyIpv6?: boolean;
 }): void {
   const router = routerOf(session);
   const context = session.vrfCtx;
@@ -42,6 +43,18 @@ function updateVrf(session: SessionApi, mutate: (current: ReturnType<Router["vrf
   const next = mutate(current);
   router.defineVrf(next);
   context.routeDistinguisher = next.routeDistinguisher;
+}
+
+/** Carry every setting the caller is not changing through `defineVrf`. */
+function vrfBase(session: SessionApi, current: ReturnType<Router["vrfConfigurations"]>[number] | undefined) {
+  return {
+    id: session.vrfCtx!.id,
+    name: session.vrfCtx!.name,
+    routeDistinguisher: current?.routeDistinguisher ?? session.vrfCtx!.routeDistinguisher!,
+    importRouteTargets: current?.importRouteTargets ?? [],
+    exportRouteTargets: current?.exportRouteTargets ?? [],
+    addressFamilyIpv6: current?.addressFamilyIpv6,
+  };
 }
 
 function showMplsForwarding(session: SessionApi, label?: number): string {
@@ -127,13 +140,7 @@ export const mplsCommands: CommandSpec[] = [
   },
   {
     pattern: "rd {value}", usage: "rd <asn:number|ipv4:number>", modes: ["config-vrf"], device: "router",
-    run: (s, p) => updateVrf(s, (current) => ({
-      id: s.vrfCtx!.id,
-      name: s.vrfCtx!.name,
-      routeDistinguisher: p.value!,
-      importRouteTargets: current?.importRouteTargets ?? [],
-      exportRouteTargets: current?.exportRouteTargets ?? [],
-    })),
+    run: (s, p) => updateVrf(s, (current) => ({ ...vrfBase(s, current), routeDistinguisher: p.value! })),
   },
   {
     pattern: "route-target {direction} {value}", usage: "route-target import|export <asn:number|ipv4:number>",
@@ -145,14 +152,21 @@ export const mplsCommands: CommandSpec[] = [
       const exports = [...(current?.exportRouteTargets ?? [])];
       const list = p.direction === "import" ? imports : exports;
       if (!list.includes(p.value!)) list.push(p.value!);
-      return {
-        id: s.vrfCtx!.id,
-        name: s.vrfCtx!.name,
-        routeDistinguisher: current?.routeDistinguisher ?? s.vrfCtx!.routeDistinguisher!,
-        importRouteTargets: imports,
-        exportRouteTargets: exports,
-      };
+      return { ...vrfBase(s, current), importRouteTargets: imports, exportRouteTargets: exports };
     }),
+  },
+  {
+    // `address-family ipv6` inside a VRF adds a second, separate route table.
+    // IPv4 has always been implicit here, so it needs no counterpart command.
+    pattern: "address-family ipv6", modes: ["config-vrf"], device: "router",
+    run: (s) => updateVrf(s, (current) => {
+      if (!current && !s.vrfCtx?.routeDistinguisher) throw new ValidationError("Configure the route distinguisher first.");
+      return { ...vrfBase(s, current), addressFamilyIpv6: true };
+    }),
+  },
+  {
+    pattern: "exit-address-family", modes: ["config-vrf"], device: "router",
+    run: () => undefined,
   },
   {
     pattern: "ip route vrf {vrf} {network} {mask} {nextHop}", modes: ["config"], device: "router",
@@ -168,6 +182,41 @@ export const mplsCommands: CommandSpec[] = [
       } catch (error) {
         throw new ValidationError(error instanceof Error ? error.message : "Invalid VRF static route.");
       }
+    },
+  },
+  {
+    pattern: "ipv6 route vrf {vrf} {prefix} {nextHop}",
+    usage: "ipv6 route vrf <name> <prefix>/<length> <next-hop>",
+    modes: ["config"], device: "router",
+    run: (s, p) => {
+      const router = routerOf(s);
+      const vrf = router.vrfConfigurations().find((entry) => entry.id === p.vrf || entry.name === p.vrf);
+      if (!vrf) throw new ValidationError(`VRF '${p.vrf}' is not defined.`);
+      const { network, prefixLength } = parseIpv6Prefix(p.prefix!);
+      try {
+        router.addVrfIpv6StaticRoute(vrf.id, network, prefixLength, parseIpv6(p.nextHop!));
+      } catch (error) {
+        throw new ValidationError(error instanceof Error ? error.message : "Invalid VRF IPv6 static route.");
+      }
+    },
+  },
+  {
+    pattern: "show ipv6 route vrf {name}", modes: ["exec", "privileged"], device: "router",
+    run: (s, p) => {
+      const router = routerOf(s);
+      const vrf = router.vrfConfigurations().find((entry) => entry.id === p.name || entry.name === p.name);
+      if (!vrf) return `% VRF ${p.name} is not configured.`;
+      if (!vrf.addressFamilyIpv6) return `% VRF ${vrf.name} has no IPv6 address family.`;
+      const rows = router.vrfIpv6RoutingTable(vrf.id);
+      return rows.length
+        ? table(["Source", "Prefix", "Next Hop", "Interface", "VPN Label"], rows.map((route) => [
+            route.source,
+            `${route.network}/${route.prefixLength}`,
+            route.nextHop ?? route.remotePe ?? "direct",
+            route.outgoingInterfaceId ?? "-",
+            route.vpnLabel === undefined ? "-" : String(route.vpnLabel),
+          ]))
+        : `% VRF ${vrf.name} IPv6 routing table is empty.`;
     },
   },
   {

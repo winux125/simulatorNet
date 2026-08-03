@@ -71,16 +71,49 @@ describe("MPLS and L3VPN IOS-like import/render", () => {
     expect(renderDeviceConfiguration(config)).toBe(rendered);
   });
 
-  it("preserves unsupported TE, pseudowire, VPNv6 and EVPN lines", () => {
-    const parsed = parseIosConfig(`${SOURCE}\nmpls traffic-eng tunnels\nxconnect 192.0.2.2 10\n neighbor 3.3.3.3 route-reflector-client\n address-family vpnv6\n address-family l2vpn evpn\n`, ["Gi0/0", "Gi0/1"]);
+  it("preserves unsupported TE, pseudowire and EVPN lines", () => {
+    const parsed = parseIosConfig(`${SOURCE}\nmpls traffic-eng tunnels\nxconnect 192.0.2.2 10\n neighbor 3.3.3.3 route-reflector-client\n address-family l2vpn evpn\n`, ["Gi0/0", "Gi0/1"]);
     expect(parsed.unparsedLines).toEqual(expect.arrayContaining([
       "mpls traffic-eng tunnels",
       "xconnect 192.0.2.2 10",
-      "address-family vpnv6",
       "address-family l2vpn evpn",
     ]));
     // Route reflection became supported in M10.12, including for VPNv4.
     expect(parsed.appliedLines).toContain("neighbor 3.3.3.3 route-reflector-client");
     expect(parsed.bgp?.neighbors.find((neighbor) => neighbor.address === "3.3.3.3")?.routeReflectorClient).toBe(true);
+  });
+
+  it("round-trips a VRF IPv6 address family and its static route", () => {
+    const source = [
+      "vrf definition CUSTOMER-A",
+      " rd 65000:100",
+      " route-target import 65000:100",
+      " route-target export 65000:100",
+      " address-family ipv6",
+      " exit-address-family",
+      "!",
+      "interface Gi0/1",
+      " vrf forwarding CUSTOMER-A",
+      " ipv6 address 2001:db8:a:1::1/64",
+      "!",
+      "ipv6 route vrf CUSTOMER-A 2001:db8:a:2::/64 2001:db8:a:1::2",
+    ].join("\n");
+    const parsed = parseIosConfig(source, ["Gi0/0", "Gi0/1"]);
+    expect(parsed.unparsedLines).toEqual([]);
+    expect(parsed.vrfs[0]).toMatchObject({
+      addressFamilyIpv6: true,
+      ipv6StaticRoutes: [{ network: "2001:db8:a:2::", prefixLength: 64, nextHop: "2001:db8:a:1::2" }],
+    });
+    const config = buildDeviceConfigFromIos("router", parsed, ["Gi0/0", "Gi0/1"], "PE1").config as DeviceConfig;
+    const rendered = renderDeviceConfiguration(config);
+    expect(rendered).toContain(" address-family ipv6");
+    expect(rendered).toContain("ipv6 route vrf CUSTOMER-A 2001:db8:a:2::/64 2001:db8:a:1::2");
+    expect(renderDeviceConfiguration(config)).toBe(rendered);
+  });
+
+  it("keeps a VRF IPv6 route out of an IPv4-only VRF", () => {
+    const parsed = parseIosConfig(`${SOURCE}\nipv6 route vrf CUSTOMER-A 2001:db8::/32 2001:db8:a:1::2\n`, ["Gi0/0", "Gi0/1"]);
+    expect(parsed.unparsedLines).toContain("ipv6 route vrf CUSTOMER-A 2001:db8::/32 2001:db8:a:1::2");
+    expect(parsed.vrfs[0]?.ipv6StaticRoutes).toBeUndefined();
   });
 });

@@ -72,6 +72,39 @@ describe("MPLS, LDP and L3VPN CLI", () => {
     expect(run(session, "show bgp vpnv4 unicast neighbors")).toContain("No VPNv4 neighbors");
   });
 
+  it("adds an IPv6 address family and a VRF IPv6 static route", () => {
+    const { router, session } = setup();
+    run(session, "enable", "configure terminal",
+      "vrf definition CUSTOMER-A", "rd 65000:100", "address-family ipv6", "exit-address-family", "exit",
+      "interface Gi0/1", "vrf forwarding CUSTOMER-A", "ipv6 address 2001:db8:a:1::1/64", "exit",
+      "ipv6 route vrf CUSTOMER-A 2001:db8:a:2::/64 2001:db8:a:1::2");
+    expect(router.vrfConfigurations()[0]).toMatchObject({ id: "CUSTOMER-A", addressFamilyIpv6: true });
+    expect(router.vrfIpv6StaticRouteConfigurations("CUSTOMER-A")).toEqual([
+      expect.objectContaining({ network: "2001:db8:a:2::", prefixLength: 64, nextHop: "2001:db8:a:1::2" }),
+    ]);
+  });
+
+  it("rejects a VRF IPv6 route without the address family or with a foreign next hop", () => {
+    const { session } = setup();
+    run(session, "enable", "configure terminal", "vrf definition BLUE", "rd 65000:1", "exit",
+      "interface Gi0/1", "vrf forwarding BLUE", "ipv6 address 2001:db8:b::1/64", "exit");
+    expect(run(session, "ipv6 route vrf BLUE 2001:db8:c::/64 2001:db8:b::2"))
+      .toContain("no IPv6 address family");
+    run(session, "vrf definition BLUE", "address-family ipv6", "exit-address-family", "exit");
+    expect(run(session, "ipv6 route vrf BLUE 2001:db8:c::/64 2001:db8:9::2"))
+      .toContain("not reachable in the same VRF");
+  });
+
+  it("shows the VRF IPv6 table separately from the global one", () => {
+    const { session } = setup();
+    run(session, "enable", "configure terminal", "vrf definition BLUE", "rd 65000:1", "exit", "end");
+    expect(run(session, "show ipv6 route vrf BLUE")).toContain("no IPv6 address family");
+    expect(run(session, "show ipv6 route vrf MISSING")).toContain("is not configured");
+    run(session, "configure terminal", "vrf definition BLUE", "address-family ipv6", "exit-address-family", "end");
+    expect(run(session, "show ipv6 route vrf BLUE")).toContain("IPv6 routing table is empty");
+    expect(run(session, "show mpls forwarding-table")).toContain("65000:1:vrf:ipv6");
+  });
+
   it("keeps unsupported MPLS commands out of contextual help", () => {
     const { session } = setup();
     run(session, "enable");

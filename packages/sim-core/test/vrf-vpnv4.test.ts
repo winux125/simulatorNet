@@ -152,12 +152,15 @@ describe("VRF routing isolation", () => {
     expect(table.routes("customer-a", []).map((route) => route.network)).toEqual(["10.1.0.0"]);
   });
 
-  it("allocates stable distinct per-VRF VPN labels", () => {
+  it("allocates stable distinct labels per VRF and address family", () => {
     const table = new VrfRoutingTable();
     table.define({ ...customerA, id: "z", name: "Z" });
     table.define({ ...customerA, id: "a", name: "A", routeDistinguisher: "65000:101" });
     expect(table.vpnLabel("a")).toBe(100_000);
-    expect(table.vpnLabel("z")).toBe(100_001);
+    expect(table.vpnLabel("a", "ipv6")).toBe(100_001);
+    expect(table.vpnLabel("z")).toBe(100_002);
+    expect(table.vpnLabel("z", "ipv6")).toBe(100_003);
+    expect(table.vpnLabelBinding(100_003)).toEqual({ vrfId: "z", family: "ipv6" });
   });
 });
 
@@ -168,7 +171,7 @@ describe("MP-BGP VPNv4 and MPLS L3VPN", () => {
     expect(pe1.bgp.summaries()[0]?.state).toBe("established");
     expect(pe1.bgp.selectedVpnv4Routes().some((route) => route.network === "10.2.1.0")).toBe(true);
     expect(pe1.vrfRoutingTable("customer-a").some((route) => route.source === "bgp-vpn" && route.network === "10.2.1.0")).toBe(true);
-    expect(pe2.vpnLabelBindings()).toEqual([{ label: 100_000, vrfId: "customer-a" }]);
+    expect(pe2.vpnLabelBindings()).toEqual([{ label: 100_000, vrfId: "customer-a", addressFamily: "ipv4" }]);
   });
 
   it("does not import a VPN route when extended communities are not sent", () => {

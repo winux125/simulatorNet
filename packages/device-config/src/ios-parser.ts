@@ -678,6 +678,15 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
         applied(line);
         continue;
       }
+      // IPv4 is the implicit family of a VRF; only IPv6 has to be declared.
+      if (head === "address-family" && tokens[1]?.toLowerCase() === "ipv6" && tokens.length === 2) {
+        currentVrf.addressFamilyIpv6 = true;
+        currentVrf.ipv6StaticRoutes ??= [];
+        applied(line);
+        continue;
+      }
+      if (head === "address-family" && tokens[1]?.toLowerCase() === "ipv4" && tokens.length === 2) { applied(line); continue; }
+      if (head === "exit-address-family") { applied(line); continue; }
     }
     if (head === "mpls" && tokens[1]?.toLowerCase() === "label" && tokens[2]?.toLowerCase() === "protocol" && tokens[3]?.toLowerCase() === "ldp") {
       result.ldp ??= {};
@@ -798,6 +807,18 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     }
     if (trimmed.toLowerCase() === "no ipv6 unicast-routing") {
       result.ipv6UnicastRoutingEnabled = false; applied(line); continue;
+    }
+    if (head === "ipv6" && tokens[1]?.toLowerCase() === "route" && tokens[2]?.toLowerCase() === "vrf" && tokens[3]) {
+      const vrf = result.vrfs.find((entry) => entry.id === tokens[3] || entry.name === tokens[3]);
+      const prefix = ipv6Cidr(tokens[4]);
+      if (vrf?.addressFamilyIpv6 && prefix && Ipv6Schema.safeParse(tokens[5]).success) {
+        vrf.ipv6StaticRoutes = [
+          ...(vrf.ipv6StaticRoutes ?? []),
+          { network: prefix.address, prefixLength: prefix.prefixLength, nextHop: tokens[5]! },
+        ];
+        applied(line);
+      } else unparsed(line);
+      continue;
     }
     if (head === "ipv6" && tokens[1]?.toLowerCase() === "route") {
       const prefix = ipv6Cidr(tokens[2]);

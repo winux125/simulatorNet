@@ -146,7 +146,8 @@ function ipv6Bytes(packet: Ipv6Packet): number {
 }
 
 function mplsBytes(packet: MplsPacket): number {
-  return (packet.labels.length * 4) + ipv4Bytes(packet.payload);
+  const payload = packet.payload;
+  return (packet.labels.length * 4) + (payload.kind === "ipv4" ? ipv4Bytes(payload) : ipv6Bytes(payload));
 }
 
 function l2PayloadBytes(payload: L2Payload): number {

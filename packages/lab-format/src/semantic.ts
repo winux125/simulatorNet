@@ -26,10 +26,13 @@ import {
 } from "@sim/contracts";
 import {
   ipToInt,
+  ipv6InPrefix,
+  ipv6Network,
   MAXIMUM_AS_PATH_MATCH_LENGTH,
   maskToInt,
   normalizeDnsName,
   normalizeHttpPath,
+  normalizeIpv6,
   normalizeTftpFilename,
 } from "@sim/sim-core";
 import { LabSemanticError } from "./errors";
@@ -508,6 +511,25 @@ function validateRouter(config: RouterDeviceConfig, node: NodeSpec, path: string
       }
       if (!vrfConnected.some((iface) => inSubnet(route.nextHop, iface.address, iface.prefixLength))) {
         fail("unreachable-vrf-next-hop", `${path}.vrfs[${vrfIndex}].staticRoutes[${routeIndex}].nextHop`, `VRF next hop '${route.nextHop}' is not reachable in VRF '${vrf.id}'`);
+      }
+    });
+    // An IPv6 route inside a VRF needs that VRF's IPv6 address family, and its
+    // next hop has to sit in a prefix the same VRF actually carries.
+    const vrfIpv6Routes = vrf.ipv6StaticRoutes ?? [];
+    if (vrfIpv6Routes.length > 0 && !vrf.addressFamilyIpv6) {
+      fail("vrf-ipv6-family-missing", `${path}.vrfs[${vrfIndex}].ipv6StaticRoutes`, `VRF '${vrf.id}' has IPv6 routes without 'address-family ipv6'`);
+    }
+    requireUnique(vrfIpv6Routes.map((route) => `${route.network}/${route.prefixLength}`), `${path}.vrfs[${vrfIndex}].ipv6StaticRoutes`, "VRF IPv6 static route");
+    const vrfIpv6Connected = [
+      ...config.interfaces.flatMap((iface) => (iface.vrfId === vrf.id ? iface.ipv6 ?? [] : [])),
+      ...config.subinterfaces.flatMap((iface) => (iface.vrfId === vrf.id ? iface.ipv6 ?? [] : [])),
+    ];
+    vrfIpv6Routes.forEach((route, routeIndex) => {
+      if (ipv6Network(route.network, route.prefixLength) !== normalizeIpv6(route.network)) {
+        fail("invalid-vrf-route-network", `${path}.vrfs[${vrfIndex}].ipv6StaticRoutes[${routeIndex}].network`, "VRF IPv6 static route must use a canonical network address");
+      }
+      if (!vrfIpv6Connected.some((iface) => ipv6InPrefix(route.nextHop, iface.address, iface.prefixLength))) {
+        fail("unreachable-vrf-next-hop", `${path}.vrfs[${vrfIndex}].ipv6StaticRoutes[${routeIndex}].nextHop`, `VRF next hop '${route.nextHop}' is not reachable in VRF '${vrf.id}'`);
       }
     });
   }

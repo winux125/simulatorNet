@@ -3,6 +3,8 @@ import {
   Ipv4InterfaceConfigSchema,
   Ipv4Schema,
   Ipv6InterfaceAddressSchema,
+  Ipv6PrefixLengthSchema,
+  Ipv6Schema,
   VlanIdSchema,
 } from "./primitives";
 
@@ -278,6 +280,12 @@ export const VrfStaticRouteConfigSchema = z.object({
   nextHop: Ipv4Schema,
 }).strict();
 
+export const VrfIpv6StaticRouteConfigSchema = z.object({
+  network: Ipv6Schema,
+  prefixLength: Ipv6PrefixLengthSchema,
+  nextHop: Ipv6Schema,
+}).strict();
+
 export const VrfConfigSchema = z.object({
   id: z.string().min(1).max(64),
   name: z.string().min(1).max(64),
@@ -285,6 +293,12 @@ export const VrfConfigSchema = z.object({
   importRouteTargets: z.array(RouteTargetSchema).max(64).default([]),
   exportRouteTargets: z.array(RouteTargetSchema).max(64).default([]),
   staticRoutes: z.array(VrfStaticRouteConfigSchema).max(4_096).default([]),
+  /**
+   * `address-family ipv6` inside `vrf definition`. Absent means the VRF is
+   * IPv4 only, so every document written before M10.13 opens unchanged.
+   */
+  addressFamilyIpv6: z.boolean().optional(),
+  ipv6StaticRoutes: z.array(VrfIpv6StaticRouteConfigSchema).max(4_096).optional(),
 }).strict();
 export type VrfConfig = z.infer<typeof VrfConfigSchema>;
 

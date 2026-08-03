@@ -571,6 +571,9 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
     if (config.kind === "router") {
       for (const vrf of config.vrfs ?? []) {
         for (const route of vrf.staticRoutes) device.addVrfStaticRoute(vrf.id, route.network, route.prefixLength, route.nextHop);
+        for (const route of vrf.ipv6StaticRoutes ?? []) {
+          device.addVrfIpv6StaticRoute(vrf.id, route.network, route.prefixLength, route.nextHop);
+        }
       }
     }
     device.setIpv6ForwardingEnabled(config.ipv6UnicastRoutingEnabled ?? false);
@@ -1290,16 +1293,27 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       ? { routerIdInterface: device.ldp.configuredRouterIdSource() }
       : undefined,
     vrfs: device.deviceType === "router"
-      ? device.vrfConfigurations().map((vrf) => ({
-          ...vrf,
-          importRouteTargets: [...vrf.importRouteTargets],
-          exportRouteTargets: [...vrf.exportRouteTargets],
-          staticRoutes: device.vrfStaticRouteConfigurations(vrf.id).map((route) => ({
-            network: route.network,
-            prefixLength: route.prefixLength,
-            nextHop: route.nextHop!,
-          })),
-        }))
+      ? device.vrfConfigurations().map((vrf) => {
+          const ipv6StaticRoutes = vrf.addressFamilyIpv6
+            ? device.vrfIpv6StaticRouteConfigurations(vrf.id).map((route) => ({
+                network: route.network,
+                prefixLength: route.prefixLength,
+                nextHop: route.nextHop!,
+              }))
+            : [];
+          return {
+            ...vrf,
+            importRouteTargets: [...vrf.importRouteTargets],
+            exportRouteTargets: [...vrf.exportRouteTargets],
+            staticRoutes: device.vrfStaticRouteConfigurations(vrf.id).map((route) => ({
+              network: route.network,
+              prefixLength: route.prefixLength,
+              nextHop: route.nextHop!,
+            })),
+            // An IPv4-only VRF keeps its pre-M10.13 shape exactly.
+            ...(vrf.addressFamilyIpv6 ? { addressFamilyIpv6: true, ipv6StaticRoutes } : {}),
+          };
+        })
       : undefined,
     vpn: serializeVpnConfiguration(device),
     discovery: serializeDiscoveryConfiguration(device),
