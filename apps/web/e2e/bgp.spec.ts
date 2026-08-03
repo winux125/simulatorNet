@@ -111,6 +111,8 @@ test.describe("M10.10 deterministic BGP", () => {
     await window.getByRole("tab", { name: "Monitor" }).click();
     await window.getByRole("combobox", { name: "Monitor section", exact: true }).selectOption("bgp-runtime");
     await expect(window).toContainText("2/2 Established");
+    // From M10.12 the monitor opens on Summary; the table is one subsection in.
+    await window.getByRole("tab", { name: "BGP Table" }).click();
     await expect(window).toContainText("10.1.0.0/24");
   });
 });

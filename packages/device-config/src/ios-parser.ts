@@ -15,6 +15,8 @@ import {
   type Ipv6AclConfig,
   type BgpProcessConfig,
   type LdpConfig,
+  type AsPathListConfig,
+  type CommunityListConfig,
   type PrefixListConfig,
   type RouteMapConfig,
   type RouteMapSequenceConfig,
@@ -176,6 +178,8 @@ export interface ImportedDeviceConfiguration {
   vrfs: VrfConfig[];
   prefixLists: PrefixListConfig[];
   routeMaps: RouteMapConfig[];
+  communityLists: CommunityListConfig[];
+  asPathLists: AsPathListConfig[];
   /**
    * The recognised MQC subset: class-map, match, policy-map, class, set dscp,
    * priority/bandwidth percent, police, shape average. Anything else stays in
@@ -217,6 +221,54 @@ function ipv6Matcher(tokens: string[], start: number) {
     matcher: { kind: "prefix" as const, address: prefix.address, prefixLength: prefix.prefixLength },
     consumed: 1,
   };
+}
+
+/** `65000:100` or a well-known name, canonicalized; `undefined` if unsupported. */
+function canonicalCommunity(value: string | undefined): string | undefined {
+  const text = value?.trim().toLowerCase();
+  if (!text) return undefined;
+  if (text === "internet" || text === "no-export" || text === "no-advertise") return text;
+  const match = /^(\d{1,5}):(\d{1,5})$/u.exec(text);
+  if (!match || Number(match[1]) > 65_535 || Number(match[2]) > 65_535) return undefined;
+  const value32 = (Number(match[1]) << 16 >>> 0) + Number(match[2]);
+  if (value32 === 0) return "internet";
+  if (value32 === 0xffff_ff01) return "no-export";
+  if (value32 === 0xffff_ff02) return "no-advertise";
+  return `${Number(match[1])}:${Number(match[2])}`;
+}
+
+/**
+ * The documented educational AS-path pattern subset. An unsupported regular
+ * expression is never stored: it is reported so the import stays honest.
+ */
+function safeAsPathMatcher(pattern: string): AsPathListConfig["entries"][number]["matcher"] | undefined {
+  const text = pattern.trim();
+  if (text === "^$") return { kind: "empty" };
+  const asn = (value: string | undefined): number | undefined => {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed >= 1 && parsed <= 4_294_967_295 ? parsed : undefined;
+  };
+  const single = (regex: RegExp, kind: "contains" | "starts-with" | "ends-with") => {
+    const match = regex.exec(text);
+    const value = match ? asn(match[1]) : undefined;
+    return value === undefined ? undefined : { kind, asn: value } as const;
+  };
+  const contains = single(/^_(\d{1,10})_$/u, "contains");
+  if (contains) return contains;
+  const starts = single(/^\^(\d{1,10})_$/u, "starts-with");
+  if (starts) return starts;
+  const ends = single(/^_(\d{1,10})\$$/u, "ends-with");
+  if (ends) return ends;
+  const exact = /^\^(\d{1,10}(?: \d{1,10})*)\$$/u.exec(text);
+  if (!exact) return undefined;
+  const asPath = exact[1]!.split(" ").map((value) => asn(value));
+  return asPath.some((value) => value === undefined) || asPath.length > 32
+    ? undefined
+    : { kind: "exact", asPath: asPath as number[] };
+}
+
+function nextListSequence(entries: readonly { sequence: number }[]): number {
+  return entries.reduce((highest, entry) => Math.max(highest, entry.sequence), 0) + 10;
 }
 
 function isIpv4(value: string | undefined): value is string {
@@ -511,6 +563,8 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     ipv6AclBindings: [],
     prefixLists: [],
     routeMaps: [],
+    communityLists: [],
+    asPathLists: [],
     vrfs: [],
     vlans: [],
     spanningTreeVlanPriorities: [],
@@ -830,6 +884,36 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       } else unparsed(line);
       continue;
     }
+    if (head === "ip" && tokens[1]?.toLowerCase() === "community-list" && tokens[2]?.toLowerCase() === "standard"
+      && tokens[3] && (tokens[4]?.toLowerCase() === "permit" || tokens[4]?.toLowerCase() === "deny")) {
+      const communities = tokens.slice(5).map((value) => canonicalCommunity(value));
+      if (!communities.length || communities.some((value) => value === undefined)) { unparsed(line); continue; }
+      const list = result.communityLists.find((entry) => entry.id === tokens[3]) ?? { id: tokens[3]!, entries: [] };
+      if (!result.communityLists.includes(list)) result.communityLists.push(list);
+      list.entries.push({
+        sequence: nextListSequence(list.entries),
+        action: tokens[4]!.toLowerCase() as "permit" | "deny",
+        communities: communities as string[],
+      });
+      applied(line);
+      continue;
+    }
+    if (head === "ip" && tokens[1]?.toLowerCase() === "as-path" && tokens[2]?.toLowerCase() === "access-list"
+      && tokens[3] && (tokens[4]?.toLowerCase() === "permit" || tokens[4]?.toLowerCase() === "deny")) {
+      // Only the documented educational pattern subset is understood; anything
+      // else is reported rather than stored as an executable expression.
+      const matcher = safeAsPathMatcher(tokens.slice(5).join(" "));
+      if (!matcher) { unparsed(line); continue; }
+      const list = result.asPathLists.find((entry) => entry.id === tokens[3]) ?? { id: tokens[3]!, entries: [] };
+      if (!result.asPathLists.includes(list)) result.asPathLists.push(list);
+      list.entries.push({
+        sequence: nextListSequence(list.entries),
+        action: tokens[4]!.toLowerCase() as "permit" | "deny",
+        matcher,
+      });
+      applied(line);
+      continue;
+    }
     if (head === "route-map" && tokens[1]
       && (tokens[2]?.toLowerCase() === "permit" || tokens[2]?.toLowerCase() === "deny")
       && /^\d+$/u.test(tokens[3] ?? "")) {
@@ -869,14 +953,51 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
         && (tokens[2]?.toLowerCase() === "igp" || tokens[2]?.toLowerCase() === "incomplete")) {
         currentRouteMap.set = { ...currentRouteMap.set, origin: tokens[2]!.toLowerCase() as "igp" | "incomplete" }; applied(line); continue;
       }
+      if (head === "match" && tokens[1]?.toLowerCase() === "route-source"
+        && (tokens[2]?.toLowerCase() === "local" || tokens[2]?.toLowerCase() === "ebgp" || tokens[2]?.toLowerCase() === "ibgp")) {
+        currentRouteMap.match = { ...currentRouteMap.match, source: tokens[2]!.toLowerCase() as "local" | "ebgp" | "ibgp" };
+        applied(line); continue;
+      }
+      if (head === "match" && tokens[1]?.toLowerCase() === "route-type"
+        && (tokens[2]?.toLowerCase() === "local" || tokens[2]?.toLowerCase() === "ebgp" || tokens[2]?.toLowerCase() === "ibgp")) {
+        currentRouteMap.match = { ...currentRouteMap.match, source: tokens[2]!.toLowerCase() as "local" | "ebgp" | "ibgp" };
+        applied(line); continue;
+      }
+      if (head === "match" && tokens[1]?.toLowerCase() === "community" && tokens[2]) {
+        const all = tokens[2].toLowerCase() === "all";
+        const ids = tokens.slice(all ? 3 : 2);
+        if (!ids.length) { unparsed(line); continue; }
+        currentRouteMap.match = {
+          ...currentRouteMap.match,
+          communityListIds: ids,
+          communityMatchAll: all ? true : undefined,
+        };
+        applied(line); continue;
+      }
+      if (head === "match" && tokens[1]?.toLowerCase() === "as-path" && tokens[2]
+        && tokens[2].toLowerCase() !== "length") {
+        currentRouteMap.match = { ...currentRouteMap.match, asPathListIds: tokens.slice(2) };
+        applied(line); continue;
+      }
+      if (head === "set" && tokens[1]?.toLowerCase() === "community" && tokens[2]) {
+        if (tokens.length === 3 && tokens[2].toLowerCase() === "none") {
+          currentRouteMap.set = { ...currentRouteMap.set, communityNone: true }; applied(line); continue;
+        }
+        const additive = tokens.at(-1)!.toLowerCase() === "additive";
+        const values = (additive ? tokens.slice(2, -1) : tokens.slice(2)).map((value) => canonicalCommunity(value));
+        if (!values.length || values.some((value) => value === undefined)) { unparsed(line); continue; }
+        currentRouteMap.set = {
+          ...currentRouteMap.set,
+          communities: values as string[],
+          communityAdditive: additive ? true : undefined,
+        };
+        applied(line); continue;
+      }
       if (head === "set" && tokens[1]?.toLowerCase() === "as-path" && tokens[2]?.toLowerCase() === "prepend"
-        && result.bgp && tokens.slice(3).length > 0) {
+        && tokens.slice(3).length > 0) {
         const values = tokens.slice(3).map(Number);
-        const count = values.length === 1 && Number.isInteger(values[0]) && values[0]! >= 1 && values[0]! <= 10
-          ? values[0]
-          : values.every((asn) => asn === result.bgp!.localAs) ? values.length : undefined;
-        if (count !== undefined && count <= 10) {
-          currentRouteMap.set = { ...currentRouteMap.set, prependLocalAs: count }; applied(line); continue;
+        if (values.length <= 10 && values.every((asn) => Number.isInteger(asn) && asn >= 1 && asn <= 4_294_967_295)) {
+          currentRouteMap.set = { ...currentRouteMap.set, prependAsns: values }; applied(line); continue;
         }
       }
       unparsed(line); continue;
@@ -931,11 +1052,31 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       if (head === "bgp" && tokens[1]?.toLowerCase() === "router-id" && isIpv4(tokens[2])) {
         result.bgp.routerId = tokens[2]; applied(line); continue;
       }
+      if (head === "bgp" && tokens[1]?.toLowerCase() === "cluster-id" && isIpv4(tokens[2])) {
+        result.bgp.clusterId = tokens[2]; applied(line); continue;
+      }
       if (head === "network" && isIpv4(tokens[1]) && tokens[2]?.toLowerCase() === "mask") {
         const length = maskToPrefix(tokens[3]);
         if (length !== undefined) { result.bgp.networks.push({ network: tokens[1], prefixLength: length }); applied(line); }
         else unparsed(line);
         continue;
+      }
+      if (head === "aggregate-address" && isIpv4(tokens[1]) && tokens[2]) {
+        const length = maskToPrefix(tokens[2]);
+        const modifiers = tokens.slice(3).map((token) => token.toLowerCase());
+        if (length === undefined || length > 31 || modifiers.some((token) => token !== "summary-only" && token !== "as-set")) {
+          unparsed(line); continue;
+        }
+        result.bgp.aggregates = [
+          ...(result.bgp.aggregates ?? []).filter((entry) => entry.prefix !== tokens[1] || entry.prefixLength !== length),
+          {
+            prefix: tokens[1],
+            prefixLength: length,
+            summaryOnly: modifiers.includes("summary-only") ? true : undefined,
+            asSet: modifiers.includes("as-set") ? true : undefined,
+          },
+        ];
+        applied(line); continue;
       }
       if (head === "neighbor" && isIpv4(tokens[1])) {
         const address = tokens[1];
@@ -967,6 +1108,21 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
           existing.ebgpMultihop = Number(tokens[3]); applied(line); continue;
         }
         if (tokens[2]?.toLowerCase() === "next-hop-self") { existing.nextHopSelf = true; applied(line); continue; }
+        if (tokens[2]?.toLowerCase() === "route-reflector-client" && tokens.length === 3) {
+          existing.routeReflectorClient = true; applied(line); continue;
+        }
+        if (tokens[2]?.toLowerCase() === "send-community" && tokens.length === 3) {
+          existing.sendCommunityStandard = true; applied(line); continue;
+        }
+        if (tokens[2]?.toLowerCase() === "send-community" && tokens[3]?.toLowerCase() === "both") {
+          existing.sendCommunityStandard = true; existing.sendCommunityExtended = true; applied(line); continue;
+        }
+        if (tokens[2]?.toLowerCase() === "default-originate" && tokens.length === 3) {
+          existing.defaultOriginate = true; applied(line); continue;
+        }
+        if (tokens[2]?.toLowerCase() === "default-originate" && tokens[3]?.toLowerCase() === "route-map" && tokens[4]) {
+          existing.defaultOriginate = true; existing.defaultOriginateRouteMap = tokens[4]; applied(line); continue;
+        }
         if ((tokens[2]?.toLowerCase() === "prefix-list" || tokens[2]?.toLowerCase() === "route-map")
           && tokens[3] && (tokens[4]?.toLowerCase() === "in" || tokens[4]?.toLowerCase() === "out")) {
           const key = `${tokens[2]!.toLowerCase() === "prefix-list" ? "prefixList" : "routeMap"}${tokens[4]!.toLowerCase() === "in" ? "In" : "Out"}` as "prefixListIn" | "prefixListOut" | "routeMapIn" | "routeMapOut";

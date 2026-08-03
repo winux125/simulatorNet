@@ -300,9 +300,27 @@ describe("Worker BGP inspection and actions", () => {
 
   it("supports the typed overview/table/policy adapter requests", () => {
     const { send } = runtimeFor(labWithBgpRouters());
-    for (const type of ["GET_BGP_OVERVIEW", "GET_BGP_SUMMARY", "GET_BGP_NEIGHBORS", "GET_BGP_TABLE", "GET_PREFIX_LIST_STATUS", "GET_ROUTE_MAP_STATUS"] as const) {
+    for (const type of [
+      "GET_BGP_OVERVIEW", "GET_BGP_SUMMARY", "GET_BGP_NEIGHBORS", "GET_BGP_TABLE",
+      "GET_PREFIX_LIST_STATUS", "GET_ROUTE_MAP_STATUS",
+      "GET_BGP_ROUTE_REFLECTION_STATUS", "GET_BGP_COMMUNITIES", "GET_BGP_AGGREGATES",
+      "GET_BGP_SUPPRESSED_ROUTES", "GET_BGP_POLICY_COUNTERS",
+    ] as const) {
       expect(send<BgpStateView>({ type, deviceId: "r1" } as never).deviceId).toBe("r1");
     }
+  });
+
+  it("returns plain-JSON reflection, community and aggregate views and soft-resets policy", () => {
+    const { send } = runtimeFor(labWithBgpRouters());
+    const state = send<BgpStateView>({ type: "GET_BGP_ROUTE_REFLECTION_STATUS", deviceId: "r1" } as never);
+    expect(state.routeReflection).toMatchObject({ clusterId: "1.1.1.1", isRouteReflector: false, clients: [] });
+    expect(Array.isArray(state.communities) && Array.isArray(state.aggregates) && Array.isArray(state.suppressedRoutes)).toBe(true);
+    expect(JSON.parse(JSON.stringify(state))).toEqual(state);
+
+    const soft = send<BgpStateView>({ type: "SOFT_RESET_BGP_NEIGHBOR", deviceId: "r1", neighbor: "192.0.2.2", direction: "in" } as never);
+    // Soft reconfiguration reevaluates policy; it never resets the session.
+    expect(soft.neighbors[0]?.state).toBe("established");
+    expect(soft.configuration?.neighbors).toHaveLength(1);
   });
 
   it("resets one neighbor or the whole process without changing configuration", () => {

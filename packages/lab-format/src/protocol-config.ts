@@ -9,12 +9,16 @@ import type {
   BgpProcessConfig,
   PrefixListConfig,
   RouteMapConfig,
+  CommunityListConfig,
+  AsPathListConfig,
 } from "@sim/contracts";
 import {
   DEFAULT_STP_PORT_PRIORITY_VALUE,
   isDefaultVpnConfiguration,
 } from "@sim/contracts";
 import {
+  type AsPathList,
+  type CommunityList,
   type L2Switch,
   type Layer3Switch,
   loopbackName,
@@ -259,8 +263,14 @@ export function applyBgpConfiguration(
   bgp: BgpProcessConfig | undefined,
   prefixLists: readonly PrefixListConfig[] = [],
   routeMaps: readonly RouteMapConfig[] = [],
+  communityLists: readonly CommunityListConfig[] = [],
+  asPathLists: readonly AsPathListConfig[] = [],
 ): void {
+  // Reusable lists come first: a route map may reference any of them, and the
+  // engine denies a route that names a list it cannot resolve.
   device.bgp.routingPolicy.setPrefixLists(prefixLists);
+  device.bgp.routingPolicy.setCommunityLists(communityLists as readonly CommunityList[]);
+  device.bgp.routingPolicy.setAsPathLists(asPathLists as readonly AsPathList[]);
   device.bgp.routingPolicy.setRouteMaps(routeMaps);
   if (bgp) device.bgp.configure(bgp);
 }
@@ -413,6 +423,16 @@ export function serializePrefixLists(device: Router | Layer3Switch): PrefixListC
 export function serializeRouteMaps(device: Router | Layer3Switch): RouteMapConfig[] | undefined {
   const maps = device.bgp.routingPolicy.routeMapConfigurations() as RouteMapConfig[];
   return maps.length ? maps : undefined;
+}
+
+export function serializeCommunityLists(device: Router | Layer3Switch): CommunityListConfig[] | undefined {
+  const lists = device.bgp.routingPolicy.communityListConfigurations() as CommunityListConfig[];
+  return lists.length ? lists : undefined;
+}
+
+export function serializeAsPathLists(device: Router | Layer3Switch): AsPathListConfig[] | undefined {
+  const lists = device.bgp.routingPolicy.asPathListConfigurations() as AsPathListConfig[];
+  return lists.length ? lists : undefined;
 }
 
 function prefixLength(maskInt: number): number {

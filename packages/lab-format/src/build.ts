@@ -72,6 +72,8 @@ import {
   serializeBgpConfiguration,
   serializePrefixLists,
   serializeRouteMaps,
+  serializeCommunityLists,
+  serializeAsPathLists,
   serializeSpanningTreeConfiguration,
   serializeVpnConfiguration,
 } from "./protocol-config";
@@ -635,7 +637,7 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
     if (config.ospf) applyOspfConfiguration(device, config.ospf);
     if (config.ospfv3) applyOspfv3Configuration(device, config.ospfv3);
     if (!deferBgp && config.kind === "router") {
-      applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps);
+      applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists);
     }
   }
 }
@@ -745,15 +747,15 @@ function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3Swit
   applyLoopbackConfiguration(device, config.loopbacks ?? []);
   if (config.ospf) applyOspfConfiguration(device, config.ospf);
   if (config.ospfv3) applyOspfv3Configuration(device, config.ospfv3);
-  if (!deferBgp) applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps);
+  if (!deferBgp) applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists);
 }
 
 /** Apply the TCP-based routing process only after the complete underlay exists. */
 export function applyPostLinkRoutingConfiguration(device: Device, config: DeviceConfig): void {
   if (device instanceof Layer3Switch && config.kind === "l3-switch") {
-    applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps);
+    applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists);
   } else if (device instanceof Router && config.kind === "router") {
-    applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps);
+    applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists);
   }
 }
 
@@ -1163,6 +1165,8 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       bgp: serializeBgpConfiguration(device),
       prefixLists: serializePrefixLists(device),
       routeMaps: serializeRouteMaps(device),
+      communityLists: serializeCommunityLists(device),
+      asPathLists: serializeAsPathLists(device),
       consoleAccess: device.consoleAccess.snapshot(),
       remoteAccess: serializeRemoteAccess(device.remoteAccess),
       aaa: serializeAaa(device.aaa),
@@ -1305,6 +1309,8 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
     bgp: serializeBgpConfiguration(device),
     prefixLists: serializePrefixLists(device),
     routeMaps: serializeRouteMaps(device),
+    communityLists: serializeCommunityLists(device),
+    asPathLists: serializeAsPathLists(device),
     consoleAccess: device instanceof IspCloud ? undefined : device.consoleAccess.snapshot(),
     remoteAccess: device instanceof IspCloud ? undefined : serializeRemoteAccess(device.remoteAccess),
     aaa: device instanceof IspCloud ? undefined : serializeAaa(device.aaa),

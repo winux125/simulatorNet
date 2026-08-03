@@ -38,6 +38,8 @@ import {
   type BgpProcessConfig,
   type PrefixListConfig,
   type RouteMapConfig,
+  type CommunityListConfig,
+  type AsPathListConfig,
   type QosConfiguration,
   type RemoteAccessConfiguration,
   type RouterDeviceConfig,
@@ -391,12 +393,39 @@ function ospfv3ProcessLines(ospfv3: Ospfv3ProcessConfig | undefined): string[] {
   return out;
 }
 
-function routePolicyLines(prefixLists: readonly PrefixListConfig[] | undefined, routeMaps: readonly RouteMapConfig[] | undefined): string[] {
+/** `^$`, `_65001_`, … — the same educational subset the parser accepts back. */
+function asPathPatternText(matcher: AsPathListConfig["entries"][number]["matcher"]): string {
+  switch (matcher.kind) {
+    case "empty": return "^$";
+    case "contains": return `_${matcher.asn}_`;
+    case "starts-with": return `^${matcher.asn}_`;
+    case "ends-with": return `_${matcher.asn}$`;
+    case "exact": return `^${matcher.asPath.join(" ")}$`;
+    case "length": return `length ${matcher.operator} ${matcher.length}`;
+  }
+}
+
+function routePolicyLines(
+  prefixLists: readonly PrefixListConfig[] | undefined,
+  routeMaps: readonly RouteMapConfig[] | undefined,
+  communityLists: readonly CommunityListConfig[] | undefined,
+  asPathLists: readonly AsPathListConfig[] | undefined,
+): string[] {
   const out: string[] = [];
   for (const list of sorted(prefixLists, byId)) {
     for (const entry of sorted(list.entries, bySequence)) {
       out.push(`ip prefix-list ${list.id} seq ${entry.sequence} ${entry.action} ${entry.prefix}/${entry.prefixLength}`
         + `${entry.ge === undefined ? "" : ` ge ${entry.ge}`}${entry.le === undefined ? "" : ` le ${entry.le}`}`);
+    }
+  }
+  for (const list of sorted(communityLists, byId)) {
+    for (const entry of sorted(list.entries, bySequence)) {
+      out.push(`ip community-list standard ${list.id} ${entry.action} ${entry.communities.join(" ")}`);
+    }
+  }
+  for (const list of sorted(asPathLists, byId)) {
+    for (const entry of sorted(list.entries, bySequence)) {
+      out.push(`ip as-path access-list ${list.id} ${entry.action} ${asPathPatternText(entry.matcher)}`);
     }
   }
   for (const map of sorted(routeMaps, byId)) {
@@ -406,10 +435,19 @@ function routePolicyLines(prefixLists: readonly PrefixListConfig[] | undefined, 
       if (sequence.match?.neighbor) out.push(` match neighbor ${sequence.match.neighbor}`);
       if (sequence.match?.maximumAsPathLength !== undefined) out.push(` match as-path length ${sequence.match.maximumAsPathLength}`);
       if (sequence.match?.source) out.push(` match route-source ${sequence.match.source}`);
+      if (sequence.match?.communityListIds?.length) {
+        out.push(` match community ${sequence.match.communityMatchAll ? "all " : ""}${sequence.match.communityListIds.join(" ")}`);
+      }
+      if (sequence.match?.asPathListIds?.length) out.push(` match as-path ${sequence.match.asPathListIds.join(" ")}`);
       if (sequence.set?.localPreference !== undefined) out.push(` set local-preference ${sequence.set.localPreference}`);
       if (sequence.set?.med !== undefined) out.push(` set metric ${sequence.set.med}`);
       if (sequence.set?.weight !== undefined) out.push(` set weight ${sequence.set.weight}`);
-      if (sequence.set?.prependLocalAs !== undefined) out.push(` set as-path prepend ${sequence.set.prependLocalAs}`);
+      if (sequence.set?.prependAsns?.length) out.push(` set as-path prepend ${sequence.set.prependAsns.join(" ")}`);
+      else if (sequence.set?.prependLocalAs !== undefined) out.push(` set as-path prepend ${sequence.set.prependLocalAs}`);
+      if (sequence.set?.communityNone) out.push(" set community none");
+      else if (sequence.set?.communities?.length) {
+        out.push(` set community ${sequence.set.communities.join(" ")}${sequence.set.communityAdditive ? " additive" : ""}`);
+      }
       if (sequence.set?.origin !== undefined) out.push(` set origin ${sequence.set.origin}`);
       out.push("!");
     }
@@ -421,26 +459,42 @@ function bgpProcessLines(bgp: BgpProcessConfig | undefined): string[] {
   if (!bgp) return [];
   const out = [`router bgp ${bgp.localAs}`];
   if (bgp.routerId) out.push(` bgp router-id ${bgp.routerId}`);
+  if (bgp.clusterId) out.push(` bgp cluster-id ${bgp.clusterId}`);
   for (const neighbor of sorted(bgp.neighbors, (a, b) => byString(a.address, b.address))) {
     out.push(` neighbor ${neighbor.address} remote-as ${neighbor.remoteAs}`);
     if (neighbor.description) out.push(` neighbor ${neighbor.address} description ${neighbor.description}`);
     if (neighbor.updateSource) out.push(` neighbor ${neighbor.address} update-source ${neighbor.updateSource}`);
     if (neighbor.ebgpMultihop !== undefined) out.push(` neighbor ${neighbor.address} ebgp-multihop ${neighbor.ebgpMultihop}`);
     if (neighbor.nextHopSelf) out.push(` neighbor ${neighbor.address} next-hop-self`);
+    if (neighbor.routeReflectorClient) out.push(` neighbor ${neighbor.address} route-reflector-client`);
+    if (neighbor.sendCommunityStandard) {
+      out.push(` neighbor ${neighbor.address} send-community${neighbor.sendCommunityExtended ? " both" : ""}`);
+    }
     if (neighbor.prefixListIn) out.push(` neighbor ${neighbor.address} prefix-list ${neighbor.prefixListIn} in`);
     if (neighbor.prefixListOut) out.push(` neighbor ${neighbor.address} prefix-list ${neighbor.prefixListOut} out`);
     if (neighbor.routeMapIn) out.push(` neighbor ${neighbor.address} route-map ${neighbor.routeMapIn} in`);
     if (neighbor.routeMapOut) out.push(` neighbor ${neighbor.address} route-map ${neighbor.routeMapOut} out`);
+    if (neighbor.defaultOriginate) {
+      out.push(` neighbor ${neighbor.address} default-originate`
+        + `${neighbor.defaultOriginateRouteMap ? ` route-map ${neighbor.defaultOriginateRouteMap}` : ""}`);
+    }
     if (neighbor.enabled === false) out.push(` neighbor ${neighbor.address} shutdown`);
   }
   for (const network of sorted(bgp.networks, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength)) {
     out.push(` network ${network.network} mask ${maskFromPrefixLength(network.prefixLength)}`);
+  }
+  for (const aggregate of sorted(bgp.aggregates, (a, b) => byString(a.prefix, b.prefix) || a.prefixLength - b.prefixLength)) {
+    out.push(` aggregate-address ${aggregate.prefix} ${maskFromPrefixLength(aggregate.prefixLength)}`
+      + `${aggregate.summaryOnly ? " summary-only" : ""}${aggregate.asSet ? " as-set" : ""}`);
   }
   const vpnNeighbors = sorted(bgp.neighbors?.filter((neighbor) => neighbor.vpnv4Activated || neighbor.sendCommunityExtended), (a, b) => byString(a.address, b.address));
   if (vpnNeighbors.length > 0) {
     out.push(" address-family vpnv4");
     for (const neighbor of vpnNeighbors) {
       if (neighbor.vpnv4Activated) out.push(`  neighbor ${neighbor.address} activate`);
+      if (neighbor.routeReflectorClient && neighbor.vpnv4Activated) {
+        out.push(`  neighbor ${neighbor.address} route-reflector-client`);
+      }
       if (neighbor.sendCommunityExtended) out.push(`  neighbor ${neighbor.address} send-community extended`);
     }
     out.push(" exit-address-family");
@@ -701,7 +755,7 @@ function renderRoutedDevice(config: RouterDeviceConfig | FirewallDeviceConfig | 
   }
   out.push(...ospfProcessLines(config.ospf));
   out.push(...ospfv3ProcessLines(config.ospfv3));
-  out.push(...routePolicyLines(config.prefixLists, config.routeMaps));
+  out.push(...routePolicyLines(config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists));
   out.push(...bgpProcessLines(config.bgp));
   for (const route of sorted(config.staticRoutes, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength)) {
     out.push(`ip route ${route.network} ${maskFromPrefixLength(route.prefixLength)} ${route.nextHop}`);
@@ -886,7 +940,7 @@ function renderLayer3Switch(config: Layer3SwitchDeviceConfig): string[] {
   out.push(...loopbackLines(config.loopbacks));
   out.push(...ospfProcessLines(config.ospf));
   out.push(...ospfv3ProcessLines(config.ospfv3));
-  out.push(...routePolicyLines(config.prefixLists, config.routeMaps));
+  out.push(...routePolicyLines(config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists));
   out.push(...bgpProcessLines(config.bgp));
   for (const route of sorted(config.staticRoutes, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength)) {
     out.push(`ip route ${route.network} ${maskFromPrefixLength(route.prefixLength)} ${route.nextHop}`);

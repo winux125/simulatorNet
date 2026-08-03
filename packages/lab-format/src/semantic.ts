@@ -24,7 +24,14 @@ import {
   getDeviceProfile,
   resolveDeviceInterfaceTemplates,
 } from "@sim/contracts";
-import { ipToInt, maskToInt, normalizeDnsName, normalizeHttpPath, normalizeTftpFilename } from "@sim/sim-core";
+import {
+  ipToInt,
+  MAXIMUM_AS_PATH_MATCH_LENGTH,
+  maskToInt,
+  normalizeDnsName,
+  normalizeHttpPath,
+  normalizeTftpFilename,
+} from "@sim/sim-core";
 import { LabSemanticError } from "./errors";
 
 function fail(code: string, path: string, message: string, context: Record<string, unknown> = {}): never {
@@ -750,7 +757,7 @@ function validateDiscovery(
 }
 
 function validateBgpConfiguration(
-  config: Pick<RouterDeviceConfig, "bgp" | "prefixLists" | "routeMaps">,
+  config: Pick<RouterDeviceConfig, "bgp" | "prefixLists" | "routeMaps" | "communityLists" | "asPathLists">,
   node: NodeSpec,
   path: string,
   interfaceNames: ReadonlySet<string>,
@@ -758,10 +765,42 @@ function validateBgpConfiguration(
 ): void {
   const prefixLists = config.prefixLists ?? [];
   const routeMaps = config.routeMaps ?? [];
+  const communityLists = config.communityLists ?? [];
+  const asPathLists = config.asPathLists ?? [];
   requireUnique(prefixLists.map((list) => list.id), `${path}.prefixLists`, "prefix-list name");
   requireUnique(routeMaps.map((map) => map.id), `${path}.routeMaps`, "route-map name");
+  requireUnique(communityLists.map((list) => list.id), `${path}.communityLists`, "community-list name");
+  requireUnique(asPathLists.map((list) => list.id), `${path}.asPathLists`, "AS-path list name");
   const prefixListIds = new Set(prefixLists.map((list) => list.id));
   const routeMapIds = new Set(routeMaps.map((map) => map.id));
+  const communityListIds = new Set(communityLists.map((list) => list.id));
+  const asPathListIds = new Set(asPathLists.map((list) => list.id));
+  communityLists.forEach((list, listIndex) => {
+    requireUnique(list.entries.map((entry) => String(entry.sequence)), `${path}.communityLists[${listIndex}].entries`, "community-list sequence");
+    list.entries.forEach((entry, entryIndex) => {
+      for (const [communityIndex, community] of entry.communities.entries()) {
+        if (!isCanonicalCommunity(community)) {
+          fail(
+            "invalid-bgp-community",
+            `${path}.communityLists[${listIndex}].entries[${entryIndex}].communities[${communityIndex}]`,
+            `Community '${community}' must be <0-65535>:<0-65535>, 'internet', 'no-export' or 'no-advertise'`,
+          );
+        }
+      }
+    });
+  });
+  asPathLists.forEach((list, listIndex) => {
+    requireUnique(list.entries.map((entry) => String(entry.sequence)), `${path}.asPathLists[${listIndex}].entries`, "AS-path list sequence");
+    list.entries.forEach((entry, entryIndex) => {
+      if (entry.matcher.kind === "exact" && entry.matcher.asPath.length > MAXIMUM_AS_PATH_MATCH_LENGTH) {
+        fail(
+          "invalid-as-path-matcher",
+          `${path}.asPathLists[${listIndex}].entries[${entryIndex}].matcher`,
+          `An exact AS-path match holds at most ${MAXIMUM_AS_PATH_MATCH_LENGTH} AS numbers`,
+        );
+      }
+    });
+  });
   prefixLists.forEach((list, listIndex) => {
     requireUnique(list.entries.map((entry) => String(entry.sequence)), `${path}.prefixLists[${listIndex}].entries`, "prefix-list sequence");
     list.entries.forEach((entry, entryIndex) => {
@@ -780,9 +819,33 @@ function validateBgpConfiguration(
   routeMaps.forEach((map, mapIndex) => {
     requireUnique(map.sequences.map((sequence) => String(sequence.sequence)), `${path}.routeMaps[${mapIndex}].sequences`, "route-map sequence");
     map.sequences.forEach((sequence, sequenceIndex) => {
+      const sequencePath = `${path}.routeMaps[${mapIndex}].sequences[${sequenceIndex}]`;
       sequence.match?.prefixListIds?.forEach((id, idIndex) => {
         if (!prefixListIds.has(id)) {
-          fail("unknown-prefix-list", `${path}.routeMaps[${mapIndex}].sequences[${sequenceIndex}].match.prefixListIds[${idIndex}]`, `Unknown prefix-list '${id}'`);
+          fail("unknown-prefix-list", `${sequencePath}.match.prefixListIds[${idIndex}]`, `Unknown prefix-list '${id}'`);
+        }
+      });
+      sequence.match?.communityListIds?.forEach((id, idIndex) => {
+        if (!communityListIds.has(id)) {
+          fail("unknown-community-list", `${sequencePath}.match.communityListIds[${idIndex}]`, `Unknown community-list '${id}'`);
+        }
+      });
+      sequence.match?.asPathListIds?.forEach((id, idIndex) => {
+        if (!asPathListIds.has(id)) {
+          fail("unknown-as-path-list", `${sequencePath}.match.asPathListIds[${idIndex}]`, `Unknown AS-path list '${id}'`);
+        }
+      });
+      sequence.set?.communities?.forEach((community, communityIndex) => {
+        if (!isCanonicalCommunity(community)) {
+          fail("invalid-bgp-community", `${sequencePath}.set.communities[${communityIndex}]`, `Community '${community}' is not supported`);
+        }
+      });
+      if (sequence.set?.communityNone && sequence.set.communities?.length) {
+        fail("invalid-bgp-community", `${sequencePath}.set.communityNone`, "'set community none' cannot be combined with community values");
+      }
+      sequence.set?.prependAsns?.forEach((asn, asnIndex) => {
+        if (!Number.isInteger(asn) || asn < 1) {
+          fail("invalid-as-path-prepend", `${sequencePath}.set.prependAsns[${asnIndex}]`, "An AS-path prepend cannot use AS 0");
         }
       });
     });
@@ -801,25 +864,49 @@ function validateBgpConfiguration(
       fail("invalid-bgp-network", `${path}.bgp.networks[${index}].network`, "BGP network statement must use a canonical network address");
     }
   });
+  const aggregates = bgp.aggregates ?? [];
+  requireUnique(aggregates.map((aggregate) => `${aggregate.prefix}/${aggregate.prefixLength}`), `${path}.bgp.aggregates`, "BGP aggregate");
+  aggregates.forEach((aggregate, index) => {
+    if (((ipToInt(aggregate.prefix) & maskToInt(aggregate.prefixLength)) >>> 0) !== ipToInt(aggregate.prefix)) {
+      fail("invalid-bgp-aggregate", `${path}.bgp.aggregates[${index}].prefix`, "A BGP aggregate must use a canonical network address");
+    }
+  });
   bgp.neighbors.forEach((neighbor, index) => {
     const neighborPath = `${path}.bgp.neighbors[${index}]`;
     if (neighbor.updateSource !== undefined && !interfaceNames.has(neighbor.updateSource)) {
       fail("unknown-bgp-update-source", `${neighborPath}.updateSource`, `Unknown BGP update-source interface '${neighbor.updateSource}'`);
+    }
+    // Reflection is an intra-AS relationship; an eBGP peer already receives
+    // every path this device selects.
+    if (neighbor.routeReflectorClient && neighbor.remoteAs !== bgp.localAs) {
+      fail(
+        "route-reflector-client-on-ebgp",
+        `${neighborPath}.routeReflectorClient`,
+        `Route-reflector-client requires an iBGP neighbor; ${neighbor.address} is in AS ${neighbor.remoteAs}`,
+      );
     }
     for (const [field, id, known] of [
       ["prefixListIn", neighbor.prefixListIn, prefixListIds],
       ["prefixListOut", neighbor.prefixListOut, prefixListIds],
       ["routeMapIn", neighbor.routeMapIn, routeMapIds],
       ["routeMapOut", neighbor.routeMapOut, routeMapIds],
+      ["defaultOriginateRouteMap", neighbor.defaultOriginateRouteMap, routeMapIds],
     ] as const) {
       if (id !== undefined && !known.has(id)) fail("unknown-bgp-policy", `${neighborPath}.${field}`, `Unknown BGP policy '${id}'`);
     }
   });
 }
 
+/** Mirrors the engine's canonical community grammar without importing it. */
+function isCanonicalCommunity(value: string): boolean {
+  if (value === "internet" || value === "no-export" || value === "no-advertise") return true;
+  const match = /^(\d{1,5}):(\d{1,5})$/u.exec(value);
+  return match !== null && Number(match[1]) <= 65_535 && Number(match[2]) <= 65_535;
+}
+
 /** Loopback interfaces and the single area-0 OSPF/BGP process. */
 function validateRoutedProtocols(
-  config: Pick<RouterDeviceConfig, "loopbacks" | "ospf" | "bgp" | "prefixLists" | "routeMaps">,
+  config: Pick<RouterDeviceConfig, "loopbacks" | "ospf" | "bgp" | "prefixLists" | "routeMaps" | "communityLists" | "asPathLists">,
   node: NodeSpec,
   path: string,
   l3Interfaces: ReadonlySet<string>,

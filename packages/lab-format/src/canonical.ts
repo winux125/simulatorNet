@@ -314,7 +314,10 @@ function canonicalDiscovery(discovery: NeighborDiscoveryConfig | undefined): Nei
 
 /** Loopbacks by numeric id, OSPF networks by network then wildcard. */
 function canonicalRoutedProtocols(
-  config: Partial<Pick<RouterDeviceConfig, "loopbacks" | "ospf" | "ospfv3" | "bgp" | "prefixLists" | "routeMaps">> | undefined,
+  config: Partial<Pick<
+    RouterDeviceConfig,
+    "loopbacks" | "ospf" | "ospfv3" | "bgp" | "prefixLists" | "routeMaps" | "communityLists" | "asPathLists"
+  >> | undefined,
 ) {
   return {
     loopbacks: [...(config?.loopbacks ?? [])]
@@ -352,6 +355,9 @@ function canonicalRoutedProtocols(
       networks: [...config.bgp.networks]
         .sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || a.prefixLength - b.prefixLength)
         .map((network) => ({ ...network })),
+      aggregates: config.bgp.aggregates === undefined ? undefined : [...config.bgp.aggregates]
+        .sort((a, b) => ipToInt(a.prefix) - ipToInt(b.prefix) || a.prefixLength - b.prefixLength)
+        .map((aggregate) => ({ ...aggregate })),
       vrfAddressFamilies: [...config.bgp.vrfAddressFamilies]
         .sort((a, b) => a.vrfId.localeCompare(b.vrfId))
         .map((family) => ({ ...family })),
@@ -363,9 +369,35 @@ function canonicalRoutedProtocols(
       .sort(byId)
       .map((map) => ({ ...map, sequences: [...map.sequences].sort((a, b) => a.sequence - b.sequence).map((sequence) => ({
         ...sequence,
-        match: sequence.match ? { ...sequence.match, prefixListIds: sequence.match.prefixListIds ? [...sequence.match.prefixListIds].sort() : undefined } : undefined,
-        set: sequence.set ? { ...sequence.set } : undefined,
+        match: sequence.match ? {
+          ...sequence.match,
+          prefixListIds: sequence.match.prefixListIds ? [...sequence.match.prefixListIds].sort() : undefined,
+          communityListIds: sequence.match.communityListIds ? [...sequence.match.communityListIds].sort() : undefined,
+          asPathListIds: sequence.match.asPathListIds ? [...sequence.match.asPathListIds].sort() : undefined,
+        } : undefined,
+        // `set community` and `set as-path prepend` are ordered actions: the
+        // engine already canonicalizes communities and a prepend list is
+        // positional, so neither is re-sorted here.
+        set: sequence.set ? {
+          ...sequence.set,
+          communities: sequence.set.communities ? [...sequence.set.communities] : undefined,
+          prependAsns: sequence.set.prependAsns ? [...sequence.set.prependAsns] : undefined,
+        } : undefined,
       })) })),
+    communityLists: config?.communityLists === undefined ? undefined : [...config.communityLists]
+      .sort(byId)
+      .map((list) => ({
+        ...list,
+        entries: [...list.entries].sort((a, b) => a.sequence - b.sequence)
+          .map((entry) => ({ ...entry, communities: [...entry.communities] })),
+      })),
+    asPathLists: config?.asPathLists === undefined ? undefined : [...config.asPathLists]
+      .sort(byId)
+      .map((list) => ({
+        ...list,
+        entries: [...list.entries].sort((a, b) => a.sequence - b.sequence)
+          .map((entry) => ({ ...entry, matcher: { ...entry.matcher } })),
+      })),
   };
 }
 

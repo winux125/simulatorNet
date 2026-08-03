@@ -255,16 +255,44 @@ execution must always drain, while explicit virtual-time advancement can expire
 the Hold timer.
 
 Keep raw Adj-RIB-In, policy-filtered Adj-RIB-In, Loc-RIB and Adj-RIB-Out
-separate. The one routing-policy engine evaluates ordered prefix lists and route
-maps for both inbound and outbound paths; no executable policy or unrestricted
-regular expression is allowed. The documented stable best-path comparator is
-the single selection implementation used by routing, UI and grading.
+separate. The one routing-policy engine evaluates ordered prefix lists,
+community lists, AS-path lists and route maps for both inbound and outbound
+paths; no executable policy or unrestricted regular expression is allowed. An
+AS-path pattern is parsed once into a structured matcher — an unsupported
+pattern is reported, never stored or run. The documented stable best-path
+comparator is the single selection implementation used by routing, UI and
+grading.
 
-`LabDocument` stores the BGP process, peers, exact network statements, prefix
-lists, route maps and bindings. It must never store TCP/FSM state, learned RIBs,
-message counters, policy counters or browser execution mode. The verifier
-rebuilds these from structured configuration and ignores client-provided routes,
-trace and score. See `docs/routing-bgp.md`.
+A **route reflector** is the same BGP process, not a second protocol. It serves
+IPv4 unicast and VPNv4, its cluster ID defaults to the BGP router ID, and a
+client is only ever an iBGP neighbor. A client's path may go to anyone; a
+non-client's path only to clients; a path never returns to the peer it came
+from; a router with no clients keeps plain iBGP split horizon. Reflection stamps
+`ORIGINATOR_ID` and prepends the local cluster ID to `CLUSTER_LIST`; a path is
+rejected when either names this device or when the list exceeds its bound. A
+reflector never rewrites `NEXT_HOP` — `next-hop-self` stays a separate policy.
+
+**Standard communities** are canonical, deduplicated and sorted, so an
+identical input yields an identical RIB. `no-advertise` blocks every peer,
+`no-export` blocks only eBGP, and communities cross a session only with
+`send-community`. They never change best-path selection by themselves. Standard
+communities and VPNv4 route targets are separate attributes: `set community`
+can never delete a route target.
+
+An **aggregate** exists only while a contributing more-specific path does.
+`summary-only` suppresses advertisements, never the Loc-RIB or the local
+forwarding table. `default-originate` is per neighbor and is never installed
+locally. Soft reevaluation re-runs policy without resetting TCP.
+
+`LabDocument` stores the BGP process, peers, exact network statements, cluster
+ID, route-reflector-client and send-community flags, default-originate,
+aggregates, prefix lists, community lists, AS-path lists, route maps and
+bindings. It must never store TCP/FSM state, learned RIBs, `ORIGINATOR_ID` or
+`CLUSTER_LIST` state, reflected-route flags, communities learned through BGP,
+aggregate contribution, suppressed routes, message counters, policy counters or
+browser execution mode. The verifier rebuilds these from structured
+configuration and ignores client-provided routes, trace and score. See
+`docs/routing-bgp.md`.
 
 ### Management plane
 

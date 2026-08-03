@@ -49,9 +49,13 @@ import type {
   TrafficFlowResult,
   QosClassCounter,
   QosProblem,
+  AsPathList,
+  BgpAggregateSummary,
   BgpNeighborSummary,
   BgpRoute,
   BgpRibEntry,
+  BgpSuppressedRoute,
+  CommunityList,
   RoutePolicyCounter,
   MplsForwardingEntry,
   LdpNeighborSummary,
@@ -326,7 +330,8 @@ export interface HostNetworkWarning {
     | "ldp-router-id-unavailable"
     | "vpnv4-extended-community-disabled"
     | "l3vpn-transport-label-unavailable"
-    | "bgp";
+    | "bgp"
+    | "bgp-policy";
   message: string;
   address?: string;
   deviceIds: readonly string[];
@@ -638,6 +643,25 @@ export interface BgpStateView {
   adjRibOut: BgpRoute[];
   ribFailures: Array<{ routeId: string; reason: string }>;
   policyCounters: RoutePolicyCounter[];
+  /**
+   * M10.12 route reflection, communities, policy lists and aggregation. Every
+   * field is derived runtime state rebuilt from configuration; none of it is
+   * persisted in a `LabDocument` or trusted from the browser.
+   */
+  routeReflection: {
+    clusterId: string;
+    isRouteReflector: boolean;
+    clients: string[];
+    nonClients: string[];
+    reflectedRoutes: number;
+    originatorLoopsRejected: number;
+    clusterLoopsRejected: number;
+  };
+  communities: Array<{ community: string; routes: number }>;
+  communityLists: CommunityList[];
+  asPathLists: AsPathList[];
+  aggregates: BgpAggregateSummary[];
+  suppressedRoutes: BgpSuppressedRoute[];
 }
 
 /** Router-only MPLS/LDP/L3VPN inspection. Runtime tables are never persisted. */
@@ -840,6 +864,18 @@ export type SimWorkerRequest =
   | { type: "GET_ROUTE_MAP_STATUS"; requestId: string; deviceId: string }
   | { type: "RESET_BGP_NEIGHBOR"; requestId: string; deviceId: string; neighbor: string }
   | { type: "RESET_BGP_PROCESS"; requestId: string; deviceId: string }
+  | { type: "GET_BGP_ROUTE_REFLECTION_STATUS"; requestId: string; deviceId: string }
+  | { type: "GET_BGP_COMMUNITIES"; requestId: string; deviceId: string }
+  | { type: "GET_BGP_AGGREGATES"; requestId: string; deviceId: string }
+  | { type: "GET_BGP_SUPPRESSED_ROUTES"; requestId: string; deviceId: string }
+  | { type: "GET_BGP_POLICY_COUNTERS"; requestId: string; deviceId: string }
+  | {
+    type: "SOFT_RESET_BGP_NEIGHBOR";
+    requestId: string;
+    deviceId: string;
+    neighbor?: string;
+    direction?: "in" | "out" | "both";
+  }
   // --- M10.11 Router-only MPLS, LDP and L3VPN inspection ---
   | { type: "GET_MPLS_INTERFACES"; requestId: string; deviceId: string }
   | { type: "GET_MPLS_FORWARDING_TABLE"; requestId: string; deviceId: string }
@@ -1016,6 +1052,12 @@ export interface SimWorkerPayloadByType {
   GET_ROUTE_MAP_STATUS: BgpStateView;
   RESET_BGP_NEIGHBOR: BgpStateView;
   RESET_BGP_PROCESS: BgpStateView;
+  GET_BGP_ROUTE_REFLECTION_STATUS: BgpStateView;
+  GET_BGP_COMMUNITIES: BgpStateView;
+  GET_BGP_AGGREGATES: BgpStateView;
+  GET_BGP_SUPPRESSED_ROUTES: BgpStateView;
+  GET_BGP_POLICY_COUNTERS: BgpStateView;
+  SOFT_RESET_BGP_NEIGHBOR: BgpStateView;
   GET_MPLS_INTERFACES: MplsL3VpnView;
   GET_MPLS_FORWARDING_TABLE: MplsL3VpnView;
   GET_LDP_NEIGHBORS: MplsL3VpnView;

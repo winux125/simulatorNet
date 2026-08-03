@@ -67,13 +67,17 @@ function showVpnv4(session: SessionApi, vrfId?: string): string {
     : new Set(router.vrfConfigurations().filter((vrf) => vrf.id === vrfId || vrf.name === vrfId).map((vrf) => vrf.routeDistinguisher));
   const routes = router.bgp.vpnv4Routes().filter((route) => allowedRds === undefined || allowedRds.has(route.routeDistinguisher));
   if (!routes.length) return "% VPNv4 table is empty.";
-  return table(["Status", "RD", "Prefix", "Next Hop", "VPN Label", "Route Targets"], routes.map((route) => [
+  // Originator/cluster list expose VPNv4 route reflection through the same
+  // table, so a reflected VPN path is visible without a second command.
+  return table(["Status", "RD", "Prefix", "Next Hop", "VPN Label", "Route Targets", "Originator", "Cluster list"], routes.map((route) => [
     route.best ? "*>" : "*",
     route.routeDistinguisher,
     `${route.network}/${route.prefixLength}`,
     route.nextHop,
     String(route.vpnLabel),
     route.routeTargets.join(","),
+    route.originatorId ?? "—",
+    route.clusterList.join(" ") || "—",
   ]));
 }
 

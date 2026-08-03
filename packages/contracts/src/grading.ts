@@ -3,7 +3,7 @@ import { DeviceCapabilitySchema, DeviceTypeSchema } from "./devices";
 import { WirelessSecurityModeSchema } from "./wireless";
 import { IpAddressSchema } from "./primitives";
 import { CosValueSchema, DscpValueSchema } from "./qos";
-import { RouteDistinguisherSchema, RouteTargetSchema } from "./protocols";
+import { BgpCommunitySchema, RouteDistinguisherSchema, RouteTargetSchema } from "./protocols";
 import {
   Ipv4Schema,
   Ipv6CidrSchema,
@@ -1054,6 +1054,95 @@ export const BgpReceivedRouteGradingCheckSchema = CheckIdentitySchema.extend({
     .merge(BgpPrefixExpectationSchema).strict(),
 }).strict();
 
+// --- M10.12 route reflection, communities and advanced policy -------------
+
+export const BgpRouteReflectorClientGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-route-reflector-client"),
+  configuration: z.object({ deviceId: z.string().min(1), neighborAddress: Ipv4Schema }).strict(),
+}).strict();
+
+export const BgpClusterIdGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-cluster-id"),
+  configuration: z.object({ deviceId: z.string().min(1), expectedClusterId: Ipv4Schema }).strict(),
+}).strict();
+
+/** A reflected path reached this device with the expected reflection attributes. */
+export const BgpRouteReflectedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-route-reflected"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    expectedOriginatorId: Ipv4Schema.optional(),
+    expectedClusterId: Ipv4Schema.optional(),
+  }).merge(BgpPrefixExpectationSchema).strict(),
+}).strict();
+
+export const BgpOriginatorLoopPreventedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-originator-loop-prevented"),
+  configuration: z.object({ deviceId: z.string().min(1) }).merge(BgpPrefixExpectationSchema).strict(),
+}).strict();
+
+export const BgpCommunityGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-community"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    expectedCommunity: BgpCommunitySchema,
+    expected: z.enum(["present", "absent"]).default("present"),
+  }).merge(BgpPrefixExpectationSchema).strict(),
+}).strict();
+
+export const BgpCommunityListGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-community-list"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    communityListId: z.string().min(1),
+    sequence: z.number().int().min(1),
+    expectedAction: z.enum(["permit", "deny"]),
+  }).strict(),
+}).strict();
+
+export const BgpAsPathListGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-as-path-list"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    asPathListId: z.string().min(1),
+    sequence: z.number().int().min(1),
+    expectedAction: z.enum(["permit", "deny"]),
+  }).strict(),
+}).strict();
+
+export const BgpRoutePolicyResultGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-route-policy-result"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    routeMapId: z.string().min(1),
+    sequence: z.number().int().min(1),
+    expectedMatches: z.number().int().min(0).optional(),
+  }).strict(),
+}).strict();
+
+export const BgpAggregateGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-aggregate"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    expectedSummaryOnly: z.boolean().optional(),
+    expectedActive: z.boolean().default(true),
+  }).merge(BgpPrefixExpectationSchema).strict(),
+}).strict();
+
+export const BgpSpecificSuppressedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-specific-suppressed"),
+  configuration: z.object({ deviceId: z.string().min(1) }).merge(BgpPrefixExpectationSchema).strict(),
+}).strict();
+
+export const BgpDefaultAdvertisedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-default-advertised"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    neighborAddress: Ipv4Schema,
+    expected: z.enum(["advertised", "withheld"]).default("advertised"),
+  }).strict(),
+}).strict();
+
 // --- MPLS, LDP and Layer 3 VPN ------------------------------------------
 
 export const MplsInterfaceEnabledGradingCheckSchema = CheckIdentitySchema.extend({
@@ -1136,6 +1225,17 @@ export const GradingCheckSchema = z.discriminatedUnion("type", [
   RoutePolicyResultGradingCheckSchema,
   BgpAdvertisedRouteGradingCheckSchema,
   BgpReceivedRouteGradingCheckSchema,
+  BgpRouteReflectorClientGradingCheckSchema,
+  BgpClusterIdGradingCheckSchema,
+  BgpRouteReflectedGradingCheckSchema,
+  BgpOriginatorLoopPreventedGradingCheckSchema,
+  BgpCommunityGradingCheckSchema,
+  BgpCommunityListGradingCheckSchema,
+  BgpAsPathListGradingCheckSchema,
+  BgpRoutePolicyResultGradingCheckSchema,
+  BgpAggregateGradingCheckSchema,
+  BgpSpecificSuppressedGradingCheckSchema,
+  BgpDefaultAdvertisedGradingCheckSchema,
   ConfigurationSavedGradingCheckSchema,
   GreTunnelConfiguredGradingCheckSchema,
   GreTunnelOperationalGradingCheckSchema,

@@ -447,7 +447,22 @@ export class SimulationWorkerRuntime {
       case "GET_BGP_ROUTE":
       case "GET_PREFIX_LIST_STATUS":
       case "GET_ROUTE_MAP_STATUS":
+      case "GET_BGP_ROUTE_REFLECTION_STATUS":
+      case "GET_BGP_COMMUNITIES":
+      case "GET_BGP_AGGREGATES":
+      case "GET_BGP_SUPPRESSED_ROUTES":
+      case "GET_BGP_POLICY_COUNTERS":
         return this.bgpState(requireString(request, "deviceId"));
+      case "SOFT_RESET_BGP_NEIGHBOR": {
+        // Policy reevaluation only: the TCP session and the stored
+        // configuration are deliberately left alone.
+        const deviceId = requireString(request, "deviceId");
+        const neighbor = typeof request.neighbor === "string" ? request.neighbor : undefined;
+        const direction = request.direction === "in" || request.direction === "out" ? request.direction : "both";
+        this.requireOspf(deviceId).bgp.softReset(neighbor, direction);
+        this.runProtocolConvergence();
+        return this.bgpState(deviceId);
+      }
       case "RESET_BGP_SESSION":
       case "RESET_BGP_NEIGHBOR":
       case "RESET_BGP_PROCESS": {
@@ -1903,6 +1918,9 @@ export class SimulationWorkerRuntime {
           message: `${device.name} rejected BGP route ${failure.routeId}: ${failure.reason}.`,
           deviceIds: [device.id],
         });
+        for (const problem of this.bgpPolicyProblems(device)) {
+          warnings.push({ code: "bgp-policy", message: `${device.name} ${problem}`, deviceIds: [device.id] });
+        }
         for (const problem of device.qosProblems()) {
           warnings.push({ code: "qos-policy", message: problem.message, deviceIds: [device.id] });
         }
@@ -2342,23 +2360,94 @@ export class SimulationWorkerRuntime {
     };
   }
 
+  /**
+   * Structural BGP policy problems that are worth explaining rather than
+   * throwing: they are derived from configuration and current runtime state, so
+   * the lab keeps running while Problems says what is wrong.
+   */
+  private bgpPolicyProblems(device: Router | Layer3Switch): string[] {
+    const configuration = device.bgp.configurationSnapshot();
+    if (!configuration) return [];
+    const problems: string[] = [];
+    const routeMapIds = new Set(device.bgp.routingPolicy.routeMapConfigurations().map((map) => map.id));
+    const communityListIds = new Set(device.bgp.routingPolicy.communityListConfigurations().map((list) => list.id));
+    const asPathListIds = new Set(device.bgp.routingPolicy.asPathListConfigurations().map((list) => list.id));
+    const carriesCommunities = device.bgp.routes().some((route) => route.communities.length > 0);
+    for (const neighbor of configuration.neighbors ?? []) {
+      if (neighbor.routeReflectorClient && neighbor.remoteAs !== configuration.localAs) {
+        problems.push(`configures route-reflector-client on eBGP neighbor ${neighbor.address}.`);
+      }
+      if (carriesCommunities && !neighbor.sendCommunityStandard) {
+        problems.push(`holds BGP communities but does not send them to ${neighbor.address} (no send-community).`);
+      }
+      if (neighbor.defaultOriginateRouteMap !== undefined && !routeMapIds.has(neighbor.defaultOriginateRouteMap)) {
+        problems.push(`references missing default-originate route-map '${neighbor.defaultOriginateRouteMap}'.`);
+      }
+    }
+    for (const map of device.bgp.routingPolicy.routeMapConfigurations()) {
+      for (const sequence of map.sequences) {
+        for (const id of sequence.match?.communityListIds ?? []) {
+          if (!communityListIds.has(id)) problems.push(`route-map ${map.id} sequence ${sequence.sequence} references missing community-list '${id}'.`);
+        }
+        for (const id of sequence.match?.asPathListIds ?? []) {
+          if (!asPathListIds.has(id)) problems.push(`route-map ${map.id} sequence ${sequence.sequence} references missing AS-path list '${id}'.`);
+        }
+      }
+    }
+    for (const aggregate of device.bgp.aggregateSummaries()) {
+      if (!aggregate.active) {
+        problems.push(`aggregate ${aggregate.prefix}/${aggregate.prefixLength} has no contributing BGP route.`);
+      }
+    }
+    return problems;
+  }
+
   private bgpState(deviceId: string): BgpStateView {
     const bgp = this.requireOspf(deviceId).bgp;
     const configuration = bgp.configurationSnapshot();
+    const clients = bgp.routeReflectorClients();
+    const clientSet = new Set(clients);
+    const routes = bgp.routes();
+    // Loop rejections are trace facts, not stored state; counting them here
+    // keeps the reflection panel honest without a second runtime cache.
+    const traces = this.requireBuiltLab().engine.traceLog.filter((entry) => entry.device === deviceId);
+    const communities = new Map<string, number>();
+    for (const route of routes) {
+      for (const community of route.communities) communities.set(community, (communities.get(community) ?? 0) + 1);
+    }
     return {
       deviceId,
       configuration: configuration === undefined ? undefined : {
         ...configuration,
         neighbors: [...(configuration.neighbors ?? [])],
         networks: [...(configuration.networks ?? [])],
+        aggregates: configuration.aggregates === undefined ? undefined : [...configuration.aggregates],
         vrfAddressFamilies: [...(configuration.vrfAddressFamilies ?? [])],
       },
       neighbors: bgp.summaries(),
-      routes: bgp.routes(),
+      routes,
       adjRibIn: bgp.adjRibInEntries(),
       adjRibOut: bgp.adjRibOutEntries(),
       ribFailures: bgp.ribFailureSummaries(),
       policyCounters: bgp.routingPolicy.counterSummaries(),
+      routeReflection: {
+        clusterId: bgp.clusterIdentity,
+        isRouteReflector: bgp.routeReflector,
+        clients,
+        nonClients: (configuration?.neighbors ?? [])
+          .filter((neighbor) => neighbor.remoteAs === configuration?.localAs && !clientSet.has(neighbor.address))
+          .map((neighbor) => neighbor.address),
+        reflectedRoutes: routes.filter((route) => route.clusterList.length > 0).length,
+        originatorLoopsRejected: traces.filter((entry) => entry.type === "bgp-originator-loop-rejected").length,
+        clusterLoopsRejected: traces.filter((entry) => entry.type === "bgp-cluster-loop-rejected").length,
+      },
+      communities: [...communities.entries()]
+        .map(([community, count]) => ({ community, routes: count }))
+        .sort((a, b) => a.community.localeCompare(b.community)),
+      communityLists: bgp.routingPolicy.communityListConfigurations(),
+      asPathLists: bgp.routingPolicy.asPathListConfigurations(),
+      aggregates: bgp.aggregateSummaries(),
+      suppressedRoutes: bgp.suppressedRoutes(),
     };
   }
 

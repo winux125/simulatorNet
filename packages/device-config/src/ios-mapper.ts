@@ -244,6 +244,9 @@ function bgpFrom(applied: ImportedDeviceConfiguration): BgpProcessConfig | undef
     ...applied.bgp,
     neighbors: [...applied.bgp.neighbors].sort((left, right) => left.address.localeCompare(right.address)),
     networks: [...applied.bgp.networks].sort((left, right) => left.network.localeCompare(right.network) || left.prefixLength - right.prefixLength),
+    aggregates: applied.bgp.aggregates === undefined
+      ? undefined
+      : [...applied.bgp.aggregates].sort((left, right) => left.prefix.localeCompare(right.prefix) || left.prefixLength - right.prefixLength),
   };
 }
 
@@ -400,6 +403,8 @@ export function buildDeviceConfigFromIos(
       loopbacks: loopbacksFrom(applied),
       prefixLists: applied.prefixLists,
       routeMaps: applied.routeMaps,
+      communityLists: applied.communityLists.length ? applied.communityLists : undefined,
+      asPathLists: applied.asPathLists.length ? applied.asPathLists : undefined,
     };
     if (deviceType === "firewall") {
       // A firewall is not an OSPF speaker in this release; the process lines
@@ -476,6 +481,8 @@ export function buildDeviceConfigFromIos(
         bgp: bgpFrom(applied),
         prefixLists: applied.prefixLists,
         routeMaps: applied.routeMaps,
+        communityLists: applied.communityLists.length ? applied.communityLists : undefined,
+        asPathLists: applied.asPathLists.length ? applied.asPathLists : undefined,
         acls: [],
         aclBindings: [],
       },

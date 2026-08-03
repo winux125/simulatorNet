@@ -202,16 +202,36 @@ export const BgpNeighborConfigSchema = z.object({
   routeMapOut: z.string().min(1).max(64).optional(),
   vpnv4Activated: z.boolean().optional(),
   sendCommunityExtended: z.boolean().optional(),
+  /** `neighbor <a> send-community`: standard communities leave this device. */
+  sendCommunityStandard: z.boolean().optional(),
+  /** Reflection client; semantic validation rejects it on an eBGP neighbor. */
+  routeReflectorClient: z.boolean().optional(),
+  defaultOriginate: z.boolean().optional(),
+  defaultOriginateRouteMap: z.string().min(1).max(64).optional(),
 }).strict();
 export type BgpNeighborConfig = z.infer<typeof BgpNeighborConfigSchema>;
+
+/** `65000:100` or a well-known name; the engine owns the canonical form. */
+export const BgpCommunitySchema = z.string().min(1).max(32);
+
+export const BgpAggregateConfigSchema = z.object({
+  prefix: Ipv4Schema,
+  prefixLength: z.number().int().min(0).max(31),
+  summaryOnly: z.boolean().optional(),
+  asSet: z.boolean().optional(),
+}).strict();
+export type BgpAggregateConfig = z.infer<typeof BgpAggregateConfigSchema>;
 
 export const BgpProcessConfigSchema = z.object({
   localAs: BgpAsnSchema,
   routerId: Ipv4Schema.optional(),
   keepaliveSeconds: z.number().int().min(0).max(65_535).optional(),
   holdTimeSeconds: z.number().int().min(0).max(65_535).optional(),
+  /** Route-reflection cluster identity; defaults to the BGP router ID. */
+  clusterId: Ipv4Schema.optional(),
   neighbors: z.array(BgpNeighborConfigSchema).max(64).default([]),
   networks: z.array(BgpNetworkStatementSchema).max(4_096).default([]),
+  aggregates: z.array(BgpAggregateConfigSchema).max(64).optional(),
   vrfAddressFamilies: z.array(z.object({
     vrfId: z.string().min(1).max(64),
     redistributeConnected: z.boolean().optional(),
@@ -282,6 +302,46 @@ export const PrefixListConfigSchema = z.object({
 }).strict();
 export type PrefixListConfig = z.infer<typeof PrefixListConfigSchema>;
 
+export const CommunityListEntryConfigSchema = z.object({
+  sequence: z.number().int().min(1).max(4_294_967_295),
+  action: z.enum(["permit", "deny"]),
+  /** Every listed community must be present for the entry to match. */
+  communities: z.array(BgpCommunitySchema).min(1).max(32),
+}).strict();
+export const CommunityListConfigSchema = z.object({
+  id: z.string().min(1).max(64),
+  entries: z.array(CommunityListEntryConfigSchema).max(128).default([]),
+}).strict();
+export type CommunityListConfig = z.infer<typeof CommunityListConfigSchema>;
+
+/**
+ * A structured AS-path matcher. A configuration never stores a regular
+ * expression: the CLI and the importer parse the educational Cisco-like
+ * pattern subset into one of these variants, and only the variant is executed.
+ */
+export const AsPathMatcherConfigSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("empty") }).strict(),
+  z.object({ kind: z.literal("contains"), asn: BgpAsnSchema }).strict(),
+  z.object({ kind: z.literal("starts-with"), asn: BgpAsnSchema }).strict(),
+  z.object({ kind: z.literal("ends-with"), asn: BgpAsnSchema }).strict(),
+  z.object({ kind: z.literal("exact"), asPath: z.array(BgpAsnSchema).min(1).max(32) }).strict(),
+  z.object({
+    kind: z.literal("length"),
+    operator: z.enum(["eq", "le", "ge"]),
+    length: z.number().int().min(0).max(256),
+  }).strict(),
+]);
+export const AsPathListEntryConfigSchema = z.object({
+  sequence: z.number().int().min(1).max(4_294_967_295),
+  action: z.enum(["permit", "deny"]),
+  matcher: AsPathMatcherConfigSchema,
+}).strict();
+export const AsPathListConfigSchema = z.object({
+  id: z.string().min(1).max(64),
+  entries: z.array(AsPathListEntryConfigSchema).max(128).default([]),
+}).strict();
+export type AsPathListConfig = z.infer<typeof AsPathListConfigSchema>;
+
 export const RouteMapSequenceConfigSchema = z.object({
   sequence: z.number().int().min(1).max(4_294_967_295),
   action: z.enum(["permit", "deny"]),
@@ -290,13 +350,20 @@ export const RouteMapSequenceConfigSchema = z.object({
     neighbor: Ipv4Schema.optional(),
     maximumAsPathLength: z.number().int().min(0).max(256).optional(),
     source: z.enum(["local", "ebgp", "ibgp"]).optional(),
+    communityListIds: z.array(z.string().min(1).max(64)).max(16).optional(),
+    communityMatchAll: z.boolean().optional(),
+    asPathListIds: z.array(z.string().min(1).max(64)).max(16).optional(),
   }).strict().optional(),
   set: z.object({
     localPreference: z.number().int().min(0).max(4_294_967_295).optional(),
     med: z.number().int().min(0).max(4_294_967_295).optional(),
     weight: z.number().int().min(0).max(4_294_967_295).optional(),
     prependLocalAs: z.number().int().min(1).max(10).optional(),
+    prependAsns: z.array(BgpAsnSchema).min(1).max(10).optional(),
     origin: z.enum(["igp", "egp", "incomplete"]).optional(),
+    communities: z.array(BgpCommunitySchema).max(32).optional(),
+    communityAdditive: z.boolean().optional(),
+    communityNone: z.boolean().optional(),
   }).strict().optional(),
 }).strict();
 export type RouteMapSequenceConfig = z.infer<typeof RouteMapSequenceConfigSchema>;
@@ -328,6 +395,8 @@ export const RoutedControlProtocolShape = {
   bgp: BgpProcessConfigSchema.optional(),
   prefixLists: z.array(PrefixListConfigSchema).max(128).optional(),
   routeMaps: z.array(RouteMapConfigSchema).max(128).optional(),
+  communityLists: z.array(CommunityListConfigSchema).max(128).optional(),
+  asPathLists: z.array(AsPathListConfigSchema).max(128).optional(),
 };
 
 /** Canonical defaults applied when a document omits a protocol block. */

@@ -110,6 +110,8 @@ function isPacketTraceEvent(event: SimulationTraceEvent): boolean {
     || type.startsWith("prefix-list-")
     || type.startsWith("route-map-")
     || type.startsWith("route-policy-")
+    || type.startsWith("community-list-")
+    || type.startsWith("as-path-list-")
     || type.startsWith("wireless-")
     || type.startsWith("mpls-")
     || type.startsWith("ldp-")
@@ -123,6 +125,7 @@ export const TRACE_PROTOCOL_FILTERS = [
   "QoS", "Classification", "Marking", "Queue", "Policing", "Shaping",
   "STP", "RSTP", "LACP", "PAGP", "CDP", "LLDP", "OSPF",
   "BGP", "BGP Session", "BGP Updates", "Route Policy",
+  "Route Reflection", "Community", "Aggregation",
   "MPLS", "LDP", "VPNv4", "L3VPN",
   "IPv6", "ICMPv6", "NDP", "SLAAC", "DHCPv6", "OSPFv3", "IPv6 ACL",
   "Wireless", "Beacon", "Probe", "Authentication", "Association", "Roaming",
@@ -331,7 +334,8 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
     // select one stage of it.
     if (filter === "VPN") return isVpnTraceEvent(event.type);
     if (filter === "BGP") return event.type.startsWith("bgp-")
-      || event.type.startsWith("prefix-list-") || event.type.startsWith("route-map-") || event.type.startsWith("route-policy-");
+      || event.type.startsWith("prefix-list-") || event.type.startsWith("route-map-") || event.type.startsWith("route-policy-")
+      || event.type.startsWith("community-list-") || event.type.startsWith("as-path-list-");
     return protocol === filter;
   });
   return <div className="dock-table-wrap"><div className="trace-filter"><label>Protocol filter <select aria-label="Packet trace protocol filter" value={filter} onChange={(event) => setFilter(event.target.value)}>{TRACE_PROTOCOL_FILTERS.map((protocol) => <option key={protocol}>{protocol}</option>)}</select></label><span>{visible.length} records</span></div><table className="data-table packet-table"><thead><tr><th>Time</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Ports</th><th>Event</th><th>QoS</th><th>Result</th></tr></thead><tbody>{visible.slice(-300).reverse().map((event, index) => {
@@ -373,8 +377,15 @@ function traceProtocol(event: SimulationTraceEvent): string {
   if (type.startsWith("snmp-")) return "SNMP";
   if (type === "aaa-accounting") return "AAA";
   if (type.startsWith("bgp-vpnv4-")) return "VPNv4";
+  // M10.12 families come before the generic BGP prefixes so each one keeps its
+  // own filter while "BGP" still selects the whole family.
+  if (type === "bgp-route-reflected" || type === "bgp-route-reflection-rejected"
+    || type === "bgp-originator-loop-rejected" || type === "bgp-cluster-loop-rejected") return "Route Reflection";
+  if (type.startsWith("bgp-community-")) return "Community";
+  if (type.startsWith("bgp-aggregate-") || type === "bgp-specific-suppressed") return "Aggregation";
   if (type.startsWith("prefix-list-") || type.startsWith("route-map-") || type.startsWith("route-policy-")
-    || type.startsWith("bgp-policy-")
+    || type.startsWith("community-list-") || type.startsWith("as-path-list-")
+    || type.startsWith("bgp-policy-") || type === "bgp-soft-reevaluation" || type === "bgp-default-originated"
     || type === "bgp-attribute-modified") return "Route Policy";
   if (type.startsWith("bgp-update-") || type.startsWith("bgp-route-") || type === "bgp-best-path-selected"
     || type === "bgp-next-hop-unreachable" || type === "bgp-as-loop-rejected") return "BGP Updates";

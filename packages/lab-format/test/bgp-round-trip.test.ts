@@ -74,3 +74,65 @@ describe("BGP LabDocument integration", () => {
     expect(() => parseLabDocument(duplicate)).toThrow(/Duplicate BGP network statement/);
   });
 });
+
+/** M10.12 persistence: configuration only, never reflected or learned state. */
+function advancedLab(): LabDocument {
+  const document = bgpLab();
+  const r1 = document.configurations.r1 as Record<string, unknown>;
+  r1.communityLists = [{ id: "CUSTOMER-C", entries: [{ sequence: 10, action: "permit", communities: ["65000:100", "no-export"] }] }];
+  r1.asPathLists = [{ id: "LOCAL", entries: [{ sequence: 10, action: "permit", matcher: { kind: "empty" } }] }];
+  r1.routeMaps = [{
+    id: "PEER-IN",
+    sequences: [{
+      sequence: 10,
+      action: "permit",
+      match: { prefixListIds: ["CUSTOMER"], communityListIds: ["CUSTOMER-C"], communityMatchAll: true, asPathListIds: ["LOCAL"] },
+      set: { localPreference: 150, communities: ["65000:200"], communityAdditive: true, prependAsns: [65_001, 65_001] },
+    }],
+  }];
+  const bgp = r1.bgp as Record<string, unknown>;
+  bgp.clusterId = "10.255.0.1";
+  bgp.aggregates = [{ prefix: "10.0.0.0", prefixLength: 8, summaryOnly: true, asSet: true }];
+  (bgp.neighbors as Array<Record<string, unknown>>)[0]!.sendCommunityStandard = true;
+  (bgp.neighbors as Array<Record<string, unknown>>)[0]!.defaultOriginate = true;
+  return document;
+}
+
+describe("M10.12 BGP LabDocument persistence", () => {
+  it("round-trips reflection, communities, lists, aggregates and default-originate", () => {
+    const canonical = canonicalizeLabDocument(advancedLab());
+    const built = buildLabFromDocument(canonical);
+    const serialized = serializeLabDocument(built, metadata);
+    const rebuilt = buildLabFromDocument(serialized);
+    expect(stringifyLabDocument(serializeLabDocument(rebuilt, metadata))).toBe(stringifyLabDocument(serialized));
+    const r1 = serialized.configurations.r1;
+    if (!r1 || !("bgp" in r1)) throw new Error("fixture");
+    expect(r1.bgp).toMatchObject({
+      clusterId: "10.255.0.1",
+      aggregates: [{ prefix: "10.0.0.0", prefixLength: 8, summaryOnly: true, asSet: true }],
+    });
+    expect(r1.communityLists?.[0]?.entries[0]?.communities).toEqual(["65000:100", "no-export"]);
+    expect(r1.asPathLists?.[0]?.entries[0]?.matcher).toEqual({ kind: "empty" });
+    expect(r1.routeMaps?.[0]?.sequences[0]?.set).toMatchObject({ communities: ["65000:200"], prependAsns: [65_001, 65_001] });
+  });
+
+  it("never serializes reflected route state, learned communities or policy counters", () => {
+    const built = buildLabFromDocument(canonicalizeLabDocument(advancedLab()));
+    built.engine.runUntilIdle();
+    const json = stringifyLabDocument(serializeLabDocument(built, metadata));
+    expect(json).not.toMatch(/originatorId|clusterList|suppressedRoutes|contributingRoutes|reflected/i);
+  });
+
+  it("rejects a route-reflector client on an eBGP neighbor and an unknown policy list", () => {
+    const reflector = advancedLab();
+    const r1 = reflector.configurations.r1;
+    if (!r1 || !("bgp" in r1) || !r1.bgp) throw new Error("fixture");
+    r1.bgp.neighbors[0]!.routeReflectorClient = true;
+    expect(() => parseLabDocument(reflector)).toThrow(/Route-reflector-client requires an iBGP neighbor/);
+
+    const missing = advancedLab();
+    const next = missing.configurations.r1 as Record<string, unknown>;
+    next.communityLists = [];
+    expect(() => parseLabDocument(missing)).toThrow(/Unknown community-list 'CUSTOMER-C'/);
+  });
+});

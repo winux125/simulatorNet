@@ -1,13 +1,19 @@
 import {
+  type AsPathList,
   type BgpConfiguration,
   type BgpNeighborConfiguration,
+  type CommunityList,
   type Layer3Switch,
   type PrefixList,
   type RouteMap,
   type RouteMapSequence,
   type Router,
+  ControlProtocolConfigurationError,
+  formatAsPathMatcher,
   ipToInt,
   maskToInt,
+  parseAsPathPattern,
+  parseBgpCommunity,
 } from "@sim/sim-core";
 import { InvalidModeError, ValidationError } from "../errors/errors";
 import { table } from "../formatter/tables";
@@ -108,6 +114,89 @@ function setPrefixListEntry(session: SessionApi, parameters: Readonly<Record<str
   device.bgp.routingPolicy.setPrefixLists([...lists.filter((list) => list.id !== parameters.name), updated]);
 }
 
+/** Turn CLI text into the canonical community form, or fail with its rule. */
+function parseCommunities(values: readonly string[]): string[] {
+  return values.map((value) => {
+    try {
+      return parseBgpCommunity(value);
+    } catch (error) {
+      throw new ValidationError(error instanceof ControlProtocolConfigurationError ? error.message : `Invalid community '${value}'.`);
+    }
+  });
+}
+
+function requireNeighbor(neighbor: BgpNeighborConfiguration | undefined): BgpNeighborConfiguration {
+  if (!neighbor) throw new ValidationError("Configure neighbor remote-as first.");
+  return neighbor;
+}
+
+function updateCommunityList(session: SessionApi, name: string, mutate: (list: CommunityList) => CommunityList): void {
+  const device = deviceOf(session);
+  const lists = device.bgp.routingPolicy.communityListConfigurations();
+  const current = lists.find((list) => list.id === name) ?? { id: name, entries: [] };
+  device.bgp.routingPolicy.setCommunityLists([...lists.filter((list) => list.id !== name), mutate(current)]);
+}
+
+function updateAsPathList(session: SessionApi, name: string, mutate: (list: AsPathList) => AsPathList): void {
+  const device = deviceOf(session);
+  const lists = device.bgp.routingPolicy.asPathListConfigurations();
+  const current = lists.find((list) => list.id === name) ?? { id: name, entries: [] };
+  device.bgp.routingPolicy.setAsPathLists([...lists.filter((list) => list.id !== name), mutate(current)]);
+}
+
+/** The next free sequence number, so repeated CLI lines append in order. */
+function nextSequence(entries: readonly { sequence: number }[]): number {
+  return entries.reduce((highest, entry) => Math.max(highest, entry.sequence), 0) + 10;
+}
+
+function parseAction(value: string | undefined): "permit" | "deny" {
+  if (value !== "permit" && value !== "deny") throw new ValidationError("Action must be permit or deny.");
+  return value;
+}
+
+function routeText(route: { asPath: readonly number[]; origin: string; communities: readonly string[] }): string {
+  const origin = route.origin === "igp" ? "i" : route.origin === "egp" ? "e" : "?";
+  return `${route.asPath.join(" ")} ${origin}`.trim();
+}
+
+function showNeighborRib(session: SessionApi, neighbor: string, direction: "in" | "out"): string {
+  const device = deviceOf(session);
+  const address = parseIpv4(neighbor);
+  if (!device.bgp.summaries().some((peer) => peer.address === address)) return `% BGP neighbor ${address} is not configured.`;
+  const rows = direction === "out" ? device.bgp.adjRibOutEntries(address) : device.bgp.adjRibInEntries(address);
+  if (!rows.length) return `% No ${direction === "out" ? "advertised" : "received"} routes for ${address}.`;
+  return table(["Network", "Next Hop", "LocPrf", "Communities", "Originator", "Cluster list", "Path"], rows.map((route) => [
+    `${route.network}/${route.prefixLength}`,
+    route.nextHop,
+    String(route.localPreference),
+    route.communities.join(" ") || "—",
+    route.originatorId ?? "—",
+    route.clusterList.join(" ") || "—",
+    routeText(route),
+  ]));
+}
+
+function setAggregate(
+  session: SessionApi,
+  parameters: Readonly<Record<string, string | undefined>>,
+  summaryOnly: boolean,
+  asSet: boolean,
+): void {
+  const { device, configuration } = bgpOf(session);
+  const prefix = parseIpv4(parameters.network!);
+  const length = prefixLength(parameters.mask!);
+  if (((ipToInt(prefix) & maskToInt(length)) >>> 0) !== ipToInt(prefix)) {
+    throw new ValidationError("An aggregate must use a network address.");
+  }
+  device.bgp.configure({
+    ...configuration,
+    aggregates: [
+      ...(configuration.aggregates ?? []).filter((entry) => entry.prefix !== prefix || entry.prefixLength !== length),
+      { prefix, prefixLength: length, summaryOnly: summaryOnly || undefined, asSet: asSet || undefined },
+    ],
+  });
+}
+
 function showBgp(session: SessionApi): string {
   const device = deviceOf(session);
   const configuration = device.bgp.configurationSnapshot();
@@ -116,13 +205,14 @@ function showBgp(session: SessionApi): string {
   if (!rows.length) return `BGP table version 0, local router ID ${configuration.routerId ?? "unassigned"}`;
   return [
     `BGP table, local router ID ${configuration.routerId ?? "unassigned"}, local AS ${configuration.localAs}`,
-    table(["Status", "Network", "Next Hop", "Weight", "LocPrf", "Path"], rows.map((route) => [
+    table(["Status", "Network", "Next Hop", "Weight", "LocPrf", "Communities", "Path"], rows.map((route) => [
       `${route.valid ? "*" : " "}${route.best ? ">" : " "}`,
       `${route.network}/${route.prefixLength}`,
       route.nextHop,
       String(route.weight),
       String(route.localPreference),
-      `${route.asPath.join(" ")} ${route.origin === "igp" ? "i" : route.origin === "egp" ? "e" : "?"}`.trim(),
+      route.communities.join(" ") || "—",
+      routeText(route),
     ])),
   ].join("\n");
 }
@@ -192,6 +282,96 @@ export const bgpCommands: CommandSpec[] = [
   {
     pattern: "bgp router-id {id}", modes: ["config-router"], device: "ospf",
     run: (s, p) => updateBgp(s, (configuration) => ({ ...configuration, routerId: parseIpv4(p.id!) })),
+  },
+  {
+    pattern: "bgp cluster-id {id}", usage: "bgp cluster-id <A.B.C.D>",
+    modes: ["config-router"], device: "ospf",
+    run: (s, p) => updateBgp(s, (configuration) => ({ ...configuration, clusterId: parseIpv4(p.id!) })),
+  },
+  {
+    pattern: "neighbor {address} route-reflector-client", modes: ["config-router"], device: "ospf",
+    run: (s, p) => updateNeighbor(s, p.address!, (neighbor) => ({ ...requireNeighbor(neighbor), routeReflectorClient: true })),
+  },
+  {
+    pattern: "neighbor {address} send-community", modes: ["config-router"], device: "ospf",
+    run: (s, p) => updateNeighbor(s, p.address!, (neighbor) => ({ ...requireNeighbor(neighbor), sendCommunityStandard: true })),
+  },
+  {
+    pattern: "neighbor {address} send-community both", modes: ["config-router"], device: "ospf",
+    run: (s, p) => updateNeighbor(s, p.address!, (neighbor) => ({
+      ...requireNeighbor(neighbor), sendCommunityStandard: true, sendCommunityExtended: true,
+    })),
+  },
+  {
+    pattern: "neighbor {address} default-originate", modes: ["config-router"], device: "ospf",
+    run: (s, p) => updateNeighbor(s, p.address!, (neighbor) => ({ ...requireNeighbor(neighbor), defaultOriginate: true })),
+  },
+  {
+    pattern: "neighbor {address} default-originate route-map {name}", modes: ["config-router"], device: "ospf",
+    run: (s, p) => updateNeighbor(s, p.address!, (neighbor) => ({
+      ...requireNeighbor(neighbor), defaultOriginate: true, defaultOriginateRouteMap: p.name,
+    })),
+  },
+  {
+    pattern: "aggregate-address {network} {mask}", usage: "aggregate-address <network> <mask> [summary-only [as-set]]",
+    modes: ["config-router"], device: "ospf",
+    run: (s, p) => setAggregate(s, p, false, false),
+  },
+  {
+    pattern: "aggregate-address {network} {mask} summary-only", modes: ["config-router"], device: "ospf",
+    run: (s, p) => setAggregate(s, p, true, false),
+  },
+  {
+    pattern: "aggregate-address {network} {mask} summary-only as-set", modes: ["config-router"], device: "ospf",
+    run: (s, p) => setAggregate(s, p, true, true),
+  },
+  {
+    pattern: "aggregate-address {network} {mask} as-set", modes: ["config-router"], device: "ospf",
+    run: (s, p) => setAggregate(s, p, false, true),
+  },
+  {
+    pattern: "no aggregate-address {network} {mask}", modes: ["config-router"], device: "ospf",
+    run: (s, p) => {
+      const { device, configuration } = bgpOf(s);
+      const network = parseIpv4(p.network!);
+      const length = prefixLength(p.mask!);
+      device.bgp.configure({
+        ...configuration,
+        aggregates: (configuration.aggregates ?? [])
+          .filter((entry) => entry.prefix !== network || entry.prefixLength !== length),
+      });
+    },
+  },
+  {
+    pattern: "ip community-list standard {name} {action} {communities...}",
+    usage: "ip community-list standard <name> permit|deny <ASN:value|internet|no-export|no-advertise>...",
+    modes: ["config"], device: "ospf",
+    run: (s, p) => {
+      const action = parseAction(p.action);
+      const communities = parseCommunities(p.communities!.split(" ").filter(Boolean));
+      updateCommunityList(s, p.name!, (list) => ({
+        ...list,
+        entries: [...list.entries, { sequence: nextSequence(list.entries), action, communities }],
+      }));
+    },
+  },
+  {
+    pattern: "ip as-path access-list {name} {action} {pattern}",
+    usage: "ip as-path access-list <name> permit|deny <^$|_<asn>_|^<asn>_|_<asn>$|^<asn> <asn>$>",
+    modes: ["config"], device: "ospf",
+    run: (s, p) => {
+      const action = parseAction(p.action);
+      let matcher;
+      try {
+        matcher = parseAsPathPattern(p.pattern!);
+      } catch (error) {
+        throw new ValidationError(error instanceof ControlProtocolConfigurationError ? error.message : "Unsupported AS-path pattern.");
+      }
+      updateAsPathList(s, p.name!, (list) => ({
+        ...list,
+        entries: [...list.entries, { sequence: nextSequence(list.entries), action, matcher }],
+      }));
+    },
   },
   {
     pattern: "neighbor {address} remote-as {asn}", usage: "neighbor <address> remote-as <1-4294967295>",
@@ -292,6 +472,59 @@ export const bgpCommands: CommandSpec[] = [
     run: (s, p) => updateRouteMap(s, (sequence) => ({ ...sequence, match: { ...sequence.match, prefixListIds: [p.name!] } })),
   },
   {
+    pattern: "match route-type {type}", usage: "match route-type local|ebgp|ibgp",
+    modes: ["config-route-map"], device: "ospf",
+    run: (s, p) => {
+      if (p.type !== "local" && p.type !== "ebgp" && p.type !== "ibgp") throw new ValidationError("Route type must be local, ebgp or ibgp.");
+      updateRouteMap(s, (sequence) => ({ ...sequence, match: { ...sequence.match, source: p.type as "local" | "ebgp" | "ibgp" } }));
+    },
+  },
+  {
+    // Several lists on one clause are OR-ed; `all` switches that clause to AND.
+    pattern: "match community {lists...}", usage: "match community [all] <community-list>...",
+    modes: ["config-route-map"], device: "ospf",
+    run: (s, p) => updateRouteMap(s, (sequence) => ({
+      ...sequence,
+      match: { ...sequence.match, communityListIds: p.lists!.split(" ").filter(Boolean), communityMatchAll: undefined },
+    })),
+  },
+  {
+    pattern: "match community all {lists...}", modes: ["config-route-map"], device: "ospf",
+    run: (s, p) => updateRouteMap(s, (sequence) => ({
+      ...sequence,
+      match: { ...sequence.match, communityListIds: p.lists!.split(" ").filter(Boolean), communityMatchAll: true },
+    })),
+  },
+  {
+    pattern: "match as-path {lists...}", usage: "match as-path <as-path-list>...",
+    modes: ["config-route-map"], device: "ospf",
+    run: (s, p) => updateRouteMap(s, (sequence) => ({
+      ...sequence,
+      match: { ...sequence.match, asPathListIds: p.lists!.split(" ").filter(Boolean) },
+    })),
+  },
+  {
+    pattern: "set community {values...}", usage: "set community <ASN:value|well-known>... [additive] | none",
+    modes: ["config-route-map"], device: "ospf",
+    run: (s, p) => {
+      const tokens = p.values!.split(" ").filter(Boolean);
+      if (tokens.length === 1 && tokens[0]!.toLowerCase() === "none") {
+        updateRouteMap(s, (sequence) => ({
+          ...sequence,
+          set: { ...sequence.set, communityNone: true, communities: undefined, communityAdditive: undefined },
+        }));
+        return;
+      }
+      const additive = tokens.at(-1)?.toLowerCase() === "additive";
+      const communities = parseCommunities(additive ? tokens.slice(0, -1) : tokens);
+      if (!communities.length) throw new ValidationError("Specify at least one community.");
+      updateRouteMap(s, (sequence) => ({
+        ...sequence,
+        set: { ...sequence.set, communities, communityAdditive: additive || undefined, communityNone: undefined },
+      }));
+    },
+  },
+  {
     pattern: "set local-preference {value}", modes: ["config-route-map"], device: "ospf",
     run: (s, p) => updateRouteMap(s, (sequence) => ({ ...sequence, set: { ...sequence.set, localPreference: Number(p.value) } })),
   },
@@ -304,8 +537,18 @@ export const bgpCommands: CommandSpec[] = [
     run: (s, p) => updateRouteMap(s, (sequence) => ({ ...sequence, set: { ...sequence.set, weight: Number(p.value) } })),
   },
   {
-    pattern: "set as-path prepend {count}", modes: ["config-route-map"], device: "ospf",
-    run: (s, p) => updateRouteMap(s, (sequence) => ({ ...sequence, set: { ...sequence.set, prependLocalAs: Number(p.count) } })),
+    // Cisco-exact form: an explicit AS list, never a repeat count. Documents
+    // written before M10.12 keep their `prependLocalAs` count.
+    pattern: "set as-path prepend {asns...}", usage: "set as-path prepend <asn> [<asn>...]",
+    modes: ["config-route-map"], device: "ospf",
+    run: (s, p) => {
+      const prependAsns = p.asns!.split(" ").filter(Boolean).map(Number);
+      if (prependAsns.some((asn) => !Number.isInteger(asn) || asn < 1 || asn > 4_294_967_295)) {
+        throw new ValidationError("Each prepended AS number must be between 1 and 4294967295.");
+      }
+      if (prependAsns.length > 10) throw new ValidationError("AS-path prepend accepts at most 10 AS numbers.");
+      updateRouteMap(s, (sequence) => ({ ...sequence, set: { ...sequence.set, prependAsns, prependLocalAs: undefined } }));
+    },
   },
   {
     pattern: "set origin {origin}", modes: ["config-route-map"], device: "ospf",
@@ -321,21 +564,87 @@ export const bgpCommands: CommandSpec[] = [
       const device = deviceOf(s);
       const config = device.bgp.configurationSnapshot();
       if (!config) return "% BGP is not running.";
-      return table(["Neighbor", "V", "AS", "State/PfxRcd", "MsgRcvd", "MsgSent"], device.bgp.summaries().map((peer) => [
-        peer.address, "4", String(peer.remoteAs), peer.state === "established" ? String(device.bgp.adjRibInEntries(peer.address).length) : peer.state,
-        String(peer.messagesReceived), String(peer.messagesSent),
+      const clients = new Set(device.bgp.routeReflectorClients());
+      return [
+        `BGP router identifier ${config.routerId ?? "unassigned"}, local AS number ${config.localAs}`,
+        device.bgp.routeReflector ? `Route reflector cluster ID ${device.bgp.clusterIdentity}` : "",
+        table(["Neighbor", "V", "AS", "State/PfxRcd", "MsgRcvd", "MsgSent", "RRClient"], device.bgp.summaries().map((peer) => [
+          peer.address, "4", String(peer.remoteAs), peer.state === "established" ? String(device.bgp.adjRibInEntries(peer.address).length) : peer.state,
+          String(peer.messagesReceived), String(peer.messagesSent), clients.has(peer.address) ? "yes" : "no",
+        ])),
+      ].filter(Boolean).join("\n");
+    },
+  },
+  {
+    pattern: "show ip community-list", modes: ["exec", "privileged"], device: "ospf",
+    run: (s) => deviceOf(s).bgp.routingPolicy.communityListConfigurations().flatMap((list) => [
+      `Standard community-list ${list.id}`,
+      ...list.entries.map((entry) => `    ${entry.action} ${entry.communities.join(" ")}`),
+    ]).join("\n") || "% No community-lists configured.",
+  },
+  {
+    pattern: "show ip as-path-access-list", modes: ["exec", "privileged"], device: "ospf",
+    run: (s) => deviceOf(s).bgp.routingPolicy.asPathListConfigurations().flatMap((list) => [
+      `AS path access list ${list.id}`,
+      ...list.entries.map((entry) => `    ${entry.action} ${formatAsPathMatcher(entry.matcher)}`),
+    ]).join("\n") || "% No AS-path access lists configured.",
+  },
+  {
+    pattern: "show ip bgp community {value}", modes: ["exec", "privileged"], device: "ospf",
+    run: (s, p) => {
+      const community = parseCommunities([p.value!])[0]!;
+      const rows = deviceOf(s).bgp.routes().filter((route) => route.communities.includes(community));
+      if (!rows.length) return `% No BGP routes carry community ${community}.`;
+      return table(["Status", "Network", "Next Hop", "Communities", "Path"], rows.map((route) => [
+        `${route.valid ? "*" : " "}${route.best ? ">" : " "}`,
+        `${route.network}/${route.prefixLength}`,
+        route.nextHop,
+        route.communities.join(" "),
+        routeText(route),
       ]));
     },
   },
   {
+    pattern: "show ip bgp suppressed-paths", modes: ["exec", "privileged"], device: "ospf",
+    run: (s) => {
+      const rows = deviceOf(s).bgp.suppressedRoutes();
+      if (!rows.length) return "% No BGP routes are suppressed.";
+      return table(["Network", "Suppressed by"], rows.map((row) => [`${row.network}/${row.prefixLength}`, row.aggregate]));
+    },
+  },
+  {
+    pattern: "show ip bgp neighbors {neighbor} advertised-routes", modes: ["exec", "privileged"], device: "ospf",
+    run: (s, p) => showNeighborRib(s, p.neighbor!, "out"),
+  },
+  {
+    pattern: "show ip bgp neighbors {neighbor} received-routes", modes: ["exec", "privileged"], device: "ospf",
+    run: (s, p) => showNeighborRib(s, p.neighbor!, "in"),
+  },
+  {
     pattern: "show ip bgp neighbors", modes: ["exec", "privileged"], device: "ospf",
-    run: (s) => deviceOf(s).bgp.summaries().map((peer) => [
-      `BGP neighbor is ${peer.address}, remote AS ${peer.remoteAs}`,
-      `  BGP state = ${peer.state}`,
-      `  Local address ${peer.localAddress ?? "unassigned"}, hold time ${peer.negotiatedHoldTimeSeconds ?? 0}`,
-      `  Messages: sent ${peer.messagesSent}, received ${peer.messagesReceived}`,
-      peer.lastError ? `  Last error: ${peer.lastError}` : "",
-    ].filter(Boolean).join("\n")).join("\n\n") || "% No BGP neighbors configured.",
+    run: (s) => {
+      const device = deviceOf(s);
+      const configuration = device.bgp.configurationSnapshot();
+      const clients = new Set(device.bgp.routeReflectorClients());
+      return device.bgp.summaries().map((peer) => {
+        const neighbor = configuration?.neighbors?.find((entry) => entry.address === peer.address);
+        return [
+          `BGP neighbor is ${peer.address}, remote AS ${peer.remoteAs}`,
+          `  BGP state = ${peer.state}`,
+          `  Local address ${peer.localAddress ?? "unassigned"}, hold time ${peer.negotiatedHoldTimeSeconds ?? 0}`,
+          clients.has(peer.address) ? `  Route-Reflector Client, cluster ID ${device.bgp.clusterIdentity}` : "",
+          `  Community attribute sent: ${[
+            neighbor?.sendCommunityStandard ? "standard" : "",
+            neighbor?.sendCommunityExtended ? "extended" : "",
+          ].filter(Boolean).join(" and ") || "none"}`,
+          neighbor?.defaultOriginate
+            ? `  Default information originate${neighbor.defaultOriginateRouteMap ? `, route-map ${neighbor.defaultOriginateRouteMap}` : ""}`
+            : "",
+          `  Messages: sent ${peer.messagesSent}, received ${peer.messagesReceived}`,
+          peer.lastError ? `  Last error: ${peer.lastError}` : "",
+        ].filter(Boolean).join("\n");
+      }).join("\n\n") || "% No BGP neighbors configured.";
+    },
   },
   {
     pattern: "show ip bgp neighbors {neighbor}", modes: ["exec", "privileged"], device: "ospf",
@@ -352,7 +661,12 @@ export const bgpCommands: CommandSpec[] = [
       const prefix = parsePrefix(p.prefix!);
       const routes = deviceOf(s).bgp.routes().filter((entry) => entry.network === prefix.prefix && entry.prefixLength === prefix.prefixLength);
       if (!routes.length) return `% Network ${p.prefix} not in BGP table.`;
-      return routes.map((route) => `${route.best ? ">" : " "} ${route.nextHop} ${route.localPreference} ${route.weight} ${route.asPath.join(" ")} ${route.origin}`).join("\n");
+      return routes.map((route) => [
+        `${route.best ? ">" : " "} ${route.nextHop} ${route.localPreference} ${route.weight} ${route.asPath.join(" ")} ${route.origin}`,
+        route.communities.length ? `    Community: ${route.communities.join(" ")}` : "",
+        route.originatorId ? `    Originator: ${route.originatorId}` : "",
+        route.clusterList.length ? `    Cluster list: ${route.clusterList.join(" ")}` : "",
+      ].filter(Boolean).join("\n")).join("\n");
     },
   },
   {
@@ -382,6 +696,31 @@ export const bgpCommands: CommandSpec[] = [
       deviceOf(s).bgp.restart();
       return "% BGP sessions reset; configuration is unchanged.";
     }),
+  },
+  {
+    // Soft reconfiguration re-runs policy against the stored Adj-RIB-In and the
+    // outbound baseline. No TCP session is touched, so no confirmation is asked.
+    pattern: "clear ip bgp * soft", modes: ["privileged"], device: "ospf",
+    run: (s) => {
+      deviceOf(s).bgp.softReset(undefined, "both");
+      return "% BGP policy reevaluated for all neighbors; sessions are unchanged.";
+    },
+  },
+  {
+    pattern: "clear ip bgp {neighbor} soft", usage: "clear ip bgp <address> soft [in|out]",
+    modes: ["privileged"], device: "ospf",
+    run: (s, p) => {
+      deviceOf(s).bgp.softReset(parseIpv4(p.neighbor!), "both");
+      return `% BGP policy reevaluated for ${p.neighbor}; the session is unchanged.`;
+    },
+  },
+  {
+    pattern: "clear ip bgp {neighbor} soft {direction}", modes: ["privileged"], device: "ospf",
+    run: (s, p) => {
+      if (p.direction !== "in" && p.direction !== "out") throw new ValidationError("Soft reconfiguration direction must be in or out.");
+      deviceOf(s).bgp.softReset(parseIpv4(p.neighbor!), p.direction);
+      return `% BGP ${p.direction}bound policy reevaluated for ${p.neighbor}; the session is unchanged.`;
+    },
   },
   {
     pattern: "clear ip bgp {neighbor}", modes: ["privileged"], device: "ospf",

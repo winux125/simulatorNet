@@ -71,14 +71,16 @@ describe("MPLS and L3VPN IOS-like import/render", () => {
     expect(renderDeviceConfiguration(config)).toBe(rendered);
   });
 
-  it("preserves unsupported TE, pseudowire, RR, VPNv6 and EVPN lines", () => {
+  it("preserves unsupported TE, pseudowire, VPNv6 and EVPN lines", () => {
     const parsed = parseIosConfig(`${SOURCE}\nmpls traffic-eng tunnels\nxconnect 192.0.2.2 10\n neighbor 3.3.3.3 route-reflector-client\n address-family vpnv6\n address-family l2vpn evpn\n`, ["Gi0/0", "Gi0/1"]);
     expect(parsed.unparsedLines).toEqual(expect.arrayContaining([
       "mpls traffic-eng tunnels",
       "xconnect 192.0.2.2 10",
-      "neighbor 3.3.3.3 route-reflector-client",
       "address-family vpnv6",
       "address-family l2vpn evpn",
     ]));
+    // Route reflection became supported in M10.12, including for VPNv4.
+    expect(parsed.appliedLines).toContain("neighbor 3.3.3.3 route-reflector-client");
+    expect(parsed.bgp?.neighbors.find((neighbor) => neighbor.address === "3.3.3.3")?.routeReflectorClient).toBe(true);
   });
 });
