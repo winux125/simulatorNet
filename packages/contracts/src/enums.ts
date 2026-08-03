@@ -29,6 +29,8 @@ export const EtherType = {
   LLC: 0x0000,
   IPv4: 0x0800,
   ARP: 0x0806,
+  /** MPLS unicast; SimulatorNet carries a structured label stack, not raw bytes. */
+  MPLS: 0x8847,
   /** IEEE 802.1AB LLDP, which really does use its own EtherType. */
   LLDP: 0x88cc,
   IPv6: 0x86dd,

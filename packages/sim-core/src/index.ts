@@ -59,6 +59,7 @@ export * from "./packets/ospf";
 export * from "./packets/ospfv3";
 export * from "./packets/bgp";
 export * from "./packets/ipv4";
+export * from "./packets/mpls";
 export * from "./packets/gre";
 export * from "./packets/esp";
 export * from "./packets/ike";
@@ -74,6 +75,10 @@ export * from "./packets/dhcpv6";
 export * from "./policy/packet-policy-engine";
 export * from "./policy/nat-engine";
 export * from "./routing/route-policy";
+
+// Deterministic MPLS label stack and LFIB forwarding
+export * from "./mpls/limits";
+export * from "./mpls/label-forwarding";
 
 // Reusable deterministic quality of service
 export * from "./qos";

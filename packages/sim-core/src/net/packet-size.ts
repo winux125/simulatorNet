@@ -3,6 +3,7 @@ import { ESP_OVERHEAD_BYTES, type SimulatedEspPacket } from "../packets/esp";
 import { GRE_HEADER_BYTES, type GrePacket } from "../packets/gre";
 import type { Ipv4Packet } from "../packets/ipv4";
 import type { Ipv6Packet } from "../packets/ipv6";
+import type { MplsPacket } from "../packets/mpls";
 import type { TcpSegment } from "../packets/tcp";
 import type { UdpDatagram } from "../packets/udp";
 
@@ -144,9 +145,14 @@ function ipv6Bytes(packet: Ipv6Packet): number {
   return WIRE_SIZE_MODEL.ipv6HeaderBytes + (FIXED_PAYLOAD_BYTES[payload.kind] ?? WIRE_SIZE_MODEL.defaultApplicationBytes);
 }
 
+function mplsBytes(packet: MplsPacket): number {
+  return (packet.labels.length * 4) + ipv4Bytes(packet.payload);
+}
+
 function l2PayloadBytes(payload: L2Payload): number {
   if (payload.kind === "ipv4") return ipv4Bytes(payload);
   if (payload.kind === "ipv6") return ipv6Bytes(payload);
+  if (payload.kind === "mpls") return mplsBytes(payload);
   return FIXED_PAYLOAD_BYTES[payload.kind] ?? WIRE_SIZE_MODEL.defaultApplicationBytes;
 }
 

@@ -57,6 +57,11 @@ import {
 } from "../protocols/ospfv3";
 import { BgpProcess } from "../protocols/bgp";
 import type { Ipv4Packet } from "../packets/ipv4";
+import type { MplsPacket } from "../packets/mpls";
+import {
+  MplsForwardingPlane,
+  type MplsForwardingEntry,
+} from "../mpls/label-forwarding";
 import { ESP_OVERHEAD_BYTES } from "../packets/esp";
 import type { GrePacket } from "../packets/gre";
 import { IKE_PORT, type IkeMessage } from "../packets/ike";
@@ -342,6 +347,8 @@ export class Router extends Device {
   readonly ospfv3 = new Ospfv3Process(this);
   /** BGPv4 uses the shared routed management TCP stack on port 179. */
   readonly bgp = new BgpProcess(this);
+  /** Structured MPLS LFIB. Only Router exposes this plane in M10.11. */
+  readonly mpls = new MplsForwardingPlane();
   /**
    * Logical GRE tunnel configuration. It holds no packets and no peer state:
    * operational status is derived from the underlay routing table on demand.
@@ -373,7 +380,11 @@ export class Router extends Device {
 
   readonly arpTable = new Map<Ipv4, Mac>();
   /** IPv4 packets awaiting ARP resolution, keyed by next-hop IP. */
-  private readonly arpPending = new Map<Ipv4, { packet: Ipv4Packet; egress: L3Interface }[]>();
+  private readonly arpPending = new Map<Ipv4, Array<{
+    payload: Ipv4Packet | MplsPacket;
+    etherType: EtherType;
+    egress: L3Interface;
+  }>>();
 
   /**
    * Management-plane sockets. A network device is not a general-purpose server:
@@ -1191,6 +1202,31 @@ export class Router extends Device {
     return this.forwardingEnabled;
   }
 
+  /** `mpls ip` is valid only on a cabled physical Router interface. */
+  setMplsEnabled(interfaceName: string, enabled: boolean): void {
+    const iface = this.l3.get(interfaceName);
+    if (!iface) throw new Error(`Router ${this.id} has no L3 interface ${interfaceName}`);
+    if (iface.name !== iface.physical.name || isTunnelInterface(iface.physical) || this.isLoopback(interfaceName)) {
+      throw new Error(`MPLS is supported only on physical Router interfaces (${interfaceName}).`);
+    }
+    this.mpls.setInterfaceEnabled(interfaceName, enabled);
+  }
+
+  mplsInterfaceSummaries(): ReadonlyArray<{ interfaceId: string; enabled: boolean; operational: boolean }> {
+    return this.mpls.enabledInterfaceIds().map((interfaceId) => ({
+      interfaceId,
+      enabled: true,
+      operational: this.l3.get(interfaceId)?.physical.operationalUp ?? false,
+    }));
+  }
+
+  installMplsForwardingEntry(entry: MplsForwardingEntry): void {
+    if (entry.outgoingInterfaceId !== undefined && !this.mpls.interfaceEnabled(entry.outgoingInterfaceId)) {
+      throw new Error(`MPLS is not enabled on interface ${entry.outgoingInterfaceId}.`);
+    }
+    this.mpls.install(entry);
+  }
+
   /** `encapsulation dot1Q <vlan> [native]`: ensure the subinterface exists. */
   getOrCreateSubinterface(physicalName: string, vlan: number, native = false): L3Interface {
     const name = `${physicalName}.${vlan}`;
@@ -1673,7 +1709,81 @@ export class Router extends Device {
       this.handleIpv4(payload, frame, iface);
     } else if (payload.kind === "ipv6") {
       this.handleIpv6(payload, frame, iface);
+    } else if (payload.kind === "mpls") {
+      this.handleMpls(payload, iface);
     }
+  }
+
+  /** MPLS transit bypasses customer IPv4 lookup until the label stack is gone. */
+  private handleMpls(packet: MplsPacket, ingress: L3Interface): void {
+    if (!this.mpls.interfaceEnabled(ingress.name)) {
+      this.traceMpls("mpls-packet-dropped", { reason: "mpls-not-enabled", interface: ingress.name });
+      return;
+    }
+    const before = packet.labels.map((entry) => entry.label);
+    const decision = this.mpls.forward(packet);
+    if (decision.kind === "drop") {
+      const traceType = decision.reason === "unknown-label"
+        ? "mpls-label-unknown"
+        : decision.reason === "ttl-exceeded" ? "mpls-ttl-exceeded" : "mpls-packet-dropped";
+      this.traceMpls(traceType, { reason: decision.detail, incomingLabel: decision.incomingLabel, before });
+      return;
+    }
+    if (decision.kind === "deliver") {
+      this.traceMpls("mpls-packet-delivered", {
+        incomingLabel: decision.entry.incomingLabel,
+        vrfId: decision.vrfId,
+        before,
+      });
+      this.receiveMplsIpv4(decision.packet, ingress, decision.vrfId);
+      return;
+    }
+    const egressId = decision.entry.outgoingInterfaceId;
+    const nextHop = decision.entry.nextHop;
+    const egress = egressId === undefined ? undefined : this.l3.get(egressId);
+    if (!egress || !nextHop || !this.mpls.interfaceEnabled(egress.name) || !egress.physical.operationalUp) {
+      this.traceMpls("mpls-packet-dropped", {
+        reason: "mpls-egress-unavailable",
+        incomingLabel: decision.entry.incomingLabel,
+        egress: egressId,
+      });
+      return;
+    }
+    if (decision.kind === "ipv4") {
+      this.traceMpls("mpls-label-popped", { before, after: [], egress: egress.name });
+      this.traceMpls("mpls-php-applied", { incomingLabel: decision.entry.incomingLabel, fec: decision.entry.fec });
+      this.sendResolvedPayload(decision.packet, EtherType.IPv4, egress, nextHop);
+      return;
+    }
+    const after = decision.packet.labels.map((entry) => entry.label);
+    const operation = decision.entry.operation.type;
+    this.traceMpls(
+      operation === "swap" ? "mpls-label-swapped" : operation === "pop" ? "mpls-label-popped" : "mpls-label-imposed",
+      { before, after, egress: egress.name, fec: decision.entry.fec },
+    );
+    this.traceMpls("mpls-packet-forwarded", { labels: after, egress: egress.name, nextHop });
+    this.sendResolvedPayload(decision.packet, EtherType.MPLS, egress, nextHop);
+  }
+
+  /** Extension point used by the later VRF stage. */
+  protected receiveMplsIpv4(packet: Ipv4Packet, ingress: L3Interface, _vrfId?: string): void {
+    if (this.isOwnIp(packet.dst)) this.deliverLocal(packet);
+    else this.forwardAfterMpls(packet, ingress);
+  }
+
+  private forwardAfterMpls(packet: Ipv4Packet, ingress: L3Interface): void {
+    if (!this.forwardingEnabled) return;
+    const route = this.resolve(packet.dst);
+    if (!route) {
+      this.sendIcmpError(IcmpType.DestinationUnreachable, IcmpCode.NetUnreachable, packet, ingress);
+      return;
+    }
+    if (!this.permitForward(packet, ingress, route.egress)) return;
+    this.egressSend(packet, route.egress, route.nextHopIp);
+  }
+
+  private traceMpls(type: string, detail: Readonly<Record<string, unknown>>): void {
+    this.engine.trace({ time: this.engine.now(), type, device: this.id, detail: { ...detail } });
   }
 
   /** Dispatch a link-local control payload; a router terminates every one. */
@@ -1937,7 +2047,7 @@ export class Router extends Device {
     const queued = this.arpPending.get(ip);
     if (!mac || !queued) return;
     this.arpPending.delete(ip);
-    for (const { packet, egress } of queued) this.transmit(egress, mac, EtherType.IPv4, packet);
+    for (const { payload, etherType, egress } of queued) this.transmit(egress, mac, etherType, payload);
   }
 
   // --- IPv6 / ICMPv6 / NDP / DHCPv6 ------------------------------------
@@ -2552,16 +2662,25 @@ export class Router extends Device {
       this.sendThroughTunnel(egress, packet);
       return;
     }
+    this.sendResolvedPayload(packet, EtherType.IPv4, egress, nextHopIp);
+  }
+
+  private sendResolvedPayload(
+    payload: Ipv4Packet | MplsPacket,
+    etherType: EtherType,
+    egress: L3Interface,
+    nextHopIp: Ipv4,
+  ): void {
     const mac = this.arpTable.get(nextHopIp);
     if (mac !== undefined) {
-      this.transmit(egress, mac, EtherType.IPv4, packet);
+      this.transmit(egress, mac, etherType, payload);
       return;
     }
     const queued = this.arpPending.get(nextHopIp);
     if (queued) {
-      queued.push({ packet, egress });
+      queued.push({ payload, etherType, egress });
     } else {
-      this.arpPending.set(nextHopIp, [{ packet, egress }]);
+      this.arpPending.set(nextHopIp, [{ payload, etherType, egress }]);
       this.sendArpRequest(egress, nextHopIp);
     }
   }
@@ -3014,7 +3133,7 @@ export class Router extends Device {
     iface: L3Interface,
     dstMac: Mac,
     etherType: EtherType,
-    payload: ArpPacket | Ipv4Packet | Ipv6Packet,
+    payload: ArpPacket | Ipv4Packet | Ipv6Packet | MplsPacket,
   ): void {
     const frame: EthernetFrame = {
       src: iface.physical.mac,
