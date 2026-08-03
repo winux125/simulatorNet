@@ -1,6 +1,9 @@
 import type { BgpRoute, BgpRouteSource } from "../protocols/bgp";
+import type { BgpUnicastAddressFamily } from "../packets/bgp";
 import type { Ipv4 } from "../util/ipv4";
 import { ipToInt, maskToInt } from "../util/ipv4";
+import type { Ipv6 } from "../util/ipv6";
+import { ipv6InPrefix, ipv6Network, normalizeIpv6, validateIpv6PrefixLength } from "../util/ipv6";
 import {
   ControlProtocolConfigurationError,
   DEFAULT_CONTROL_PROTOCOL_LIMITS,
@@ -30,6 +33,24 @@ export interface PrefixList {
   readonly entries: readonly PrefixListEntry[];
 }
 
+/**
+ * `ipv6 prefix-list <name> seq <n> permit|deny <prefix>/<len> [ge] [le]`.
+ * IPv6 has no wildcard-mask form, so the entry is deliberately prefix-only.
+ */
+export interface Ipv6PrefixListEntry {
+  readonly sequence: number;
+  readonly action: RoutePolicyAction;
+  readonly prefix: Ipv6;
+  readonly prefixLength: number;
+  readonly ge?: number;
+  readonly le?: number;
+}
+
+export interface Ipv6PrefixList {
+  readonly id: string;
+  readonly entries: readonly Ipv6PrefixListEntry[];
+}
+
 export interface CommunityListEntry {
   readonly sequence: number;
   readonly action: RoutePolicyAction;
@@ -54,7 +75,10 @@ export interface AsPathList {
 }
 
 export interface RouteMatch {
+  /** `match ip address prefix-list`; only ever matches an IPv4 unicast route. */
   readonly prefixListIds?: readonly string[];
+  /** `match ipv6 address prefix-list`; only ever matches an IPv6 unicast route. */
+  readonly ipv6PrefixListIds?: readonly string[];
   readonly neighbor?: Ipv4;
   readonly maximumAsPathLength?: number;
   readonly source?: BgpRouteSource;
@@ -151,6 +175,14 @@ function prefixMatches(route: BgpRoute, entry: PrefixListEntry): boolean {
   return route.prefixLength >= minimum && route.prefixLength <= maximum;
 }
 
+/** The same `ge`/`le` window rule, bounded by 128 instead of 32. */
+function ipv6PrefixMatches(route: BgpRoute, entry: Ipv6PrefixListEntry): boolean {
+  if (!ipv6InPrefix(route.network, entry.prefix, entry.prefixLength)) return false;
+  const minimum = entry.ge ?? entry.prefixLength;
+  const maximum = entry.le ?? (entry.ge === undefined ? entry.prefixLength : 128);
+  return route.prefixLength >= minimum && route.prefixLength <= maximum;
+}
+
 /**
  * `set community` semantics. Without `additive` the standard community set is
  * replaced; with it the new values are merged, deduplicated and re-sorted into
@@ -188,6 +220,7 @@ interface MutableCounter {
 /** Shared deterministic prefix-list/route-map evaluation engine. */
 export class RoutingPolicyEngine {
   private readonly prefixLists = new Map<string, PrefixList>();
+  private readonly ipv6PrefixLists = new Map<string, Ipv6PrefixList>();
   private readonly routeMaps = new Map<string, RouteMap>();
   private readonly communityLists = new Map<string, CommunityList>();
   private readonly asPathLists = new Map<string, AsPathList>();
@@ -291,6 +324,44 @@ export class RoutingPolicyEngine {
     this.onChanged();
   }
 
+  setIpv6PrefixLists(prefixLists: readonly Ipv6PrefixList[]): void {
+    const next = new Map<string, Ipv6PrefixList>();
+    for (const list of prefixLists) {
+      if (!list.id.trim()) throw new ControlProtocolConfigurationError("Prefix-list name is required", "ipv6PrefixList.id");
+      if (next.has(list.id)) throw new ControlProtocolConfigurationError(`Duplicate prefix-list ${list.id}`, "ipv6PrefixLists");
+      const seen = new Set<number>();
+      const entries = [...list.entries]
+        .sort((a, b) => a.sequence - b.sequence)
+        .map((entry) => {
+          validateSequence(entry.sequence, "ipv6PrefixList.sequence");
+          if (seen.has(entry.sequence)) {
+            throw new ControlProtocolConfigurationError(`Duplicate prefix-list sequence ${entry.sequence}`, "ipv6PrefixList.sequence");
+          }
+          seen.add(entry.sequence);
+          validateIpv6PrefixLength(entry.prefixLength);
+          const prefix = normalizeIpv6(entry.prefix);
+          if (ipv6Network(prefix, entry.prefixLength) !== prefix) {
+            throw new ControlProtocolConfigurationError("Prefix-list entry must use a canonical network address", "ipv6PrefixList.prefix");
+          }
+          if (entry.ge !== undefined && (!Number.isInteger(entry.ge) || entry.ge < entry.prefixLength || entry.ge > 128)) {
+            throw new ControlProtocolConfigurationError("Prefix-list ge must be between the prefix length and 128", "ipv6PrefixList.ge");
+          }
+          if (entry.le !== undefined && (!Number.isInteger(entry.le) || entry.le < (entry.ge ?? entry.prefixLength) || entry.le > 128)) {
+            throw new ControlProtocolConfigurationError("Prefix-list le must be between ge/prefix length and 128", "ipv6PrefixList.le");
+          }
+          return { ...entry, prefix };
+        });
+      next.set(list.id, { id: list.id, entries });
+    }
+    this.ipv6PrefixLists.clear();
+    for (const [id, list] of next) this.ipv6PrefixLists.set(id, list);
+    this.onChanged();
+  }
+
+  ipv6PrefixListConfigurations(): Ipv6PrefixList[] {
+    return [...this.ipv6PrefixLists.values()].map((list) => ({ ...list, entries: list.entries.map((entry) => ({ ...entry })) }));
+  }
+
   setRouteMaps(routeMaps: readonly RouteMap[]): void {
     const next = new Map<string, RouteMap>();
     for (const map of routeMaps) {
@@ -333,7 +404,9 @@ export class RoutingPolicyEngine {
     let current = route;
     let matchedPrefixListSequence: number | undefined;
     if (binding.prefixListId !== undefined) {
-      const result = this.evaluatePrefixList(binding.prefixListId, current);
+      // A neighbor binding is already per address family, so the list is looked
+      // up in the store that matches the route being evaluated.
+      const result = this.evaluatePrefixList(binding.prefixListId, current, current.addressFamily);
       matchedPrefixListSequence = result.sequence;
       if (result.action === "deny") {
         return { action: "deny", route: current, matchedPrefixListSequence, reason: result.reason };
@@ -398,7 +471,9 @@ export class RoutingPolicyEngine {
       // LabDocument is validated with strict schemas that count it as set.
       sequences: map.sequences.map((sequence) => ({
         ...sequence,
-        match: sequence.match ? cloneArrayFields(sequence.match, ["prefixListIds", "communityListIds", "asPathListIds"]) : undefined,
+        match: sequence.match
+          ? cloneArrayFields(sequence.match, ["prefixListIds", "ipv6PrefixListIds", "communityListIds", "asPathListIds"])
+          : undefined,
         set: sequence.set ? cloneArrayFields(sequence.set, ["communities", "prependAsns"]) : undefined,
       })),
     }));
@@ -413,7 +488,29 @@ export class RoutingPolicyEngine {
     this.counters.clear();
   }
 
-  private evaluatePrefixList(id: string, route: BgpRoute): { action: RoutePolicyAction; sequence?: number; reason: string } {
+  /**
+   * First match wins, then implicit deny. `listFamily` is the family the clause
+   * names — `match ip address` versus `match ipv6 address` — so an IPv4 list can
+   * never accidentally decide an IPv6 route.
+   */
+  private evaluatePrefixList(
+    id: string,
+    route: BgpRoute,
+    listFamily: BgpUnicastAddressFamily,
+  ): { action: RoutePolicyAction; sequence?: number; reason: string } {
+    if (listFamily !== route.addressFamily) {
+      return { action: "deny", reason: `prefix-list ${id} belongs to another address family` };
+    }
+    if (listFamily === "ipv6-unicast") {
+      const list = this.ipv6PrefixLists.get(id);
+      if (!list) return { action: "deny", reason: `prefix-list ${id} is undefined` };
+      for (const entry of list.entries) {
+        if (!ipv6PrefixMatches(route, entry)) continue;
+        this.count("prefix-list", id, entry.sequence, entry.action);
+        return { action: entry.action, sequence: entry.sequence, reason: `prefix-list ${id} sequence ${entry.sequence} ${entry.action}` };
+      }
+      return { action: "deny", reason: `prefix-list ${id} implicit deny` };
+    }
     const list = this.prefixLists.get(id);
     if (!list) return { action: "deny", reason: `prefix-list ${id} is undefined` };
     for (const entry of list.entries) {
@@ -468,7 +565,9 @@ export class RoutingPolicyEngine {
     if (match.maximumAsPathLength !== undefined && route.asPath.length > match.maximumAsPathLength) return false;
     if (match.source !== undefined && route.source !== match.source) return false;
     if (match.prefixListIds?.length
-      && !match.prefixListIds.some((id) => this.evaluatePrefixList(id, route).action === "permit")) return false;
+      && !match.prefixListIds.some((id) => this.evaluatePrefixList(id, route, "ipv4-unicast").action === "permit")) return false;
+    if (match.ipv6PrefixListIds?.length
+      && !match.ipv6PrefixListIds.some((id) => this.evaluatePrefixList(id, route, "ipv6-unicast").action === "permit")) return false;
     if (match.communityListIds?.length) {
       const results = match.communityListIds.map((id) => this.evaluateCommunityList(id, route).action === "permit");
       if (match.communityMatchAll ? results.some((permitted) => !permitted) : !results.some(Boolean)) return false;

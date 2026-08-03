@@ -284,7 +284,7 @@ interface ResolvedRoute {
   administrativeDistance: number;
 }
 
-export type Ipv6RouteSource = "connected" | "static" | "ospfv3";
+export type Ipv6RouteSource = "connected" | "static" | "ospfv3" | "bgp";
 
 export interface Ipv6RouteRow {
   readonly kind: Ipv6RouteSource;
@@ -1681,6 +1681,19 @@ export class Router extends Device {
         });
       }
     }
+    for (const route of this.bgp.selectedRoutes("ipv6-unicast")) {
+      if (route.source === "local") continue;
+      const underlay = this.resolveIpv6(route.nextHop);
+      rows.push({
+        kind: "bgp",
+        network: route.network,
+        prefixLength: route.prefixLength,
+        viaIp: route.nextHop,
+        egressName: underlay?.egress.name ?? "",
+        administrativeDistance: route.source === "ebgp" ? 20 : 200,
+        metric: route.igpMetric,
+      });
+    }
     return rows.sort((left, right) =>
       right.prefixLength - left.prefixLength
       || left.network.localeCompare(right.network)
@@ -2300,6 +2313,13 @@ export class Router extends Device {
       onDadConflict: (_address, message) => {
         const scoped = `${iface.name}: ${message}`;
         if (!this.ipv6Problems.includes(scoped)) this.ipv6Problems.push(scoped);
+      },
+      // An address is unusable until DAD finishes, so completing it is a real
+      // stimulus: without it an IPv6 BGP session would sit in Active until a
+      // later, unrelated event happened to re-open the activity window.
+      onDadComplete: () => {
+        this.bgp.refreshRoutes();
+        this.bgp.onInterfaceStateChanged();
       },
     });
     this.ipv6DiscoveryByInterface.set(iface.name, discovery);
@@ -2931,23 +2951,62 @@ export class Router extends Device {
   }
 
   /** Adapter used by BGP to select the ordinary routed source or update-source. */
-  bgpSourceAddress(remoteAddress: Ipv4, updateSource?: string): Ipv4 | undefined {
+  bgpSourceAddress(remoteAddress: IpAddress, updateSource?: string): IpAddress | undefined {
+    const family = ipFamilyOf(remoteAddress);
     if (updateSource !== undefined) {
       const iface = this.l3.get(updateSource);
-      return iface?.physical.operationalUp && iface.ip !== undefined ? iface.ip : undefined;
+      if (!iface?.physical.operationalUp) return undefined;
+      return family === "ipv6" ? iface.ipv6.sourceFor(remoteAddress) : iface.ip;
     }
-    return this.managementSourceAddress("ipv4", remoteAddress) as Ipv4 | undefined;
+    return this.managementSourceAddress(family, remoteAddress);
   }
 
-  bgpOwnsAddress(address: Ipv4): boolean {
+  bgpNextHop(
+    family: "ipv4-unicast" | "ipv6-unicast",
+    remoteAddress: IpAddress,
+    updateSource?: string,
+  ): IpAddress | undefined {
+    if (family === "ipv4-unicast") {
+      if (updateSource !== undefined) {
+        const iface = this.l3.get(updateSource);
+        return iface?.physical.operationalUp ? iface.ip : undefined;
+      }
+      return this.managementSourceAddress("ipv4", ipFamilyOf(remoteAddress) === "ipv4" ? remoteAddress : undefined);
+    }
+    // An IPv6 prefix needs an IPv6 next hop even when the session runs over
+    // IPv4, so it is selected from the interface facing this peer.
+    if (updateSource !== undefined) {
+      const iface = this.l3.get(updateSource);
+      return iface?.physical.operationalUp ? iface.ipv6.sourceFor(remoteAddress) : undefined;
+    }
+    if (ipFamilyOf(remoteAddress) === "ipv6") return this.managementSourceAddress("ipv6", remoteAddress);
+    const egress = this.resolve(remoteAddress, false, false)?.egress;
+    return egress ? egress.ipv6.sourceFor("2001:db8::") : this.managementSourceAddress("ipv6");
+  }
+
+  bgpOwnsAddress(address: IpAddress): boolean {
     return this.managementAddresses().includes(address);
   }
 
-  bgpRouteReachable(address: Ipv4): boolean {
-    return this.resolve(address, false, false) !== undefined;
+  bgpRouteReachable(address: IpAddress): boolean {
+    return ipFamilyOf(address) === "ipv6"
+      ? this.resolveIpv6(address) !== undefined
+      : this.resolve(address, false, false) !== undefined;
   }
 
-  bgpExactRouteExists(network: Ipv4, prefixLength: number): boolean {
+  bgpExactRouteExists(
+    network: IpAddress,
+    prefixLength: number,
+    family: "ipv4-unicast" | "ipv6-unicast" = "ipv4-unicast",
+  ): boolean {
+    if (family === "ipv6-unicast") {
+      const canonical = ipv6Network(network, prefixLength);
+      return this.ipv6RoutingTable().some((route) =>
+        route.kind !== "bgp"
+        && route.prefixLength === prefixLength
+        && route.network === canonical
+        && (route.kind === "connected" || route.egressName !== ""));
+    }
     const maskInt = maskToInt(prefixLength);
     return this.routingTable().some((route) =>
       route.kind !== "bgp"
@@ -2956,16 +3015,23 @@ export class Router extends Device {
       && (route.kind === "connected" || route.egressName !== ""));
   }
 
-  bgpIgpMetric(address: Ipv4): number | undefined {
-    return this.resolve(address, false, false)?.metric;
+  bgpIgpMetric(address: IpAddress): number | undefined {
+    if (ipFamilyOf(address) !== "ipv6") return this.resolve(address, false, false)?.metric;
+    // An IPv6 next hop is resolved through the IPv6 table; the metric is the
+    // one the IGP already selected for that egress.
+    const route = this.resolveIpv6(address);
+    if (!route) return undefined;
+    return this.ipv6RoutingTable()
+      .filter((entry) => entry.egressName === route.egress.name && ipv6InPrefix(address, entry.network, entry.prefixLength))
+      .sort((a, b) => b.prefixLength - a.prefixLength)[0]?.metric ?? 0;
   }
 
-  bgpRoutesChanged(): void {
+  bgpRoutesChanged(family: "ipv4-unicast" | "ipv6-unicast"): void {
     this.engine.trace({
       time: this.engine.now(),
       type: "bgp-routing-table-changed",
       device: this.id,
-      detail: { routes: this.bgp.selectedRoutes().length },
+      detail: { addressFamily: family, routes: this.bgp.selectedRoutes(family).length },
     });
   }
 
@@ -3351,7 +3417,7 @@ export class Router extends Device {
     } : undefined;
   }
 
-  private resolveIpv6(destinationInput: Ipv6): ResolvedIpv6Route | undefined {
+  private resolveIpv6(destinationInput: Ipv6, includeBgp = true): ResolvedIpv6Route | undefined {
     const destination = normalizeIpv6(destinationInput);
     interface Candidate extends ResolvedIpv6Route {
       readonly prefixLength: number;
@@ -3410,6 +3476,23 @@ export class Router extends Device {
           distance: route.administrativeDistance,
           metric: route.cost,
           egress,
+          nextHopIp: route.nextHop,
+        });
+      }
+    }
+    // A BGP path is recursive: its next hop is resolved through the rest of the
+    // IPv6 table, never through another BGP path.
+    if (includeBgp) {
+      for (const route of this.bgp.selectedRoutes("ipv6-unicast")) {
+        if (route.source === "local") continue;
+        if (!ipv6InPrefix(destination, route.network, route.prefixLength)) continue;
+        const underlay = this.resolveIpv6(route.nextHop, false);
+        if (!underlay) continue;
+        consider({
+          prefixLength: route.prefixLength,
+          distance: route.source === "ebgp" ? 20 : 200,
+          metric: route.igpMetric,
+          egress: underlay.egress,
           nextHopIp: route.nextHop,
         });
       }

@@ -4,9 +4,11 @@ import {
   BGP_TCP_PORT,
   BGP_VERSION,
   isBgpMessage,
+  type BgpAddressFamily,
   type BgpMessage,
   type BgpNotificationMessage,
   type BgpPathAttributes,
+  type BgpUnicastAddressFamily,
   type Vpnv4Nlri,
 } from "../packets/bgp";
 import type { TcpApplicationPayload } from "../packets/tcp";
@@ -14,6 +16,9 @@ import { TcpState, type TcpConnection, type TcpConnectionHandlers } from "../tra
 import type { HostTransportStack } from "../transport/host-transport";
 import type { Ipv4 } from "../util/ipv4";
 import { intToIp, ipToInt, maskToInt } from "../util/ipv4";
+import type { Ipv6 } from "../util/ipv6";
+import { ipv6Network, normalizeIpv6, validateIpv6PrefixLength } from "../util/ipv6";
+import { compareIpAddresses, ipFamilyOf, type IpAddress } from "../util/ip-address";
 import {
   ControlProtocolConfigurationError,
   DEFAULT_CONTROL_PROTOCOL_LIMITS,
@@ -40,8 +45,29 @@ export type BgpSessionState =
   | "open-confirm"
   | "established";
 
+/**
+ * Per-address-family neighbor settings for IPv6 unicast. IPv4 unicast keeps its
+ * flat fields — that is what every document written before M10.13 contains —
+ * so the IPv6 family declares its own activation and policy instead of
+ * retro-fitting a nested shape onto the existing one.
+ */
+export interface BgpNeighborIpv6AddressFamily {
+  /** `neighbor <a> activate` under `address-family ipv6 unicast`. */
+  readonly activated?: boolean;
+  readonly nextHopSelf?: boolean;
+  readonly prefixListIn?: string;
+  readonly prefixListOut?: string;
+  readonly routeMapIn?: string;
+  readonly routeMapOut?: string;
+  readonly sendCommunityStandard?: boolean;
+  readonly routeReflectorClient?: boolean;
+  readonly defaultOriginate?: boolean;
+  readonly defaultOriginateRouteMap?: string;
+}
+
 export interface BgpNeighborConfiguration {
-  readonly address: Ipv4;
+  /** IPv4 or IPv6 transport address of the peer. */
+  readonly address: IpAddress;
   readonly remoteAs: number;
   readonly description?: string;
   readonly updateSource?: string;
@@ -53,6 +79,7 @@ export interface BgpNeighborConfiguration {
   readonly routeMapIn?: string;
   readonly routeMapOut?: string;
   readonly vpnv4Activated?: boolean;
+  readonly vpnv6Activated?: boolean;
   readonly sendCommunityExtended?: boolean;
   /** `neighbor <a> send-community`: standard communities may leave this device. */
   readonly sendCommunityStandard?: boolean;
@@ -62,6 +89,8 @@ export interface BgpNeighborConfiguration {
   readonly defaultOriginate?: boolean;
   /** Bounded route-map deciding whether default-originate advertises. */
   readonly defaultOriginateRouteMap?: string;
+  /** `address-family ipv6 unicast` settings for this neighbor. */
+  readonly ipv6?: BgpNeighborIpv6AddressFamily;
 }
 
 export interface BgpAggregateConfiguration {
@@ -78,6 +107,11 @@ export interface BgpNetworkStatement {
   readonly prefixLength: number;
 }
 
+export interface BgpIpv6NetworkStatement {
+  readonly network: Ipv6;
+  readonly prefixLength: number;
+}
+
 export interface BgpConfiguration {
   readonly localAs: number;
   readonly routerId?: Ipv4;
@@ -87,6 +121,8 @@ export interface BgpConfiguration {
   readonly clusterId?: Ipv4;
   readonly neighbors?: readonly BgpNeighborConfiguration[];
   readonly networks?: readonly BgpNetworkStatement[];
+  /** `network <prefix>/<length>` under `address-family ipv6 unicast`. */
+  readonly ipv6Networks?: readonly BgpIpv6NetworkStatement[];
   readonly aggregates?: readonly BgpAggregateConfiguration[];
   readonly vrfAddressFamilies?: readonly BgpVrfAddressFamilyConfiguration[];
 }
@@ -107,21 +143,26 @@ export interface BgpVrfAddressFamilyConfiguration {
   readonly vrfId: string;
   readonly redistributeConnected?: boolean;
   readonly redistributeStatic?: boolean;
+  /** `address-family ipv6 vrf <name>` redistribution into VPNv6. */
+  readonly redistributeConnectedIpv6?: boolean;
+  readonly redistributeStaticIpv6?: boolean;
 }
 
 export type BgpRouteSource = "local" | "ebgp" | "ibgp";
 
 export interface BgpRoute {
-  readonly network: Ipv4;
+  /** Which unicast RIB this path belongs to; the two never mix. */
+  readonly addressFamily: BgpUnicastAddressFamily;
+  readonly network: IpAddress;
   readonly prefixLength: number;
   readonly origin: "igp" | "egp" | "incomplete";
   readonly asPath: readonly number[];
-  readonly nextHop: Ipv4;
+  readonly nextHop: IpAddress;
   readonly localPreference: number;
   readonly med: number;
   readonly weight: number;
   readonly source: BgpRouteSource;
-  readonly neighborAddress?: Ipv4;
+  readonly neighborAddress?: IpAddress;
   readonly neighborAs?: number;
   readonly neighborRouterId?: Ipv4;
   readonly learnedAtNs: number;
@@ -158,27 +199,40 @@ export interface BgpRibEntry extends BgpRoute {
 }
 
 export interface BgpNeighborSummary {
-  readonly address: Ipv4;
+  readonly address: IpAddress;
   readonly remoteAs: number;
   readonly state: BgpSessionState;
   readonly description?: string;
-  readonly localAddress?: Ipv4;
+  readonly localAddress?: IpAddress;
   readonly negotiatedHoldTimeSeconds?: number;
   readonly lastError?: string;
   readonly messagesSent: number;
   readonly messagesReceived: number;
+  /** Address families both ends have activated on this one session. */
+  readonly addressFamilies: readonly BgpAddressFamily[];
 }
 
 export interface BgpHost {
   readonly id: string;
   readonly engine: SimulationEngine;
   readonly management: HostTransportStack;
-  bgpSourceAddress(remoteAddress: Ipv4, updateSource?: string): Ipv4 | undefined;
-  bgpOwnsAddress(address: Ipv4): boolean;
-  bgpRouteReachable(address: Ipv4): boolean;
-  bgpExactRouteExists(network: Ipv4, prefixLength: number): boolean;
-  bgpIgpMetric(address: Ipv4): number | undefined;
-  bgpRoutesChanged(): void;
+  /** Family-neutral: the address decides which stack answers. */
+  bgpSourceAddress(remoteAddress: IpAddress, updateSource?: string): IpAddress | undefined;
+  /**
+   * The local next hop for one unicast family toward a peer. A dual-stack
+   * session runs over one transport but still needs a same-family next hop for
+   * the other address family's prefixes.
+   */
+  bgpNextHop(
+    family: BgpUnicastAddressFamily,
+    remoteAddress: IpAddress,
+    updateSource?: string,
+  ): IpAddress | undefined;
+  bgpOwnsAddress(address: IpAddress): boolean;
+  bgpRouteReachable(address: IpAddress): boolean;
+  bgpExactRouteExists(network: IpAddress, prefixLength: number, family: BgpUnicastAddressFamily): boolean;
+  bgpIgpMetric(address: IpAddress): number | undefined;
+  bgpRoutesChanged(family: BgpUnicastAddressFamily): void;
   bgpVpnv4Exports(): readonly Vpnv4Route[];
   bgpVpnv4RoutesChanged(routes: readonly Vpnv4Route[]): void;
 }
@@ -187,7 +241,7 @@ interface NeighborRuntime {
   configuration: BgpNeighborConfiguration;
   state: BgpSessionState;
   connection?: TcpConnection;
-  localAddress?: Ipv4;
+  localAddress?: IpAddress;
   negotiatedHoldTimeSeconds?: number;
   lastReceivedAtNs?: number;
   lastError?: string;
@@ -195,10 +249,23 @@ interface NeighborRuntime {
   messagesReceived: number;
   generation: number;
   remoteRouterId?: Ipv4;
-  remoteAddressFamilies?: readonly ("ipv4-unicast" | "vpnv4-unicast")[];
+  remoteAddressFamilies?: readonly BgpAddressFamily[];
 }
 
 const ORIGIN_ORDER: Readonly<Record<BgpRoute["origin"], number>> = Object.freeze({ igp: 0, egp: 1, incomplete: 2 });
+
+/**
+ * Address ordering that never mixes families. Both are plain strings in this
+ * engine, so a comparator that assumed IPv4 would throw on an IPv6 neighbor.
+ */
+function compareBgpAddresses(left: IpAddress | undefined, right: IpAddress | undefined): number {
+  if (left === undefined) return right === undefined ? 0 : -1;
+  if (right === undefined) return 1;
+  const leftFamily = ipFamilyOf(left);
+  const rightFamily = ipFamilyOf(right);
+  if (leftFamily !== rightFamily) return leftFamily === "ipv4" ? -1 : 1;
+  return compareIpAddresses(leftFamily, left, right);
+}
 
 /** Cisco-like deterministic educational best-path ordering. */
 export function compareBgpPaths(left: BgpRoute, right: BgpRoute): number {
@@ -215,7 +282,7 @@ export function compareBgpPaths(left: BgpRoute, right: BgpRoute): number {
   if (left.learnedAtNs !== right.learnedAtNs) return left.learnedAtNs - right.learnedAtNs;
   const routerId = ipToInt(left.neighborRouterId ?? "0.0.0.0") - ipToInt(right.neighborRouterId ?? "0.0.0.0");
   if (routerId !== 0) return routerId;
-  const neighbor = ipToInt(left.neighborAddress ?? "0.0.0.0") - ipToInt(right.neighborAddress ?? "0.0.0.0");
+  const neighbor = compareBgpAddresses(left.neighborAddress, right.neighborAddress);
   return neighbor || left.routeId.localeCompare(right.routeId);
 }
 
@@ -229,6 +296,7 @@ export function compareVpnv4Paths(left: Vpnv4Route, right: Vpnv4Route): number {
 
 function vpnComparable(route: Vpnv4Route): BgpRoute {
   return {
+    addressFamily: "ipv4-unicast",
     network: route.network,
     prefixLength: route.prefixLength,
     origin: route.path.origin,
@@ -268,18 +336,32 @@ function validateTimer(value: number, field: string, maximum: number): void {
  * ACL/firewall policy, TCP retransmission and IP TTL therefore remain real
  * parts of the simulation instead of direct process-to-process calls.
  */
+/** One complete set of unicast RIBs. Two families never share any of them. */
+interface UnicastRibs {
+  readonly raw: Map<IpAddress, Map<string, BgpRoute>>;
+  readonly adjIn: Map<IpAddress, Map<string, BgpRoute>>;
+  readonly loc: Map<string, BgpRoute>;
+  readonly adjOut: Map<IpAddress, Map<string, BgpRoute>>;
+  readonly failures: Map<string, string>;
+}
+
+function createUnicastRibs(): UnicastRibs {
+  return { raw: new Map(), adjIn: new Map(), loc: new Map(), adjOut: new Map(), failures: new Map() };
+}
+
+const UNICAST_FAMILIES: readonly BgpUnicastAddressFamily[] = ["ipv4-unicast", "ipv6-unicast"];
+
 export class BgpProcess {
   readonly routingPolicy = new RoutingPolicyEngine(() => this.reevaluatePolicies());
   private configuration: BgpConfiguration | undefined;
-  private readonly neighbors = new Map<Ipv4, NeighborRuntime>();
-  private readonly rawAdjRibIn = new Map<Ipv4, Map<string, BgpRoute>>();
-  private readonly adjRibIn = new Map<Ipv4, Map<string, BgpRoute>>();
-  private readonly locRib = new Map<string, BgpRoute>();
-  private readonly adjRibOut = new Map<Ipv4, Map<string, BgpRoute>>();
-  private readonly ribFailures = new Map<string, string>();
-  private readonly vpnv4AdjRibIn = new Map<Ipv4, Map<string, Vpnv4Route>>();
+  private readonly neighbors = new Map<IpAddress, NeighborRuntime>();
+  private readonly unicast: Record<BgpUnicastAddressFamily, UnicastRibs> = {
+    "ipv4-unicast": createUnicastRibs(),
+    "ipv6-unicast": createUnicastRibs(),
+  };
+  private readonly vpnv4AdjRibIn = new Map<IpAddress, Map<string, Vpnv4Route>>();
   private readonly vpnv4LocRib = new Map<string, Vpnv4Route>();
-  private readonly vpnv4AdjRibOut = new Map<Ipv4, Map<string, Vpnv4Route>>();
+  private readonly vpnv4AdjRibOut = new Map<IpAddress, Map<string, Vpnv4Route>>();
   /** Aggregates that currently have a contributing route, for change tracing. */
   private readonly activeAggregates = new Set<string>();
   private listening = false;
@@ -316,7 +398,10 @@ export class BgpProcess {
     const seen = new Set<string>();
     let clients = 0;
     for (const neighbor of configured) {
-      ipToInt(neighbor.address);
+      // Both transports are legal; the address itself decides which stack the
+      // TCP session, the routing lookup and the next hop come from.
+      if (ipFamilyOf(neighbor.address) === "ipv6") normalizeIpv6(neighbor.address);
+      else ipToInt(neighbor.address);
       validateAsn(neighbor.remoteAs, "remoteAs");
       if (seen.has(neighbor.address)) {
         throw new ControlProtocolConfigurationError(`Duplicate BGP neighbor ${neighbor.address}`, "neighbors");
@@ -326,7 +411,7 @@ export class BgpProcess {
         && (!Number.isInteger(neighbor.ebgpMultihop) || neighbor.ebgpMultihop < 1 || neighbor.ebgpMultihop > 255)) {
         throw new ControlProtocolConfigurationError("eBGP multihop TTL must be between 1 and 255", "ebgpMultihop");
       }
-      if (neighbor.routeReflectorClient) {
+      if (neighbor.routeReflectorClient || neighbor.ipv6?.routeReflectorClient) {
         // Reflection only has meaning inside one AS; an eBGP peer already
         // receives every path, so accepting it would teach the wrong rule.
         if (neighbor.remoteAs !== configuration.localAs) {
@@ -349,6 +434,14 @@ export class BgpProcess {
         throw new ControlProtocolConfigurationError("BGP network statement must use a canonical network address", "networks");
       }
     }
+    const ipv6Networks = [...(configuration.ipv6Networks ?? [])].map((network) => {
+      validateIpv6PrefixLength(network.prefixLength);
+      const canonical = ipv6Network(network.network, network.prefixLength);
+      if (canonical !== normalizeIpv6(network.network)) {
+        throw new ControlProtocolConfigurationError("BGP network statement must use a canonical network address", "ipv6Networks");
+      }
+      return { network: canonical, prefixLength: network.prefixLength };
+    });
     const aggregates = [...(configuration.aggregates ?? [])];
     enforceStructuralLimit("maximumBgpAggregatesPerDevice", aggregates.length);
     const seenAggregates = new Set<string>();
@@ -374,7 +467,18 @@ export class BgpProcess {
       vrfIds.add(family.vrfId);
     }
     this.resetRuntime(false);
-    this.configuration = { ...configuration, keepaliveSeconds, holdTimeSeconds, neighbors: configured, networks, aggregates, vrfAddressFamilies };
+    this.configuration = {
+      ...configuration,
+      keepaliveSeconds,
+      holdTimeSeconds,
+      neighbors: configured,
+      networks,
+      // Absent rather than empty, so an IPv4-only process serializes exactly
+      // as it did before M10.13.
+      ...(ipv6Networks.length ? { ipv6Networks } : {}),
+      aggregates,
+      vrfAddressFamilies,
+    };
     this.activityRounds = Math.max(
       1,
       Math.min(BGP_ACTIVITY_QUIESCENCE_ROUNDS, Math.floor(BGP_ACTIVITY_WINDOW_SECONDS / Math.max(1, keepaliveSeconds))),
@@ -390,7 +494,7 @@ export class BgpProcess {
       () => this.tick(),
     );
     this.neighbors.clear();
-    for (const neighbor of configured.sort((a, b) => ipToInt(a.address) - ipToInt(b.address))) {
+    for (const neighbor of configured.sort((a, b) => compareBgpAddresses(a.address, b.address))) {
       this.neighbors.set(neighbor.address, {
         configuration: { ...neighbor },
         state: "idle",
@@ -407,11 +511,14 @@ export class BgpProcess {
     this.resetRuntime(true);
     this.configuration = undefined;
     this.neighbors.clear();
-    this.adjRibIn.clear();
-    this.rawAdjRibIn.clear();
-    this.locRib.clear();
-    this.adjRibOut.clear();
-    this.ribFailures.clear();
+    for (const family of UNICAST_FAMILIES) {
+      const ribs = this.unicast[family];
+      ribs.raw.clear();
+      ribs.adjIn.clear();
+      ribs.loc.clear();
+      ribs.adjOut.clear();
+      ribs.failures.clear();
+    }
     this.vpnv4AdjRibIn.clear();
     this.vpnv4LocRib.clear();
     this.vpnv4AdjRibOut.clear();
@@ -461,29 +568,60 @@ export class BgpProcess {
         lastError: runtime.lastError,
         messagesSent: runtime.messagesSent,
         messagesReceived: runtime.messagesReceived,
+        addressFamilies: this.negotiatedFamilies(runtime),
       }))
-      .sort((a, b) => ipToInt(a.address) - ipToInt(b.address));
+      .sort((a, b) => compareBgpAddresses(a.address, b.address));
   }
 
-  routes(): BgpRibEntry[] {
+  /** Families both ends activated; before OPEN this is the local offer. */
+  private negotiatedFamilies(runtime: NeighborRuntime): BgpAddressFamily[] {
+    const local = this.localFamilies(runtime.configuration);
+    const remote = runtime.remoteAddressFamilies;
+    return remote === undefined ? local : local.filter((family) => remote.includes(family));
+  }
+
+  /**
+   * The families this device offers a peer. IPv4 unicast stays implicit on an
+   * IPv4-transport neighbor — that is exactly what a pre-M10.13 document means
+   * — while an IPv6-transport neighbor has no IPv4 next hop to give and carries
+   * the IPv6 family instead. Every other family is activated explicitly.
+   */
+  private localFamilies(neighbor: BgpNeighborConfiguration): BgpAddressFamily[] {
+    const families: BgpAddressFamily[] = [];
+    if (ipFamilyOf(neighbor.address) === "ipv4") families.push("ipv4-unicast");
+    if (neighbor.ipv6?.activated || ipFamilyOf(neighbor.address) === "ipv6") families.push("ipv6-unicast");
+    if (neighbor.vpnv4Activated) families.push("vpnv4-unicast");
+    if (neighbor.vpnv6Activated) families.push("vpnv6-unicast");
+    return families;
+  }
+
+  private familyNegotiated(runtime: NeighborRuntime, family: BgpAddressFamily): boolean {
+    return this.localFamilies(runtime.configuration).includes(family)
+      && runtime.remoteAddressFamilies?.includes(family) === true;
+  }
+
+  routes(family: BgpUnicastAddressFamily = "ipv4-unicast"): BgpRibEntry[] {
     this.expireHoldTimers();
+    const ribs = this.unicast[family];
     const all = new Map<string, BgpRoute>();
-    for (const routes of this.adjRibIn.values()) {
+    for (const routes of ribs.adjIn.values()) {
       for (const route of routes.values()) all.set(`${route.routeId}\u0000${route.neighborAddress ?? ""}`, route);
     }
-    for (const route of this.localCandidates()) all.set(route.routeId, route);
+    for (const route of this.localCandidates(family)) all.set(route.routeId, route);
     return [...all.values()].map((route) => ({
       ...route,
-      best: this.locRib.get(this.prefixKey(route.network, route.prefixLength))?.routeId === route.routeId,
-      valid: this.ribFailures.get(route.routeId) === undefined,
-      rejectionReason: this.ribFailures.get(route.routeId),
+      best: ribs.loc.get(this.prefixKey(route.network, route.prefixLength))?.routeId === route.routeId,
+      valid: ribs.failures.get(route.routeId) === undefined,
+      rejectionReason: ribs.failures.get(route.routeId),
     })).sort((a, b) => a.network.localeCompare(b.network) || a.prefixLength - b.prefixLength || compareBgpPaths(a, b));
   }
 
-  selectedRoutes(): BgpRoute[] {
+  selectedRoutes(family: BgpUnicastAddressFamily = "ipv4-unicast"): BgpRoute[] {
     this.expireHoldTimers();
-    return [...this.locRib.values()].sort((a, b) =>
-      ipToInt(a.network) - ipToInt(b.network) || b.prefixLength - a.prefixLength || a.routeId.localeCompare(b.routeId));
+    return [...this.unicast[family].loc.values()].sort((a, b) =>
+      compareBgpAddresses(a.network, b.network)
+      || b.prefixLength - a.prefixLength
+      || a.routeId.localeCompare(b.routeId));
   }
 
   vpnv4Routes(): Vpnv4Route[] {
@@ -508,42 +646,49 @@ export class BgpProcess {
       || a.routeId.localeCompare(b.routeId));
   }
 
-  adjRibInEntries(address?: Ipv4): BgpRoute[] {
+  adjRibInEntries(address?: IpAddress, family: BgpUnicastAddressFamily = "ipv4-unicast"): BgpRoute[] {
     this.expireHoldTimers();
-    const entries = address === undefined ? [...this.adjRibIn.values()] : [this.adjRibIn.get(address) ?? new Map()];
-    return entries.flatMap((rib) => [...rib.values()]).sort((a, b) => a.routeId.localeCompare(b.routeId));
+    const rib = this.unicast[family].adjIn;
+    const entries = address === undefined ? [...rib.values()] : [rib.get(address) ?? new Map()];
+    return entries.flatMap((value) => [...value.values()]).sort((a, b) => a.routeId.localeCompare(b.routeId));
   }
 
-  adjRibOutEntries(address?: Ipv4): BgpRoute[] {
+  adjRibOutEntries(address?: IpAddress, family: BgpUnicastAddressFamily = "ipv4-unicast"): BgpRoute[] {
     this.expireHoldTimers();
-    const entries = address === undefined ? [...this.adjRibOut.values()] : [this.adjRibOut.get(address) ?? new Map()];
-    return entries.flatMap((rib) => [...rib.values()]).sort((a, b) => a.routeId.localeCompare(b.routeId));
+    const rib = this.unicast[family].adjOut;
+    const entries = address === undefined ? [...rib.values()] : [rib.get(address) ?? new Map()];
+    return entries.flatMap((value) => [...value.values()]).sort((a, b) => a.routeId.localeCompare(b.routeId));
   }
 
-  ribFailureSummaries(): Array<{ routeId: string; reason: string }> {
+  ribFailureSummaries(family: BgpUnicastAddressFamily = "ipv4-unicast"): Array<{ routeId: string; reason: string }> {
     this.expireHoldTimers();
-    return [...this.ribFailures.entries()].map(([routeId, reason]) => ({ routeId, reason }))
+    return [...this.unicast[family].failures.entries()].map(([routeId, reason]) => ({ routeId, reason }))
       .sort((a, b) => a.routeId.localeCompare(b.routeId));
   }
 
   refreshRoutes(): void {
     if (!this.configuration) return;
-    this.recomputeLocRib();
+    for (const family of UNICAST_FAMILIES) this.recomputeLocRib(family);
     this.recomputeVpnv4LocRib();
     this.advertiseRoutes();
   }
 
   configurationSnapshot(): BgpConfiguration | undefined {
     if (!this.configuration) return undefined;
-    const { aggregates: configured, ...rest } = this.configuration;
+    const { aggregates: configured, ipv6Networks: configuredIpv6, ...rest } = this.configuration;
     const aggregates = [...(configured ?? [])].map((aggregate) => ({ ...aggregate }));
+    const ipv6Networks = [...(configuredIpv6 ?? [])].map((network) => ({ ...network }));
     return {
       ...rest,
-      neighbors: [...(rest.neighbors ?? [])].map((neighbor) => ({ ...neighbor })),
+      neighbors: [...(rest.neighbors ?? [])].map((neighbor) => ({
+        ...neighbor,
+        ...(neighbor.ipv6 ? { ipv6: { ...neighbor.ipv6 } } : {}),
+      })),
       networks: [...(rest.networks ?? [])].map((network) => ({ ...network })),
       // Omitted rather than emitted empty, so a lab that configures no
-      // aggregate serializes exactly as it did before M10.12.
+      // aggregate or IPv6 network serializes exactly as it did before.
       ...(aggregates.length ? { aggregates } : {}),
+      ...(ipv6Networks.length ? { ipv6Networks } : {}),
       vrfAddressFamilies: [...(rest.vrfAddressFamilies ?? [])].map((family) => ({ ...family })),
     };
   }
@@ -565,7 +710,14 @@ export class BgpProcess {
     this.refreshRoutes();
   }
 
-  outboundTtl(remoteAddress: Ipv4): number | undefined {
+  setIpv6Networks(networks: readonly BgpIpv6NetworkStatement[]): void {
+    if (!this.configuration) {
+      throw new ControlProtocolConfigurationError("BGP process is not configured", "ipv6Networks");
+    }
+    this.configure({ ...this.configuration, ipv6Networks: networks });
+  }
+
+  outboundTtl(remoteAddress: IpAddress): number | undefined {
     const runtime = this.neighbors.get(remoteAddress);
     if (!runtime || !this.configuration) return undefined;
     return runtime.configuration.remoteAs === this.configuration.localAs
@@ -585,23 +737,24 @@ export class BgpProcess {
 
   private tryConnect(runtime: NeighborRuntime): void {
     if (!this.configuration || runtime.configuration.enabled === false || runtime.connection) return;
+    const transport = ipFamilyOf(runtime.configuration.address) === "ipv6" ? "IPv6" : "IPv4";
     const localAddress = this.host.bgpSourceAddress(runtime.configuration.address, runtime.configuration.updateSource);
     if (localAddress === undefined) {
       runtime.lastError = runtime.configuration.updateSource
-        ? `update-source ${runtime.configuration.updateSource} has no usable IPv4 address`
-        : "no usable local IPv4 address";
+        ? `update-source ${runtime.configuration.updateSource} has no usable ${transport} address`
+        : `no usable local ${transport} address`;
       this.transition(runtime, "active", runtime.lastError);
       return;
     }
     runtime.localAddress = localAddress;
     if (!this.host.bgpRouteReachable(runtime.configuration.address)) {
-      runtime.lastError = "neighbor is not reachable through the IPv4 routing table";
+      runtime.lastError = `neighbor is not reachable through the ${transport} routing table`;
       this.transition(runtime, "active", runtime.lastError);
       return;
     }
     // Exactly one side actively opens a symmetric session. The lower endpoint
     // wins, avoiding duplicate TCP sessions without randomness.
-    if (ipToInt(localAddress) > ipToInt(runtime.configuration.address)) {
+    if (compareBgpAddresses(localAddress, runtime.configuration.address) > 0) {
       this.transition(runtime, "active", "waiting for deterministic passive open");
       return;
     }
@@ -628,16 +781,16 @@ export class BgpProcess {
   }
 
   private accept(connection: TcpConnection): void {
-    const remote = connection.remoteAddress as Ipv4;
+    const remote = connection.remoteAddress as IpAddress;
     const runtime = this.neighbors.get(remote);
-    if (!runtime || runtime.configuration.enabled === false || !this.host.bgpOwnsAddress(connection.localAddress as Ipv4)) {
+    if (!runtime || runtime.configuration.enabled === false || !this.host.bgpOwnsAddress(connection.localAddress as IpAddress)) {
       connection.setHandlers({ onEstablished: (established) => established.close() });
       this.trace("bgp-session-rejected", { neighbor: remote, reason: "unconfigured neighbor" });
       return;
     }
     runtime.connection?.abort();
     runtime.connection = connection;
-    runtime.localAddress = connection.localAddress as Ipv4;
+    runtime.localAddress = connection.localAddress as IpAddress;
     connection.setHandlers(this.handlers(runtime));
     this.onTcpEstablished(runtime, connection);
   }
@@ -659,8 +812,10 @@ export class BgpProcess {
       version: BGP_VERSION,
       localAs: this.configuration.localAs,
       holdTimeSeconds: this.configuration.holdTimeSeconds ?? DEFAULT_BGP_HOLD_SECONDS,
-      bgpIdentifier: this.configuration.routerId ?? runtime.localAddress ?? "0.0.0.0",
-      addressFamilies: runtime.configuration.vpnv4Activated ? ["ipv4-unicast", "vpnv4-unicast"] : ["ipv4-unicast"],
+      bgpIdentifier: this.configuration.routerId
+        ?? (runtime.localAddress !== undefined && ipFamilyOf(runtime.localAddress) === "ipv4" ? runtime.localAddress : undefined)
+        ?? "0.0.0.0",
+      addressFamilies: this.localFamilies(runtime.configuration),
     });
   }
 
@@ -713,13 +868,23 @@ export class BgpProcess {
       return;
     }
     this.applyUpdate(runtime, message);
-    this.trace("bgp-update-received", {
-      neighbor: runtime.configuration.address,
-      announced: message.nlri.length,
-      withdrawn: message.withdrawn.length,
-      vpnv4Announced: message.vpnv4Nlri?.length ?? 0,
-      vpnv4Withdrawn: message.vpnv4Withdrawn?.length ?? 0,
-    });
+    // One event per family that actually carried something, so a Packet Trace
+    // filter can separate an IPv4 UPDATE from an IPv6 one without a second
+    // near-identical event name.
+    for (const [family, announced, withdrawn] of [
+      ["ipv4-unicast", message.nlri.length, message.withdrawn.length],
+      ["ipv6-unicast", message.ipv6Nlri?.length ?? 0, message.ipv6Withdrawn?.length ?? 0],
+      ["vpnv4-unicast", message.vpnv4Nlri?.length ?? 0, message.vpnv4Withdrawn?.length ?? 0],
+      ["vpnv6-unicast", message.vpnv6Nlri?.length ?? 0, message.vpnv6Withdrawn?.length ?? 0],
+    ] as const) {
+      if (announced === 0 && withdrawn === 0 && family !== "ipv4-unicast") continue;
+      this.trace("bgp-update-received", {
+        neighbor: runtime.configuration.address,
+        addressFamily: family,
+        announced,
+        withdrawn,
+      });
+    }
   }
 
   private send(runtime: NeighborRuntime, message: BgpMessage): void {
@@ -740,8 +905,12 @@ export class BgpProcess {
       ...(message.kind === "bgp-update" ? {
         announced: message.nlri.length,
         withdrawn: message.withdrawn.length,
+        ipv6Announced: message.ipv6Nlri?.length ?? 0,
+        ipv6Withdrawn: message.ipv6Withdrawn?.length ?? 0,
         vpnv4Announced: message.vpnv4Nlri?.length ?? 0,
         vpnv4Withdrawn: message.vpnv4Withdrawn?.length ?? 0,
+        vpnv6Announced: message.vpnv6Nlri?.length ?? 0,
+        vpnv6Withdrawn: message.vpnv6Withdrawn?.length ?? 0,
       } : {}),
     });
   }
@@ -774,14 +943,15 @@ export class BgpProcess {
     this.trace("bgp-session-failed", { neighbor: runtime.configuration.address, reason });
   }
 
-  private withdrawNeighborRoutes(address: Ipv4): void {
-    const rawChanged = this.rawAdjRibIn.delete(address);
-    const inboundChanged = this.adjRibIn.delete(address);
-    const outboundChanged = this.adjRibOut.delete(address);
+  private withdrawNeighborRoutes(address: IpAddress): void {
+    for (const family of UNICAST_FAMILIES) {
+      const ribs = this.unicast[family];
+      const changed = [ribs.raw.delete(address), ribs.adjIn.delete(address), ribs.adjOut.delete(address)]
+        .some(Boolean);
+      if (changed) this.recomputeLocRib(family);
+    }
     const vpnInboundChanged = this.vpnv4AdjRibIn.delete(address);
     const vpnOutboundChanged = this.vpnv4AdjRibOut.delete(address);
-    const changed = rawChanged || inboundChanged || outboundChanged || vpnInboundChanged || vpnOutboundChanged;
-    if (changed) this.recomputeLocRib();
     if (vpnInboundChanged || vpnOutboundChanged) this.recomputeVpnv4LocRib();
   }
 
@@ -861,22 +1031,48 @@ export class BgpProcess {
 
   private applyUpdate(runtime: NeighborRuntime, message: Extract<BgpMessage, { kind: "bgp-update" }>): void {
     if (!this.configuration) return;
-    const rawRib = this.rawAdjRibIn.get(runtime.configuration.address) ?? new Map<string, BgpRoute>();
-    for (const withdrawn of message.withdrawn) rawRib.delete(this.prefixKey(withdrawn.network, withdrawn.prefixLength));
-    enforceStructuralLimit("maximumBgpPrefixesPerPeer", rawRib.size + message.nlri.length);
-    for (const nlri of message.nlri) {
-      if (nlri.prefixLength < 0 || nlri.prefixLength > 32 || nlri.path.asPath.length > 256) {
-        this.trace("bgp-route-rejected", { neighbor: runtime.configuration.address, routeId: nlri.routeId, reason: "malformed NLRI" });
+    this.applyUnicastUpdate(runtime, "ipv4-unicast", message.withdrawn, message.nlri);
+    if (this.familyNegotiated(runtime, "ipv6-unicast")) {
+      this.applyUnicastUpdate(runtime, "ipv6-unicast", message.ipv6Withdrawn ?? [], message.ipv6Nlri ?? []);
+    }
+    this.applyVpnv4Update(runtime, message);
+    this.advertiseRoutes();
+  }
+
+  /**
+   * One inbound path for both unicast families. The NLRI shape is identical;
+   * only the prefix canonicalization differs, so there is a single loop rather
+   * than a copied IPv6 one.
+   */
+  private applyUnicastUpdate(
+    runtime: NeighborRuntime,
+    family: BgpUnicastAddressFamily,
+    withdrawn: readonly { network: IpAddress; prefixLength: number }[],
+    announced: readonly import("../packets/bgp").BgpNlri[],
+  ): void {
+    if (!this.configuration) return;
+    if (withdrawn.length === 0 && announced.length === 0) return;
+    const ribs = this.unicast[family];
+    const rawRib = ribs.raw.get(runtime.configuration.address) ?? new Map<string, BgpRoute>();
+    for (const entry of withdrawn) {
+      rawRib.delete(this.prefixKey(this.canonicalPrefix(entry.network, entry.prefixLength, family), entry.prefixLength));
+    }
+    enforceStructuralLimit("maximumBgpPrefixesPerPeer", rawRib.size + announced.length);
+    const maximumPrefixLength = family === "ipv6-unicast" ? 128 : 32;
+    for (const nlri of announced) {
+      if (nlri.prefixLength < 0 || nlri.prefixLength > maximumPrefixLength || nlri.path.asPath.length > 256) {
+        this.trace("bgp-route-rejected", { neighbor: runtime.configuration.address, addressFamily: family, routeId: nlri.routeId, reason: "malformed NLRI" });
         continue;
       }
       if (nlri.path.asPath.includes(this.configuration.localAs)) {
-        this.trace("bgp-loop-rejected", { neighbor: runtime.configuration.address, routeId: nlri.routeId });
+        this.trace("bgp-loop-rejected", { neighbor: runtime.configuration.address, addressFamily: family, routeId: nlri.routeId });
         continue;
       }
-      if (this.rejectReflectionLoop(runtime, nlri.routeId, nlri.path)) continue;
+      if (this.rejectReflectionLoop(runtime, nlri.routeId, nlri.path, family)) continue;
       const igpMetric = this.host.bgpIgpMetric(nlri.path.nextHop);
       const route: BgpRoute = {
-        network: intToIp((ipToInt(nlri.network) & maskToInt(nlri.prefixLength)) >>> 0),
+        addressFamily: family,
+        network: this.canonicalPrefix(nlri.network, nlri.prefixLength, family),
         prefixLength: nlri.prefixLength,
         origin: nlri.path.origin,
         asPath: [...nlri.path.asPath],
@@ -898,6 +1094,7 @@ export class BgpProcess {
       if (nlri.path.reflected) {
         this.trace("bgp-route-reflected", {
           neighbor: runtime.configuration.address,
+          addressFamily: family,
           direction: "in",
           routeId: route.routeId,
           originatorId: route.originatorId,
@@ -906,24 +1103,38 @@ export class BgpProcess {
       }
       rawRib.set(this.prefixKey(route.network, route.prefixLength), route);
     }
-    this.rawAdjRibIn.set(runtime.configuration.address, rawRib);
-    this.evaluateInboundRib(runtime);
-    this.recomputeLocRib();
-    this.applyVpnv4Update(runtime, message);
-    this.advertiseRoutes();
+    ribs.raw.set(runtime.configuration.address, rawRib);
+    this.evaluateInboundRib(runtime, family);
+    this.recomputeLocRib(family);
   }
 
-  private localCandidates(): BgpRoute[] {
+  private canonicalPrefix(network: IpAddress, prefixLength: number, family: BgpUnicastAddressFamily): IpAddress {
+    return family === "ipv6-unicast"
+      ? ipv6Network(network, prefixLength)
+      : intToIp((ipToInt(network) & maskToInt(prefixLength)) >>> 0);
+  }
+
+  /**
+   * A `network` statement originates a prefix only while an exact route of the
+   * same family already exists locally, which is what makes the statement a
+   * teaching point rather than a free advertisement.
+   */
+  private localCandidates(family: BgpUnicastAddressFamily): BgpRoute[] {
     if (!this.configuration) return [];
     const routerId = this.configuration.routerId ?? "0.0.0.0";
-    return [...(this.configuration.networks ?? [])]
-      .filter((network) => this.host.bgpExactRouteExists(network.network, network.prefixLength))
+    const statements: ReadonlyArray<{ network: IpAddress; prefixLength: number }> = family === "ipv6-unicast"
+      ? (this.configuration.ipv6Networks ?? [])
+      : (this.configuration.networks ?? []);
+    const unspecified = family === "ipv6-unicast" ? "::" : "0.0.0.0";
+    return statements
+      .filter((network) => this.host.bgpExactRouteExists(network.network, network.prefixLength, family))
       .map((network) => ({
+        addressFamily: family,
         network: network.network,
         prefixLength: network.prefixLength,
         origin: "igp" as const,
         asPath: [],
-        nextHop: "0.0.0.0",
+        nextHop: unspecified,
         localPreference: 100,
         med: 0,
         weight: 32_768,
@@ -979,6 +1190,7 @@ export class BgpProcess {
       const communities = normalizeBgpCommunities(contributors.flatMap((route) => route.communities))
         .slice(0, DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumBgpCommunitiesPerRoute);
       produced.push({
+        addressFamily: "ipv4-unicast",
         network: aggregate.prefix,
         prefixLength: aggregate.prefixLength,
         origin: "incomplete",
@@ -1011,7 +1223,7 @@ export class BgpProcess {
 
   /** Configured aggregates with their live contribution and suppression counts. */
   aggregateSummaries(): BgpAggregateSummary[] {
-    const candidates = [...this.locRib.values()].filter((route) => !this.isAggregate(route));
+    const candidates = [...this.unicast["ipv4-unicast"].loc.values()].filter((route) => !this.isAggregate(route));
     return (this.configuration?.aggregates ?? []).map((aggregate) => {
       const contributors = this.contributorsOf(aggregate, candidates);
       return {
@@ -1025,7 +1237,7 @@ export class BgpProcess {
 
   /** More-specific routes a `summary-only` aggregate hides from advertisements. */
   suppressedRoutes(): BgpSuppressedRoute[] {
-    const candidates = [...this.locRib.values()].filter((route) => !this.isAggregate(route));
+    const candidates = [...this.unicast["ipv4-unicast"].loc.values()].filter((route) => !this.isAggregate(route));
     return (this.configuration?.aggregates ?? [])
       .filter((aggregate) => aggregate.summaryOnly && this.activeAggregates.has(`${aggregate.prefix}/${aggregate.prefixLength}`))
       .flatMap((aggregate) => this.contributorsOf(aggregate, candidates).map((route) => ({
@@ -1036,14 +1248,19 @@ export class BgpProcess {
       .sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || a.prefixLength - b.prefixLength);
   }
 
-  private recomputeLocRib(): void {
-    const learned = [...this.localCandidates(), ...this.adjRibInEntries()];
-    const candidates = [...learned, ...this.aggregateCandidates(learned)];
+  private recomputeLocRib(family: BgpUnicastAddressFamily): void {
+    const ribs = this.unicast[family];
+    const learned = [...this.localCandidates(family), ...this.adjRibInEntries(undefined, family)];
+    // Aggregation is IPv4-only in M10.13: the generic refactor its IPv6
+    // counterpart would need is deliberately deferred rather than copied.
+    const candidates = family === "ipv4-unicast"
+      ? [...learned, ...this.aggregateCandidates(learned)]
+      : learned;
     const groups = new Map<string, BgpRoute[]>();
-    this.ribFailures.clear();
+    ribs.failures.clear();
     for (const route of candidates) {
       if (route.source !== "local" && this.host.bgpIgpMetric(route.nextHop) === undefined) {
-        this.ribFailures.set(route.routeId, `next hop ${route.nextHop} is unreachable`);
+        ribs.failures.set(route.routeId, `next hop ${route.nextHop} is unreachable`);
         continue;
       }
       const key = this.prefixKey(route.network, route.prefixLength);
@@ -1056,13 +1273,13 @@ export class BgpProcess {
       const best = selectBestBgpPath(routes);
       if (best) next.set(key, best);
     }
-    const before = JSON.stringify([...this.locRib.entries()]);
+    const before = JSON.stringify([...ribs.loc.entries()]);
     const after = JSON.stringify([...next.entries()]);
     if (before === after) return;
-    this.locRib.clear();
-    for (const [key, route] of next) this.locRib.set(key, route);
-    this.host.bgpRoutesChanged();
-    this.trace("bgp-best-path-changed", { routes: this.locRib.size });
+    ribs.loc.clear();
+    for (const [key, route] of next) ribs.loc.set(key, route);
+    this.host.bgpRoutesChanged(family);
+    this.trace("bgp-best-path-changed", { addressFamily: family, routes: ribs.loc.size });
   }
 
   private applyVpnv4Update(runtime: NeighborRuntime, message: Extract<BgpMessage, { kind: "bgp-update" }>): void {
@@ -1132,21 +1349,123 @@ export class BgpProcess {
     if (!this.configuration) return;
     for (const runtime of this.neighbors.values()) {
       if (runtime.state !== "established" || !runtime.localAddress) continue;
-      const previous = this.adjRibOut.get(runtime.configuration.address) ?? new Map<string, BgpRoute>();
-      const desired = new Map<string, BgpRoute>();
-      const announcements: import("../packets/bgp").BgpNlri[] = [];
+      const peerIsIbgp = runtime.configuration.remoteAs === this.configuration.localAs;
+      const ipv4 = this.advertiseUnicast(runtime, "ipv4-unicast", peerIsIbgp);
+      const ipv6 = this.familyNegotiated(runtime, "ipv6-unicast")
+        ? this.advertiseUnicast(runtime, "ipv6-unicast", peerIsIbgp)
+        : { announcements: [], withdrawn: [] };
       const vpnPrevious = this.vpnv4AdjRibOut.get(runtime.configuration.address) ?? new Map<string, Vpnv4Route>();
       const vpnDesired = new Map<string, Vpnv4Route>();
       const vpnAnnouncements: Vpnv4Nlri[] = [];
-      const peerIsIbgp = runtime.configuration.remoteAs === this.configuration.localAs;
       const sendsCommunities = runtime.configuration.sendCommunityStandard === true;
-      // Aggregates are evaluated first so `summary-only` can only suppress a
-      // more-specific route on a peer that actually received the summary.
-      const suppressing: BgpAggregateConfiguration[] = [];
-      const ordered = [...this.locRib.values()].sort((a, b) =>
-        Number(this.isAggregate(b)) - Number(this.isAggregate(a))
-        || ipToInt(a.network) - ipToInt(b.network)
-        || a.prefixLength - b.prefixLength);
+      const vpnNegotiated = this.familyNegotiated(runtime, "vpnv4-unicast");
+      if (vpnNegotiated) {
+        for (const route of this.vpnv4LocRib.values()) {
+          if (route.neighborAddress === runtime.configuration.address) continue;
+          const reflection = this.reflectionDecision(route, runtime, peerIsIbgp);
+          if (!reflection.advertise) continue;
+          if (communityBlocksAdvertisement(route.communities, peerIsIbgp) !== undefined) continue;
+          const reflectedAttributes = this.reflectAttributes(route, reflection.reflect, peerIsIbgp);
+          if (reflectedAttributes === undefined) continue;
+          const key = this.vpnPrefixKey(route.routeDistinguisher, route.network, route.prefixLength);
+          const advertised: Vpnv4Route = {
+            ...route,
+            ...reflectedAttributes,
+            communities: sendsCommunities ? [...route.communities] : [],
+            routeTargets: runtime.configuration.sendCommunityExtended ? [...route.routeTargets] : [],
+            path: {
+              ...route.path,
+              asPath: peerIsIbgp ? [...route.path.asPath] : [this.configuration.localAs, ...route.path.asPath],
+              localPreference: peerIsIbgp ? route.localPreference : undefined,
+              communities: sendsCommunities && route.communities.length ? [...route.communities] : undefined,
+              originatorId: reflectedAttributes.originatorId,
+              clusterList: reflectedAttributes.clusterList.length ? [...reflectedAttributes.clusterList] : undefined,
+              reflected: reflection.reflect ? true : undefined,
+            },
+            routeId: `${this.configuration.routerId ?? this.host.id}:vpnv4:${key}`,
+          };
+          if (reflection.reflect) {
+            this.host.engine.controlProtocolBudget.consume("bgpReflectedUpdates", this.host.id);
+            this.trace("bgp-route-reflected", {
+              neighbor: runtime.configuration.address,
+              direction: "out",
+              addressFamily: "vpnv4-unicast",
+              rd: route.routeDistinguisher,
+              prefix: `${route.network}/${route.prefixLength}`,
+              originatorId: advertised.originatorId,
+              clusterList: advertised.clusterList,
+            });
+          }
+          vpnDesired.set(key, advertised);
+          if (JSON.stringify(vpnPrevious.get(key)) !== JSON.stringify(advertised)) {
+            vpnAnnouncements.push({
+              routeDistinguisher: advertised.routeDistinguisher,
+              network: advertised.network,
+              prefixLength: advertised.prefixLength,
+              routeTargets: advertised.routeTargets,
+              vpnLabel: advertised.vpnLabel,
+              nextHop: advertised.nextHop,
+              sourceVrfId: advertised.sourceVrfId,
+              path: advertised.path,
+              routeId: advertised.routeId,
+            });
+          }
+        }
+      }
+      const vpnWithdrawn = [...vpnPrevious.entries()]
+        .filter(([key]) => !vpnDesired.has(key))
+        .map(([, route]) => ({
+          routeDistinguisher: route.routeDistinguisher,
+          network: route.network,
+          prefixLength: route.prefixLength,
+        }));
+      const carries = ipv4.announcements.length || ipv4.withdrawn.length
+        || ipv6.announcements.length || ipv6.withdrawn.length
+        || vpnAnnouncements.length || vpnWithdrawn.length;
+      if (carries) {
+        this.send(runtime, {
+          kind: "bgp-update",
+          withdrawn: ipv4.withdrawn,
+          nlri: ipv4.announcements,
+          ipv6Withdrawn: ipv6.withdrawn,
+          ipv6Nlri: ipv6.announcements,
+          vpnv4Withdrawn: vpnWithdrawn,
+          vpnv4Nlri: vpnAnnouncements,
+        });
+      }
+      this.vpnv4AdjRibOut.set(runtime.configuration.address, vpnDesired);
+    }
+  }
+
+  /**
+   * The outbound path of one unicast family for one peer. Reflection, community
+   * blocking, `next-hop-self` and policy are identical in both families; only
+   * aggregation and `default-originate` are IPv4-specific, and the per-family
+   * neighbor policy binding decides which prefix lists and route maps apply.
+   */
+  private advertiseUnicast(
+    runtime: NeighborRuntime,
+    family: BgpUnicastAddressFamily,
+    peerIsIbgp: boolean,
+  ): { announcements: import("../packets/bgp").BgpNlri[]; withdrawn: Array<{ network: IpAddress; prefixLength: number }> } {
+    const empty = { announcements: [], withdrawn: [] };
+    if (!this.configuration || runtime.localAddress === undefined) return empty;
+    const ribs = this.unicast[family];
+    const policy = this.familyPolicy(runtime.configuration, family);
+    const localAddress = this.localAddressFor(runtime, family);
+    if (localAddress === undefined) return empty;
+    const previous = ribs.adjOut.get(runtime.configuration.address) ?? new Map<string, BgpRoute>();
+    const desired = new Map<string, BgpRoute>();
+    const announcements: import("../packets/bgp").BgpNlri[] = [];
+    const sendsCommunities = policy.sendCommunityStandard === true;
+    // Aggregates are evaluated first so `summary-only` can only suppress a
+    // more-specific route on a peer that actually received the summary.
+    const suppressing: BgpAggregateConfiguration[] = [];
+    const ordered = [...ribs.loc.values()].sort((a, b) =>
+      Number(this.isAggregate(b)) - Number(this.isAggregate(a))
+      || compareBgpAddresses(a.network, b.network)
+      || a.prefixLength - b.prefixLength);
+    {
       for (const route of ordered) {
         if (route.neighborAddress === runtime.configuration.address) continue;
         const summary = suppressing.find((aggregate) => this.contributorsOf(aggregate, [route]).length > 0);
@@ -1181,13 +1500,13 @@ export class BgpProcess {
         const advertised: BgpRoute = {
           ...route,
           asPath: peerIsIbgp ? [...route.asPath] : [this.configuration.localAs, ...route.asPath],
-          nextHop: (!peerIsIbgp || runtime.configuration.nextHopSelf || route.source === "local")
-            ? runtime.localAddress
+          nextHop: (!peerIsIbgp || policy.nextHopSelf || route.source === "local")
+            ? localAddress
             : route.nextHop,
           ...reflectedAttributes,
           routeId: `${this.configuration.routerId ?? this.host.id}:${route.network}/${route.prefixLength}`,
         };
-        const decision = this.routingPolicy.evaluate(advertised, this.outboundBinding(runtime.configuration), this.configuration.localAs);
+        const decision = this.routingPolicy.evaluate(advertised, this.outboundBinding(policy), this.configuration.localAs);
         this.trace(decision.action === "permit" ? "bgp-policy-permit" : "bgp-policy-deny", {
           direction: "out",
           neighbor: runtime.configuration.address,
@@ -1208,6 +1527,7 @@ export class BgpProcess {
           this.host.engine.controlProtocolBudget.consume("bgpReflectedUpdates", this.host.id);
           this.trace("bgp-route-reflected", {
             neighbor: runtime.configuration.address,
+            addressFamily: family,
             direction: "out",
             prefix: `${permitted.network}/${permitted.prefixLength}`,
             originatorId: permitted.originatorId,
@@ -1237,123 +1557,88 @@ export class BgpProcess {
           });
         }
       }
-      this.originateDefault(runtime, peerIsIbgp, previous, desired, announcements);
+      this.originateDefault(runtime, family, policy, peerIsIbgp, localAddress, previous, desired, announcements);
       const withdrawn = [...previous.entries()]
         .filter(([key]) => !desired.has(key))
         .map(([, route]) => ({ network: route.network, prefixLength: route.prefixLength }));
-      const vpnNegotiated = runtime.configuration.vpnv4Activated === true
-        && runtime.remoteAddressFamilies?.includes("vpnv4-unicast") === true;
-      if (vpnNegotiated) {
-        for (const route of this.vpnv4LocRib.values()) {
-          if (route.neighborAddress === runtime.configuration.address) continue;
-          const reflection = this.reflectionDecision(route, runtime, peerIsIbgp);
-          if (!reflection.advertise) continue;
-          if (communityBlocksAdvertisement(route.communities, peerIsIbgp) !== undefined) continue;
-          const reflectedAttributes = this.reflectAttributes(route, reflection.reflect, peerIsIbgp);
-          if (reflectedAttributes === undefined) continue;
-          const key = this.vpnPrefixKey(route.routeDistinguisher, route.network, route.prefixLength);
-          const advertised: Vpnv4Route = {
-            ...route,
-            ...reflectedAttributes,
-            communities: sendsCommunities ? [...route.communities] : [],
-            routeTargets: runtime.configuration.sendCommunityExtended ? [...route.routeTargets] : [],
-            path: {
-              ...route.path,
-              asPath: peerIsIbgp ? [...route.path.asPath] : [this.configuration.localAs, ...route.path.asPath],
-              localPreference: peerIsIbgp ? route.localPreference : undefined,
-              communities: sendsCommunities && route.communities.length ? [...route.communities] : undefined,
-              originatorId: reflectedAttributes.originatorId,
-              clusterList: reflectedAttributes.clusterList.length ? [...reflectedAttributes.clusterList] : undefined,
-              reflected: reflection.reflect ? true : undefined,
-            },
-            routeId: `${this.configuration.routerId ?? this.host.id}:vpnv4:${key}`,
-          };
-          if (reflection.reflect) {
-            this.host.engine.controlProtocolBudget.consume("bgpReflectedUpdates", this.host.id);
-            this.trace("bgp-route-reflected", {
-              neighbor: runtime.configuration.address,
-              direction: "out",
-              family: "vpnv4-unicast",
-              rd: route.routeDistinguisher,
-              prefix: `${route.network}/${route.prefixLength}`,
-              originatorId: advertised.originatorId,
-              clusterList: advertised.clusterList,
-            });
-          }
-          vpnDesired.set(key, advertised);
-          if (JSON.stringify(vpnPrevious.get(key)) !== JSON.stringify(advertised)) {
-            vpnAnnouncements.push({
-              routeDistinguisher: advertised.routeDistinguisher,
-              network: advertised.network,
-              prefixLength: advertised.prefixLength,
-              routeTargets: advertised.routeTargets,
-              vpnLabel: advertised.vpnLabel,
-              nextHop: advertised.nextHop,
-              sourceVrfId: advertised.sourceVrfId,
-              path: advertised.path,
-              routeId: advertised.routeId,
-            });
-          }
-        }
-      }
-      const vpnWithdrawn = [...vpnPrevious.entries()]
-        .filter(([key]) => !vpnDesired.has(key))
-        .map(([, route]) => ({
-          routeDistinguisher: route.routeDistinguisher,
-          network: route.network,
-          prefixLength: route.prefixLength,
-        }));
-      if (announcements.length || withdrawn.length || vpnAnnouncements.length || vpnWithdrawn.length) {
-        this.send(runtime, {
-          kind: "bgp-update",
-          withdrawn,
-          nlri: announcements,
-          vpnv4Withdrawn: vpnWithdrawn,
-          vpnv4Nlri: vpnAnnouncements,
-        });
-      }
-      this.adjRibOut.set(runtime.configuration.address, desired);
-      this.vpnv4AdjRibOut.set(runtime.configuration.address, vpnDesired);
+      ribs.adjOut.set(runtime.configuration.address, desired);
+      return { announcements, withdrawn };
     }
   }
 
+  /** Per-family neighbor policy; IPv4 keeps the flat pre-M10.13 fields. */
+  private familyPolicy(
+    neighbor: BgpNeighborConfiguration,
+    family: BgpUnicastAddressFamily,
+  ): BgpNeighborIpv6AddressFamily {
+    return family === "ipv6-unicast" ? (neighbor.ipv6 ?? {}) : {
+      nextHopSelf: neighbor.nextHopSelf,
+      prefixListIn: neighbor.prefixListIn,
+      prefixListOut: neighbor.prefixListOut,
+      routeMapIn: neighbor.routeMapIn,
+      routeMapOut: neighbor.routeMapOut,
+      sendCommunityStandard: neighbor.sendCommunityStandard,
+      routeReflectorClient: neighbor.routeReflectorClient,
+      defaultOriginate: neighbor.defaultOriginate,
+      defaultOriginateRouteMap: neighbor.defaultOriginateRouteMap,
+    };
+  }
+
   /**
-   * `neighbor <a> default-originate` advertises 0.0.0.0/0 to exactly one peer.
-   * Cisco-like educational behaviour: no local default route is required. The
-   * default is never installed locally — it only ever exists in Adj-RIB-Out.
+   * The next hop this device offers for one family. An IPv6 prefix needs an
+   * IPv6 next hop even when the session itself runs over IPv4, so the local
+   * transport address is only reusable when the families already match.
+   */
+  private localAddressFor(runtime: NeighborRuntime, family: BgpUnicastAddressFamily): IpAddress | undefined {
+    const wanted = family === "ipv6-unicast" ? "ipv6" : "ipv4";
+    if (runtime.localAddress !== undefined && ipFamilyOf(runtime.localAddress) === wanted) return runtime.localAddress;
+    return this.host.bgpNextHop(family, runtime.configuration.address, runtime.configuration.updateSource);
+  }
+
+  /**
+   * `neighbor <a> default-originate` advertises the family's default route to
+   * exactly one peer. Cisco-like educational behaviour: no local default route
+   * is required, and the default is never installed locally — it only ever
+   * exists in that peer's Adj-RIB-Out.
    */
   private originateDefault(
     runtime: NeighborRuntime,
+    family: BgpUnicastAddressFamily,
+    policy: BgpNeighborIpv6AddressFamily,
     peerIsIbgp: boolean,
+    localAddress: IpAddress,
     previous: Map<string, BgpRoute>,
     desired: Map<string, BgpRoute>,
     announcements: import("../packets/bgp").BgpNlri[],
   ): void {
-    if (!this.configuration || !runtime.configuration.defaultOriginate || !runtime.localAddress) return;
+    if (!this.configuration || !policy.defaultOriginate) return;
+    const network = family === "ipv6-unicast" ? "::" : "0.0.0.0";
     const candidate: BgpRoute = {
-      network: "0.0.0.0",
+      addressFamily: family,
+      network,
       prefixLength: 0,
       origin: "igp",
       asPath: peerIsIbgp ? [] : [this.configuration.localAs],
-      nextHop: runtime.localAddress,
+      nextHop: localAddress,
       localPreference: 100,
       med: 0,
       weight: 32_768,
       source: "local",
       neighborRouterId: this.configuration.routerId,
       learnedAtNs: 0,
-      routeId: `default-originate:${runtime.configuration.address}`,
+      routeId: `default-originate:${family}:${runtime.configuration.address}`,
       igpMetric: 0,
       communities: [],
       clusterList: [],
     };
-    const routeMapId = runtime.configuration.defaultOriginateRouteMap;
+    const routeMapId = policy.defaultOriginateRouteMap;
     const decision = routeMapId === undefined
       ? { action: "permit" as const, route: candidate, reason: "default-originate" }
       : this.routingPolicy.evaluate(candidate, { routeMapId }, this.configuration.localAs);
     if (decision.action === "deny") {
       this.trace("bgp-policy-deny", {
         direction: "out",
+        addressFamily: family,
         neighbor: runtime.configuration.address,
         routeId: candidate.routeId,
         reason: decision.reason,
@@ -1361,11 +1646,11 @@ export class BgpProcess {
       return;
     }
     const advertised = decision.route;
-    desired.set(this.prefixKey("0.0.0.0", 0), advertised);
-    this.trace("bgp-default-originated", { neighbor: runtime.configuration.address, routeMap: routeMapId });
-    if (JSON.stringify(previous.get(this.prefixKey("0.0.0.0", 0))) === JSON.stringify(advertised)) return;
+    desired.set(this.prefixKey(network, 0), advertised);
+    this.trace("bgp-default-originated", { neighbor: runtime.configuration.address, addressFamily: family, routeMap: routeMapId });
+    if (JSON.stringify(previous.get(this.prefixKey(network, 0))) === JSON.stringify(advertised)) return;
     announcements.push({
-      network: "0.0.0.0",
+      network,
       prefixLength: 0,
       routeId: advertised.routeId,
       path: {
@@ -1374,7 +1659,7 @@ export class BgpProcess {
         nextHop: advertised.nextHop,
         localPreference: peerIsIbgp ? advertised.localPreference : undefined,
         med: advertised.med,
-        communities: runtime.configuration.sendCommunityStandard && advertised.communities.length
+        communities: policy.sendCommunityStandard && advertised.communities.length
           ? advertised.communities
           : undefined,
       },
@@ -1386,22 +1671,24 @@ export class BgpProcess {
    * re-evaluated and the outbound baseline is dropped so the current policy is
    * re-applied — all without touching the TCP session or the configuration.
    */
-  softReset(address?: Ipv4, direction: "in" | "out" | "both" = "both"): void {
+  softReset(address?: IpAddress, direction: "in" | "out" | "both" = "both"): void {
     if (!this.configuration) return;
     const selected = address === undefined ? [...this.neighbors.values()] : [this.requireNeighbor(address)];
     for (const runtime of selected) {
       this.trace("bgp-soft-reevaluation", { neighbor: runtime.configuration.address, direction });
-      if (direction !== "out") this.evaluateInboundRib(runtime);
-      if (direction !== "in") this.adjRibOut.delete(runtime.configuration.address);
+      for (const family of UNICAST_FAMILIES) {
+        if (direction !== "out") this.evaluateInboundRib(runtime, family);
+        if (direction !== "in") this.unicast[family].adjOut.delete(runtime.configuration.address);
+      }
     }
-    this.recomputeLocRib();
+    for (const family of UNICAST_FAMILIES) this.recomputeLocRib(family);
     this.advertiseRoutes();
   }
 
   private traceListEvaluations(
     decision: { listEvaluations?: readonly import("../routing/route-policy").RoutePolicyListEvaluation[] },
     direction: "in" | "out",
-    neighbor: Ipv4,
+    neighbor: IpAddress,
   ): void {
     for (const evaluation of decision.listEvaluations ?? []) {
       this.trace(evaluation.policyType === "community-list" ? "community-list-evaluated" : "as-path-list-evaluated", {
@@ -1417,7 +1704,7 @@ export class BgpProcess {
   private traceCommunityChanges(
     decision: { route: BgpRoute; communitiesAdded?: readonly string[]; communitiesRemoved?: readonly string[] },
     direction: "in" | "out",
-    neighbor: Ipv4,
+    neighbor: IpAddress,
   ): void {
     const detail = { direction, neighbor, routeId: decision.route.routeId };
     if (decision.communitiesAdded?.length) {
@@ -1433,16 +1720,22 @@ export class BgpProcess {
     return this.configuration?.clusterId ?? this.configuration?.routerId ?? "0.0.0.0";
   }
 
-  /** `true` when at least one neighbor is configured as a reflector client. */
+  /** `true` when at least one neighbor is a reflector client in any family. */
   get routeReflector(): boolean {
-    return [...this.neighbors.values()].some((runtime) => runtime.configuration.routeReflectorClient === true);
+    return [...this.neighbors.values()].some((runtime) => this.isReflectorClient(runtime.configuration));
   }
 
-  routeReflectorClients(): Ipv4[] {
+  routeReflectorClients(): IpAddress[] {
     return [...this.neighbors.values()]
-      .filter((runtime) => runtime.configuration.routeReflectorClient === true)
+      .filter((runtime) => this.isReflectorClient(runtime.configuration))
       .map((runtime) => runtime.configuration.address)
-      .sort((a, b) => ipToInt(a) - ipToInt(b));
+      .sort(compareBgpAddresses);
+  }
+
+  private isReflectorClient(neighbor: BgpNeighborConfiguration, family?: BgpUnicastAddressFamily): boolean {
+    if (family === "ipv6-unicast") return neighbor.ipv6?.routeReflectorClient === true;
+    if (family === "ipv4-unicast") return neighbor.routeReflectorClient === true;
+    return neighbor.routeReflectorClient === true || neighbor.ipv6?.routeReflectorClient === true;
   }
 
   /**
@@ -1457,11 +1750,12 @@ export class BgpProcess {
     route: Pick<BgpRoute, "source" | "neighborAddress">,
     runtime: NeighborRuntime,
     peerIsIbgp: boolean,
+    family?: BgpUnicastAddressFamily,
   ): { advertise: boolean; reflect: boolean } {
     if (!peerIsIbgp || route.source !== "ibgp") return { advertise: true, reflect: false };
-    const peerIsClient = runtime.configuration.routeReflectorClient === true;
-    const learnedFromClient = route.neighborAddress !== undefined
-      && this.neighbors.get(route.neighborAddress)?.configuration.routeReflectorClient === true;
+    const peerIsClient = this.isReflectorClient(runtime.configuration, family);
+    const source = route.neighborAddress === undefined ? undefined : this.neighbors.get(route.neighborAddress);
+    const learnedFromClient = source !== undefined && this.isReflectorClient(source.configuration, family);
     if (!learnedFromClient && !peerIsClient) return { advertise: false, reflect: false };
     return { advertise: true, reflect: true };
   }
@@ -1488,10 +1782,10 @@ export class BgpProcess {
     runtime: NeighborRuntime,
     routeId: string,
     path: BgpPathAttributes,
-    family: "ipv4-unicast" | "vpnv4" = "ipv4-unicast",
+    family: BgpAddressFamily | "vpnv4" = "ipv4-unicast",
   ): boolean {
     const clusterList = path.clusterList ?? [];
-    const detail = { neighbor: runtime.configuration.address, routeId, family };
+    const detail = { neighbor: runtime.configuration.address, routeId, addressFamily: family, family };
     const routerId = this.configuration?.routerId;
     if (path.originatorId !== undefined && routerId !== undefined && path.originatorId === routerId) {
       this.trace("bgp-originator-loop-rejected", { ...detail, originatorId: path.originatorId });
@@ -1511,30 +1805,35 @@ export class BgpProcess {
     return false;
   }
 
-  private prefixKey(network: Ipv4, prefixLength: number): string {
+  private prefixKey(network: IpAddress, prefixLength: number): string {
     return `${network}/${prefixLength}`;
   }
 
-  private vpnPrefixKey(routeDistinguisher: string, network: Ipv4, prefixLength: number): string {
+  private vpnPrefixKey(routeDistinguisher: string, network: IpAddress, prefixLength: number): string {
     return `${routeDistinguisher}:${network}/${prefixLength}`;
   }
 
   private reevaluatePolicies(): void {
     if (!this.configuration) return;
-    for (const runtime of this.neighbors.values()) this.evaluateInboundRib(runtime);
-    this.recomputeLocRib();
+    for (const family of UNICAST_FAMILIES) {
+      for (const runtime of this.neighbors.values()) this.evaluateInboundRib(runtime, family);
+      this.recomputeLocRib(family);
+    }
     // Force comparison against the pre-change outbound policy result.
     this.advertiseRoutes();
   }
 
-  private evaluateInboundRib(runtime: NeighborRuntime): void {
+  private evaluateInboundRib(runtime: NeighborRuntime, family: BgpUnicastAddressFamily): void {
     if (!this.configuration) return;
-    const raw = this.rawAdjRibIn.get(runtime.configuration.address) ?? new Map<string, BgpRoute>();
+    const ribs = this.unicast[family];
+    const raw = ribs.raw.get(runtime.configuration.address) ?? new Map<string, BgpRoute>();
     const evaluated = new Map<string, BgpRoute>();
+    const policy = this.familyPolicy(runtime.configuration, family);
     for (const [key, route] of raw) {
-      const decision = this.routingPolicy.evaluate(route, this.inboundBinding(runtime.configuration), this.configuration.localAs);
+      const decision = this.routingPolicy.evaluate(route, this.inboundBinding(policy), this.configuration.localAs);
       this.trace(decision.action === "permit" ? "bgp-policy-permit" : "bgp-policy-deny", {
         direction: "in",
+        addressFamily: family,
         neighbor: runtime.configuration.address,
         routeId: route.routeId,
         reason: decision.reason,
@@ -1545,15 +1844,15 @@ export class BgpProcess {
       this.traceListEvaluations(decision, "in", runtime.configuration.address);
       if (decision.action === "permit") evaluated.set(key, decision.route);
     }
-    this.adjRibIn.set(runtime.configuration.address, evaluated);
+    ribs.adjIn.set(runtime.configuration.address, evaluated);
   }
 
-  private inboundBinding(configuration: BgpNeighborConfiguration): RoutePolicyBinding {
-    return { prefixListId: configuration.prefixListIn, routeMapId: configuration.routeMapIn };
+  private inboundBinding(policy: BgpNeighborIpv6AddressFamily): RoutePolicyBinding {
+    return { prefixListId: policy.prefixListIn, routeMapId: policy.routeMapIn };
   }
 
-  private outboundBinding(configuration: BgpNeighborConfiguration): RoutePolicyBinding {
-    return { prefixListId: configuration.prefixListOut, routeMapId: configuration.routeMapOut };
+  private outboundBinding(policy: BgpNeighborIpv6AddressFamily): RoutePolicyBinding {
+    return { prefixListId: policy.prefixListOut, routeMapId: policy.routeMapOut };
   }
 
   private trace(type: string, detail: Readonly<Record<string, unknown>>): void {
