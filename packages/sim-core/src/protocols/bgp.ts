@@ -12,6 +12,7 @@ import type { HostTransportStack } from "../transport/host-transport";
 import type { Ipv4 } from "../util/ipv4";
 import { intToIp, ipToInt, maskToInt } from "../util/ipv4";
 import { ControlProtocolConfigurationError, enforceStructuralLimit } from "./limits";
+import { RoutingPolicyEngine, type RoutePolicyBinding } from "../routing/route-policy";
 
 export const DEFAULT_BGP_KEEPALIVE_SECONDS = 60;
 export const DEFAULT_BGP_HOLD_SECONDS = 180;
@@ -32,6 +33,10 @@ export interface BgpNeighborConfiguration {
   readonly ebgpMultihop?: number;
   readonly enabled?: boolean;
   readonly nextHopSelf?: boolean;
+  readonly prefixListIn?: string;
+  readonly prefixListOut?: string;
+  readonly routeMapIn?: string;
+  readonly routeMapOut?: string;
 }
 
 export interface BgpNetworkStatement {
@@ -156,8 +161,10 @@ function validateTimer(value: number, field: string, maximum: number): void {
  * parts of the simulation instead of direct process-to-process calls.
  */
 export class BgpProcess {
+  readonly routingPolicy = new RoutingPolicyEngine(() => this.reevaluatePolicies());
   private configuration: BgpConfiguration | undefined;
   private readonly neighbors = new Map<Ipv4, NeighborRuntime>();
+  private readonly rawAdjRibIn = new Map<Ipv4, Map<string, BgpRoute>>();
   private readonly adjRibIn = new Map<Ipv4, Map<string, BgpRoute>>();
   private readonly locRib = new Map<string, BgpRoute>();
   private readonly adjRibOut = new Map<Ipv4, Map<string, BgpRoute>>();
@@ -233,6 +240,7 @@ export class BgpProcess {
     this.configuration = undefined;
     this.neighbors.clear();
     this.adjRibIn.clear();
+    this.rawAdjRibIn.clear();
     this.locRib.clear();
     this.adjRibOut.clear();
     this.ribFailures.clear();
@@ -521,6 +529,7 @@ export class BgpProcess {
   private onTcpClosed(runtime: NeighborRuntime, reason: string): void {
     if (!runtime.connection) return;
     runtime.connection = undefined;
+    this.rawAdjRibIn.delete(runtime.configuration.address);
     this.adjRibIn.delete(runtime.configuration.address);
     this.adjRibOut.delete(runtime.configuration.address);
     this.recomputeLocRib();
@@ -561,9 +570,9 @@ export class BgpProcess {
 
   private applyUpdate(runtime: NeighborRuntime, message: Extract<BgpMessage, { kind: "bgp-update" }>): void {
     if (!this.configuration) return;
-    const rib = this.adjRibIn.get(runtime.configuration.address) ?? new Map<string, BgpRoute>();
-    for (const withdrawn of message.withdrawn) rib.delete(this.prefixKey(withdrawn.network, withdrawn.prefixLength));
-    enforceStructuralLimit("maximumBgpPrefixesPerPeer", rib.size + message.nlri.length);
+    const rawRib = this.rawAdjRibIn.get(runtime.configuration.address) ?? new Map<string, BgpRoute>();
+    for (const withdrawn of message.withdrawn) rawRib.delete(this.prefixKey(withdrawn.network, withdrawn.prefixLength));
+    enforceStructuralLimit("maximumBgpPrefixesPerPeer", rawRib.size + message.nlri.length);
     for (const nlri of message.nlri) {
       if (nlri.prefixLength < 0 || nlri.prefixLength > 32 || nlri.path.asPath.length > 256) {
         this.trace("bgp-route-rejected", { neighbor: runtime.configuration.address, routeId: nlri.routeId, reason: "malformed NLRI" });
@@ -591,9 +600,10 @@ export class BgpProcess {
         routeId: nlri.routeId,
         igpMetric: igpMetric ?? Number.MAX_SAFE_INTEGER,
       };
-      rib.set(this.prefixKey(route.network, route.prefixLength), route);
+      rawRib.set(this.prefixKey(route.network, route.prefixLength), route);
     }
-    this.adjRibIn.set(runtime.configuration.address, rib);
+    this.rawAdjRibIn.set(runtime.configuration.address, rawRib);
+    this.evaluateInboundRib(runtime);
     this.recomputeLocRib();
     this.advertiseRoutes();
   }
@@ -667,18 +677,27 @@ export class BgpProcess {
             : route.nextHop,
           routeId: `${this.configuration.routerId ?? this.host.id}:${route.network}/${route.prefixLength}`,
         };
-        desired.set(this.prefixKey(route.network, route.prefixLength), advertised);
-        if (JSON.stringify(previous.get(this.prefixKey(route.network, route.prefixLength))) !== JSON.stringify(advertised)) {
+        const decision = this.routingPolicy.evaluate(advertised, this.outboundBinding(runtime.configuration), this.configuration.localAs);
+        this.trace(decision.action === "permit" ? "bgp-policy-permit" : "bgp-policy-deny", {
+          direction: "out",
+          neighbor: runtime.configuration.address,
+          routeId: advertised.routeId,
+          reason: decision.reason,
+        });
+        if (decision.action === "deny") continue;
+        const permitted = decision.route;
+        desired.set(this.prefixKey(route.network, route.prefixLength), permitted);
+        if (JSON.stringify(previous.get(this.prefixKey(route.network, route.prefixLength))) !== JSON.stringify(permitted)) {
           announcements.push({
-            network: advertised.network,
-            prefixLength: advertised.prefixLength,
-            routeId: advertised.routeId,
+            network: permitted.network,
+            prefixLength: permitted.prefixLength,
+            routeId: permitted.routeId,
             path: {
-              origin: advertised.origin,
-              asPath: advertised.asPath,
-              nextHop: advertised.nextHop,
-              localPreference: peerIsIbgp ? advertised.localPreference : undefined,
-              med: advertised.med,
+              origin: permitted.origin,
+              asPath: permitted.asPath,
+              nextHop: permitted.nextHop,
+              localPreference: peerIsIbgp ? permitted.localPreference : undefined,
+              med: permitted.med,
             },
           });
         }
@@ -695,6 +714,41 @@ export class BgpProcess {
 
   private prefixKey(network: Ipv4, prefixLength: number): string {
     return `${network}/${prefixLength}`;
+  }
+
+  private reevaluatePolicies(): void {
+    if (!this.configuration) return;
+    for (const runtime of this.neighbors.values()) this.evaluateInboundRib(runtime);
+    this.recomputeLocRib();
+    // Force comparison against the pre-change outbound policy result.
+    this.advertiseRoutes();
+  }
+
+  private evaluateInboundRib(runtime: NeighborRuntime): void {
+    if (!this.configuration) return;
+    const raw = this.rawAdjRibIn.get(runtime.configuration.address) ?? new Map<string, BgpRoute>();
+    const evaluated = new Map<string, BgpRoute>();
+    for (const [key, route] of raw) {
+      const decision = this.routingPolicy.evaluate(route, this.inboundBinding(runtime.configuration), this.configuration.localAs);
+      this.trace(decision.action === "permit" ? "bgp-policy-permit" : "bgp-policy-deny", {
+        direction: "in",
+        neighbor: runtime.configuration.address,
+        routeId: route.routeId,
+        reason: decision.reason,
+        matchedPrefixListSequence: decision.matchedPrefixListSequence,
+        matchedRouteMapSequence: decision.matchedRouteMapSequence,
+      });
+      if (decision.action === "permit") evaluated.set(key, decision.route);
+    }
+    this.adjRibIn.set(runtime.configuration.address, evaluated);
+  }
+
+  private inboundBinding(configuration: BgpNeighborConfiguration): RoutePolicyBinding {
+    return { prefixListId: configuration.prefixListIn, routeMapId: configuration.routeMapIn };
+  }
+
+  private outboundBinding(configuration: BgpNeighborConfiguration): RoutePolicyBinding {
+    return { prefixListId: configuration.prefixListOut, routeMapId: configuration.routeMapOut };
   }
 
   private trace(type: string, detail: Readonly<Record<string, unknown>>): void {
