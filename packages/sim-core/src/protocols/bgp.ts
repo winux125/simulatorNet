@@ -29,6 +29,9 @@ export const BGP_ACTIVITY_QUIESCENCE_ROUNDS = 4;
 export const BGP_MAXIMUM_ACTIVITY_TICKS = 64;
 export const BGP_ACTIVITY_WINDOW_SECONDS = 30;
 
+/** Route-ID namespace that marks a locally originated `aggregate-address`. */
+const AGGREGATE_ROUTE_PREFIX = "aggregate:";
+
 export type BgpSessionState =
   | "idle"
   | "connect"
@@ -55,6 +58,19 @@ export interface BgpNeighborConfiguration {
   readonly sendCommunityStandard?: boolean;
   /** iBGP peer this device reflects for; invalid on an eBGP neighbor. */
   readonly routeReflectorClient?: boolean;
+  /** `neighbor <a> default-originate`: 0.0.0.0/0 for this peer only. */
+  readonly defaultOriginate?: boolean;
+  /** Bounded route-map deciding whether default-originate advertises. */
+  readonly defaultOriginateRouteMap?: string;
+}
+
+export interface BgpAggregateConfiguration {
+  readonly prefix: Ipv4;
+  readonly prefixLength: number;
+  /** Advertise only the summary; more-specific routes stay in the Loc-RIB. */
+  readonly summaryOnly?: boolean;
+  /** Carry the deterministic sorted set of contributing ASNs in AS_PATH. */
+  readonly asSet?: boolean;
 }
 
 export interface BgpNetworkStatement {
@@ -71,7 +87,20 @@ export interface BgpConfiguration {
   readonly clusterId?: Ipv4;
   readonly neighbors?: readonly BgpNeighborConfiguration[];
   readonly networks?: readonly BgpNetworkStatement[];
+  readonly aggregates?: readonly BgpAggregateConfiguration[];
   readonly vrfAddressFamilies?: readonly BgpVrfAddressFamilyConfiguration[];
+}
+
+export interface BgpAggregateSummary extends BgpAggregateConfiguration {
+  readonly active: boolean;
+  readonly contributingRoutes: number;
+  readonly suppressedRoutes: number;
+}
+
+export interface BgpSuppressedRoute {
+  readonly network: Ipv4;
+  readonly prefixLength: number;
+  readonly aggregate: string;
 }
 
 export interface BgpVrfAddressFamilyConfiguration {
@@ -251,6 +280,8 @@ export class BgpProcess {
   private readonly vpnv4AdjRibIn = new Map<Ipv4, Map<string, Vpnv4Route>>();
   private readonly vpnv4LocRib = new Map<string, Vpnv4Route>();
   private readonly vpnv4AdjRibOut = new Map<Ipv4, Map<string, Vpnv4Route>>();
+  /** Aggregates that currently have a contributing route, for change tracing. */
+  private readonly activeAggregates = new Set<string>();
   private listening = false;
   private activity: ProtocolActivity | undefined;
   private activityRounds = 1;
@@ -318,6 +349,22 @@ export class BgpProcess {
         throw new ControlProtocolConfigurationError("BGP network statement must use a canonical network address", "networks");
       }
     }
+    const aggregates = [...(configuration.aggregates ?? [])];
+    enforceStructuralLimit("maximumBgpAggregatesPerDevice", aggregates.length);
+    const seenAggregates = new Set<string>();
+    for (const aggregate of aggregates) {
+      if (!Number.isInteger(aggregate.prefixLength) || aggregate.prefixLength < 0 || aggregate.prefixLength > 31) {
+        throw new ControlProtocolConfigurationError("An aggregate prefix length must be between 0 and 31", "aggregates");
+      }
+      if (((ipToInt(aggregate.prefix) & maskToInt(aggregate.prefixLength)) >>> 0) !== ipToInt(aggregate.prefix)) {
+        throw new ControlProtocolConfigurationError("An aggregate must use a canonical network address", "aggregates");
+      }
+      const key = `${aggregate.prefix}/${aggregate.prefixLength}`;
+      if (seenAggregates.has(key)) {
+        throw new ControlProtocolConfigurationError(`Duplicate aggregate-address ${key}`, "aggregates");
+      }
+      seenAggregates.add(key);
+    }
     const vrfAddressFamilies = [...(configuration.vrfAddressFamilies ?? [])];
     const vrfIds = new Set<string>();
     for (const family of vrfAddressFamilies) {
@@ -327,7 +374,7 @@ export class BgpProcess {
       vrfIds.add(family.vrfId);
     }
     this.resetRuntime(false);
-    this.configuration = { ...configuration, keepaliveSeconds, holdTimeSeconds, neighbors: configured, networks, vrfAddressFamilies };
+    this.configuration = { ...configuration, keepaliveSeconds, holdTimeSeconds, neighbors: configured, networks, aggregates, vrfAddressFamilies };
     this.activityRounds = Math.max(
       1,
       Math.min(BGP_ACTIVITY_QUIESCENCE_ROUNDS, Math.floor(BGP_ACTIVITY_WINDOW_SECONDS / Math.max(1, keepaliveSeconds))),
@@ -488,11 +535,16 @@ export class BgpProcess {
 
   configurationSnapshot(): BgpConfiguration | undefined {
     if (!this.configuration) return undefined;
+    const { aggregates: configured, ...rest } = this.configuration;
+    const aggregates = [...(configured ?? [])].map((aggregate) => ({ ...aggregate }));
     return {
-      ...this.configuration,
-      neighbors: [...(this.configuration.neighbors ?? [])].map((neighbor) => ({ ...neighbor })),
-      networks: [...(this.configuration.networks ?? [])].map((network) => ({ ...network })),
-      vrfAddressFamilies: [...(this.configuration.vrfAddressFamilies ?? [])].map((family) => ({ ...family })),
+      ...rest,
+      neighbors: [...(rest.neighbors ?? [])].map((neighbor) => ({ ...neighbor })),
+      networks: [...(rest.networks ?? [])].map((network) => ({ ...network })),
+      // Omitted rather than emitted empty, so a lab that configures no
+      // aggregate serializes exactly as it did before M10.12.
+      ...(aggregates.length ? { aggregates } : {}),
+      vrfAddressFamilies: [...(rest.vrfAddressFamilies ?? [])].map((family) => ({ ...family })),
     };
   }
 
@@ -885,8 +937,108 @@ export class BgpProcess {
       }));
   }
 
+  /** `true` for a route this process originated from `aggregate-address`. */
+  private isAggregate(route: BgpRoute): boolean {
+    return route.source === "local" && route.routeId.startsWith(AGGREGATE_ROUTE_PREFIX);
+  }
+
+  private aggregateOf(route: BgpRoute): BgpAggregateConfiguration | undefined {
+    if (!this.isAggregate(route)) return undefined;
+    return this.configuration?.aggregates?.find((aggregate) =>
+      aggregate.prefix === route.network && aggregate.prefixLength === route.prefixLength);
+  }
+
+  private contributorsOf(aggregate: BgpAggregateConfiguration, candidates: readonly BgpRoute[]): BgpRoute[] {
+    const mask = maskToInt(aggregate.prefixLength);
+    const network = ipToInt(aggregate.prefix);
+    return candidates.filter((route) => route.prefixLength > aggregate.prefixLength
+      && ((ipToInt(route.network) & mask) >>> 0) === network);
+  }
+
+  /**
+   * One summary per configured aggregate that has at least one contributing
+   * more-specific path. ORIGIN is INCOMPLETE, the next hop is local and the
+   * community set is the bounded canonical union of the contributing paths, so
+   * a summary can still carry `no-export` from the routes it represents.
+   */
+  private aggregateCandidates(candidates: readonly BgpRoute[]): BgpRoute[] {
+    const configured = this.configuration?.aggregates ?? [];
+    if (!configured.length) return [];
+    const routerId = this.configuration?.routerId ?? "0.0.0.0";
+    const produced: BgpRoute[] = [];
+    const active = new Set<string>();
+    for (const aggregate of configured) {
+      const key = `${aggregate.prefix}/${aggregate.prefixLength}`;
+      const contributors = this.contributorsOf(aggregate, candidates);
+      if (!contributors.length) continue;
+      active.add(key);
+      const asSet = aggregate.asSet
+        ? [...new Set(contributors.flatMap((route) => route.asPath))].sort((a, b) => a - b)
+          .slice(0, DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumBgpClusterListLength)
+        : [];
+      const communities = normalizeBgpCommunities(contributors.flatMap((route) => route.communities))
+        .slice(0, DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumBgpCommunitiesPerRoute);
+      produced.push({
+        network: aggregate.prefix,
+        prefixLength: aggregate.prefixLength,
+        origin: "incomplete",
+        asPath: asSet,
+        nextHop: "0.0.0.0",
+        localPreference: 100,
+        med: 0,
+        weight: 32_768,
+        source: "local",
+        neighborRouterId: routerId,
+        learnedAtNs: 0,
+        routeId: `${AGGREGATE_ROUTE_PREFIX}${key}`,
+        igpMetric: 0,
+        communities,
+        clusterList: [],
+      });
+    }
+    for (const key of active) {
+      if (!this.activeAggregates.has(key)) {
+        this.trace("bgp-aggregate-originated", { prefix: key, contributingRoutes: this.activeAggregates.size });
+      }
+    }
+    for (const key of this.activeAggregates) {
+      if (!active.has(key)) this.trace("bgp-aggregate-withdrawn", { prefix: key, reason: "no contributing route" });
+    }
+    this.activeAggregates.clear();
+    for (const key of active) this.activeAggregates.add(key);
+    return produced;
+  }
+
+  /** Configured aggregates with their live contribution and suppression counts. */
+  aggregateSummaries(): BgpAggregateSummary[] {
+    const candidates = [...this.locRib.values()].filter((route) => !this.isAggregate(route));
+    return (this.configuration?.aggregates ?? []).map((aggregate) => {
+      const contributors = this.contributorsOf(aggregate, candidates);
+      return {
+        ...aggregate,
+        active: this.activeAggregates.has(`${aggregate.prefix}/${aggregate.prefixLength}`),
+        contributingRoutes: contributors.length,
+        suppressedRoutes: aggregate.summaryOnly ? contributors.length : 0,
+      };
+    }).sort((a, b) => ipToInt(a.prefix) - ipToInt(b.prefix) || a.prefixLength - b.prefixLength);
+  }
+
+  /** More-specific routes a `summary-only` aggregate hides from advertisements. */
+  suppressedRoutes(): BgpSuppressedRoute[] {
+    const candidates = [...this.locRib.values()].filter((route) => !this.isAggregate(route));
+    return (this.configuration?.aggregates ?? [])
+      .filter((aggregate) => aggregate.summaryOnly && this.activeAggregates.has(`${aggregate.prefix}/${aggregate.prefixLength}`))
+      .flatMap((aggregate) => this.contributorsOf(aggregate, candidates).map((route) => ({
+        network: route.network,
+        prefixLength: route.prefixLength,
+        aggregate: `${aggregate.prefix}/${aggregate.prefixLength}`,
+      })))
+      .sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || a.prefixLength - b.prefixLength);
+  }
+
   private recomputeLocRib(): void {
-    const candidates = [...this.localCandidates(), ...this.adjRibInEntries()];
+    const learned = [...this.localCandidates(), ...this.adjRibInEntries()];
+    const candidates = [...learned, ...this.aggregateCandidates(learned)];
     const groups = new Map<string, BgpRoute[]>();
     this.ribFailures.clear();
     for (const route of candidates) {
@@ -988,8 +1140,24 @@ export class BgpProcess {
       const vpnAnnouncements: Vpnv4Nlri[] = [];
       const peerIsIbgp = runtime.configuration.remoteAs === this.configuration.localAs;
       const sendsCommunities = runtime.configuration.sendCommunityStandard === true;
-      for (const route of this.locRib.values()) {
+      // Aggregates are evaluated first so `summary-only` can only suppress a
+      // more-specific route on a peer that actually received the summary.
+      const suppressing: BgpAggregateConfiguration[] = [];
+      const ordered = [...this.locRib.values()].sort((a, b) =>
+        Number(this.isAggregate(b)) - Number(this.isAggregate(a))
+        || ipToInt(a.network) - ipToInt(b.network)
+        || a.prefixLength - b.prefixLength);
+      for (const route of ordered) {
         if (route.neighborAddress === runtime.configuration.address) continue;
+        const summary = suppressing.find((aggregate) => this.contributorsOf(aggregate, [route]).length > 0);
+        if (summary) {
+          this.trace("bgp-specific-suppressed", {
+            neighbor: runtime.configuration.address,
+            prefix: `${route.network}/${route.prefixLength}`,
+            aggregate: `${summary.prefix}/${summary.prefixLength}`,
+          });
+          continue;
+        }
         const reflection = this.reflectionDecision(route, runtime, peerIsIbgp);
         if (!reflection.advertise) continue;
         const blocked = communityBlocksAdvertisement(route.communities, peerIsIbgp);
@@ -1027,6 +1195,7 @@ export class BgpProcess {
           reason: decision.reason,
         });
         this.traceCommunityChanges(decision, "out", runtime.configuration.address);
+        this.traceListEvaluations(decision, "out", runtime.configuration.address);
         if (decision.action === "deny") continue;
         // Adj-RIB-Out stores exactly what leaves this device: without
         // `send-community` the peer never learns the attribute, so the
@@ -1046,6 +1215,8 @@ export class BgpProcess {
           });
         }
         desired.set(this.prefixKey(route.network, route.prefixLength), permitted);
+        const aggregate = this.aggregateOf(route);
+        if (aggregate?.summaryOnly) suppressing.push(aggregate);
         if (JSON.stringify(previous.get(this.prefixKey(route.network, route.prefixLength))) !== JSON.stringify(permitted)) {
           announcements.push({
             network: permitted.network,
@@ -1061,10 +1232,12 @@ export class BgpProcess {
               originatorId: permitted.originatorId,
               clusterList: permitted.clusterList.length ? permitted.clusterList : undefined,
               reflected: reflection.reflect ? true : undefined,
+              aggregatorAsSet: aggregate?.asSet && permitted.asPath.length ? [...permitted.asPath] : undefined,
             },
           });
         }
       }
+      this.originateDefault(runtime, peerIsIbgp, previous, desired, announcements);
       const withdrawn = [...previous.entries()]
         .filter(([key]) => !desired.has(key))
         .map(([, route]) => ({ network: route.network, prefixLength: route.prefixLength }));
@@ -1141,6 +1314,103 @@ export class BgpProcess {
       }
       this.adjRibOut.set(runtime.configuration.address, desired);
       this.vpnv4AdjRibOut.set(runtime.configuration.address, vpnDesired);
+    }
+  }
+
+  /**
+   * `neighbor <a> default-originate` advertises 0.0.0.0/0 to exactly one peer.
+   * Cisco-like educational behaviour: no local default route is required. The
+   * default is never installed locally — it only ever exists in Adj-RIB-Out.
+   */
+  private originateDefault(
+    runtime: NeighborRuntime,
+    peerIsIbgp: boolean,
+    previous: Map<string, BgpRoute>,
+    desired: Map<string, BgpRoute>,
+    announcements: import("../packets/bgp").BgpNlri[],
+  ): void {
+    if (!this.configuration || !runtime.configuration.defaultOriginate || !runtime.localAddress) return;
+    const candidate: BgpRoute = {
+      network: "0.0.0.0",
+      prefixLength: 0,
+      origin: "igp",
+      asPath: peerIsIbgp ? [] : [this.configuration.localAs],
+      nextHop: runtime.localAddress,
+      localPreference: 100,
+      med: 0,
+      weight: 32_768,
+      source: "local",
+      neighborRouterId: this.configuration.routerId,
+      learnedAtNs: 0,
+      routeId: `default-originate:${runtime.configuration.address}`,
+      igpMetric: 0,
+      communities: [],
+      clusterList: [],
+    };
+    const routeMapId = runtime.configuration.defaultOriginateRouteMap;
+    const decision = routeMapId === undefined
+      ? { action: "permit" as const, route: candidate, reason: "default-originate" }
+      : this.routingPolicy.evaluate(candidate, { routeMapId }, this.configuration.localAs);
+    if (decision.action === "deny") {
+      this.trace("bgp-policy-deny", {
+        direction: "out",
+        neighbor: runtime.configuration.address,
+        routeId: candidate.routeId,
+        reason: decision.reason,
+      });
+      return;
+    }
+    const advertised = decision.route;
+    desired.set(this.prefixKey("0.0.0.0", 0), advertised);
+    this.trace("bgp-default-originated", { neighbor: runtime.configuration.address, routeMap: routeMapId });
+    if (JSON.stringify(previous.get(this.prefixKey("0.0.0.0", 0))) === JSON.stringify(advertised)) return;
+    announcements.push({
+      network: "0.0.0.0",
+      prefixLength: 0,
+      routeId: advertised.routeId,
+      path: {
+        origin: advertised.origin,
+        asPath: advertised.asPath,
+        nextHop: advertised.nextHop,
+        localPreference: peerIsIbgp ? advertised.localPreference : undefined,
+        med: advertised.med,
+        communities: runtime.configuration.sendCommunityStandard && advertised.communities.length
+          ? advertised.communities
+          : undefined,
+      },
+    });
+  }
+
+  /**
+   * Deterministic soft reconfiguration. The stored raw Adj-RIB-In is
+   * re-evaluated and the outbound baseline is dropped so the current policy is
+   * re-applied — all without touching the TCP session or the configuration.
+   */
+  softReset(address?: Ipv4, direction: "in" | "out" | "both" = "both"): void {
+    if (!this.configuration) return;
+    const selected = address === undefined ? [...this.neighbors.values()] : [this.requireNeighbor(address)];
+    for (const runtime of selected) {
+      this.trace("bgp-soft-reevaluation", { neighbor: runtime.configuration.address, direction });
+      if (direction !== "out") this.evaluateInboundRib(runtime);
+      if (direction !== "in") this.adjRibOut.delete(runtime.configuration.address);
+    }
+    this.recomputeLocRib();
+    this.advertiseRoutes();
+  }
+
+  private traceListEvaluations(
+    decision: { listEvaluations?: readonly import("../routing/route-policy").RoutePolicyListEvaluation[] },
+    direction: "in" | "out",
+    neighbor: Ipv4,
+  ): void {
+    for (const evaluation of decision.listEvaluations ?? []) {
+      this.trace(evaluation.policyType === "community-list" ? "community-list-evaluated" : "as-path-list-evaluated", {
+        direction,
+        neighbor,
+        policyId: evaluation.policyId,
+        sequence: evaluation.sequence,
+        result: evaluation.action,
+      });
     }
   }
 
@@ -1272,6 +1542,7 @@ export class BgpProcess {
         matchedRouteMapSequence: decision.matchedRouteMapSequence,
       });
       this.traceCommunityChanges(decision, "in", runtime.configuration.address);
+      this.traceListEvaluations(decision, "in", runtime.configuration.address);
       if (decision.action === "permit") evaluated.set(key, decision.route);
     }
     this.adjRibIn.set(runtime.configuration.address, evaluated);

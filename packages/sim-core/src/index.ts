@@ -75,6 +75,7 @@ export * from "./packets/dhcpv6";
 // Reusable L3 packet policy (Router, L3 switch, and future Firewall)
 export * from "./policy/packet-policy-engine";
 export * from "./policy/nat-engine";
+export * from "./routing/bgp-as-path";
 export * from "./routing/bgp-community";
 export * from "./routing/route-policy";
 export * from "./routing/vrf";

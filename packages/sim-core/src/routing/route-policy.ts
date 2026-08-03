@@ -1,8 +1,18 @@
 import type { BgpRoute, BgpRouteSource } from "../protocols/bgp";
 import type { Ipv4 } from "../util/ipv4";
 import { ipToInt, maskToInt } from "../util/ipv4";
-import { ControlProtocolConfigurationError } from "../protocols/limits";
+import {
+  ControlProtocolConfigurationError,
+  DEFAULT_CONTROL_PROTOCOL_LIMITS,
+  enforceStructuralLimit,
+} from "../protocols/limits";
 import { normalizeBgpCommunities } from "./bgp-community";
+import {
+  matchesAsPath,
+  validateAsPathMatcher,
+  validateAsPathPrepend,
+  type AsPathMatcher,
+} from "./bgp-as-path";
 
 export type RoutePolicyAction = "permit" | "deny";
 
@@ -20,18 +30,49 @@ export interface PrefixList {
   readonly entries: readonly PrefixListEntry[];
 }
 
+export interface CommunityListEntry {
+  readonly sequence: number;
+  readonly action: RoutePolicyAction;
+  /** Every community listed here must be present for the entry to match. */
+  readonly communities: readonly string[];
+}
+
+export interface CommunityList {
+  readonly id: string;
+  readonly entries: readonly CommunityListEntry[];
+}
+
+export interface AsPathListEntry {
+  readonly sequence: number;
+  readonly action: RoutePolicyAction;
+  readonly matcher: AsPathMatcher;
+}
+
+export interface AsPathList {
+  readonly id: string;
+  readonly entries: readonly AsPathListEntry[];
+}
+
 export interface RouteMatch {
   readonly prefixListIds?: readonly string[];
   readonly neighbor?: Ipv4;
   readonly maximumAsPathLength?: number;
   readonly source?: BgpRouteSource;
+  /** `match community <list>...`; OR across lists unless `communityMatchAll`. */
+  readonly communityListIds?: readonly string[];
+  readonly communityMatchAll?: boolean;
+  /** `match as-path <list>...`; OR across lists. */
+  readonly asPathListIds?: readonly string[];
 }
 
 export interface RouteSetAction {
   readonly localPreference?: number;
   readonly med?: number;
   readonly weight?: number;
+  /** `set as-path prepend <local-as> * n` kept for documents written before M10.12. */
   readonly prependLocalAs?: number;
+  /** `set as-path prepend <asn>...`: an explicit, bounded AS list. */
+  readonly prependAsns?: readonly number[];
   readonly origin?: BgpRoute["origin"];
   /** `set community <value>...`; replaces the set unless `communityAdditive`. */
   readonly communities?: readonly string[];
@@ -70,10 +111,19 @@ export interface RoutePolicyDecision {
    */
   readonly communitiesAdded?: readonly string[];
   readonly communitiesRemoved?: readonly string[];
+  /** Community/AS-path list evaluations the BGP process turns into trace events. */
+  readonly listEvaluations?: readonly RoutePolicyListEvaluation[];
+}
+
+export interface RoutePolicyListEvaluation {
+  readonly policyType: "community-list" | "as-path-list";
+  readonly policyId: string;
+  readonly sequence?: number;
+  readonly action: RoutePolicyAction;
 }
 
 export interface RoutePolicyCounter {
-  readonly policyType: "prefix-list" | "route-map";
+  readonly policyType: "prefix-list" | "route-map" | "community-list" | "as-path-list";
   readonly policyId: string;
   readonly sequence: number;
   readonly matches: number;
@@ -116,6 +166,16 @@ export function applyCommunitySet(
   return normalizeBgpCommunities(set.communityAdditive ? [...current, ...set.communities] : set.communities);
 }
 
+/** Copy the named readonly arrays without ever adding an `undefined` key. */
+function cloneArrayFields<T extends object>(value: T, fields: readonly (keyof T)[]): T {
+  const clone = { ...value };
+  for (const field of fields) {
+    const entry = clone[field];
+    if (Array.isArray(entry)) clone[field] = [...entry] as T[keyof T];
+  }
+  return clone;
+}
+
 interface MutableCounter {
   policyType: RoutePolicyCounter["policyType"];
   policyId: string;
@@ -129,9 +189,75 @@ interface MutableCounter {
 export class RoutingPolicyEngine {
   private readonly prefixLists = new Map<string, PrefixList>();
   private readonly routeMaps = new Map<string, RouteMap>();
+  private readonly communityLists = new Map<string, CommunityList>();
+  private readonly asPathLists = new Map<string, AsPathList>();
   private readonly counters = new Map<string, MutableCounter>();
+  /** Collected during one `evaluate` call; drained into the decision. */
+  private evaluations: RoutePolicyListEvaluation[] = [];
 
   constructor(private readonly onChanged: () => void = () => undefined) {}
+
+  setCommunityLists(communityLists: readonly CommunityList[]): void {
+    enforceStructuralLimit("maximumBgpCommunityListsPerDevice", communityLists.length);
+    const next = new Map<string, CommunityList>();
+    for (const list of communityLists) {
+      if (!list.id.trim()) throw new ControlProtocolConfigurationError("Community-list name is required", "communityList.id");
+      if (next.has(list.id)) throw new ControlProtocolConfigurationError(`Duplicate community-list ${list.id}`, "communityLists");
+      enforceStructuralLimit("maximumBgpCommunityListEntriesPerList", list.entries.length);
+      const seen = new Set<number>();
+      const entries = [...list.entries]
+        .sort((a, b) => a.sequence - b.sequence)
+        .map((entry) => {
+          validateSequence(entry.sequence, "communityList.sequence");
+          if (seen.has(entry.sequence)) {
+            throw new ControlProtocolConfigurationError(`Duplicate community-list sequence ${entry.sequence}`, "communityList.sequence");
+          }
+          seen.add(entry.sequence);
+          if (!entry.communities.length) {
+            throw new ControlProtocolConfigurationError("A community-list entry needs at least one community", "communityList.communities");
+          }
+          return { ...entry, communities: normalizeBgpCommunities(entry.communities, "communityList.communities") };
+        });
+      next.set(list.id, { id: list.id, entries });
+    }
+    this.communityLists.clear();
+    for (const [id, list] of next) this.communityLists.set(id, list);
+    this.onChanged();
+  }
+
+  setAsPathLists(asPathLists: readonly AsPathList[]): void {
+    enforceStructuralLimit("maximumBgpAsPathListsPerDevice", asPathLists.length);
+    const next = new Map<string, AsPathList>();
+    for (const list of asPathLists) {
+      if (!list.id.trim()) throw new ControlProtocolConfigurationError("AS-path list name is required", "asPathList.id");
+      if (next.has(list.id)) throw new ControlProtocolConfigurationError(`Duplicate AS-path list ${list.id}`, "asPathLists");
+      enforceStructuralLimit("maximumBgpAsPathListEntriesPerList", list.entries.length);
+      const seen = new Set<number>();
+      const entries = [...list.entries].sort((a, b) => a.sequence - b.sequence);
+      for (const entry of entries) {
+        validateSequence(entry.sequence, "asPathList.sequence");
+        if (seen.has(entry.sequence)) {
+          throw new ControlProtocolConfigurationError(`Duplicate AS-path list sequence ${entry.sequence}`, "asPathList.sequence");
+        }
+        seen.add(entry.sequence);
+        validateAsPathMatcher(entry.matcher);
+      }
+      next.set(list.id, { id: list.id, entries });
+    }
+    this.asPathLists.clear();
+    for (const [id, list] of next) this.asPathLists.set(id, list);
+    this.onChanged();
+  }
+
+  communityListConfigurations(): CommunityList[] {
+    return [...this.communityLists.values()]
+      .map((list) => ({ ...list, entries: list.entries.map((entry) => ({ ...entry, communities: [...entry.communities] })) }));
+  }
+
+  asPathListConfigurations(): AsPathList[] {
+    return [...this.asPathLists.values()]
+      .map((list) => ({ ...list, entries: list.entries.map((entry) => ({ ...entry, matcher: { ...entry.matcher } })) }));
+  }
 
   setPrefixLists(prefixLists: readonly PrefixList[]): void {
     const next = new Map<string, PrefixList>();
@@ -183,6 +309,9 @@ export class RoutingPolicyEngine {
         if (prepend !== undefined && (!Number.isInteger(prepend) || prepend < 1 || prepend > 10)) {
           throw new ControlProtocolConfigurationError("AS prepend count must be between 1 and 10", "routeMap.prependLocalAs");
         }
+        if (sequence.set?.prependAsns !== undefined) {
+          validateAsPathPrepend(sequence.set.prependAsns, DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumBgpAsPathPrependLength);
+        }
         if (sequence.set?.communities !== undefined) normalizeBgpCommunities(sequence.set.communities, "routeMap.communities");
         if (sequence.set?.communityNone && sequence.set.communities?.length) {
           throw new ControlProtocolConfigurationError("'set community none' cannot be combined with community values", "routeMap.communityNone");
@@ -200,6 +329,7 @@ export class RoutingPolicyEngine {
   }
 
   evaluate(route: BgpRoute, binding: RoutePolicyBinding, localAs: number): RoutePolicyDecision {
+    this.evaluations = [];
     let current = route;
     let matchedPrefixListSequence: number | undefined;
     if (binding.prefixListId !== undefined) {
@@ -210,10 +340,18 @@ export class RoutingPolicyEngine {
       }
     }
     if (binding.routeMapId === undefined) {
-      return { action: "permit", route: current, matchedPrefixListSequence, reason: "permitted" };
+      return { action: "permit", route: current, matchedPrefixListSequence, reason: "permitted", listEvaluations: this.evaluations };
     }
     const map = this.routeMaps.get(binding.routeMapId);
-    if (!map) return { action: "deny", route: current, matchedPrefixListSequence, reason: `route-map ${binding.routeMapId} is undefined` };
+    if (!map) {
+      return {
+        action: "deny",
+        route: current,
+        matchedPrefixListSequence,
+        reason: `route-map ${binding.routeMapId} is undefined`,
+        listEvaluations: this.evaluations,
+      };
+    }
     for (const sequence of map.sequences) {
       if (!this.routeMapMatches(sequence.match, current)) continue;
       this.count("route-map", map.id, sequence.sequence, sequence.action);
@@ -224,6 +362,7 @@ export class RoutingPolicyEngine {
           matchedPrefixListSequence,
           matchedRouteMapSequence: sequence.sequence,
           reason: `route-map ${map.id} sequence ${sequence.sequence} denied the route`,
+          listEvaluations: this.evaluations,
         };
       }
       const before = current.communities;
@@ -236,9 +375,16 @@ export class RoutingPolicyEngine {
         reason: `route-map ${map.id} sequence ${sequence.sequence} permitted the route`,
         communitiesAdded: current.communities.filter((value) => !before.includes(value)),
         communitiesRemoved: before.filter((value) => !current.communities.includes(value)),
+        listEvaluations: this.evaluations,
       };
     }
-    return { action: "deny", route: current, matchedPrefixListSequence, reason: `route-map ${map.id} implicit deny` };
+    return {
+      action: "deny",
+      route: current,
+      matchedPrefixListSequence,
+      reason: `route-map ${map.id} implicit deny`,
+      listEvaluations: this.evaluations,
+    };
   }
 
   prefixListConfigurations(): PrefixList[] {
@@ -248,14 +394,12 @@ export class RoutingPolicyEngine {
   routeMapConfigurations(): RouteMap[] {
     return [...this.routeMaps.values()].map((map) => ({
       ...map,
+      // Never introduce a key with an `undefined` value: a canonical
+      // LabDocument is validated with strict schemas that count it as set.
       sequences: map.sequences.map((sequence) => ({
         ...sequence,
-        match: sequence.match ? { ...sequence.match, prefixListIds: sequence.match.prefixListIds ? [...sequence.match.prefixListIds] : undefined } : undefined,
-        // Never introduce a key with an `undefined` value: a canonical
-        // LabDocument is validated with strict schemas that count it as set.
-        set: sequence.set
-          ? (sequence.set.communities ? { ...sequence.set, communities: [...sequence.set.communities] } : { ...sequence.set })
-          : undefined,
+        match: sequence.match ? cloneArrayFields(sequence.match, ["prefixListIds", "communityListIds", "asPathListIds"]) : undefined,
+        set: sequence.set ? cloneArrayFields(sequence.set, ["communities", "prependAsns"]) : undefined,
       })),
     }));
   }
@@ -280,19 +424,66 @@ export class RoutingPolicyEngine {
     return { action: "deny", reason: `prefix-list ${id} implicit deny` };
   }
 
+  /** First match wins, then implicit deny — exactly like a prefix list. */
+  private evaluateCommunityList(id: string, route: BgpRoute): { action: RoutePolicyAction; sequence?: number } {
+    const list = this.communityLists.get(id);
+    if (!list) {
+      this.evaluations.push({ policyType: "community-list", policyId: id, action: "deny" });
+      return { action: "deny" };
+    }
+    for (const entry of list.entries) {
+      if (!entry.communities.every((community) => route.communities.includes(community))) continue;
+      this.count("community-list", id, entry.sequence, entry.action);
+      this.evaluations.push({ policyType: "community-list", policyId: id, sequence: entry.sequence, action: entry.action });
+      return { action: entry.action, sequence: entry.sequence };
+    }
+    this.evaluations.push({ policyType: "community-list", policyId: id, action: "deny" });
+    return { action: "deny" };
+  }
+
+  private evaluateAsPathList(id: string, route: BgpRoute): { action: RoutePolicyAction; sequence?: number } {
+    const list = this.asPathLists.get(id);
+    if (!list) {
+      this.evaluations.push({ policyType: "as-path-list", policyId: id, action: "deny" });
+      return { action: "deny" };
+    }
+    for (const entry of list.entries) {
+      if (!matchesAsPath(route.asPath, entry.matcher)) continue;
+      this.count("as-path-list", id, entry.sequence, entry.action);
+      this.evaluations.push({ policyType: "as-path-list", policyId: id, sequence: entry.sequence, action: entry.action });
+      return { action: entry.action, sequence: entry.sequence };
+    }
+    this.evaluations.push({ policyType: "as-path-list", policyId: id, action: "deny" });
+    return { action: "deny" };
+  }
+
+  /**
+   * Documented combination rule: several lists of the *same* category are OR-ed
+   * (any permitting list matches), while different categories are AND-ed. A
+   * `match community` clause may opt into AND with `communityMatchAll`.
+   */
   private routeMapMatches(match: RouteMatch | undefined, route: BgpRoute): boolean {
     if (!match) return true;
     if (match.neighbor !== undefined && route.neighborAddress !== match.neighbor) return false;
     if (match.maximumAsPathLength !== undefined && route.asPath.length > match.maximumAsPathLength) return false;
     if (match.source !== undefined && route.source !== match.source) return false;
-    if (match.prefixListIds?.length) {
-      return match.prefixListIds.some((id) => this.evaluatePrefixList(id, route).action === "permit");
+    if (match.prefixListIds?.length
+      && !match.prefixListIds.some((id) => this.evaluatePrefixList(id, route).action === "permit")) return false;
+    if (match.communityListIds?.length) {
+      const results = match.communityListIds.map((id) => this.evaluateCommunityList(id, route).action === "permit");
+      if (match.communityMatchAll ? results.some((permitted) => !permitted) : !results.some(Boolean)) return false;
     }
+    if (match.asPathListIds?.length
+      && !match.asPathListIds.map((id) => this.evaluateAsPathList(id, route).action === "permit").some(Boolean)) return false;
     return true;
   }
 
   private applySet(route: BgpRoute, set: RouteSetAction | undefined, localAs: number): BgpRoute {
     if (!set) return route;
+    // An explicit prepend list wins over the legacy local-AS repeat count so a
+    // migrated document keeps working while new configuration stays exact.
+    const prepend = set.prependAsns
+      ?? (set.prependLocalAs === undefined ? undefined : Array.from({ length: set.prependLocalAs }, () => localAs));
     return {
       ...route,
       communities: applyCommunitySet(route.communities, set),
@@ -300,9 +491,7 @@ export class RoutingPolicyEngine {
       med: set.med ?? route.med,
       weight: set.weight ?? route.weight,
       origin: set.origin ?? route.origin,
-      asPath: set.prependLocalAs === undefined
-        ? route.asPath
-        : [...Array.from({ length: set.prependLocalAs }, () => localAs), ...route.asPath],
+      asPath: prepend === undefined ? route.asPath : [...prepend, ...route.asPath],
     };
   }
 
