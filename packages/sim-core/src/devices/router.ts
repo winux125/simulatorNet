@@ -56,6 +56,12 @@ import {
   type Ospfv3InterfaceDescriptor,
 } from "../protocols/ospfv3";
 import { BgpProcess } from "../protocols/bgp";
+import {
+  LdpProcess,
+  type LdpFecRoute,
+  type LdpInterfaceDescriptor,
+  type LdpPeerDescriptor,
+} from "../protocols/ldp";
 import type { Ipv4Packet } from "../packets/ipv4";
 import type { MplsPacket } from "../packets/mpls";
 import {
@@ -349,6 +355,8 @@ export class Router extends Device {
   readonly bgp = new BgpProcess(this);
   /** Structured MPLS LFIB. Only Router exposes this plane in M10.11. */
   readonly mpls = new MplsForwardingPlane();
+  /** LDP discovers only directly attached, MPLS-enabled Router peers. */
+  readonly ldp = new LdpProcess(this);
   /**
    * Logical GRE tunnel configuration. It holds no packets and no peer state:
    * operational status is derived from the underlay routing table on demand.
@@ -450,6 +458,7 @@ export class Router extends Device {
       tunnelForPeer: (peerId) => this.tunnelIdForPeer(peerId),
     });
     this.bgp.start();
+    this.ldp.arm();
   }
 
   // --- site-to-site IPsec -------------------------------------------------
@@ -1210,6 +1219,7 @@ export class Router extends Device {
       throw new Error(`MPLS is supported only on physical Router interfaces (${interfaceName}).`);
     }
     this.mpls.setInterfaceEnabled(interfaceName, enabled);
+    this.ldp.arm();
   }
 
   mplsInterfaceSummaries(): ReadonlyArray<{ interfaceId: string; enabled: boolean; operational: boolean }> {
@@ -1225,6 +1235,10 @@ export class Router extends Device {
       throw new Error(`MPLS is not enabled on interface ${entry.outgoingInterfaceId}.`);
     }
     this.mpls.install(entry);
+  }
+
+  configureLdpRouterId(interfaceName: string | undefined): void {
+    this.ldp.configureRouterId(interfaceName);
   }
 
   /** `encapsulation dot1Q <vlan> [native]`: ensure the subinterface exists. */
@@ -1256,6 +1270,7 @@ export class Router extends Device {
     iface.maskInt = maskToInt(mask);
     this.ospf.arm();
     this.bgp.refreshRoutes();
+    this.ldp.arm();
   }
 
   setIpv6ForwardingEnabled(enabled: boolean): void {
@@ -1342,6 +1357,7 @@ export class Router extends Device {
     };
     this.l3.set(name, iface);
     this.ospf.arm();
+    this.ldp.arm();
     return iface;
   }
 
@@ -1352,6 +1368,7 @@ export class Router extends Device {
     this.ipv6DiscoveryByInterface.delete(name);
     this.routerAdvertisements.delete(name);
     this.ospf.arm();
+    this.ldp.arm();
   }
 
   isLoopback(name: string): boolean {
@@ -1798,6 +1815,7 @@ export class Router extends Device {
     this.ospf.onInterfaceStateChanged(iface.name);
     this.ospfv3.onInterfaceStateChanged(iface.name);
     this.bgp.onInterfaceStateChanged();
+    this.ldp.arm();
     for (const [name, l3] of this.l3) {
       if (l3.physical === iface && !iface.operationalUp) {
         this.ipv6DiscoveryByInterface.get(name)?.reset();
@@ -1915,6 +1933,7 @@ export class Router extends Device {
       device: this.id,
       detail: { routes: this.ospf.routeTable().length },
     });
+    this.ldp.arm();
   }
 
   /** Send through the normal ARP-resolving egress path (used by OSPF unicast). */
@@ -2593,6 +2612,77 @@ export class Router extends Device {
       device: this.id,
       detail: { routes: this.bgp.selectedRoutes().length },
     });
+  }
+
+  // --- LDP host ---------------------------------------------------------
+
+  ldpInterfaces(): readonly LdpInterfaceDescriptor[] {
+    return [...this.l3.values()]
+      .filter((iface) => iface.name === iface.physical.name && !this.isLoopback(iface.name) && !isTunnelInterface(iface.physical))
+      .map((iface) => ({
+        id: iface.name,
+        address: iface.ip,
+        enabled: this.mpls.interfaceEnabled(iface.name),
+        operational: iface.physical.operationalUp,
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  ldpPeer(interfaceId: string): LdpPeerDescriptor | undefined {
+    const local = this.l3.get(interfaceId);
+    const peerInterface = local?.physical.peer();
+    if (!local || !peerInterface || !(peerInterface.device instanceof Router)) return undefined;
+    const peerRouter = peerInterface.device;
+    const remote = peerRouter.l3.get(peerInterface.name);
+    return {
+      deviceId: peerRouter.id,
+      localInterfaceId: interfaceId,
+      remoteInterfaceId: peerInterface.name,
+      remoteAddress: remote?.ip,
+      process: peerRouter.ldp,
+    };
+  }
+
+  ldpRouterIdCandidates(): readonly { interfaceId: string; address: Ipv4; loopback: boolean; active: boolean }[] {
+    return [...this.l3.values()]
+      .filter((iface): iface is L3Interface & { ip: Ipv4 } => iface.ip !== undefined)
+      .map((iface) => ({
+        interfaceId: iface.name,
+        address: iface.ip,
+        loopback: this.isLoopback(iface.name),
+        active: iface.physical.operationalUp,
+      }))
+      .sort((a, b) => a.interfaceId.localeCompare(b.interfaceId));
+  }
+
+  ldpRouteReachable(address: Ipv4): boolean {
+    return this.resolve(address, false, false) !== undefined;
+  }
+
+  ldpFecs(): readonly LdpFecRoute[] {
+    const byFec = new Map<string, LdpFecRoute>();
+    for (const route of this.routingTable()) {
+      if (route.kind !== "connected" && route.kind !== "ospf") continue;
+      const prefixLength = popcount(route.maskInt);
+      const fec = `${route.network}/${prefixLength}`;
+      const candidate: LdpFecRoute = {
+        fec,
+        source: route.kind,
+        nextHop: route.viaIp,
+        outgoingInterfaceId: route.egressName,
+      };
+      const existing = byFec.get(fec);
+      if (!existing || candidate.source === "connected") byFec.set(fec, candidate);
+    }
+    return [...byFec.values()].sort((a, b) => a.fec.localeCompare(b.fec));
+  }
+
+  ldpInstallForwardingEntry(entry: MplsForwardingEntry): void {
+    this.mpls.install(entry);
+  }
+
+  ldpClearForwardingEntries(): void {
+    this.mpls.removeBySource("ldp");
   }
 
   private sendManagement(

@@ -57,6 +57,13 @@ export const DEFAULT_CONTROL_PROTOCOL_LIMITS = Object.freeze({
   maximumBgpStateTransitionsPerOperation: 4_096,
   maximumBgpPrefixesPerPeer: 4_096,
   maximumBgpAsPathLength: 256,
+
+  // --- MPLS / LDP ------------------------------------------------------
+  maximumLdpNeighborsPerDevice: 64,
+  maximumLdpSessionsPerLab: 256,
+  maximumLdpBindingsPerRouter: 4_096,
+  maximumLdpEventsPerOperation: 20_000,
+  maximumLdpStateTransitionsPerOperation: 4_096,
 });
 
 export type ControlProtocolLimits = typeof DEFAULT_CONTROL_PROTOCOL_LIMITS;
@@ -76,7 +83,9 @@ export type ControlProtocolBudgetKey =
   | "adjacencyTransitions"
   | "ospfEvents"
   | "bgpMessages"
-  | "bgpStateTransitions";
+  | "bgpStateTransitions"
+  | "ldpEvents"
+  | "ldpStateTransitions";
 
 const BUDGET_LIMIT_KEYS: Readonly<Record<ControlProtocolBudgetKey, keyof ControlProtocolLimits>> = Object.freeze({
   bpduEvents: "maximumBpduEventsPerOperation",
@@ -94,6 +103,8 @@ const BUDGET_LIMIT_KEYS: Readonly<Record<ControlProtocolBudgetKey, keyof Control
   ospfEvents: "maximumOspfEventsPerOperation",
   bgpMessages: "maximumBgpMessagesPerOperation",
   bgpStateTransitions: "maximumBgpStateTransitionsPerOperation",
+  ldpEvents: "maximumLdpEventsPerOperation",
+  ldpStateTransitions: "maximumLdpStateTransitionsPerOperation",
 });
 
 /** Raised when a lab exceeds a structural or per-operation protocol bound. */

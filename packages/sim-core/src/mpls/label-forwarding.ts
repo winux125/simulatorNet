@@ -94,6 +94,16 @@ export class MplsForwardingPlane {
     return this.entries.delete(incomingLabel);
   }
 
+  removeBySource(source: MplsForwardingEntry["source"]): number {
+    let removed = 0;
+    for (const [label, entry] of this.entries) {
+      if (entry.source !== source) continue;
+      this.entries.delete(label);
+      removed++;
+    }
+    return removed;
+  }
+
   clearRuntime(): void {
     this.entries.clear();
     this.forwardingEvents = 0;
