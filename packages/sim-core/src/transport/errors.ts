@@ -1,5 +1,6 @@
 export type TransportErrorCode =
   | "invalid-port"
+  | "invalid-address"
   | "address-in-use"
   | "socket-limit"
   | "connection-limit"

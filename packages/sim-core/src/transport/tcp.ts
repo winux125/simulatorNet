@@ -332,9 +332,13 @@ export class TcpSocketRegistry {
     remotePort: number,
     handlers: TcpConnectionHandlers = {},
     service = "application",
+    sourceAddress?: IpAddress,
   ): TcpConnection {
     validateTransportPort(remotePort);
-    const localAddress = this.requireLocalAddress(remoteAddress);
+    const localAddress = sourceAddress ?? this.requireLocalAddress(remoteAddress);
+    if (ipFamilyOf(localAddress) !== ipFamilyOf(remoteAddress)) {
+      throw new TransportError("invalid-address", "TCP source and destination address families must match");
+    }
     const localPort = this.allocateEphemeralPort(localAddress);
     this.requireConnectionCapacity();
     const connection = new TcpConnection(

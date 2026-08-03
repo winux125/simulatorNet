@@ -57,6 +57,7 @@ export * from "./packets/etherchannel";
 export * from "./packets/discovery";
 export * from "./packets/ospf";
 export * from "./packets/ospfv3";
+export * from "./packets/bgp";
 export * from "./packets/ipv4";
 export * from "./packets/gre";
 export * from "./packets/esp";
@@ -93,6 +94,7 @@ export * from "./protocols/dhcpv6";
 export * from "./protocols/ospf";
 export * from "./protocols/ospf-common";
 export * from "./protocols/ospfv3";
+export * from "./protocols/bgp";
 
 // Host transport
 export * from "./transport/errors";

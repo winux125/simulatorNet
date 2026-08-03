@@ -49,6 +49,14 @@ export const DEFAULT_CONTROL_PROTOCOL_LIMITS = Object.freeze({
   maximumSpfRunsPerOperation: 256,
   maximumAdjacencyTransitionsPerOperation: 4_096,
   maximumOspfEventsPerOperation: 50_000,
+
+  // --- BGP -------------------------------------------------------------
+  maximumBgpPeersPerDevice: 64,
+  maximumBgpSessionsPerLab: 256,
+  maximumBgpMessagesPerOperation: 20_000,
+  maximumBgpStateTransitionsPerOperation: 4_096,
+  maximumBgpPrefixesPerPeer: 4_096,
+  maximumBgpAsPathLength: 256,
 });
 
 export type ControlProtocolLimits = typeof DEFAULT_CONTROL_PROTOCOL_LIMITS;
@@ -66,7 +74,9 @@ export type ControlProtocolBudgetKey =
   | "lsaFloods"
   | "spfRuns"
   | "adjacencyTransitions"
-  | "ospfEvents";
+  | "ospfEvents"
+  | "bgpMessages"
+  | "bgpStateTransitions";
 
 const BUDGET_LIMIT_KEYS: Readonly<Record<ControlProtocolBudgetKey, keyof ControlProtocolLimits>> = Object.freeze({
   bpduEvents: "maximumBpduEventsPerOperation",
@@ -82,6 +92,8 @@ const BUDGET_LIMIT_KEYS: Readonly<Record<ControlProtocolBudgetKey, keyof Control
   spfRuns: "maximumSpfRunsPerOperation",
   adjacencyTransitions: "maximumAdjacencyTransitionsPerOperation",
   ospfEvents: "maximumOspfEventsPerOperation",
+  bgpMessages: "maximumBgpMessagesPerOperation",
+  bgpStateTransitions: "maximumBgpStateTransitionsPerOperation",
 });
 
 /** Raised when a lab exceeds a structural or per-operation protocol bound. */

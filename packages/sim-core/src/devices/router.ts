@@ -55,6 +55,7 @@ import {
   Ospfv3Process,
   type Ospfv3InterfaceDescriptor,
 } from "../protocols/ospfv3";
+import { BgpProcess } from "../protocols/bgp";
 import type { Ipv4Packet } from "../packets/ipv4";
 import { ESP_OVERHEAD_BYTES } from "../packets/esp";
 import type { GrePacket } from "../packets/gre";
@@ -336,6 +337,8 @@ export class Router extends Device {
   readonly ospf = new OspfProcess(this);
   /** OSPFv3 is independent from the OSPFv2 process and advertises IPv6 prefixes only. */
   readonly ospfv3 = new Ospfv3Process(this);
+  /** BGPv4 uses the shared routed management TCP stack on port 179. */
+  readonly bgp = new BgpProcess(this);
   /**
    * Logical GRE tunnel configuration. It holds no packets and no peer state:
    * operational status is derived from the underlay routing table on demand.
@@ -432,6 +435,7 @@ export class Router extends Device {
       peerReachable: (remoteAddress) => this.resolve(remoteAddress, true) !== undefined,
       tunnelForPeer: (peerId) => this.tunnelIdForPeer(peerId),
     });
+    this.bgp.start();
   }
 
   // --- site-to-site IPsec -------------------------------------------------
@@ -1663,6 +1667,7 @@ export class Router extends Device {
     this.discovery.onPortStateChanged(iface.name);
     this.ospf.onInterfaceStateChanged(iface.name);
     this.ospfv3.onInterfaceStateChanged(iface.name);
+    this.bgp.onInterfaceStateChanged();
     for (const [name, l3] of this.l3) {
       if (l3.physical === iface && !iface.operationalUp) {
         this.ipv6DiscoveryByInterface.get(name)?.reset();
@@ -2421,6 +2426,23 @@ export class Router extends Device {
     return [...ipv4, ...ipv6];
   }
 
+  /** Adapter used by BGP to select the ordinary routed source or update-source. */
+  bgpSourceAddress(remoteAddress: Ipv4, updateSource?: string): Ipv4 | undefined {
+    if (updateSource !== undefined) {
+      const iface = this.l3.get(updateSource);
+      return iface?.physical.operationalUp && iface.ip !== undefined ? iface.ip : undefined;
+    }
+    return this.managementSourceAddress("ipv4", remoteAddress) as Ipv4 | undefined;
+  }
+
+  bgpOwnsAddress(address: Ipv4): boolean {
+    return this.managementAddresses().includes(address);
+  }
+
+  bgpRouteReachable(address: Ipv4): boolean {
+    return this.resolve(address) !== undefined;
+  }
+
   private sendManagement(
     destination: IpAddress,
     payload: UdpDatagram | TcpSegment,
@@ -2446,7 +2468,9 @@ export class Router extends Device {
       src,
       dst: destination,
       protocol: payload.kind === "udp" ? IpProtocol.UDP : IpProtocol.TCP,
-      ttl: DEFAULT_IP_TTL,
+      ttl: payload.kind === "tcp"
+        ? (this.bgp.outboundTtl(destination as Ipv4) ?? DEFAULT_IP_TTL)
+        : DEFAULT_IP_TTL,
       payload,
     });
   }

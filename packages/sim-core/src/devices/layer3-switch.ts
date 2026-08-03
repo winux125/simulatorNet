@@ -164,6 +164,11 @@ export class Layer3Switch extends L2Switch {
     return this.routingPlane.ipRoutingEnabled;
   }
 
+  get bgp(): Router["bgp"] {
+    this.syncRoutingPlane();
+    return this.routingPlane.bgp;
+  }
+
   addStaticRoute(network: Ipv4, mask: Ipv4 | number, nextHop: Ipv4): void {
     this.syncRoutingPlane();
     this.routingPlane.addStaticRoute(network, mask, nextHop);
