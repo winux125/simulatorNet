@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { openDeviceCli, openDeviceInspector } from "./helpers/device-window";
 
 // M10.3.3a — trackpad navigation over the topology canvas.
 //
@@ -70,7 +71,7 @@ test("M10.3.3a trackpad gestures pan freely and pinch zooms gently", async ({ pa
   await page.goto("/");
   await chooseDemo(page, /Large Campus Topology/);
   await page.getByRole("button", { name: "Fit topology" }).click();
-  await expect(page.locator(".canvas-statusbar").getByText("13 devices", { exact: true })).toBeVisible();
+  await expect(page.locator(".workspace-footer").getByText("13 devices", { exact: true })).toBeVisible();
   await page.waitForTimeout(250);
 
   // 1-2. Record where every device is drawn before any navigation.
@@ -104,7 +105,7 @@ test("M10.3.3a trackpad gestures pan freely and pinch zooms gently", async ({ pa
 
   // 6. Panning never changed the scale.
   expect(afterDiagonal.map((node) => node.width)).toEqual(initial.map((node) => node.width));
-  const zoomControl = page.locator(".canvas-statusbar__zoom");
+  const zoomControl = page.getByLabel(/Canvas zoom/);
   const zoomPercent = async () => Number(/(\d+)%/.exec((await zoomControl.textContent()) ?? "")?.[1] ?? "0");
   const zoomBeforePinch = await zoomPercent();
   expect(zoomBeforePinch).toBeGreaterThan(0);
@@ -135,7 +136,8 @@ test("M10.3.3a trackpad gestures pan freely and pinch zooms gently", async ({ pa
   });
 
   // 10. Reset Zoom returns to exactly 100% and is not a fit.
-  await zoomControl.click();
+  await page.getByRole("menuitem", { name: "View", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Reset Zoom", exact: true }).click();
   await expect(zoomControl).toContainText("100%");
   await page.screenshot({ path: "/tmp/m10-3-3a-trackpad-1440x900.png", animations: "disabled" });
 });
@@ -150,9 +152,7 @@ test("M10.3.3a canvas navigation coexists with terminal, panels and small viewpo
   await page.screenshot({ path: "/tmp/m10-3-3a-navigation-1920x1080.png", animations: "disabled" });
 
   // 1. Open a CLI so the shared terminal owns its own scrolling.
-  await page.getByRole("button", { name: "Select SW1" }).click();
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  await inspector.getByRole("button", { name: /Open CLI/ }).click();
+  await openDeviceCli(page, "SW1");
   await expect(page.getByRole("tab", { name: /SW1/ })).toBeVisible();
   await page.locator(".terminal-session.is-active .xterm-screen").click();
   for (const command of ["show mac address-table", "show interfaces", "show vlan brief"]) {
@@ -171,10 +171,12 @@ test("M10.3.3a canvas navigation coexists with terminal, panels and small viewpo
   // 3. Toggling the inspector resizes the canvas without changing the viewport.
   await wheelOverCanvas(page, { deltaX: 60, deltaY: 40 });
   const panned = await deviceBoxes(page);
-  const zoomLabel = await page.locator(".canvas-statusbar__zoom").textContent();
+  const inspector = await openDeviceInspector(page, "SW1");
+  const zoomControl = page.getByLabel(/Canvas zoom/);
+  const zoomLabel = await zoomControl.textContent();
   await inspector.getByRole("button", { name: "Close inspector" }).click();
   await page.waitForTimeout(250);
-  expect(await page.locator(".canvas-statusbar__zoom").textContent()).toBe(zoomLabel);
+  expect(await zoomControl.textContent()).toBe(zoomLabel);
   const afterInspector = await deviceBoxes(page);
   for (const [index, node] of afterInspector.entries()) {
     expect(node.width).toBeCloseTo(panned[index]!.width, 1);

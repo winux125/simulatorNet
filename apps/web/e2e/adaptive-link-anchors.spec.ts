@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openDeviceCli } from "./helpers/device-window";
 
 type DeviceCategory = "End Devices" | "Network Devices";
 
@@ -126,10 +127,7 @@ async function dragDevice(page: Page, deviceId: string, dx: number, dy: number) 
 }
 
 async function openCli(page: Page, hostname: string) {
-  await closeInspector(page);
-  await page.getByRole("button", { name: `Select ${hostname}` }).click();
-  await page.getByRole("region", { name: "Inspector" }).getByRole("button", { name: /Open CLI/ }).click();
-  await expect(page.getByRole("tab", { name: new RegExp(`${hostname} terminal`) })).toBeVisible();
+  await openDeviceCli(page, hostname);
 }
 
 async function focusTerminal(page: Page) {

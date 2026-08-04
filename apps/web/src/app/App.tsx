@@ -1164,7 +1164,7 @@ export function App({ client }: AppProps) {
       <footer className="workspace-footer">
         <span>Workspace: <strong>{workspace.mode === "edit" ? "Edit" : "Operate"}</strong></span>
         <span>Virtual time <code>{((workspace.snapshot?.virtualTime ?? 0) / 1_000_000).toFixed(3)} ms</code></span>
-        <span>{workspace.snapshot?.nodes.length ?? 0} devices</span>
+        <span>{workspace.draft?.topology.nodes.length ?? 0} devices</span>
         <span>{workspace.draft?.topology.links.length ?? 0} links</span>
         {labOpen && !bottomPanelExpanded && <BottomPanelStatus
           state={workspace.bottomPanelState}

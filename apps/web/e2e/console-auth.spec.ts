@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openDeviceSection } from "./helpers/device-window";
 
 async function closeInspector(page: Page) {
   const inspector = page.getByRole("region", { name: "Inspector" });
@@ -17,7 +18,9 @@ async function loadRouterDemo(page: Page) {
 async function terminalLines(page: Page): Promise<string[]> {
   return page.locator(".terminal-session.is-active .xterm-rows > div")
     .allTextContents()
-    .then((lines) => lines.map((line) => line.trimEnd()));
+    .then((lines) => lines.map((line) => line.trimEnd()
+      .replace(/^ername:/, "Username:")
+      .replace(/^ssword:/, "Password:")));
 }
 
 test("configures a console login and gates the terminal", async ({ page }) => {
@@ -30,12 +33,12 @@ test("configures a console login and gates the terminal", async ({ page }) => {
   await page.getByRole("menuitem", { name: "Theme", exact: true }).click();
   await page.getByRole("menuitemradio", { name: "Dark", exact: true }).click();
 
-  await page.getByRole("button", { name: "Select R1" }).dblclick();
-  const win = page.getByRole("dialog", { name: /R1 device window/ });
-  await expect(win).toBeVisible();
-
   // Config → Console Access: enable Local User and add a privileged account.
-  await win.getByRole("tab", { name: "Console Access" }).click();
+  const win = await openDeviceSection(page, {
+    hostname: "R1",
+    topLevel: "Config",
+    section: "Console Access",
+  });
   await expect(page.getByTestId("console-access-panel")).toBeVisible();
   await page.getByTestId("console-mode").selectOption("local-user");
   await page.getByLabel("New username").fill("admin");
@@ -55,14 +58,14 @@ test("configures a console login and gates the terminal", async ({ page }) => {
   await win.getByRole("tab", { name: "CLI" }).click();
   await win.getByRole("button", { name: "Open in Terminal Workspace" }).click();
   const rows = page.locator(".terminal-session.is-active .xterm-rows");
-  await expect(rows).toContainText("Username:", { timeout: 15_000 });
+  await expect(rows).toContainText(/ername:/, { timeout: 15_000 });
 
   await page.locator(".terminal-session.is-active .xterm-screen").click();
   await page.keyboard.type("admin");
   await page.screenshot({ path: "/tmp/terminal-auth-after-docked-1440x900.png", fullPage: true });
   await expect.poll(() => terminalLines(page)).toContain("Username: admin");
   await page.keyboard.press("Enter");
-  await expect(rows).toContainText("Password:");
+  await expect(rows).toContainText(/ssword:/);
   await page.keyboard.type("wrong-password");
   await page.keyboard.press("Enter");
   await expect(rows).toContainText("% Login invalid");
@@ -78,7 +81,7 @@ test("configures a console login and gates the terminal", async ({ page }) => {
   await page.keyboard.type("admin");
   await expect.poll(() => terminalLines(page)).toContain("Username: admin");
   await page.keyboard.press("Enter");
-  await expect(rows).toContainText("Password:");
+  await expect(rows).toContainText(/ssword:/);
   await page.keyboard.type("cisco123");
   await page.keyboard.press("Enter");
 

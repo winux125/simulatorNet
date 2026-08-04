@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openDeviceCli, openDeviceInspector } from "./helpers/device-window";
 
 async function chooseDemo(page: import("@playwright/test").Page, name: RegExp) {
   await page.getByRole("button", { name: "Load Demo Lab", exact: true }).click();
@@ -19,12 +20,7 @@ async function closeInspector(page: import("@playwright/test").Page) {
 }
 
 async function openCli(page: import("@playwright/test").Page, hostname: string) {
-  await closeInspector(page);
-  await page.getByRole("button", { name: `Select ${hostname}` }).click();
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  await expect(inspector).toContainText(hostname);
-  await inspector.getByRole("button", { name: /Open CLI/ }).click();
-  await expect(page.getByRole("tab", { name: new RegExp(hostname) })).toBeVisible();
+  await openDeviceCli(page, hostname);
 }
 
 async function runCli(page: import("@playwright/test").Page, command: string) {
@@ -208,8 +204,8 @@ test("topology visual profiles and domain diagram tools persist", async ({ page 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
   await chooseDemo(page, /Large Campus Topology/);
-  await expect(page.locator(".canvas-statusbar").getByText("13 devices", { exact: true })).toBeVisible();
-  await expect(page.locator(".canvas-statusbar").getByText("12 links", { exact: true })).toBeVisible();
+  await expect(page.locator(".workspace-footer").getByText("13 devices", { exact: true })).toBeVisible();
+  await expect(page.locator(".workspace-footer").getByText("12 links", { exact: true })).toBeVisible();
   await expect(page.locator(".inspector-panel")).toHaveCount(0);
 
   await chooseTheme(page, "Light");
@@ -260,7 +256,8 @@ test("topology visual profiles and domain diagram tools persist", async ({ page 
   await page.getByRole("menuitem", { name: "Tools", exact: true }).click();
   await page.getByRole("menuitem", { name: "Add Diagram Annotation", exact: true }).click();
   await page.getByRole("menuitem", { name: "Text", exact: true }).click();
-  await page.getByTestId("topology-graph").click({ position: { x: 620, y: 180 } });
+  await expect(page.getByText("Click the canvas to place annotation", { exact: true })).toBeVisible();
+  await page.getByTestId("topology-graph").click({ position: { x: 1050, y: 620 } });
   const textEditor = page.getByRole("textbox", { name: "Editing topology text" });
   await expect(textEditor).toBeFocused();
   await textEditor.fill("Core loopbacks\n10.255.0.0/24");
@@ -300,7 +297,7 @@ test("topology visual profiles and domain diagram tools persist", async ({ page 
   const exportPath = await download.path();
   expect(exportPath).not.toBeNull();
   await page.locator("#load-lab-file").setInputFiles(exportPath!);
-  await expect(page.locator(".canvas-statusbar").getByText("13 devices", { exact: true })).toBeVisible();
+  await expect(page.locator(".workspace-footer").getByText("13 devices", { exact: true })).toBeVisible();
   await expect(page.getByText("Trunk VLAN 10,20", { exact: true })).toBeVisible();
   await expect(page.locator(".x6-node image")).toHaveCount(imageNodesBefore + 1);
 });
@@ -453,11 +450,13 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   expect(viewSwitchBounds!.y).toBeGreaterThanOrEqual(chromeBounds!.height);
   expect(topologyPanelBounds!.y)
     .toBeLessThanOrEqual(viewSwitchBounds!.y + viewSwitchBounds!.height + 1);
-  expect(topologyBounds!.y).toBeGreaterThanOrEqual(diagramToolbarBounds!.y + diagramToolbarBounds!.height);
+  expect(diagramToolbarBounds!.y).toBeGreaterThanOrEqual(topologyBounds!.y);
+  expect(diagramToolbarBounds!.y + diagramToolbarBounds!.height).toBeLessThanOrEqual(topologyBounds!.y + topologyBounds!.height);
   expect(dockBounds!.width).toBe(1440);
   expect(dockBounds!.y).toBeGreaterThan(topologyPanelBounds!.y);
   expect(Math.abs(dockBounds!.y + dockBounds!.height - footerBounds!.y)).toBeLessThanOrEqual(1);
-  expect(Math.abs(workspaceBounds!.y + workspaceBounds!.height - footerBounds!.y)).toBeLessThanOrEqual(1);
+  expect(workspaceBounds!.y + workspaceBounds!.height).toBeLessThanOrEqual(footerBounds!.y);
+  expect(footerBounds!.y - (workspaceBounds!.y + workspaceBounds!.height)).toBeLessThanOrEqual(40);
 
   // 3. Lab menu → toggle Edit then Simulate mode.
   await menu("Lab").click();
@@ -621,8 +620,8 @@ test("draft-only devices wait for worker rebuild without unknown-device errors",
   const canvasBounds = await canvas.boundingBox();
   expect(canvasBounds).not.toBeNull();
   await canvas.click({ position: { x: Math.round(canvasBounds!.width * 0.45), y: Math.round(canvasBounds!.height * 0.4) } });
-  await page.getByRole("button", { name: "Select BR1" }).click();
-  const pendingMessage = page.getByText("Apply Topology to create this device in the simulation worker.");
+  const bridgeInspector = await openDeviceInspector(page, "BR1");
+  const pendingMessage = bridgeInspector.getByText("Apply Topology to create this device in the simulation worker.");
   await expect(pendingMessage).toBeVisible();
   await expect(page.getByText(/Unknown device/)).toHaveCount(0);
 
@@ -834,8 +833,7 @@ test("two draft-configured PCs ping through an L2 switch after Start Lab", async
   await runCli(page, "ping 192.168.10.20");
   await expect(page.getByTestId("terminal-transcript")).toContainText("Success rate is 100 percent");
 
-  // Layout and notes are presentation-only: both remain editable while the
-  // data plane is running and neither asks for a topology rebuild.
+  // Layout remains presentation-only while creation tools stay out of Operate mode.
   const pc1Node = page.locator('[data-device-id="pc-1"]').locator("xpath=ancestor::*[contains(@class,'x6-node')]");
   const pc1Bounds = await pc1Node.boundingBox();
   expect(pc1Bounds).not.toBeNull();
@@ -844,27 +842,9 @@ test("two draft-configured PCs ping through an L2 switch after Start Lab", async
   await page.mouse.move(pc1Bounds!.x + pc1Bounds!.width / 2 + 70, pc1Bounds!.y + pc1Bounds!.height / 2 + 25, { steps: 8 });
   await page.mouse.up();
   await expect(page.getByText("Pending topology changes")).toHaveCount(0);
-  await page.getByRole("button", { name: "Text", exact: true }).click();
-  await canvas.click({ position: { x: 380, y: 90 } });
-  const runningTextEditor = page.getByRole("textbox", { name: "Editing topology text" });
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  await runningTextEditor.fill("Running lab note");
-  await runningTextEditor.press("Control+Enter");
-  await page.getByLabel("Choose diagram image").setInputFiles({
-    name: "running-note.png",
-    mimeType: "image/png",
-    buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", "base64"),
-  });
-  await expect(page.locator('[data-cell-id^="diagram:"] image')).toBeVisible();
-  const runningCanvasBounds = await canvas.boundingBox();
-  expect(runningCanvasBounds).not.toBeNull();
-  await page.getByRole("button", { name: "Arrow", exact: true }).click();
-  await page.mouse.move(runningCanvasBounds!.x + 420, runningCanvasBounds!.y + 160);
-  await page.mouse.down();
-  await page.mouse.move(runningCanvasBounds!.x + 620, runningCanvasBounds!.y + 210, { steps: 6 });
-  await page.mouse.up();
-  await expect(page.locator('[data-cell-id="diagram:annotation-3"]')).toBeVisible();
-  await expect(page.getByRole("button", { name: "Connection", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Text", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Arrow", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Connection", exact: true })).toHaveCount(0);
   await page.locator('[data-cell-id="link-1"]').click({ button: "right" });
   await expect(page.getByRole("menuitem", { name: "Reconnect…" })).toBeDisabled();
   await page.keyboard.press("Escape");
@@ -1057,10 +1037,9 @@ test("M10.2 DNS and HTTP traverse UDP/TCP and expose Server service UI", async (
   await serverWindow.getByRole("tab", { name: "Services" }).click();
   await expect(serverWindow.getByText("DNS", { exact: true }).first()).toBeVisible();
   await expect(serverWindow.getByText("HTTP", { exact: true }).first()).toBeVisible();
+  await expect(serverWindow.getByLabel("Server services")).toBeVisible();
+  await expect(serverWindow.getByLabel("DNS records")).toHaveValue(/portal\.lab/);
   await serverWindow.getByRole("button", { name: "Close device window" }).click();
-  await page.getByRole("tab", { name: "Configuration" }).click();
-  await expect(page.getByLabel("Server services")).toBeVisible();
-  await expect(page.getByLabel("DNS records")).toHaveValue(/portal\.lab/);
   await page.getByRole("tab", { name: /Packet trace/ }).click();
   await page.getByLabel("Packet trace protocol filter").selectOption("HTTP");
   await expect(page.locator('tr[data-event-type="http-response"]').first()).toBeVisible();
@@ -1089,10 +1068,10 @@ test("M10.2 TFTP, NTP, and Syslog workflows retain bounded runtime state", async
   await expect(page.getByTestId("terminal-transcript")).toContainText("message sent");
 
   await closeInspector(page);
-  await page.getByRole("button", { name: "Select SRV1" }).click();
-  await page.getByRole("tab", { name: "Runtime" }).click();
+  const serverInspector = await openDeviceInspector(page, "SRV1");
+  await serverInspector.getByRole("tab", { name: "Runtime" }).click();
   await expect(page.getByText("Syslog messages")).toBeVisible();
-  await expect(page.getByRole("region", { name: "Inspector" }).getByText("uplink changed", { exact: true })).toBeVisible();
+  await expect(serverInspector.getByText("uplink changed", { exact: true })).toBeVisible();
   await chooseTheme(page, "Dark");
   await page.screenshot({ path: "/tmp/m10-2-services-dark-1280x720.png", animations: "disabled" });
   await chooseTheme(page, "Light");

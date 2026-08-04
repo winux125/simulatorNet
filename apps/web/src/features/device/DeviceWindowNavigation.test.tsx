@@ -59,6 +59,8 @@ describe("device window information architecture", () => {
       .toEqual(["Physical", "Config", "Services", "Desktop", "Terminal", "Attributes"]);
     expect(getDeviceWindowDefinition("access-point").mainTabs.map(({ label }) => label))
       .toEqual(["Physical", "Config", "Wireless", "Monitor", "Attributes"]);
+    expect(getDeviceWindowDefinition("laptop").configSections.map(({ label }) => label))
+      .toEqual(expect.arrayContaining(["IP Configuration", "Interfaces", "Wireless"]));
   });
 
   it("preserves the traffic generator workflow instead of showing empty generic tabs", () => {

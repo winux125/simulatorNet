@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { openDeviceCli, openDeviceSection } from "./helpers/device-window";
 
 async function loadWirelessDemo(page: Page, name: RegExp) {
   await page.goto("/");
@@ -10,27 +11,8 @@ async function loadWirelessDemo(page: Page, name: RegExp) {
   await expect(page.getByRole("button", { name: "Stop Lab" })).toBeEnabled();
 }
 
-async function closeInspector(page: Page) {
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  if (await inspector.isVisible()) {
-    await inspector.getByRole("button", { name: "Close inspector" }).click();
-  }
-}
-
-async function openDevice(page: Page, hostname: string) {
-  await closeInspector(page);
-  await page.getByRole("button", { name: `Select ${hostname}` }).dblclick();
-  const dialog = page.getByRole("dialog", { name: `${hostname} device window` });
-  await expect(dialog).toBeVisible();
-  return dialog;
-}
-
 async function openCli(page: Page, hostname: string) {
-  await closeInspector(page);
-  await page.getByRole("button", { name: `Select ${hostname}` }).click();
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  await inspector.getByRole("button", { name: /Open CLI/ }).click();
-  await expect(page.getByRole("tab", { name: new RegExp(hostname) })).toBeVisible();
+  await openDeviceCli(page, hostname);
 }
 
 async function runCli(page: Page, command: string) {
@@ -49,8 +31,11 @@ async function disconnectForgetAndScan(dialog: Locator) {
 
 test("Open WLAN scans, associates, receives DHCP and reaches the wired gateway", async ({ page }) => {
   await loadWirelessDemo(page, /Open Wireless LAN/);
-  const dialog = await openDevice(page, "LAPTOP1");
-  await dialog.getByRole("tab", { name: "Wireless", exact: true }).click();
+  const dialog = await openDeviceSection(page, {
+    hostname: "LAPTOP1",
+    topLevel: "Config",
+    section: "Wireless",
+  });
   await expect(dialog).toContainText(/Status:\s*associated/i);
 
   await disconnectForgetAndScan(dialog);
@@ -71,8 +56,11 @@ test("Open WLAN scans, associates, receives DHCP and reaches the wired gateway",
 
 test("WPA2 rejects an incorrect key, accepts the configured key and never renders it", async ({ page }) => {
   await loadWirelessDemo(page, /WPA2 Wireless LAN/);
-  const dialog = await openDevice(page, "LAPTOP1");
-  await dialog.getByRole("tab", { name: "Wireless", exact: true }).click();
+  const dialog = await openDeviceSection(page, {
+    hostname: "LAPTOP1",
+    topLevel: "Config",
+    section: "Wireless",
+  });
   await disconnectForgetAndScan(dialog);
 
   const network = dialog.locator("tbody tr").filter({ hasText: "SECURE-LAB" });
@@ -95,14 +83,16 @@ test("WPA2 rejects an incorrect key, accepts the configured key and never render
 test("Home Wireless Router provides WLAN DHCP and PAT to a public server", async ({ page }) => {
   await loadWirelessDemo(page, /Home Wireless Router/);
 
-  const router = await openDevice(page, "HOME-RTR");
-  await router.getByRole("tab", { name: "Connected Clients" }).click();
+  const router = await openDeviceSection(page, { hostname: "HOME-RTR", topLevel: "Wireless" });
   await expect(router).toContainText("HOME-LAPTOP");
   await expect(router).toContainText("PHONE1");
   await router.getByRole("button", { name: "Close device window" }).click();
 
-  const laptop = await openDevice(page, "HOME-LAPTOP");
-  await laptop.getByRole("tab", { name: "Wireless", exact: true }).click();
+  const laptop = await openDeviceSection(page, {
+    hostname: "HOME-LAPTOP",
+    topLevel: "Config",
+    section: "Wireless",
+  });
   await expect(laptop).toContainText(/Status:\s*associated/i);
   await laptop.getByRole("button", { name: "Close device window" }).click();
 
@@ -119,16 +109,22 @@ test("AP shutdown deterministically roams the station without a structural Wi-Fi
   await expect(page.locator('[data-wireless-access-point="ap-1"]')).toHaveCount(1);
   await expect(page.locator('[data-link-id][data-source-interface="wlan0"], [data-link-id][data-target-interface="wlan0"]')).toHaveCount(0);
 
-  const accessPoint = await openDevice(page, "AP-PRIMARY");
-  await accessPoint.getByRole("tab", { name: "Wireless", exact: true }).click();
+  const accessPoint = await openDeviceSection(page, {
+    hostname: "AP-PRIMARY",
+    topLevel: "Config",
+    section: "Wireless",
+  });
   await accessPoint.getByLabel("Enabled", { exact: true }).uncheck();
   await accessPoint.getByRole("button", { name: "Apply" }).click();
   await expect(accessPoint.getByRole("status")).toContainText("Wireless settings applied.");
   await accessPoint.getByRole("button", { name: "Close device window" }).click();
 
   await expect(page.locator('[data-wireless-access-point="ap-2"]')).toHaveCount(1);
-  const laptop = await openDevice(page, "ROAM-LAPTOP");
-  await laptop.getByRole("tab", { name: "Wireless", exact: true }).click();
+  const laptop = await openDeviceSection(page, {
+    hostname: "ROAM-LAPTOP",
+    topLevel: "Config",
+    section: "Wireless",
+  });
   await expect(laptop).toContainText(/Status:\s*associated/i);
   await laptop.getByRole("button", { name: "Close device window" }).click();
 

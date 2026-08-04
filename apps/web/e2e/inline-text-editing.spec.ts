@@ -92,7 +92,8 @@ test("M10.3.3b inline text editing never opens a modal and survives a running la
   await page.getByRole("textbox", TEXT_EDITOR).press("Escape");
   await page.screenshot({ path: "/tmp/m10-3-3b-inline-text-1440x900.png", animations: "disabled" });
 
-  // 13-15. Start the lab and confirm text editing still works and keeps runtime.
+  // 13-15. Start the lab and edit an existing annotation without exposing the
+  // creation tools reserved for Edit mode.
   await page.getByRole("button", { name: "Add Device", exact: true }).click();
   await page.getByRole("tab", { name: "End Devices" }).click();
   await page.getByRole("button", { name: "Add PC" }).click();
@@ -100,12 +101,12 @@ test("M10.3.3b inline text editing never opens a modal and survives a running la
   await page.getByRole("button", { name: "Start Lab" }).click();
   await expect(page.getByRole("button", { name: "Stop Lab" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Text", exact: true }).click();
-  await canvas.click({ position: await canvasPoint(page, 0.6, 0.7) });
+  await expect(page.getByRole("button", { name: "Text", exact: true })).toHaveCount(0);
+  await annotation.dblclick();
   await expectNoModal(page);
-  await page.keyboard.type("Edited while running");
+  await page.getByRole("textbox", TEXT_EDITOR).fill("Edited while running");
   await page.getByRole("textbox", TEXT_EDITOR).press("Control+Enter");
-  await expect(page.locator('[data-cell-id="diagram:annotation-2"]')).toContainText("Edited while running");
+  await expect(annotation).toContainText("Edited while running");
   // Presentation-only: no rebuild is pending and the lab keeps running.
   await expect(page.locator(".pending-banner")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Stop Lab" })).toBeVisible();
@@ -117,8 +118,7 @@ test("M10.3.3b inline text editing never opens a modal and survives a running la
   const exported = await (await downloadPromise).path();
   expect(exported).not.toBeNull();
   await page.locator("#load-lab-file").setInputFiles(exported!);
-  await expect(page.locator('[data-cell-id="diagram:annotation-1"]')).toContainText("Committed by blur");
-  await expect(page.locator('[data-cell-id="diagram:annotation-2"]')).toContainText("Edited while running");
+  await expect(page.locator('[data-cell-id="diagram:annotation-1"]')).toContainText("Edited while running");
 });
 
 test("M10.3.3b inline editing owns its own keyboard and clipboard", async ({ page }) => {
@@ -133,7 +133,7 @@ test("M10.3.3b inline editing owns its own keyboard and clipboard", async ({ pag
   await page.getByRole("tab", { name: "End Devices" }).click();
   await page.getByRole("button", { name: "Add PC" }).click();
   await canvas.click({ position: await canvasPoint(page, 0.2, 0.3) });
-  await expect(page.locator(".canvas-statusbar").getByText("1 devices", { exact: true })).toBeVisible();
+  await expect(page.locator(".workspace-footer").getByText("1 devices", { exact: true })).toBeVisible();
 
   // 2. Open an inline editor and press keys that are global shortcuts.
   await page.getByRole("button", { name: "Text", exact: true }).click();
@@ -142,7 +142,7 @@ test("M10.3.3b inline editing owns its own keyboard and clipboard", async ({ pag
   await page.keyboard.press("Delete");
   await page.keyboard.press("f");
   await expect(page.getByRole("textbox", TEXT_EDITOR)).toBeVisible();
-  await expect(page.locator(".canvas-statusbar").getByText("1 devices", { exact: true })).toBeVisible();
+  await expect(page.locator(".workspace-footer").getByText("1 devices", { exact: true })).toBeVisible();
 
   // 3. Pasting uses text/plain only; clipboard HTML is discarded.
   await page.getByRole("textbox", TEXT_EDITOR).evaluate((element) => {

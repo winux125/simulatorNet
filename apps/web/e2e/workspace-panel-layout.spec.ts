@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openDeviceSection } from "./helpers/device-window";
 import {
   LEGACY_WORKSPACE_LAYOUT_STORAGE_KEY,
   WORKSPACE_BOTTOM_PANEL_ID,
@@ -48,6 +49,7 @@ test("recovers stale workspace layout across Inspector, dock, reload and QoS tra
       localStorage.setItem(legacyKey, JSON.stringify([73.333, 26.667]));
       localStorage.setItem("simulatornet.theme", "dark");
       localStorage.setItem("simulatornet.bottomPanelState", "expanded");
+      localStorage.setItem("simulatornet.inspectorAutoOpen", "true");
       sessionStorage.setItem("workspace-layout-fixture-loaded", "true");
     }
   }, { legacyKey: LEGACY_WORKSPACE_LAYOUT_STORAGE_KEY });
@@ -125,9 +127,11 @@ test("recovers stale workspace layout across Inspector, dock, reload and QoS tra
   await expectWorkspaceHealthy(page);
 
   // QoS device content is not a nested PanelGroup and remains usable.
-  await page.getByRole("button", { name: "Select R1" }).dblclick();
-  const deviceWindow = page.getByRole("dialog", { name: /R1 device window/ });
-  await deviceWindow.getByRole("tab", { name: "QoS", exact: true }).click();
+  const deviceWindow = await openDeviceSection(page, {
+    hostname: "R1",
+    topLevel: "Config",
+    section: "QoS",
+  });
   await deviceWindow.getByRole("tablist", { name: "QoS sections" })
     .getByRole("tab", { name: "Classification" }).click();
   await expect(deviceWindow.getByLabel("Class maps JSON")).toBeVisible();

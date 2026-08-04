@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openDeviceCli } from "./helpers/device-window";
 
 type IconProfile = "Classic Lab" | "Education Flat" | "Minimal Network";
 type Theme = "Light" | "Dark";
@@ -116,8 +117,7 @@ test("built-in icon profiles remain presentation-only across a running all-devic
     await page.getByRole("button", { name: "Start Lab" }).click();
   }
   await expect(page.getByRole("button", { name: "Stop Lab" })).toBeVisible();
-  await page.getByRole("button", { name: "Select PC1" }).click();
-  await page.getByRole("region", { name: "Inspector" }).getByRole("button", { name: /Open CLI/ }).click();
+  await openDeviceCli(page, "PC1");
   await page.locator(".terminal-session.is-active .xterm-screen").click();
   await page.keyboard.type("ping 192.168.77.20");
   await page.keyboard.press("Enter");

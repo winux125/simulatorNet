@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openDeviceCli } from "./helpers/device-window";
 
 /**
  * M10.9.1 configuration lifecycle and lab package flows.
@@ -22,12 +23,7 @@ async function closeInspector(page: Page) {
 }
 
 async function openCli(page: Page, hostname: string) {
-  await closeInspector(page);
-  await page.getByRole("button", { name: `Select ${hostname}` }).click();
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  await expect(inspector).toContainText(hostname);
-  await inspector.getByRole("button", { name: /Open CLI/ }).click();
-  await expect(page.getByRole("tab", { name: new RegExp(hostname) })).toBeVisible();
+  await openDeviceCli(page, hostname);
 }
 
 async function focusTerminal(page: Page) {

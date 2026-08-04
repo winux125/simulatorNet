@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openDeviceCli } from "./helpers/device-window";
 
 async function loadDemo(page: Page, name: string) {
   await page.getByRole("button", { name: "Load Demo Lab", exact: true }).click();
@@ -13,11 +14,7 @@ async function closeInspector(page: Page) {
 }
 
 async function openCli(page: Page, hostname: string) {
-  await closeInspector(page);
-  await page.getByRole("button", { name: `Select ${hostname}` }).click();
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  await inspector.getByRole("button", { name: /Open CLI/ }).click();
-  await expect(page.getByRole("tab", { name: new RegExp(hostname) })).toBeVisible();
+  await openDeviceCli(page, hostname);
 }
 
 async function focusTerminal(page: Page) {

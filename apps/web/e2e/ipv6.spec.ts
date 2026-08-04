@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openDeviceCli, openDeviceSection } from "./helpers/device-window";
 
 async function loadDemo(page: Page, name: RegExp) {
   await page.getByRole("button", { name: "Load Demo Lab", exact: true }).click();
@@ -27,11 +28,7 @@ async function closeInspector(page: Page) {
 }
 
 async function openCli(page: Page, hostname: string) {
-  await closeInspector(page);
-  await page.getByRole("button", { name: `Select ${hostname}` }).click();
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  await inspector.getByRole("button", { name: /Open CLI/ }).click();
-  await expect(page.getByRole("tab", { name: new RegExp(hostname) })).toBeVisible();
+  await openDeviceCli(page, hostname);
 }
 
 async function runCli(page: Page, command: string) {
@@ -68,8 +65,11 @@ test("SLAAC and DHCPv6 expose learned host configuration", async ({ page }) => {
   await loadDemo(page, /SLAAC and Router Advertisement/);
   await drainEvents(page);
   await closeInspector(page);
-  await page.getByRole("button", { name: "Select PC1" }).dblclick();
-  let deviceWindow = page.getByRole("dialog", { name: "PC1 device window" });
+  let deviceWindow = await openDeviceSection(page, {
+    hostname: "PC1",
+    topLevel: "Config",
+    section: "IP Configuration",
+  });
   await deviceWindow.getByRole("tab", { name: "IPv6", exact: true }).click();
   await expect(deviceWindow).toContainText(/2001:db8:20:/);
   await expect(deviceWindow).toContainText(/slaac/i);
@@ -78,8 +78,11 @@ test("SLAAC and DHCPv6 expose learned host configuration", async ({ page }) => {
   await loadDemoFromMenu(page, /DHCPv6 and DNS AAAA/);
   await drainEvents(page);
   await closeInspector(page);
-  await page.getByRole("button", { name: "Select PC1" }).dblclick();
-  deviceWindow = page.getByRole("dialog", { name: "PC1 device window" });
+  deviceWindow = await openDeviceSection(page, {
+    hostname: "PC1",
+    topLevel: "Config",
+    section: "IP Configuration",
+  });
   await deviceWindow.getByRole("tab", { name: "IPv6", exact: true }).click();
   await expect(deviceWindow.getByLabel("DHCPv6")).toBeChecked();
   await deviceWindow.getByRole("button", { name: "Renew" }).click();

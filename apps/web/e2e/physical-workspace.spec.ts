@@ -81,7 +81,7 @@ test("places equipment in sites, rooms and racks without touching the logical la
   // 8-9. Back to Logical: the topology and a live ping are unchanged.
   await chooseView(page, "Logical");
   await expect(page.getByTestId("topology-graph")).toBeVisible();
-  await expect(page.locator(".canvas-statusbar")).toContainText(/3 device/);
+  await expect(page.locator(".workspace-footer")).toContainText(/3 device/);
   await closeInspector(page);
   await page.getByRole("button", { name: "Select PC1" }).click({ button: "right" });
   await page.getByRole("menuitem", { name: /Open CLI/ }).click();

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { openDeviceSection } from "./helpers/device-window";
 
 // M10.3.3c — devices expose one cable handle and never a ring of port dots.
 // Domain interfaces still exist: links stay anchored to exact interface IDs.
@@ -86,8 +87,8 @@ async function connectWithCable(page: Page, from: string, to: string) {
   const dialog = page.getByRole("dialog", { name: "Configure connection" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByLabel("Connection type")).toHaveValue("ethernet");
-  await expect(dialog.getByLabel("From interface")).toBeVisible();
-  await expect(dialog.getByLabel("To interface")).toBeVisible();
+  await expect(dialog.getByLabel("From interface", { exact: true })).toBeVisible();
+  await expect(dialog.getByLabel("To interface", { exact: true })).toBeVisible();
   return dialog;
 }
 
@@ -112,7 +113,7 @@ test("M10.3.3c devices show one cable handle and no port dots", async ({ page })
   await page.getByRole("tab", { name: "Network Devices" }).click();
   await page.getByRole("button", { name: "Add L2 Switch" }).click();
   await canvas.click({ position: { x: Math.round(bounds!.width * 0.6), y: Math.round(bounds!.height * 0.45) } });
-  await expect(page.locator(".canvas-statusbar").getByText("3 devices", { exact: true })).toBeVisible();
+  await expect(page.locator(".workspace-footer").getByText("3 devices", { exact: true })).toBeVisible();
 
   // 2. No painted port marker exists at rest, on hover, or on selection.
   expect(await visiblePortMarkers(page)).toEqual([]);
@@ -133,29 +134,29 @@ test("M10.3.3c devices show one cable handle and no port dots", async ({ page })
   // 5-6. Drag the cable handle onto the switch and choose interfaces.
   const first = await connectWithCable(page, "PC1", "SW1");
   await first.getByRole("button", { name: "Connect", exact: true }).click();
-  await expect(page.locator(".canvas-statusbar").getByText("1 links", { exact: true })).toBeVisible();
+  await expect(page.locator(".workspace-footer").getByText("1 links", { exact: true })).toBeVisible();
 
   // 7. Cancelling the modal creates no edge.
   const cancelled = await connectWithCable(page, "PC2", "SW1");
   await cancelled.getByRole("button", { name: "Cancel" }).click();
-  await expect(page.locator(".canvas-statusbar").getByText("1 links", { exact: true })).toBeVisible();
+  await expect(page.locator(".workspace-footer").getByText("1 links", { exact: true })).toBeVisible();
 
   const second = await connectWithCable(page, "PC2", "SW1");
   // 8. The interface already used by PC1's link is not offered again.
-  const offered = await second.getByLabel("To interface").evaluate((element) =>
+  const offered = await second.getByLabel("To interface", { exact: true }).evaluate((element) =>
     [...(element as HTMLSelectElement).options].map((option) => option.value));
   expect(offered).not.toContain("Gi0/1");
   await second.getByRole("button", { name: "Connect", exact: true }).click();
-  await expect(page.locator(".canvas-statusbar").getByText("2 links", { exact: true })).toBeVisible();
+  await expect(page.locator(".workspace-footer").getByText("2 links", { exact: true })).toBeVisible();
 
   // 9. Connect… from the device context menu starts the same device-first flow.
   await closeInspector(page);
   await page.locator('[data-device-id="switch-1"]').click({ button: "right" });
   await page.getByRole("menuitem", { name: /^Connect…/ }).click();
-  await expect(page.locator(".canvas-statusbar")).toContainText("Select the device to connect");
+  await expect(page.locator(".canvas-operation-hint")).toContainText("Select the device to connect");
   await page.locator(".topology-panel").press("Escape");
-  await expect(page.locator(".canvas-statusbar")).not.toContainText("Select the device to connect");
-  await expect(page.locator(".canvas-statusbar").getByText("2 links", { exact: true })).toBeVisible();
+  await expect(page.locator(".canvas-operation-hint")).toHaveCount(0);
+  await expect(page.locator(".workspace-footer").getByText("2 links", { exact: true })).toBeVisible();
 
   // 10. Links are anchored to their exact interfaces and still no dots.
   await expect.poll(async () => (await edgeAnchors(page)).length).toBe(2);
@@ -216,8 +217,11 @@ test("M10.3.3c the lab power lock owns the cable handle, and ping still works", 
   await place("End Devices", "PC", 830, 150);
 
   const configurePc = async (hostname: string, address: string) => {
-    await page.getByRole("button", { name: `Select ${hostname}` }).dblclick();
-    const window = page.getByRole("dialog", { name: `${hostname} device window` });
+    const window = await openDeviceSection(page, {
+      hostname,
+      topLevel: "Config",
+      section: "IP Configuration",
+    });
     await window.getByLabel("IPv4 Address").fill(address);
     await window.getByLabel("Subnet Mask").fill("255.255.255.0");
     await window.getByRole("button", { name: "Apply" }).click();
@@ -235,7 +239,7 @@ test("M10.3.3c the lab power lock owns the cable handle, and ping still works", 
     await dialog.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(dialog).toHaveCount(0);
   }
-  await expect(page.locator(".canvas-statusbar").getByText("2 links", { exact: true })).toBeVisible();
+  await expect(page.locator(".workspace-footer").getByText("2 links", { exact: true })).toBeVisible();
   expect(await visiblePortMarkers(page)).toEqual([]);
 
   // 2. A running lab exposes no cable handle and no Connect affordance.
@@ -246,8 +250,8 @@ test("M10.3.3c the lab power lock owns the cable handle, and ping still works", 
   expect(await visiblePortMarkers(page)).toEqual([]);
 
   // 3. Connectivity still works while the topology is locked.
-  await page.getByRole("button", { name: "Select PC1" }).click();
-  await page.getByRole("region", { name: "Inspector" }).getByRole("button", { name: /Open CLI/ }).click();
+  await page.getByRole("button", { name: "Select PC1" }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: /Open CLI/ }).click();
   await page.locator(".terminal-session.is-active .xterm-screen").click();
   await page.keyboard.type("ping 192.168.30.20");
   await page.keyboard.press("Enter");

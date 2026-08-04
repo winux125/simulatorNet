@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openDeviceCli } from "./helpers/device-window";
 
 /**
  * M10.7 end-to-end flows.
@@ -24,19 +25,8 @@ async function loadDemo(page: Page, name: RegExp) {
   await expect(page.getByRole("button", { name: "Stop Lab" })).toBeEnabled();
 }
 
-async function closeInspector(page: Page) {
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  if (await inspector.isVisible()) {
-    await inspector.getByRole("button", { name: "Close inspector" }).click();
-  }
-}
-
 async function openCli(page: Page, hostname: string) {
-  await closeInspector(page);
-  await page.getByRole("button", { name: `Select ${hostname}` }).click();
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  await inspector.getByRole("button", { name: /Open CLI/ }).click();
-  await expect(page.getByRole("tab", { name: new RegExp(hostname) })).toBeVisible();
+  await openDeviceCli(page, hostname);
 }
 
 async function runCli(page: Page, command: string) {

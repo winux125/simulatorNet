@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openDeviceCli } from "./helpers/device-window";
 
 function denseSwitchLab() {
   const pcPositions = [
@@ -98,9 +99,7 @@ async function dragDevice(page: Page, deviceId: string, dx: number, dy: number) 
 }
 
 async function openCli(page: Page, hostname: string) {
-  await closeInspector(page);
-  await page.getByRole("button", { name: `Select ${hostname}`, exact: true }).click();
-  await page.getByRole("region", { name: "Inspector" }).getByRole("button", { name: /Open CLI/ }).click();
+  await openDeviceCli(page, hostname);
 }
 
 async function runCli(page: Page, command: string) {

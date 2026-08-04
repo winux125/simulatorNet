@@ -406,6 +406,7 @@ label.ui-icon-button { display: inline-grid; }
 .device-section-workspace__item > button.is-active { border-color: var(--color-accent-strong); background: var(--color-accent-muted); color: var(--color-accent); }
 .device-section-workspace__select { display: none; }
 .device-section-workspace__content { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.device-section-workspace__content:has(.host-ip-config) { overflow: hidden; }
 .device-section-workspace__content > .device-window-section, .device-section-workspace__content > .device-window-table { max-width: none; }
 .device-section-workspace__content > .qos-panel, .device-section-workspace__content > .device-configuration { min-height: 100%; }
 /* The services list is also rendered in the inspector, where it is one section

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openDeviceCli, openDeviceSection, openDeviceWindow } from "./helpers/device-window";
 
 /**
  * M10.9 site-to-site VPN flows. Each test loads a VPN demo explicitly, runs the
@@ -17,20 +18,8 @@ async function loadDemo(page: Page, name: RegExp) {
   await expect(page.getByRole("button", { name: "Load Demo Lab", exact: true })).toBeHidden();
 }
 
-async function closeInspector(page: Page) {
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  if (await inspector.isVisible()) {
-    await inspector.getByRole("button", { name: "Close inspector" }).click();
-  }
-}
-
 async function openCli(page: Page, hostname: string) {
-  await closeInspector(page);
-  await page.getByRole("button", { name: `Select ${hostname}` }).click();
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  await expect(inspector).toContainText(hostname);
-  await inspector.getByRole("button", { name: /Open CLI/ }).click();
-  await expect(page.getByRole("tab", { name: new RegExp(hostname) })).toBeVisible();
+  await openDeviceCli(page, hostname);
 }
 
 async function focusTerminal(page: Page) {
@@ -66,17 +55,14 @@ async function selectTraceFilter(page: Page, protocol: string) {
 }
 
 async function openDeviceTab(page: Page, hostname: string, tab: RegExp) {
-  await closeInspector(page);
-  await page.getByRole("button", { name: `Select ${hostname}` }).dblclick();
-  const window = page.getByRole("dialog", { name: new RegExp(`${hostname} device window`) });
-  await expect(window).toBeVisible();
+  const window = await openDeviceWindow(page, hostname);
   await window.getByRole("tab", { name: tab }).click();
   return window;
 }
 
-/** Open the single top-level VPN tab and one of its secondary sections. */
+/** Open VPN through Config and then select one of its focused subsections. */
 async function openVpnSection(page: Page, hostname: string, name: string) {
-  const window = await openDeviceTab(page, hostname, /^VPN$/);
+  const window = await openDeviceSection(page, { hostname, topLevel: "Config", section: "VPN" });
   await window.getByRole("tablist", { name: "VPN sections" }).getByRole("tab", { name }).click();
   return { window, panel: window.getByRole("tabpanel", { name: `VPN ${name}` }) };
 }
@@ -179,10 +165,15 @@ test.describe("Site-to-site VPN", () => {
       await expect(httpRows.nth(index)).not.toContainText("203.0.113.5");
     }
 
-    // The VPN panel is one top-level tab with five sections, and never shows a key.
-    const window = await openDeviceTab(page, "R1", /^VPN$/);
+    // VPN runtime lives under Monitor, without adding another top-level tab.
+    const window = await openDeviceSection(page, {
+      hostname: "R1",
+      topLevel: "Monitor",
+      section: "VPN Sessions",
+    });
     const tabs = await window.getByRole("tablist", { name: /R1 sections/ }).getByRole("tab").allInnerTexts();
-    expect(tabs.filter((label) => label.includes("VPN"))).toEqual(["VPN"]);
+    expect(tabs).toEqual(["Physical", "Config", "CLI", "Monitor", "Attributes"]);
+    expect(tabs.filter((label) => label.includes("VPN"))).toEqual([]);
     const sections = window.getByRole("tablist", { name: "VPN sections" });
     await expect(sections.getByRole("tab")).toHaveText([
       "Tunnels", "IKE Peers", "IPsec Profiles", "Sessions", "Counters",

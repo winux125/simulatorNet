@@ -51,7 +51,7 @@ test("imports a Containerlab topology through the wizard", async ({ page }) => {
   await page.getByTestId("import-open").click();
   await expect(page.getByTestId("import-wizard")).toHaveCount(0);
   // The imported lab opens (stopped) with its devices on the canvas.
-  await expect(page.locator(".canvas-statusbar")).toContainText(/\d+ device/);
+  await expect(page.locator(".workspace-footer")).toContainText(/\d+ device/);
 });
 
 test("large PNETLab mapping keeps its footer and final rows reachable", async ({ page }) => {
@@ -227,7 +227,9 @@ test("shows an honest diagnostic for a Packet Tracer file", async ({ page }) => 
   test.setTimeout(60_000);
   await page.goto("/");
   await page.locator("#load-lab-file").setInputFiles({ name: "lab.pkt", mimeType: "application/octet-stream", buffer: Buffer.from([0, 1, 2, 3, 0]) });
-  await expect(page.getByTestId("import-unsupported")).toContainText(/Packet Tracer/i);
+  const migration = page.getByTestId("packet-tracer-migration");
+  await expect(migration).toContainText(/Packet Tracer/i);
+  await migration.getByRole("button", { name: "Close", exact: true }).click();
   // No lab was created: the welcome workspace is still shown.
   await expect(page.getByRole("button", { name: "Import Lab" })).toBeVisible();
 });

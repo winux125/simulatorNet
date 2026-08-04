@@ -184,7 +184,7 @@ function configSections(type: DeviceType): DeviceWindowSectionDefinition[] {
   }
   if (QOS_TYPES.has(type)) sections.push({ id: "qos-config", label: "QoS" });
   if (deviceTypeHasCapability(type, "vpn-tunnel")) sections.push({ id: "vpn-config", label: "VPN" });
-  if (type === "access-point" || type === "wireless-router") {
+  if (["access-point", "wireless-router", "laptop", "smartphone"].includes(type)) {
     sections.push({ id: "wireless-config", label: "Wireless" });
   }
   if (type === "server") sections.push({ id: "services-config", label: "Services" });

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openDeviceCli, openDeviceSection, openDeviceWindow } from "./helpers/device-window";
 
 /**
  * M10.8 quality-of-service flows. Each test loads a QoS demo explicitly, runs
@@ -13,20 +14,8 @@ async function loadDemo(page: Page, name: RegExp) {
   await expect(page.getByRole("button", { name: "Load Demo Lab", exact: true })).toBeHidden();
 }
 
-async function closeInspector(page: Page) {
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  if (await inspector.isVisible()) {
-    await inspector.getByRole("button", { name: "Close inspector" }).click();
-  }
-}
-
 async function openCli(page: Page, hostname: string) {
-  await closeInspector(page);
-  await page.getByRole("button", { name: `Select ${hostname}` }).click();
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  await expect(inspector).toContainText(hostname);
-  await inspector.getByRole("button", { name: /Open CLI/ }).click();
-  await expect(page.getByRole("tab", { name: new RegExp(hostname) })).toBeVisible();
+  await openDeviceCli(page, hostname);
 }
 
 async function focusTerminal(page: Page) {
@@ -63,17 +52,16 @@ async function selectTraceFilter(page: Page, protocol: string) {
 
 /** Open a device window and its named tab. */
 async function openDeviceTab(page: Page, hostname: string, tab: RegExp) {
-  await closeInspector(page);
-  await page.getByRole("button", { name: `Select ${hostname}` }).dblclick();
-  const window = page.getByRole("dialog", { name: new RegExp(`${hostname} device window`) });
-  await expect(window).toBeVisible();
+  const window = await openDeviceWindow(page, hostname);
   await window.getByRole("tab", { name: tab }).click();
   return window;
 }
 
-/** Open the single top-level QoS tab and one of its secondary sections. */
+/** Open QoS through the capability-driven Config/Monitor navigation. */
 async function openQosSection(page: Page, hostname: string, name: string) {
-  const window = await openDeviceTab(page, hostname, /^QoS$/);
+  const window = await openDeviceSection(page, name === "Queues & Counters"
+    ? { hostname, topLevel: "Monitor", section: "QoS Queues & Counters" }
+    : { hostname, topLevel: "Config", section: "QoS" });
   await window.getByRole("tablist", { name: "QoS sections" }).getByRole("tab", { name }).click();
   return { window, panel: window.getByRole("tabpanel", { name: `QoS ${name}` }) };
 }
@@ -172,16 +160,17 @@ test.describe("QoS", () => {
     await expect(panel).toContainText("GUEST");
   });
 
-  test("one consolidated QoS tab exposes every section on Router, L3 Switch and Firewall", async ({ page }) => {
+  test("the Config QoS section exposes every panel on Router, L3 Switch and Firewall", async ({ page }) => {
     test.setTimeout(180_000);
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
     await loadDemo(page, /QoS: Guest Policing and WAN Shaping/);
 
-    // 1-2. Exactly one top-level QoS tab.
-    const router = await openDeviceTab(page, "R1", /^QoS$/);
+    // QoS is one Config section, not another crowded top-level tab.
+    const router = await openDeviceSection(page, { hostname: "R1", topLevel: "Config", section: "QoS" });
     const tabs = await router.getByRole("tablist", { name: /R1 sections/ }).getByRole("tab").allInnerTexts();
-    expect(tabs.filter((label) => label.includes("QoS"))).toEqual(["QoS"]);
+    expect(tabs).toEqual(["Physical", "Config", "CLI", "Monitor", "Attributes"]);
+    expect(tabs.filter((label) => label.includes("QoS"))).toEqual([]);
     const sections = router.getByRole("tablist", { name: "QoS sections" });
     await expect(sections.getByRole("tab")).toHaveText([
       "Overview", "Classification", "Policies", "Interfaces", "Queues & Counters",
@@ -242,10 +231,10 @@ test.describe("QoS", () => {
       await page.goto("/");
       await loadDemo(page, demo);
 
-      const window = await openDeviceTab(page, hostname, /^QoS$/);
+      const window = await openDeviceSection(page, { hostname, topLevel: "Config", section: "QoS" });
       const tabs = await window.getByRole("tablist", { name: new RegExp(`${hostname} sections`) })
         .getByRole("tab").allInnerTexts();
-      expect(tabs.filter((label) => label.includes("QoS"))).toEqual(["QoS"]);
+      expect(tabs.filter((label) => label.includes("QoS"))).toEqual([]);
       const sections = window.getByRole("tablist", { name: "QoS sections" });
       await expect(sections.getByRole("tab")).toHaveText([
         "Overview", "Classification", "Policies", "Interfaces", "Queues & Counters",

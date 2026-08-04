@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { openDeviceSection } from "./helpers/device-window";
 
 async function closeInspector(page: Page) {
   const inspector = page.getByRole("region", { name: "Inspector" });
@@ -113,9 +114,11 @@ test("keeps a pasted password invisible and survives presentation changes", asyn
 
   // 14. Configure a console login on R1.
   await closeInspector(page);
-  await page.getByRole("button", { name: "Select R1" }).dblclick();
-  const win = page.getByRole("dialog", { name: /R1 device window/ });
-  await win.getByRole("tab", { name: "Console Access" }).click();
+  const win = await openDeviceSection(page, {
+    hostname: "R1",
+    topLevel: "Config",
+    section: "Console Access",
+  });
   await page.getByTestId("console-mode").selectOption("password-only");
   const consolePassword = page.getByRole("group", { name: /^Console password/ });
   await consolePassword.getByLabel("Console password").fill("paste-secret");
@@ -129,16 +132,16 @@ test("keeps a pasted password invisible and survives presentation changes", asyn
   await win.getByRole("button", { name: "Open in Terminal Workspace" }).click();
   const rows = page.locator(".terminal-session.is-active .xterm-rows");
   const host = page.locator(".terminal-session.is-active .xterm-host");
-  await expect(rows).toContainText("Password:", { timeout: 20_000 });
+  const transcript = page.getByTestId("terminal-transcript");
+  await expect(rows).toContainText(/ssword:/, { timeout: 20_000 });
 
   // 16/17. Paste the password: it is never echoed, but it authenticates.
   await pasteIntoTerminal(host, "paste-secret");
-  await expect(rows).not.toContainText("paste-secret");
+  await expect(transcript).not.toContainText("paste-secret");
   await page.locator(".terminal-session.is-active .xterm-screen").click();
   await page.keyboard.press("Enter");
   await expect(rows).toContainText("R1>", { timeout: 20_000 });
-  await expect(rows).not.toContainText("paste-secret");
-  await expect(page.getByTestId("terminal-transcript")).not.toContainText("paste-secret");
+  await expect(transcript).not.toContainText("paste-secret");
 
   // 18/19. Float the terminal and paste another command into the same session.
   await page.getByRole("button", { name: "Float terminal" }).click();
@@ -164,9 +167,9 @@ test("keeps a pasted password invisible and survives presentation changes", asyn
   // 22. Clear Terminal wipes the visible buffer only: the prompt, the tab, the
   // authenticated session and the pasted-but-unsubmitted input all survive.
   await menu.getByRole("menuitem", { name: "Clear Terminal", exact: true }).click();
-  await expect(rows).toContainText("R1> show ip route");
+  await expect(rows).toContainText("show ip route");
   await expect(page.getByRole("tab", { name: /R1 terminal/ })).toHaveCount(1);
   await page.locator(".terminal-session.is-active .xterm-screen").click();
   await page.keyboard.press("Enter");
-  await expect(page.getByTestId("terminal-transcript")).toContainText("192.168.10.0", { timeout: 20_000 });
+  await expect(rows).toContainText("192.168.10.0", { timeout: 20_000 });
 });

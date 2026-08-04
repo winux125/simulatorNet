@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openDeviceCli } from "./helpers/device-window";
 
 /**
  * M10.4 control-protocol flows. Each test loads a demo lab explicitly, runs the
@@ -13,20 +14,8 @@ async function loadDemo(page: Page, name: RegExp) {
   await expect(page.getByRole("button", { name: "Load Demo Lab", exact: true })).toBeHidden();
 }
 
-async function closeInspector(page: Page) {
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  if (await inspector.isVisible()) {
-    await inspector.getByRole("button", { name: "Close inspector" }).click();
-  }
-}
-
 async function openCli(page: Page, hostname: string) {
-  await closeInspector(page);
-  await page.getByRole("button", { name: `Select ${hostname}` }).click();
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  await expect(inspector).toContainText(hostname);
-  await inspector.getByRole("button", { name: /Open CLI/ }).click();
-  await expect(page.getByRole("tab", { name: new RegExp(hostname) })).toBeVisible();
+  await openDeviceCli(page, hostname);
 }
 
 /** Bring the shared terminal back to the front after using another dock tab. */

@@ -30,7 +30,6 @@ import { VpnPanel } from "./VpnPanel";
 import { ConfigurationPanel, ConfigurationStatusBadge } from "./ConfigurationPanel";
 import {
   getDeviceWindowDefinition,
-  isManagedDeviceWindow,
   type DeviceWindowMainTabId,
   type DeviceWindowSectionDefinition,
   type DeviceWindowSectionId,
@@ -96,7 +95,7 @@ export function DeviceWindow(props: DeviceWindowProps) {
         </nav>
         <div className="device-window__content" role="tabpanel">
           {tab === "physical" && <PhysicalSummary node={props.node} />}
-          {tab === "config" && (isManagedDeviceWindow(props.node.type)
+          {tab === "config" && (definition.configSections.length > 1
             ? <SectionWorkspace
                 label="Configuration"
                 sections={definition.configSections}
