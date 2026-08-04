@@ -28,9 +28,9 @@ describe("bottom panel state", () => {
     setViewportHeight(900);
   });
 
-  it("defaults to expanded on a normal viewport", () => {
-    expect(defaultBottomPanelState(900)).toBe("expanded");
-    expect(readBottomPanelState()).toBe("expanded");
+  it("defaults to minimized on a normal viewport so an empty dock does not consume the canvas", () => {
+    expect(defaultBottomPanelState(900)).toBe("minimized");
+    expect(readBottomPanelState()).toBe("minimized");
   });
 
   it("defaults to minimized on a short viewport so the canvas stays usable", () => {
@@ -47,7 +47,7 @@ describe("bottom panel state", () => {
 
   it("ignores an unknown stored state", () => {
     window.localStorage.setItem(BOTTOM_PANEL_STATE_STORAGE_KEY, "collapsed");
-    expect(readBottomPanelState()).toBe("expanded");
+    expect(readBottomPanelState()).toBe("minimized");
   });
 
   it("toggles collapsed states open and an open panel closed", () => {

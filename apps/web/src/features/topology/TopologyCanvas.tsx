@@ -19,25 +19,19 @@ import {
   ArrowUpToLine,
   Bold,
   Cable,
-  Circle,
   Copy,
   Eye,
   FilePlus2,
   FlaskConical,
-  Hand,
-  Italic,
   ImagePlus,
+  Italic,
   Lock,
   LockOpen,
   Maximize2,
-  Minus,
   Monitor,
-  MousePointer2,
   Network,
   Router as RouterIcon,
-  Search,
   Square,
-  Tag,
   Type,
   Trash2,
   Upload,
@@ -55,7 +49,8 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import type { PortLabelMode, WorkspaceMode, WorkspaceTool } from "../../state/workspace-store";
-import { Button, StatusIndicator } from "../../ui";
+import { Button } from "../../ui";
+import { ToolRail } from "../../components/ToolRail";
 import type { LabChangeImpact } from "../lab/change-impact";
 import {
   addDiagramAnnotation,
@@ -101,7 +96,7 @@ import {
   type TextDiagramAnnotation,
 } from "./diagram-editor";
 import { TopologyGraphSurface } from "./TopologyGraphSurface";
-import { formatZoomPercent, type CanvasViewport } from "./canvas-navigation";
+import type { CanvasViewport } from "./canvas-navigation";
 import { portLabelsVisible } from "./diagram-presentation";
 import { createLink } from "./x6/lab-document-adapter";
 import type { Point, TopologyView } from "./x6/types";
@@ -130,7 +125,6 @@ interface TopologyCanvasProps {
   zoomOutRequest: number;
   viewport: CanvasViewport;
   onViewport(viewport: CanvasViewport): void;
-  onResetZoom(): void;
   onSelectNode(id: string | undefined): void;
   onSelectLink(id: string | undefined): void;
   onOpenTerminal(id: string): void;
@@ -142,7 +136,6 @@ interface TopologyCanvasProps {
   onReloadDevice(id: string): void;
   onPlacedDevice(): void;
   onActiveTool(tool: WorkspaceTool): void;
-  onPortLabelMode(mode: PortLabelMode): void;
   onChange(document: LabDocument, impact: LabChangeImpact): void;
   onError(message: string): void;
   onLoadDemo(): void;
@@ -339,6 +332,30 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
       setPendingConnectionSourceId(undefined);
     }
   }, [structuralEditable]);
+
+  // Tool changes terminate transient pointer sessions. This prevents a draft
+  // shape or marquee from leaking into the next tool without changing the lab.
+  useEffect(() => {
+    setDragStart(undefined);
+    setDragCurrent(undefined);
+    setMarqueeStart(undefined);
+    setMarqueeCurrent(undefined);
+    setSmartGuide({});
+  }, [props.activeTool]);
+
+  // A new/imported document is a new editing surface. Selection and draft UI
+  // are local presentation state and must not survive the document boundary.
+  useEffect(() => {
+    setContextMenu(undefined);
+    setConnectionIntent(undefined);
+    setPendingConnectionSourceId(undefined);
+    setSelectedAnnotationIds([]);
+    setTextEditing(undefined);
+    setDragStart(undefined);
+    setDragCurrent(undefined);
+    setMarqueeStart(undefined);
+    setMarqueeCurrent(undefined);
+  }, [props.document?.id]);
 
   useEffect(() => () => {
     if (viewportTimer.current !== undefined) window.clearTimeout(viewportTimer.current);
@@ -1015,7 +1032,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
   const editorBlur = (event: ReactFocusEvent<HTMLTextAreaElement>) => {
     // Formatting controls keep the session alive so styles apply without
     // closing the editor; anything else commits the text.
-    if ((event.relatedTarget as HTMLElement | null)?.closest(".annotation-toolbar, .diagram-insert-toolbar")) return;
+    if ((event.relatedTarget as HTMLElement | null)?.closest(".annotation-toolbar, .tool-rail")) return;
     commitTextEditing();
   };
 
@@ -1045,50 +1062,28 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
           event.target.value = "";
         }}
       />
-      <div className="canvas-statusbar">
-        <StatusIndicator status={props.mode === "edit" ? "unsaved" : "ready"} label={props.mode === "edit" ? "Edit topology" : "Lab running"} />
-        <span>{document.topology.nodes.length} devices</span>
-        <span>{document.topology.links.length} links</span>
-        {pendingConnectionSourceId && <strong><Cable size={12} /> Select the device to connect</strong>}
-        {props.activeTool === "add-link" && <strong><Cable size={12} /> Drag a cable handle onto another device</strong>}
-        {ANNOTATION_TOOLS.has(props.activeTool) && <strong>Click the canvas to place annotation</strong>}
-        <button
-          type="button"
-          aria-label="Toggle link labels"
-          aria-pressed={props.portLabelMode !== "hidden"}
-          onClick={() => props.onPortLabelMode(props.portLabelMode === "hidden" ? "always" : "hidden")}
-        >
-          <Tag size={13} /> Ports: {props.portLabelMode}
-        </button>
-        <button
-          type="button"
-          className="canvas-statusbar__zoom"
-          aria-label={`Canvas zoom ${formatZoomPercent(props.viewport.scale)}. Reset zoom to 100%`}
-          title="Reset zoom to 100% (Fit Topology stays separate)"
-          onClick={props.onResetZoom}
-        >
-          <Search size={13} /> Zoom: {formatZoomPercent(props.viewport.scale)}
-        </button>
-      </div>
+      <ToolRail
+        mode={props.mode}
+        activeTool={props.activeTool}
+        structuralEditable={structuralEditable}
+        snapToGrid={snapToGrid}
+        smartGuides={smartGuides}
+        onTool={props.onActiveTool}
+        onImage={() => { props.onActiveTool("annotation-image"); openImagePicker(); }}
+        onSnapToGrid={(value) => { setSnapToGrid(value); storeDiagramPreference("simulatornet.diagram.snapToGrid", value); }}
+        onSmartGuides={(value) => { setSmartGuides(value); storeDiagramPreference("simulatornet.diagram.smartGuides", value); }}
+      />
+      {(pendingConnectionSourceId || props.activeTool === "add-link" || ANNOTATION_TOOLS.has(props.activeTool)) && (
+        <div className="canvas-operation-hint" role="status">
+          {pendingConnectionSourceId
+            ? <><Cable size={12} /> Select the device to connect</>
+            : props.activeTool === "add-link"
+              ? <><Cable size={12} /> Drag a cable handle onto another device</>
+              : <>Click the canvas to place annotation</>}
+        </div>
+      )}
 
-      <div className="diagram-insert-toolbar" role="toolbar" aria-label="Diagram tools">
-        <span>Diagram</span>
-        <button type="button" title="Select (Escape)" onClick={() => props.onActiveTool("select")} aria-pressed={props.activeTool === "select"}><MousePointer2 size={13} /> Select</button>
-        <button type="button" title="Hand / Pan" onClick={() => props.onActiveTool("pan")} aria-pressed={props.activeTool === "pan"}><Hand size={13} /> Hand</button>
-        <span className="diagram-insert-toolbar__separator" />
-        <button type="button" onClick={() => props.onActiveTool("annotation-text")} aria-pressed={props.activeTool === "annotation-text"}><Type size={13} /> Text</button>
-        <button type="button" onClick={() => props.onActiveTool("annotation-rectangle")} aria-pressed={props.activeTool === "annotation-rectangle"}><Square size={13} /> Rectangle</button>
-        <button type="button" onClick={() => props.onActiveTool("annotation-ellipse")} aria-pressed={props.activeTool === "annotation-ellipse"}><Circle size={13} /> Ellipse</button>
-        <button type="button" onClick={() => props.onActiveTool("annotation-line")} aria-pressed={props.activeTool === "annotation-line"}><Minus size={13} /> Line</button>
-        <button type="button" onClick={() => props.onActiveTool("annotation-arrow")} aria-pressed={props.activeTool === "annotation-arrow"}><ArrowUpToLine size={13} /> Arrow</button>
-        <button type="button" onClick={() => { props.onActiveTool("annotation-image"); openImagePicker(); }} aria-pressed={props.activeTool === "annotation-image"}><ImagePlus size={13} /> Image</button>
-        <span className="diagram-insert-toolbar__separator" />
-        <button type="button" disabled={!structuralEditable} title={structuralEditable ? "Create a physical network connection" : "Stop the lab to edit connectivity"} onClick={() => props.onActiveTool("add-link")} aria-pressed={props.activeTool === "add-link"}><Cable size={13} /> Connection</button>
-        <label className="diagram-toolbar-toggle"><input type="checkbox" checked={snapToGrid} onChange={(event) => { setSnapToGrid(event.target.checked); storeDiagramPreference("simulatornet.diagram.snapToGrid", event.target.checked); }} /> Grid snap</label>
-        <label className="diagram-toolbar-toggle"><input type="checkbox" checked={smartGuides} onChange={(event) => { setSmartGuides(event.target.checked); storeDiagramPreference("simulatornet.diagram.smartGuides", event.target.checked); }} /> Guides</label>
-      </div>
-
-      {(selectedAnnotation || ANNOTATION_TOOLS.has(props.activeTool)) && (
+      {(selectedAnnotationIds.length > 0 || (textEditing?.kind === "annotation" && Boolean(textEditing.draft))) && (
         <div className="annotation-toolbar" aria-label="Annotation formatting">
           {selectedAnnotationIds.length > 1 && <strong>{selectedAnnotationIds.length} selected</strong>}
           {selectedAnnotation?.type === "text" && <>

@@ -83,6 +83,7 @@ const WIRELESS_ASSOCIATIONS_KEY = "simulatornet.wirelessAssociations";
 const VPN_TUNNEL_OVERLAY_KEY = "simulatornet.vpnTunnelOverlay";
 const MPLS_LABEL_OVERLAY_KEY = "simulatornet.mplsLabelOverlay";
 const L3VPN_OVERLAY_KEY = "simulatornet.l3VpnOverlay";
+const INSPECTOR_AUTO_OPEN_KEY = "simulatornet.inspectorAutoOpen";
 
 interface AppProps { client: SimulatorClient }
 
@@ -220,6 +221,17 @@ export function App({ client }: AppProps) {
     setWorkspacePanelLayout(persisted);
   }, []);
   const compact = useMediaQuery("(max-width: 999px)");
+  const narrow = useMediaQuery("(max-width: 1299px)");
+  const [inspectorAutoOpen, setInspectorAutoOpen] = useState(() => {
+    const stored = window.localStorage.getItem(INSPECTOR_AUTO_OPEN_KEY);
+    if (stored === "true" || stored === "false") return stored === "true";
+    return !narrow;
+  });
+  const chooseInspectorVisibility = useCallback((open: boolean) => {
+    window.localStorage.setItem(INSPECTOR_AUTO_OPEN_KEY, String(open));
+    setInspectorAutoOpen(open);
+    useWorkspaceStore.getState().setInspectorOpen(open);
+  }, []);
   const theme = useTheme();
   const deviceIconProfile = useDeviceIconProfile();
   const [terminalAppearance, setTerminalAppearanceState] = useState<TerminalAppearance>(getTerminalAppearance());
@@ -790,7 +802,7 @@ export function App({ client }: AppProps) {
       { id: "view-fit", label: "Fit Topology", shortcut: "F", icon: <Maximize2 size={14} />, disabled: !labOpen, onSelect: workspace.requestFit },
       { id: "view-zoom", label: "Reset Zoom", disabled: !labOpen, onSelect: workspace.requestZoomReset },
       { separator: true },
-      { id: "view-inspector", label: workspace.inspectorOpen ? "Hide Inspector" : "Show Inspector", icon: <PanelRight size={14} />, onSelect: () => workspace.setInspectorOpen(!workspace.inspectorOpen) },
+      { id: "view-inspector", label: workspace.inspectorOpen ? "Hide Inspector" : "Show Inspector", icon: <PanelRight size={14} />, onSelect: () => chooseInspectorVisibility(!workspace.inspectorOpen) },
       { id: "view-icons", label: "Device Icon Style", submenu: [
         { id: "icons-classic", label: "Classic Lab", checked: deviceIconProfile === "classic", onSelect: () => setDeviceIconProfile("classic") },
         { id: "icons-education", label: "Education Flat", checked: deviceIconProfile === "education", onSelect: () => setDeviceIconProfile("education") },
@@ -943,7 +955,7 @@ export function App({ client }: AppProps) {
       onTab={workspace.setInspectorTab}
       onOpenTerminal={openTerminal}
       onError={reportInspectionError}
-      onClose={() => workspace.setInspectorOpen(false)}
+      onClose={() => chooseInspectorVisibility(false)}
     />
   );
 
@@ -1014,31 +1026,6 @@ export function App({ client }: AppProps) {
           </Button>
         </div>
       )}
-      {labOpen && (
-        <nav className="workspace-view-switch" role="tablist" aria-label="Workspace view">
-          {([
-            { id: "logical", label: "Logical", hint: "Topology canvas: devices, cables and diagram." },
-            { id: "physical", label: "Physical", hint: "Where the equipment is: sites, rooms and racks." },
-          ] as const).map((entry) => (
-            <button
-              key={entry.id}
-              type="button"
-              role="tab"
-              aria-selected={workspace.view === entry.id}
-              className={workspace.view === entry.id ? "is-active" : ""}
-              title={entry.hint}
-              onClick={() => workspace.setView(entry.id as WorkspaceView)}
-            >
-              {entry.label}
-            </button>
-          ))}
-          <span className="workspace-view-switch__hint">
-            {workspace.view === "physical"
-              ? "Placement is presentation only — it never rebuilds the running lab."
-              : "Devices, cables and diagram annotations."}
-          </span>
-        </nav>
-      )}
       <div className="workspace-body">
         <PanelGroup
           orientation="vertical"
@@ -1054,6 +1041,26 @@ export function App({ client }: AppProps) {
             defaultSize={`${workspacePanelLayout[WORKSPACE_MAIN_PANEL_ID]}%`}
           >
             <div className="main-workspace">
+              {labOpen && (
+                <nav className="workspace-view-switch" role="tablist" aria-label="Workspace view">
+                  {([
+                    { id: "logical", label: "Logical", hint: "Topology canvas: devices, cables and diagram." },
+                    { id: "physical", label: "Physical", hint: "Where the equipment is: sites, rooms and racks." },
+                  ] as const).map((entry) => (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={workspace.view === entry.id}
+                      className={workspace.view === entry.id ? "is-active" : ""}
+                      title={entry.hint}
+                      onClick={() => workspace.setView(entry.id as WorkspaceView)}
+                    >
+                      {entry.label}
+                    </button>
+                  ))}
+                </nav>
+              )}
               {workspace.view === "physical" && workspace.draft ? (
                 <Suspense fallback={<CanvasLoading />}>
                   <PhysicalWorkspace
@@ -1158,6 +1165,7 @@ export function App({ client }: AppProps) {
         <span>Workspace: <strong>{workspace.mode === "edit" ? "Edit" : "Operate"}</strong></span>
         <span>Virtual time <code>{((workspace.snapshot?.virtualTime ?? 0) / 1_000_000).toFixed(3)} ms</code></span>
         <span>{workspace.snapshot?.nodes.length ?? 0} devices</span>
+        <span>{workspace.draft?.topology.links.length ?? 0} links</span>
         {labOpen && !bottomPanelExpanded && <BottomPanelStatus
           state={workspace.bottomPanelState}
           traces={workspace.traces.length}
@@ -1291,8 +1299,10 @@ export function App({ client }: AppProps) {
       zoomOutRequest: workspace.zoomOutRequest,
       viewport: workspace.viewport,
       onViewport: workspace.setViewport,
-      onResetZoom: workspace.requestZoomReset,
-      onSelectNode: (id: string | undefined) => { workspace.selectNode(id); if (id) workspace.setInspectorOpen(true); },
+      onSelectNode: (id: string | undefined) => {
+        workspace.selectNode(id);
+        if (id && inspectorAutoOpen) workspace.setInspectorOpen(true);
+      },
       onSelectLink: workspace.selectLink,
       onOpenTerminal: openTerminal,
       onOpenDevice: setDeviceWindowId,
@@ -1302,7 +1312,6 @@ export function App({ client }: AppProps) {
       onInspect: (id: string) => { workspace.selectNode(id); workspace.setInspectorOpen(true); },
       onPlacedDevice: () => workspace.setPendingDeviceKind(undefined),
       onActiveTool: workspace.setActiveTool,
-      onPortLabelMode: workspace.setPortLabelMode,
       onChange: updateDraft,
       onError: (message: string) => reportError(message, "validation"),
       onLoadDemo: () => setDemoLabOpen(true),
@@ -1421,7 +1430,7 @@ function CanvasNavigationHelpDialog({ onClose }: { onClose(): void }) {
       <Shortcut keys="Space + drag" label="Pan" />
       <Shortcut keys="Left drag on empty canvas" label="Select / marquee" />
     </div>
-    <p className="section-note">A plain wheel never zooms and never scrolls the page. Zoom is limited to 20%–300%; the status bar shows the current percentage and resets it to 100%. Fit Topology stays a separate action.</p>
+    <p className="section-note">A plain wheel never zooms and never scrolls the page. Zoom is limited to 20%–300%; the primary toolbar shows the current percentage and resets it to 100%. Fit Topology stays a separate action.</p>
   </WorkspaceDialog>;
 }
 
@@ -1475,7 +1484,7 @@ function TerminalWorkspaceHelpDialog({ onClose }: { onClose(): void }) {
       <section>
         <h3>Bottom panel</h3>
         <p>The bottom panel is Expanded, Minimized (a compact tab strip) or Hidden (no height at all, so the topology takes the space). Use View ▸ Bottom Panel, the panel controls, or <strong>Ctrl/Cmd+J</strong>.</p>
-        <p>Hiding or minimizing the panel only changes what is displayed. Terminal tabs, CLI sessions, authentication, the current input line, history, scrollback and a pending paste all survive — only <strong>Close Tab</strong> ends a session. Events, Packet Trace and Problems keep collecting, with their counts on the strip or in the status bar.</p>
+        <p>Hiding or minimizing the panel only changes what is displayed. Terminal tabs, CLI sessions, authentication, the current input line, history, scrollback and a pending paste all survive — only <strong>Close Tab</strong> ends a session. Events, Packet Trace and Problems keep collecting, with their counts on the compact strip or workspace footer.</p>
       </section>
     </div>
     <p className="section-note">Pasted text is plain text. Escape sequences, OSC clipboard/title/hyperlink commands and other terminal control codes are stripped; binary data is refused. One paste is limited to {TERMINAL_PASTE_LIMITS.maximumCharacters.toLocaleString("en-US")} characters, {TERMINAL_PASTE_LIMITS.maximumLines.toLocaleString("en-US")} lines and {TERMINAL_PASTE_LIMITS.maximumPendingCommands.toLocaleString("en-US")} queued commands.</p>

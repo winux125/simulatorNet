@@ -688,10 +688,10 @@ describe("M6.1 simulator workspace", () => {
   it("toggles topology link labels", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);
-    const toggle = screen.getByRole("button", { name: "Toggle link labels" });
-    expect(toggle.getAttribute("aria-pressed")).toBe("true");
-    await userEvent.click(toggle);
-    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    await openMenu("View");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Port Labels" }));
+    await userEvent.click(screen.getByRole("menuitemradio", { name: "Hidden" }));
+    expect(useWorkspaceStore.getState().portLabelMode).toBe("hidden");
   });
 
   it("reports imported document validation errors", async () => {
@@ -880,6 +880,9 @@ describe("M10.2.1 Packet Tracer-style workspace", () => {
   it("starts with the inspector closed at the 1280-wide desktop breakpoint", async () => {
     narrowViewport = true;
     await loadDemo(new RuntimeClient());
+    expect(useWorkspaceStore.getState().inspectorOpen).toBe(false);
+    expect(document.querySelector(".inspector-panel")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Select PC1" }));
     expect(useWorkspaceStore.getState().inspectorOpen).toBe(false);
     expect(document.querySelector(".inspector-panel")).toBeNull();
     await openMenu("View");
@@ -1458,19 +1461,12 @@ describe("M10.2.3c change-impact and rebuild semantics", () => {
     expect(screen.queryByText("Pending topology changes")).toBeNull();
   });
 
-  it("allows diagram notes while running but keeps connectivity controls locked", async () => {
+  it("hides diagram creation tools while running and keeps connectivity controls locked", async () => {
     const client = new RuntimeClient();
     await loadDemo(client);
-    await userEvent.click(screen.getByRole("button", { name: "Text" }));
-    fireEvent.click(screen.getByTestId("topology-graph"), { clientX: 280, clientY: 160 });
-    const editor = await screen.findByRole("textbox", { name: "Editing topology text" });
-    await userEvent.type(editor, "Core note");
-    fireEvent.keyDown(editor, { key: "Enter", ctrlKey: true });
-
-    expect(useWorkspaceStore.getState().draft?.diagram?.annotations).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Text" })).toBeNull();
     expect(useWorkspaceStore.getState()).toMatchObject({
       powerState: "running",
-      unsaved: true,
       pendingTopologyChanges: false,
     });
     expect(screen.getAllByRole("button", { name: "Add link" }).every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
@@ -1648,6 +1644,9 @@ describe("M10.3.2d professional diagram workspace", () => {
   it("exposes one explicit Select, Hand, drawing, Image, and Connection toolbar", async () => {
     await openEmptyLab();
     const toolbar = screen.getByRole("toolbar", { name: "Diagram tools" });
+    expect(document.querySelector(".canvas-statusbar")).toBeNull();
+    expect(document.querySelector(".diagram-insert-toolbar")).toBeNull();
+    expect(document.querySelector(".annotation-toolbar")).toBeNull();
     for (const name of ["Select", "Hand", "Text", "Rectangle", "Ellipse", "Line", "Arrow", "Image", "Connection"]) {
       expect(within(toolbar).getByRole("button", { name })).toBeTruthy();
     }
@@ -1708,8 +1707,8 @@ describe("M10.3.2d professional diagram workspace", () => {
   it("persists local snapping preferences without mutating the LabDocument", async () => {
     await openEmptyLab();
     const before = JSON.stringify(useWorkspaceStore.getState().draft);
-    await userEvent.click(screen.getByRole("checkbox", { name: "Grid snap" }));
-    await userEvent.click(screen.getByRole("checkbox", { name: "Guides" }));
+    await userEvent.click(screen.getByRole("button", { name: "Grid snap" }));
+    await userEvent.click(screen.getByRole("button", { name: "Smart guides" }));
     expect(window.localStorage.getItem("simulatornet.diagram.snapToGrid")).toBe("false");
     expect(window.localStorage.getItem("simulatornet.diagram.smartGuides")).toBe("false");
     expect(JSON.stringify(useWorkspaceStore.getState().draft)).toBe(before);
@@ -2024,12 +2023,19 @@ describe("M10.3.3b inline diagram text editing", () => {
     expect((screen.getByRole("textbox", TEXT_EDITOR) as HTMLTextAreaElement).value).toBe("Note");
   });
 
-  it("15. edits text while the lab runs without a rebuild or trace reset", async () => {
+  it("15. edits an existing selected text while the lab runs without a rebuild or trace reset", async () => {
     const client = new RuntimeClient();
-    await loadDemo(client);
+    render(<App client={client} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New Lab" }));
+    const draftEditor = await createTextAt(300, 200);
+    await userEvent.type(draftEditor, "Original note");
+    fireEvent.keyDown(draftEditor, { key: "Enter", ctrlKey: true });
+    await userEvent.click(screen.getByRole("button", { name: "Start Lab" }));
     const traces = useWorkspaceStore.getState().traces.length;
     const requestsBefore = client.requestTypes.length;
-    const editor = await createTextAt(300, 200);
+    await act(async () => { graphHarness.editAnnotation?.("annotation-1"); });
+    const editor = await screen.findByRole("textbox", TEXT_EDITOR);
+    await userEvent.clear(editor);
     await userEvent.type(editor, "Running note");
     fireEvent.keyDown(editor, { key: "Enter", ctrlKey: true });
     expect(annotations()).toHaveLength(1);

@@ -59,7 +59,7 @@ const ANNOTATION_HANDLE_PREFIX = "diagram-handle:";
 const ANNOTATION_Z_BASE = -10_000;
 const DEVICE_NODE_Z_INDEX = 1_000;
 const ANNOTATION_HANDLE_Z_INDEX = 2_000;
-const HANDLE_SIZE = 10;
+const HANDLE_SIZE = 8;
 
 function annotationLayerZIndex(zIndex: number): number {
   return Math.min(TOPOLOGY_EDGE_Z_INDEX - 1, ANNOTATION_Z_BASE + zIndex);

@@ -18,7 +18,7 @@ export const DEFAULT_BOTTOM_PANEL_HEIGHT = 240;
 export const MIN_BOTTOM_PANEL_HEIGHT = 180;
 /** The panel never takes more than this share of the workspace from the canvas. */
 export const MAX_BOTTOM_PANEL_VIEWPORT_RATIO = 0.48;
-/** Below this viewport height a first run starts minimized so the canvas is usable. */
+/** Retained for responsive callers and backwards-compatible layout tests. */
 export const COMPACT_VIEWPORT_HEIGHT = 620;
 
 function isBottomPanelState(value: unknown): value is BottomPanelState {
@@ -39,15 +39,15 @@ export function clampBottomPanelHeight(height: number, viewportHeight: number): 
 }
 
 /**
- * The default for a first run. A short viewport starts minimized — the tabs and
- * their badges stay reachable while the topology keeps the remaining space.
+ * A first run starts minimized at every supported viewport. The tab strip and
+ * badges remain reachable, while an empty dock never consumes topology space.
  */
-export function defaultBottomPanelState(viewportHeight: number): BottomPanelState {
-  return viewportHeight > 0 && viewportHeight < COMPACT_VIEWPORT_HEIGHT ? "minimized" : "expanded";
+export function defaultBottomPanelState(_viewportHeight: number): BottomPanelState {
+  return "minimized";
 }
 
 export function readBottomPanelState(): BottomPanelState {
-  if (typeof window === "undefined") return "expanded";
+  if (typeof window === "undefined") return "minimized";
   const stored = window.localStorage.getItem(BOTTOM_PANEL_STATE_STORAGE_KEY);
   return isBottomPanelState(stored) ? stored : defaultBottomPanelState(window.innerHeight);
 }
