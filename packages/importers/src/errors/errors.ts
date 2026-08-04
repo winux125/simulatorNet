@@ -29,6 +29,12 @@ export type ImportErrorCode =
   | "too-many-links"
   | "adapter-error"
   | "plan-invalid"
+  | "empty-companion-set"
+  | "too-many-companion-files"
+  | "companion-input-too-large"
+  | "unsafe-companion-csv"
+  | "companion-csv-header"
+  | "companion-node-limit"
   // --- native `.simlab` package ---
   | "package-invalid"
   | "package-too-large"

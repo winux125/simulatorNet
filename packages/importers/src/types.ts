@@ -15,6 +15,8 @@ export type LabImportFormat =
   | "virl-xml"
   | "packet-tracer-pkt"
   | "packet-tracer-pka"
+  /** User-guided reconstruction; the PKT/PKA bytes are never parsed. */
+  | "packet-tracer-companion"
   | "unknown";
 
 /** How faithfully a single source node survives conversion. Never hidden. */

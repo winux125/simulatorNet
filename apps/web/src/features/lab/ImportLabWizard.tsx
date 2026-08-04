@@ -6,6 +6,7 @@ import {
   detectLabImportFormat,
   executeLabImport,
   inspectLabImport,
+  inspectPacketTracerCompanions,
   registerBuiltinImportAdapters,
   UnsupportedImportFormatError,
   type ImportMappingDecision,
@@ -16,6 +17,7 @@ import {
   type ImportReportEntry,
   type ImportResult,
   type ImportSupportLevel,
+  type LabImportFormat,
 } from "@sim/importers";
 import {
   AlertCircle,
@@ -76,6 +78,7 @@ function formatName(format: string | undefined): string {
     "virl-xml": "VIRL",
     "packet-tracer-pkt": "Packet Tracer PKT",
     "packet-tracer-pka": "Packet Tracer PKA",
+    "packet-tracer-companion": "Packet Tracer companion reconstruction",
   }[format] ?? format;
 }
 
@@ -93,8 +96,14 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
   const [result, setResult] = useState<ImportResult>();
   const [selection, setSelection] = useState<ImportMappingSelection>({});
   const [message, setMessage] = useState<string>();
+  const [detectedFormat, setDetectedFormat] = useState<LabImportFormat>();
+  const [migrationMode, setMigrationMode] = useState(false);
+  const [migrationGuideOpen, setMigrationGuideOpen] = useState(false);
+  const [companionFiles, setCompanionFiles] = useState<File[]>([]);
+  const [migrationError, setMigrationError] = useState<string>();
   const dialogRef = useRef<HTMLElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const companionInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setActiveFile(file);
@@ -107,16 +116,23 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
     setResult(undefined);
     setSelection({});
     setMessage(undefined);
+    setDetectedFormat(undefined);
+    setMigrationMode(false);
+    setMigrationGuideOpen(false);
+    setCompanionFiles([]);
+    setMigrationError(undefined);
     void (async () => {
       try {
         const bytes = new Uint8Array(await activeFile.arrayBuffer());
         const source = { filename: activeFile.name, bytes };
         const detection = detectLabImportFormat(source);
+        if (cancelled) return;
+        setDetectedFormat(detection.format);
         if (!detection.supported) {
           if (cancelled) return;
           setPhase("unsupported");
           setMessage(detection.format.startsWith("packet-tracer")
-            ? "Packet Tracer files are recognised, but direct conversion is unavailable. Keep the original file and export through a supported intermediate topology format."
+            ? "Direct conversion is not available because SimulatorNet does not have a supported public parser for the PKT/PKA format."
             : "This file was not recognised as a supported network-lab format.");
           return;
         }
@@ -142,6 +158,23 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
     if (!next) return;
     setStep(0);
     setActiveFile(next);
+  };
+
+  const buildMigrationPlan = async () => {
+    if (companionFiles.length === 0) return;
+    setMigrationError(undefined);
+    try {
+      const files = await Promise.all(companionFiles.map(async (companion) => ({
+        name: companion.name,
+        bytes: new Uint8Array(await companion.arrayBuffer()),
+      })));
+      const inspected = inspectPacketTracerCompanions({ referenceFilename: activeFile.name, files });
+      setPlan(inspected);
+      setPhase("ready");
+      setStep(1);
+    } catch (error) {
+      setMigrationError(error instanceof Error ? error.message : "Companion files could not be inspected");
+    }
   };
 
   const setDecision = (nodeId: string, value: string) => {
@@ -217,6 +250,9 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
 
   const ready = phase === "ready" && Boolean(plan);
   const canContinue = ready && (step !== 1 || (plan?.parsed.nodes.length ?? 0) > 0);
+  const packetTracerUnsupported = step === 0
+    && phase === "unsupported"
+    && (detectedFormat === "packet-tracer-pkt" || detectedFormat === "packet-tracer-pka");
 
   return (
     <div
@@ -244,7 +280,9 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
             </div>
           </div>
           <dl className="import-wizard__file-meta">
-            <div><dt>Format</dt><dd>{formatName(plan?.format)}</dd></div>
+            <div><dt>Format</dt><dd>{packetTracerUnsupported
+              ? "Packet Tracer · Recognised, unsupported for direct conversion"
+              : formatName(plan?.format ?? detectedFormat)}</dd></div>
             <div><dt>File</dt><dd title={activeFile.name}>{activeFile.name}</dd></div>
           </dl>
           <IconButton data-import-close label="Close import wizard" icon={<X size={16} />} disabled={phase === "importing"} onClick={onCancel} />
@@ -260,13 +298,28 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
 
         <div className="import-wizard__body" data-scroll-owner="import-wizard-body">
           {step === 0 && (
-            <SelectFileStep
-              file={activeFile}
-              phase={phase}
-              message={message}
-              onChoose={() => fileInputRef.current?.click()}
-              onDrop={replaceFile}
-            />
+            packetTracerUnsupported ? (
+              <PacketTracerMigrationStep
+                file={activeFile}
+                migrationMode={migrationMode}
+                guideOpen={migrationGuideOpen}
+                files={companionFiles}
+                error={migrationError}
+                onClose={onCancel}
+                onGuide={() => setMigrationGuideOpen((open) => !open)}
+                onReconstruct={() => setMigrationMode(true)}
+                onChoose={() => companionInputRef.current?.click()}
+                onBuild={() => void buildMigrationPlan()}
+              />
+            ) : (
+              <SelectFileStep
+                file={activeFile}
+                phase={phase}
+                message={message}
+                onChoose={() => fileInputRef.current?.click()}
+                onDrop={replaceFile}
+              />
+            )
           )}
           {step === 1 && plan && <InspectStep plan={plan} />}
           {step === 2 && plan && (
@@ -295,9 +348,22 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
               event.target.value = "";
             }}
           />
+          <input
+            ref={companionInputRef}
+            className="visually-hidden"
+            type="file"
+            multiple
+            aria-label="Choose Packet Tracer companion files"
+            accept=".png,.jpg,.jpeg,.webp,.cfg,.txt,.csv,image/png,image/jpeg,image/webp,text/plain,text/csv"
+            onChange={(event) => {
+              setCompanionFiles([...(event.target.files ?? [])]);
+              setMigrationError(undefined);
+              event.target.value = "";
+            }}
+          />
         </div>
 
-        <footer className="import-wizard__footer" data-testid="import-wizard-footer">
+        {!packetTracerUnsupported && <footer className="import-wizard__footer" data-testid="import-wizard-footer">
           <div>
             {step > 0 && step < 4 && <Button variant="ghost" disabled={phase === "importing"} onClick={() => setStep((step - 1) as WizardStep)}>Back</Button>}
             <Button variant="ghost" disabled={phase === "importing"} onClick={onCancel}>{step === 4 ? "Close" : "Cancel"}</Button>
@@ -324,8 +390,60 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
               <Button variant="primary" data-testid="import-open" onClick={() => onImported(result.document)}>Open Lab</Button>
             </>}
           </div>
-        </footer>
+        </footer>}
       </section>
+    </div>
+  );
+}
+
+function PacketTracerMigrationStep({ file, migrationMode, guideOpen, files, error, onClose, onGuide, onReconstruct, onChoose, onBuild }: {
+  file: File;
+  migrationMode: boolean;
+  guideOpen: boolean;
+  files: readonly File[];
+  error?: string;
+  onClose(): void;
+  onGuide(): void;
+  onReconstruct(): void;
+  onChoose(): void;
+  onBuild(): void;
+}) {
+  return (
+    <div className="import-step packet-tracer-migration" data-testid="packet-tracer-migration">
+      <div className="packet-tracer-migration__card" role="status">
+        <FileWarning size={24} />
+        <div>
+          <p className="section-eyebrow">Recognised source</p>
+          <h3>Packet Tracer file recognised</h3>
+          <p>Direct conversion is not available because SimulatorNet does not have a supported public parser for the PKT/PKA format.</p>
+          <small><strong>{file.name}</strong> is retained only as source metadata. Its content is not parsed.</small>
+        </div>
+      </div>
+      <div className="packet-tracer-migration__actions">
+        <Button variant="ghost" onClick={onClose}>Close</Button>
+        <Button onClick={onGuide}>Open Migration Guide</Button>
+        <Button variant="primary" onClick={onReconstruct}>Reconstruct Lab from Companion Files</Button>
+      </div>
+      {guideOpen && (
+        <section className="packet-tracer-migration__guide" aria-label="Packet Tracer migration guide">
+          <h4>Companion data</h4>
+          <p>Attach screenshots, device <code>.cfg/.txt</code> files and explicit CSV inventories. SimulatorNet performs no OCR and never infers cables from a screenshot.</p>
+          <pre>devices.csv: hostname,type,x,y{"\n"}interfaces.csv: device,interface,address,mask,gateway{"\n"}connections.csv: deviceA,interfaceA,deviceB,interfaceB</pre>
+        </section>
+      )}
+      {migrationMode && (
+        <section className="packet-tracer-migration__assistant" aria-label="Packet Tracer companion reconstruction">
+          <h4>Reconstruct from companion files</h4>
+          <p>Supported: PNG/JPEG/WebP screenshots, device configuration text, <code>devices.csv</code>, <code>interfaces.csv</code>, and optional <code>connections.csv</code>.</p>
+          <div className="packet-tracer-migration__picker">
+            <Button icon={<Upload size={14} />} onClick={onChoose}>Choose Companion Files</Button>
+            <span>{files.length === 0 ? "No companion files selected" : `${files.length} companion file${files.length === 1 ? "" : "s"} selected`}</span>
+          </div>
+          {files.length > 0 && <ul>{files.map((entry) => <li key={`${entry.name}-${entry.size}`}>{entry.name} · {fileSize(entry.size)}</li>)}</ul>}
+          {error && <div className="import-state is-error" role="alert"><AlertCircle size={16} /><span>{error}</span></div>}
+          <Button variant="primary" disabled={files.length === 0} onClick={onBuild}>Build Reconstruction Plan</Button>
+        </section>
+      )}
     </div>
   );
 }
@@ -367,7 +485,6 @@ function SelectFileStep({ file, phase, message, onChoose, onDrop }: {
         ].map(([name, detail]) => <div key={name}><CheckCircle2 size={14} /><span><strong>{name}</strong><small>{detail}</small></span></div>)}
       </div>
       <div className="import-safe-notice"><ShieldCheck size={17} /><p><strong>Safe local conversion.</strong> No VM images, executables, scripts or remote resources are run. Maximum input size is {fileSize(DEFAULT_IMPORT_LIMITS.maxInputBytes)}.</p></div>
-      <div className="import-boundary-notice"><FileWarning size={17} /><p><strong>Packet Tracer:</strong> recognised, but direct conversion is unavailable.</p></div>
       <ImportState phase={phase} message={message} filename={file.name} />
     </div>
   );
@@ -556,6 +673,7 @@ function ResultStep({ result }: { result: ImportResult }) {
   const failed = report.errorCount;
   const ignored = report.ignoredFiles.length + report.ignoredVendorImages.length;
   const status = failed > 0 ? "Failed" : report.warningCount > 0 || placeholders > 0 ? "Partially Imported" : "Imported";
+  const reconstruction = report.entries.find((entry) => entry.code === "packet-tracer-companion-reconstruction");
   return (
     <div className="import-step import-result-step">
       <span className={`import-result-mark${failed ? " is-error" : ""}`}>{failed ? <AlertCircle size={30} /> : <CheckCircle2 size={30} />}</span>
@@ -569,6 +687,7 @@ function ResultStep({ result }: { result: ImportResult }) {
         <div><span>Ignored</span><strong>{ignored}</strong></div>
         <div><span>Failed</span><strong>{failed}</strong></div>
       </div>
+      {reconstruction && <div className="packet-tracer-migration__result"><FileWarning size={17} /><p>{reconstruction.message}</p></div>}
       <div className="import-safe-notice"><ShieldCheck size={17} /><p>The report contains conversion diagnostics only. Runtime state and credentials are not included.</p></div>
     </div>
   );

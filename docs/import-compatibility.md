@@ -23,6 +23,14 @@ but do not override unsafe or unrecognized content. Packet Tracer files are
 reported honestly as recognized-but-unsupported; they are never guessed or
 partially decoded.
 
+Packet Tracer sources can instead enter the explicit **Migration Assistant**.
+This is a reconstruction from companion files supplied by the user, not a PKT
+converter: screenshots become locked diagram references, device configuration
+text and addressing rows become mapping proposals, and physical links are
+created only from an explicit `connections.csv`. The original `.pkt`/`.pka`
+name is retained as source metadata; its bytes are never parsed. See
+[Packet Tracer migration](packet-tracer-migration.md).
+
 Device support is reported per mapping:
 
 - **Full**: topology and the supported structured behavior are representable.

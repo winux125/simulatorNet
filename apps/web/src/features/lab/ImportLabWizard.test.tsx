@@ -112,12 +112,42 @@ enable secret NeverRenderThisHash]]></config></node></nodes><networks/></topolog
     expect(document.body.textContent).not.toContain("NeverRenderThisHash");
   });
 
-  it("shows an honest diagnostic for a recognised-but-unsupported Packet Tracer file", async () => {
+  it("shows one honest Packet Tracer boundary card with migration actions and no direct Continue", async () => {
     const file = new File([new Uint8Array([0, 1, 2, 3, 0])], "lab.pkt");
     const onImported = vi.fn();
     render(<ImportLabWizard file={file} onCancel={() => undefined} onImported={onImported} onError={() => undefined} />);
-    const notice = await screen.findByTestId("import-unsupported");
-    expect(notice.textContent).toMatch(/Packet Tracer/i);
+    const notice = await screen.findByTestId("packet-tracer-migration");
+    expect(notice.textContent).toContain("Packet Tracer file recognised");
+    expect(notice.textContent).toContain("does not have a supported public parser");
+    expect(screen.getByText("Packet Tracer · Recognised, unsupported for direct conversion")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open Migration Guide" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reconstruct Lab from Companion Files" })).toBeTruthy();
+    expect(screen.queryByTestId("import-unsupported")).toBeNull();
+    expect(screen.queryByTestId("import-continue")).toBeNull();
     expect(onImported).not.toHaveBeenCalled();
+  });
+
+  it("reconstructs only from selected companion files and exposes the mapping review", async () => {
+    const source = new File([new Uint8Array([0, 1, 2, 3, 0])], "classroom.pkt");
+    const onImported = vi.fn();
+    render(<ImportLabWizard file={source} onCancel={() => undefined} onImported={onImported} onError={() => undefined} />);
+    await screen.findByTestId("packet-tracer-migration");
+    fireEvent.click(screen.getByRole("button", { name: "Reconstruct Lab from Companion Files" }));
+    const devices = new File(["hostname,type,x,y\nR1,router,100,100\nPC1,pc,300,100\n"], "devices.csv", { type: "text/csv" });
+    const interfaces = new File(["device,interface,address,mask,gateway\nR1,Gi0/0,192.168.1.1,255.255.255.0,\nPC1,eth0,192.168.1.10,255.255.255.0,192.168.1.1\n"], "interfaces.csv", { type: "text/csv" });
+    fireEvent.change(screen.getByLabelText("Choose Packet Tracer companion files"), { target: { files: [devices, interfaces] } });
+    fireEvent.click(screen.getByRole("button", { name: "Build Reconstruction Plan" }));
+
+    await screen.findByRole("heading", { name: "Review detected content" });
+    continueStep();
+    expect(screen.getByLabelText("Map R1")).toBeTruthy();
+    expect(screen.getByLabelText("Map PC1")).toBeTruthy();
+    continueStep();
+    fireEvent.click(screen.getByTestId("import-confirm"));
+    expect(await screen.findByText("Reconstructed from user-provided companion data; PKT content was not parsed.")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("import-open"));
+    const document = onImported.mock.calls[0]![0] as LabDocument;
+    expect(document.sourceImport).toMatchObject({ platform: "packet-tracer-companion", originalFilename: "classroom.pkt" });
+    expect(document.topology.links).toEqual([]);
   });
 });

@@ -22,3 +22,4 @@ export * from "./config/console-credentials";
 export * from "./config/management-config";
 export * from "./config/wireless-credentials";
 export * from "./plan/plan";
+export * from "./packet-tracer/companion";
