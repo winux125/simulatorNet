@@ -779,20 +779,38 @@ function validateDiscovery(
 }
 
 function validateBgpConfiguration(
-  config: Pick<RouterDeviceConfig, "bgp" | "prefixLists" | "routeMaps" | "communityLists" | "asPathLists">,
+  config: Pick<RouterDeviceConfig, "bgp" | "prefixLists" | "ipv6PrefixLists" | "routeMaps" | "communityLists" | "asPathLists" | "vrfs">,
   node: NodeSpec,
   path: string,
   interfaceNames: ReadonlySet<string>,
   bgpCapable: boolean,
 ): void {
   const prefixLists = config.prefixLists ?? [];
+  const ipv6PrefixLists = config.ipv6PrefixLists ?? [];
   const routeMaps = config.routeMaps ?? [];
   const communityLists = config.communityLists ?? [];
   const asPathLists = config.asPathLists ?? [];
   requireUnique(prefixLists.map((list) => list.id), `${path}.prefixLists`, "prefix-list name");
+  requireUnique(ipv6PrefixLists.map((list) => list.id), `${path}.ipv6PrefixLists`, "IPv6 prefix-list name");
   requireUnique(routeMaps.map((map) => map.id), `${path}.routeMaps`, "route-map name");
   requireUnique(communityLists.map((list) => list.id), `${path}.communityLists`, "community-list name");
   requireUnique(asPathLists.map((list) => list.id), `${path}.asPathLists`, "AS-path list name");
+  const ipv6PrefixListIds = new Set(ipv6PrefixLists.map((list) => list.id));
+  ipv6PrefixLists.forEach((list, listIndex) => {
+    requireUnique(list.entries.map((entry) => String(entry.sequence)), `${path}.ipv6PrefixLists[${listIndex}].entries`, "prefix-list sequence");
+    list.entries.forEach((entry, entryIndex) => {
+      const entryPath = `${path}.ipv6PrefixLists[${listIndex}].entries[${entryIndex}]`;
+      if (ipv6Network(entry.prefix, entry.prefixLength) !== normalizeIpv6(entry.prefix)) {
+        fail("invalid-prefix-list-network", `${entryPath}.prefix`, "Prefix-list entry must use a canonical network address");
+      }
+      if (entry.ge !== undefined && entry.ge < entry.prefixLength) {
+        fail("invalid-prefix-list-range", `${entryPath}.ge`, "Prefix-list ge cannot be shorter than its prefix length");
+      }
+      if (entry.le !== undefined && entry.le < (entry.ge ?? entry.prefixLength)) {
+        fail("invalid-prefix-list-range", `${entryPath}.le`, "Prefix-list le cannot be shorter than ge or the prefix length");
+      }
+    });
+  });
   const prefixListIds = new Set(prefixLists.map((list) => list.id));
   const routeMapIds = new Set(routeMaps.map((map) => map.id));
   const communityListIds = new Set(communityLists.map((list) => list.id));
@@ -886,6 +904,28 @@ function validateBgpConfiguration(
       fail("invalid-bgp-network", `${path}.bgp.networks[${index}].network`, "BGP network statement must use a canonical network address");
     }
   });
+  const ipv6Networks = bgp.ipv6Networks ?? [];
+  requireUnique(
+    ipv6Networks.map((network) => `${normalizeIpv6(network.network)}/${network.prefixLength}`),
+    `${path}.bgp.ipv6Networks`,
+    "BGP network statement",
+  );
+  ipv6Networks.forEach((network, index) => {
+    if (ipv6Network(network.network, network.prefixLength) !== normalizeIpv6(network.network)) {
+      fail("invalid-bgp-network", `${path}.bgp.ipv6Networks[${index}].network`, "BGP network statement must use a canonical network address");
+    }
+  });
+  // A VRF may only redistribute into VPNv6 when it actually carries IPv6.
+  const ipv6Vrfs = new Set((config.vrfs ?? []).filter((vrf) => vrf.addressFamilyIpv6).map((vrf) => vrf.id));
+  bgp.vrfAddressFamilies.forEach((family, index) => {
+    if ((family.redistributeConnectedIpv6 || family.redistributeStaticIpv6) && !ipv6Vrfs.has(family.vrfId)) {
+      fail(
+        "vrf-ipv6-family-missing",
+        `${path}.bgp.vrfAddressFamilies[${index}]`,
+        `VRF '${family.vrfId}' redistributes into VPNv6 without 'address-family ipv6'`,
+      );
+    }
+  });
   const aggregates = bgp.aggregates ?? [];
   requireUnique(aggregates.map((aggregate) => `${aggregate.prefix}/${aggregate.prefixLength}`), `${path}.bgp.aggregates`, "BGP aggregate");
   aggregates.forEach((aggregate, index) => {
@@ -900,14 +940,22 @@ function validateBgpConfiguration(
     }
     // Reflection is an intra-AS relationship; an eBGP peer already receives
     // every path this device selects.
-    if (neighbor.routeReflectorClient && neighbor.remoteAs !== bgp.localAs) {
+    if ((neighbor.routeReflectorClient || neighbor.ipv6?.routeReflectorClient) && neighbor.remoteAs !== bgp.localAs) {
       fail(
         "route-reflector-client-on-ebgp",
         `${neighborPath}.routeReflectorClient`,
         `Route-reflector-client requires an iBGP neighbor; ${neighbor.address} is in AS ${neighbor.remoteAs}`,
       );
     }
+    // A VPN family without `send-community extended` is a *runtime* problem,
+    // not an invalid document: a lab that teaches the missing-route-target
+    // failure has to stay loadable, so it is reported in Problems instead.
     for (const [field, id, known] of [
+      ["ipv6.prefixListIn", neighbor.ipv6?.prefixListIn, ipv6PrefixListIds],
+      ["ipv6.prefixListOut", neighbor.ipv6?.prefixListOut, ipv6PrefixListIds],
+      ["ipv6.routeMapIn", neighbor.ipv6?.routeMapIn, routeMapIds],
+      ["ipv6.routeMapOut", neighbor.ipv6?.routeMapOut, routeMapIds],
+      ["ipv6.defaultOriginateRouteMap", neighbor.ipv6?.defaultOriginateRouteMap, routeMapIds],
       ["prefixListIn", neighbor.prefixListIn, prefixListIds],
       ["prefixListOut", neighbor.prefixListOut, prefixListIds],
       ["routeMapIn", neighbor.routeMapIn, routeMapIds],
@@ -928,7 +976,10 @@ function isCanonicalCommunity(value: string): boolean {
 
 /** Loopback interfaces and the single area-0 OSPF/BGP process. */
 function validateRoutedProtocols(
-  config: Pick<RouterDeviceConfig, "loopbacks" | "ospf" | "bgp" | "prefixLists" | "routeMaps" | "communityLists" | "asPathLists">,
+  config: Pick<
+    RouterDeviceConfig,
+    "loopbacks" | "ospf" | "bgp" | "prefixLists" | "ipv6PrefixLists" | "routeMaps" | "communityLists" | "asPathLists" | "vrfs"
+  >,
   node: NodeSpec,
   path: string,
   l3Interfaces: ReadonlySet<string>,

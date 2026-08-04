@@ -36,6 +36,7 @@ import {
   type OspfProcessConfig,
   type Ospfv3ProcessConfig,
   type BgpProcessConfig,
+  type Ipv6PrefixListConfig,
   type PrefixListConfig,
   type RouteMapConfig,
   type CommunityListConfig,
@@ -410,11 +411,18 @@ function routePolicyLines(
   routeMaps: readonly RouteMapConfig[] | undefined,
   communityLists: readonly CommunityListConfig[] | undefined,
   asPathLists: readonly AsPathListConfig[] | undefined,
+  ipv6PrefixLists: readonly Ipv6PrefixListConfig[] | undefined,
 ): string[] {
   const out: string[] = [];
   for (const list of sorted(prefixLists, byId)) {
     for (const entry of sorted(list.entries, bySequence)) {
       out.push(`ip prefix-list ${list.id} seq ${entry.sequence} ${entry.action} ${entry.prefix}/${entry.prefixLength}`
+        + `${entry.ge === undefined ? "" : ` ge ${entry.ge}`}${entry.le === undefined ? "" : ` le ${entry.le}`}`);
+    }
+  }
+  for (const list of sorted(ipv6PrefixLists, byId)) {
+    for (const entry of sorted(list.entries, bySequence)) {
+      out.push(`ipv6 prefix-list ${list.id} seq ${entry.sequence} ${entry.action} ${entry.prefix}/${entry.prefixLength}`
         + `${entry.ge === undefined ? "" : ` ge ${entry.ge}`}${entry.le === undefined ? "" : ` le ${entry.le}`}`);
     }
   }
@@ -432,6 +440,7 @@ function routePolicyLines(
     for (const sequence of sorted(map.sequences, bySequence)) {
       out.push(`route-map ${map.id} ${sequence.action} ${sequence.sequence}`);
       if (sequence.match?.prefixListIds?.length) out.push(` match ip address prefix-list ${sequence.match.prefixListIds.join(" ")}`);
+      if (sequence.match?.ipv6PrefixListIds?.length) out.push(` match ipv6 address prefix-list ${sequence.match.ipv6PrefixListIds.join(" ")}`);
       if (sequence.match?.neighbor) out.push(` match neighbor ${sequence.match.neighbor}`);
       if (sequence.match?.maximumAsPathLength !== undefined) out.push(` match as-path length ${sequence.match.maximumAsPathLength}`);
       if (sequence.match?.source) out.push(` match route-source ${sequence.match.source}`);
@@ -487,7 +496,31 @@ function bgpProcessLines(bgp: BgpProcessConfig | undefined): string[] {
     out.push(` aggregate-address ${aggregate.prefix} ${maskFromPrefixLength(aggregate.prefixLength)}`
       + `${aggregate.summaryOnly ? " summary-only" : ""}${aggregate.asSet ? " as-set" : ""}`);
   }
-  const vpnNeighbors = sorted(bgp.neighbors?.filter((neighbor) => neighbor.vpnv4Activated || neighbor.sendCommunityExtended), (a, b) => byString(a.address, b.address));
+  // IPv6 unicast: only the per-family settings live inside the block, so an
+  // IPv4-only process renders exactly as it did before M10.13.
+  const ipv6Neighbors = sorted(bgp.neighbors?.filter((neighbor) => neighbor.ipv6 !== undefined), (a, b) => byString(a.address, b.address));
+  const ipv6Networks = sorted(bgp.ipv6Networks, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength);
+  if (ipv6Neighbors.length > 0 || ipv6Networks.length > 0) {
+    out.push(" address-family ipv6 unicast");
+    for (const neighbor of ipv6Neighbors) {
+      const ipv6 = neighbor.ipv6!;
+      if (ipv6.activated) out.push(`  neighbor ${neighbor.address} activate`);
+      if (ipv6.nextHopSelf) out.push(`  neighbor ${neighbor.address} next-hop-self`);
+      if (ipv6.routeReflectorClient) out.push(`  neighbor ${neighbor.address} route-reflector-client`);
+      if (ipv6.sendCommunityStandard) out.push(`  neighbor ${neighbor.address} send-community`);
+      if (ipv6.prefixListIn) out.push(`  neighbor ${neighbor.address} prefix-list ${ipv6.prefixListIn} in`);
+      if (ipv6.prefixListOut) out.push(`  neighbor ${neighbor.address} prefix-list ${ipv6.prefixListOut} out`);
+      if (ipv6.routeMapIn) out.push(`  neighbor ${neighbor.address} route-map ${ipv6.routeMapIn} in`);
+      if (ipv6.routeMapOut) out.push(`  neighbor ${neighbor.address} route-map ${ipv6.routeMapOut} out`);
+      if (ipv6.defaultOriginate) {
+        out.push(`  neighbor ${neighbor.address} default-originate`
+          + `${ipv6.defaultOriginateRouteMap ? ` route-map ${ipv6.defaultOriginateRouteMap}` : ""}`);
+      }
+    }
+    for (const network of ipv6Networks) out.push(`  network ${network.network}/${network.prefixLength}`);
+    out.push(" exit-address-family");
+  }
+  const vpnNeighbors = sorted(bgp.neighbors?.filter((neighbor) => neighbor.vpnv4Activated || (neighbor.sendCommunityExtended && !neighbor.vpnv6Activated)), (a, b) => byString(a.address, b.address));
   if (vpnNeighbors.length > 0) {
     out.push(" address-family vpnv4");
     for (const neighbor of vpnNeighbors) {
@@ -499,11 +532,29 @@ function bgpProcessLines(bgp: BgpProcessConfig | undefined): string[] {
     }
     out.push(" exit-address-family");
   }
-  for (const family of sorted(bgp.vrfAddressFamilies, (a, b) => byString(a.vrfId, b.vrfId))) {
-    out.push(` address-family ipv4 vrf ${family.vrfId}`);
-    if (family.redistributeConnected) out.push("  redistribute connected");
-    if (family.redistributeStatic) out.push("  redistribute static");
+  const vpn6Neighbors = sorted(bgp.neighbors?.filter((neighbor) => neighbor.vpnv6Activated), (a, b) => byString(a.address, b.address));
+  if (vpn6Neighbors.length > 0) {
+    out.push(" address-family vpnv6");
+    for (const neighbor of vpn6Neighbors) {
+      out.push(`  neighbor ${neighbor.address} activate`);
+      if (neighbor.routeReflectorClient) out.push(`  neighbor ${neighbor.address} route-reflector-client`);
+      if (neighbor.sendCommunityExtended) out.push(`  neighbor ${neighbor.address} send-community extended`);
+    }
     out.push(" exit-address-family");
+  }
+  for (const family of sorted(bgp.vrfAddressFamilies, (a, b) => byString(a.vrfId, b.vrfId))) {
+    if (family.redistributeConnected || family.redistributeStatic) {
+      out.push(` address-family ipv4 vrf ${family.vrfId}`);
+      if (family.redistributeConnected) out.push("  redistribute connected");
+      if (family.redistributeStatic) out.push("  redistribute static");
+      out.push(" exit-address-family");
+    }
+    if (family.redistributeConnectedIpv6 || family.redistributeStaticIpv6) {
+      out.push(` address-family ipv6 vrf ${family.vrfId}`);
+      if (family.redistributeConnectedIpv6) out.push("  redistribute connected");
+      if (family.redistributeStaticIpv6) out.push("  redistribute static");
+      out.push(" exit-address-family");
+    }
   }
   out.push("!");
   return out;
@@ -757,7 +808,7 @@ function renderRoutedDevice(config: RouterDeviceConfig | FirewallDeviceConfig | 
   }
   out.push(...ospfProcessLines(config.ospf));
   out.push(...ospfv3ProcessLines(config.ospfv3));
-  out.push(...routePolicyLines(config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists));
+  out.push(...routePolicyLines(config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists, config.ipv6PrefixLists));
   out.push(...bgpProcessLines(config.bgp));
   for (const route of sorted(config.staticRoutes, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength)) {
     out.push(`ip route ${route.network} ${maskFromPrefixLength(route.prefixLength)} ${route.nextHop}`);
@@ -951,7 +1002,7 @@ function renderLayer3Switch(config: Layer3SwitchDeviceConfig): string[] {
   out.push(...loopbackLines(config.loopbacks));
   out.push(...ospfProcessLines(config.ospf));
   out.push(...ospfv3ProcessLines(config.ospfv3));
-  out.push(...routePolicyLines(config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists));
+  out.push(...routePolicyLines(config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists, config.ipv6PrefixLists));
   out.push(...bgpProcessLines(config.bgp));
   for (const route of sorted(config.staticRoutes, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength)) {
     out.push(`ip route ${route.network} ${maskFromPrefixLength(route.prefixLength)} ${route.nextHop}`);

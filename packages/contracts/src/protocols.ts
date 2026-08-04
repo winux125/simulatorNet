@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  IpAddressSchema,
   Ipv4InterfaceConfigSchema,
   Ipv4Schema,
   Ipv6InterfaceAddressSchema,
@@ -190,8 +191,28 @@ export const BgpNetworkStatementSchema = z.object({
   prefixLength: z.number().int().min(0).max(32),
 }).strict();
 
+/**
+ * `address-family ipv6 unicast` settings for one neighbor. IPv4 unicast keeps
+ * the flat fields it has always had, so a document written before M10.13 is
+ * unchanged and this block is simply absent.
+ */
+export const BgpNeighborIpv6FamilyConfigSchema = z.object({
+  activated: z.boolean().optional(),
+  nextHopSelf: z.boolean().optional(),
+  prefixListIn: z.string().min(1).max(64).optional(),
+  prefixListOut: z.string().min(1).max(64).optional(),
+  routeMapIn: z.string().min(1).max(64).optional(),
+  routeMapOut: z.string().min(1).max(64).optional(),
+  sendCommunityStandard: z.boolean().optional(),
+  routeReflectorClient: z.boolean().optional(),
+  defaultOriginate: z.boolean().optional(),
+  defaultOriginateRouteMap: z.string().min(1).max(64).optional(),
+}).strict();
+export type BgpNeighborIpv6FamilyConfig = z.infer<typeof BgpNeighborIpv6FamilyConfigSchema>;
+
 export const BgpNeighborConfigSchema = z.object({
-  address: Ipv4Schema,
+  /** IPv4 or IPv6 transport address of the peer. */
+  address: IpAddressSchema,
   remoteAs: BgpAsnSchema,
   description: z.string().max(256).optional(),
   updateSource: z.string().min(1).max(64).optional(),
@@ -203,6 +224,7 @@ export const BgpNeighborConfigSchema = z.object({
   routeMapIn: z.string().min(1).max(64).optional(),
   routeMapOut: z.string().min(1).max(64).optional(),
   vpnv4Activated: z.boolean().optional(),
+  vpnv6Activated: z.boolean().optional(),
   sendCommunityExtended: z.boolean().optional(),
   /** `neighbor <a> send-community`: standard communities leave this device. */
   sendCommunityStandard: z.boolean().optional(),
@@ -210,6 +232,7 @@ export const BgpNeighborConfigSchema = z.object({
   routeReflectorClient: z.boolean().optional(),
   defaultOriginate: z.boolean().optional(),
   defaultOriginateRouteMap: z.string().min(1).max(64).optional(),
+  ipv6: BgpNeighborIpv6FamilyConfigSchema.optional(),
 }).strict();
 export type BgpNeighborConfig = z.infer<typeof BgpNeighborConfigSchema>;
 
@@ -224,6 +247,11 @@ export const BgpAggregateConfigSchema = z.object({
 }).strict();
 export type BgpAggregateConfig = z.infer<typeof BgpAggregateConfigSchema>;
 
+export const BgpIpv6NetworkStatementSchema = z.object({
+  network: Ipv6Schema,
+  prefixLength: Ipv6PrefixLengthSchema,
+}).strict();
+
 export const BgpProcessConfigSchema = z.object({
   localAs: BgpAsnSchema,
   routerId: Ipv4Schema.optional(),
@@ -233,11 +261,16 @@ export const BgpProcessConfigSchema = z.object({
   clusterId: Ipv4Schema.optional(),
   neighbors: z.array(BgpNeighborConfigSchema).max(64).default([]),
   networks: z.array(BgpNetworkStatementSchema).max(4_096).default([]),
+  /** `network` statements under `address-family ipv6 unicast`. */
+  ipv6Networks: z.array(BgpIpv6NetworkStatementSchema).max(4_096).optional(),
   aggregates: z.array(BgpAggregateConfigSchema).max(64).optional(),
   vrfAddressFamilies: z.array(z.object({
     vrfId: z.string().min(1).max(64),
     redistributeConnected: z.boolean().optional(),
     redistributeStatic: z.boolean().optional(),
+    /** `address-family ipv6 vrf <name>` redistribution into VPNv6. */
+    redistributeConnectedIpv6: z.boolean().optional(),
+    redistributeStaticIpv6: z.boolean().optional(),
   }).strict()).max(256).default([]),
 }).strict();
 export type BgpProcessConfig = z.infer<typeof BgpProcessConfigSchema>;
@@ -316,6 +349,21 @@ export const PrefixListConfigSchema = z.object({
 }).strict();
 export type PrefixListConfig = z.infer<typeof PrefixListConfigSchema>;
 
+/** `ipv6 prefix-list`: prefix-only, with the same ge/le window as IPv4. */
+export const Ipv6PrefixListEntryConfigSchema = z.object({
+  sequence: z.number().int().min(1).max(4_294_967_295),
+  action: z.enum(["permit", "deny"]),
+  prefix: Ipv6Schema,
+  prefixLength: Ipv6PrefixLengthSchema,
+  ge: Ipv6PrefixLengthSchema.optional(),
+  le: Ipv6PrefixLengthSchema.optional(),
+}).strict();
+export const Ipv6PrefixListConfigSchema = z.object({
+  id: z.string().min(1).max(64),
+  entries: z.array(Ipv6PrefixListEntryConfigSchema).max(512).default([]),
+}).strict();
+export type Ipv6PrefixListConfig = z.infer<typeof Ipv6PrefixListConfigSchema>;
+
 export const CommunityListEntryConfigSchema = z.object({
   sequence: z.number().int().min(1).max(4_294_967_295),
   action: z.enum(["permit", "deny"]),
@@ -361,6 +409,8 @@ export const RouteMapSequenceConfigSchema = z.object({
   action: z.enum(["permit", "deny"]),
   match: z.object({
     prefixListIds: z.array(z.string().min(1).max(64)).max(16).optional(),
+    /** `match ipv6 address prefix-list`; only ever matches an IPv6 route. */
+    ipv6PrefixListIds: z.array(z.string().min(1).max(64)).max(16).optional(),
     neighbor: Ipv4Schema.optional(),
     maximumAsPathLength: z.number().int().min(0).max(256).optional(),
     source: z.enum(["local", "ebgp", "ibgp"]).optional(),
@@ -408,6 +458,7 @@ export const RoutedControlProtocolShape = {
   ospfv3: Ospfv3ProcessConfigSchema.optional(),
   bgp: BgpProcessConfigSchema.optional(),
   prefixLists: z.array(PrefixListConfigSchema).max(128).optional(),
+  ipv6PrefixLists: z.array(Ipv6PrefixListConfigSchema).max(128).optional(),
   routeMaps: z.array(RouteMapConfigSchema).max(128).optional(),
   communityLists: z.array(CommunityListConfigSchema).max(128).optional(),
   asPathLists: z.array(AsPathListConfigSchema).max(128).optional(),

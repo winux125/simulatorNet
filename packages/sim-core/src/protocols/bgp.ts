@@ -414,7 +414,14 @@ export class BgpProcess {
     }
     if (configuration.routerId !== undefined) ipToInt(configuration.routerId);
     if (configuration.clusterId !== undefined) ipToInt(configuration.clusterId);
-    const configured = [...(configuration.neighbors ?? [])];
+    // Canonicalize the transport address first: `2001:DB8::2` and
+    // `2001:db8:0:0::2` name one neighbor, and the duplicate check below has
+    // to see them that way.
+    const configured = [...(configuration.neighbors ?? [])].map((neighbor) => (
+      ipFamilyOf(neighbor.address) === "ipv6"
+        ? { ...neighbor, address: normalizeIpv6(neighbor.address) }
+        : neighbor
+    ));
     enforceStructuralLimit("maximumBgpPeersPerDevice", configured.length);
     const seen = new Set<string>();
     let clients = 0;

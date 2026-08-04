@@ -27,6 +27,7 @@ import {
   maskToInt,
   normalizeDnsName,
   normalizeIpv6,
+  ipFamilyOf,
   ipv6InPrefix,
   ipv6Network,
   Ipv6NextHeader,
@@ -283,6 +284,15 @@ function ospfDeviceOf(built: BuiltLab, deviceId: string): Router | Layer3Switch 
 function mplsRouterOf(built: BuiltLab, deviceId: string): Router | undefined {
   const device = built.getDevice(deviceId);
   return device instanceof Router && device.deviceType === "router" ? device : undefined;
+}
+
+/**
+ * A BGP peer address may be IPv4 or IPv6 transport. The engine stores the
+ * canonical form, so a grading spec written as `2001:DB8:12::2` must compare
+ * equal to it; an IPv4 address is already canonical and is left alone.
+ */
+function normalizeBgpPeerAddress(address: string): string {
+  return ipFamilyOf(address) === "ipv6" ? normalizeIpv6(address) : address;
 }
 
 function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCheckResult {
@@ -1184,6 +1194,179 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
         && !second.importRouteTargets.some((target) => first.exportRouteTargets.includes(target));
       const passed = firstRoutes.length > 0 && secondRoutes.length > 0 && distinctPolicy && !crossed;
       return result(check, passed, `Overlapping ${check.network}/${check.prefixLength} ${passed ? "is isolated by VRF" : "is not safely isolated"}`, {
+        firstRouteCount: firstRoutes.length,
+        secondRouteCount: secondRoutes.length,
+        distinctPolicy,
+        crossed,
+      });
+    }
+    // --- M10.13 MP-BGP IPv6 unicast and MPLS VPNv6 ------------------------
+    case "bgp-ipv6-neighbor-state": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "BGP-capable device was not found");
+      const expected = normalizeBgpPeerAddress(check.configuration.neighborAddress);
+      const neighbor = device.bgp.summaries()
+        .find((entry) => normalizeBgpPeerAddress(entry.address) === expected);
+      const actual = neighbor?.state ?? "idle";
+      // The family must actually be negotiated: an Established session that
+      // never activated IPv6 unicast is not what this check is asking about.
+      const familyNegotiated = neighbor?.addressFamilies.includes("ipv6-unicast") ?? false;
+      const passed = actual === check.configuration.expectedState
+        && (check.configuration.expectedState !== "established" || familyNegotiated);
+      return result(check, passed, `IPv6 BGP neighbor ${check.configuration.neighborAddress} is ${actual}`, {
+        actualState: actual,
+        expectedState: check.configuration.expectedState,
+        addressFamilies: neighbor?.addressFamilies,
+        lastError: neighbor?.lastError,
+      });
+    }
+    case "bgp-ipv6-route": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "BGP-capable device was not found");
+      const network = normalizeIpv6(check.configuration.network);
+      const route = device.bgp.routes("ipv6-unicast").find((entry) => entry.best
+        && normalizeIpv6(entry.network) === network
+        && entry.prefixLength === check.configuration.prefixLength);
+      const nextHopMatches = check.configuration.expectedNextHop === undefined
+        || (route !== undefined && normalizeIpv6(route.nextHop) === normalizeIpv6(check.configuration.expectedNextHop));
+      const found = route !== undefined && nextHopMatches;
+      const passed = check.configuration.expected === "present" ? found : !found;
+      return result(check, passed, `IPv6 BGP route ${check.configuration.network}/${check.configuration.prefixLength} ${route ? "is installed" : "is missing"}`, {
+        found: route !== undefined,
+        actualNextHop: route?.nextHop,
+        expected: check.configuration.expected,
+      });
+    }
+    case "bgp-ipv6-best-path": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "BGP-capable device was not found");
+      const network = normalizeIpv6(check.configuration.network);
+      const route = device.bgp.routes("ipv6-unicast").find((entry) => entry.best
+        && normalizeIpv6(entry.network) === network
+        && entry.prefixLength === check.configuration.prefixLength);
+      const expectedNeighbor = check.configuration.expectedNeighborAddress;
+      const passed = route !== undefined
+        && (expectedNeighbor === undefined
+          || (route.neighborAddress !== undefined
+            && normalizeBgpPeerAddress(route.neighborAddress) === normalizeBgpPeerAddress(expectedNeighbor)))
+        && (check.configuration.expectedAsPath === undefined
+          || stableStringify(route.asPath) === stableStringify(check.configuration.expectedAsPath));
+      return result(check, passed, `Best IPv6 BGP path for ${check.configuration.network}/${check.configuration.prefixLength} ${route ? `uses ${route.nextHop}` : "is missing"}`, {
+        found: route !== undefined,
+        nextHop: route?.nextHop,
+        neighborAddress: route?.neighborAddress,
+        asPath: route?.asPath,
+      });
+    }
+    case "ipv6-prefix-list-entry": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "BGP-capable device was not found");
+      const entry = device.bgp.routingPolicy.ipv6PrefixListConfigurations()
+        .find((list) => list.id === check.configuration.prefixListId)?.entries
+        .find((candidate) => candidate.sequence === check.configuration.sequence);
+      const passed = entry?.action === check.configuration.expectedAction;
+      return result(check, passed, `IPv6 prefix-list ${check.configuration.prefixListId} sequence ${check.configuration.sequence} is ${entry?.action ?? "missing"}`, {
+        actualAction: entry?.action,
+        expectedAction: check.configuration.expectedAction,
+      });
+    }
+    case "bgp-ipv6-policy-result": {
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "BGP-capable device was not found");
+      const network = normalizeIpv6(check.configuration.network);
+      const entries = check.configuration.direction === "out"
+        ? device.bgp.adjRibOutEntries(check.configuration.neighborAddress, "ipv6-unicast")
+        : device.bgp.adjRibInEntries(check.configuration.neighborAddress, "ipv6-unicast");
+      const found = entries.some((entry) => normalizeIpv6(entry.network) === network
+        && entry.prefixLength === check.configuration.prefixLength);
+      const passed = found === (check.configuration.expected === "permitted");
+      return result(check, passed, `IPv6 route ${check.configuration.network}/${check.configuration.prefixLength} ${found ? "passed" : "was denied by"} the ${check.configuration.direction === "out" ? "outbound" : "inbound"} policy`, {
+        found,
+        direction: check.configuration.direction,
+        expected: check.configuration.expected,
+      });
+    }
+    case "vpnv6-route": {
+      const router = mplsRouterOf(built, check.configuration.deviceId);
+      if (!router) return errorResult(check, "VPNv6 Router was not found");
+      const network = normalizeIpv6(check.configuration.network);
+      const route = router.bgp.vpnv6Routes().find((entry) =>
+        entry.routeDistinguisher === check.configuration.routeDistinguisher
+        && normalizeIpv6(entry.network) === network
+        && entry.prefixLength === check.configuration.prefixLength);
+      const targetMatches = check.configuration.expectedRouteTarget === undefined
+        || (route?.routeTargets.includes(check.configuration.expectedRouteTarget) ?? false);
+      // The observed RD, route targets and VPN label stay in diagnostics, which
+      // a student result never carries.
+      return result(check, route !== undefined && targetMatches, `VPNv6 route ${check.configuration.network}/${check.configuration.prefixLength} ${route ? "exists" : "is missing"}`, {
+        found: route !== undefined,
+        routeTargets: route?.routeTargets,
+        vpnLabel: route?.vpnLabel,
+        nextHop: route?.nextHop,
+      });
+    }
+    case "vpnv6-label": {
+      const router = mplsRouterOf(built, check.configuration.deviceId);
+      if (!router) return errorResult(check, "VPNv6 Router was not found");
+      // A label is allocated per VRF *and* address family, so an IPv4 binding
+      // on the same VRF can never satisfy this check.
+      const binding = router.vpnLabelBindings()
+        .find((entry) => entry.vrfId === check.configuration.vrfId && entry.addressFamily === "ipv6");
+      const passed = binding !== undefined
+        && (check.configuration.expectedLabel === undefined || binding.label === check.configuration.expectedLabel);
+      return result(check, passed, `VRF ${check.configuration.vrfId} ${binding ? "has" : "has no"} an IPv6 VPN label`, {
+        found: binding !== undefined,
+        actualLabel: binding?.label,
+      });
+    }
+    case "vrf-ipv6-route": {
+      const router = mplsRouterOf(built, check.configuration.deviceId);
+      if (!router) return errorResult(check, "VRF Router was not found");
+      let routes;
+      try { routes = router.vrfIpv6RoutingTable(check.configuration.vrfId); } catch {
+        return errorResult(check, `VRF '${check.configuration.vrfId}' was not found`);
+      }
+      const network = normalizeIpv6(check.configuration.network);
+      const route = routes.find((entry) => normalizeIpv6(entry.network) === network
+        && entry.prefixLength === check.configuration.prefixLength
+        && (check.configuration.expectedSource === undefined || entry.source === check.configuration.expectedSource));
+      const passed = check.configuration.expected === "present" ? route !== undefined : route === undefined;
+      return result(check, passed, `VRF IPv6 route ${check.configuration.network}/${check.configuration.prefixLength} ${route ? `is ${route.source}` : "is missing"}`, {
+        found: route !== undefined,
+        source: route?.source,
+        nextHop: route?.nextHop,
+        vpnLabel: route?.vpnLabel,
+      });
+    }
+    case "vpnv6-connectivity": {
+      const execution = executeIpv6Traffic(runtime, check.configuration.sourceDeviceId, check.configuration.destinationIp);
+      if (!execution) return errorResult(check, "IPv6 source device was not found");
+      const passed = check.configuration.expected === "success" ? execution.success : !execution.success;
+      return result(check, passed, `${check.configuration.sourceDeviceId} ${execution.success ? "reached" : "did not reach"} ${check.configuration.destinationIp} through the IPv6 VPN`, {
+        actual: execution.success ? "success" : "failure",
+        expected: check.configuration.expected,
+        failure: execution.failure,
+      });
+    }
+    case "overlapping-ipv6-prefix-isolation": {
+      const router = mplsRouterOf(built, check.configuration.deviceId);
+      if (!router) return errorResult(check, "VRF Router was not found");
+      const first = router.vrfConfigurations().find((vrf) => vrf.id === check.configuration.firstVrfId);
+      const second = router.vrfConfigurations().find((vrf) => vrf.id === check.configuration.secondVrfId);
+      if (!first || !second) return errorResult(check, "One or both VRFs were not found");
+      const network = normalizeIpv6(check.configuration.network);
+      const matching = (vrfId: string) => router.vrfIpv6RoutingTable(vrfId)
+        .filter((route) => normalizeIpv6(route.network) === network
+          && route.prefixLength === check.configuration.prefixLength);
+      const firstRoutes = matching(first.id);
+      const secondRoutes = matching(second.id);
+      const crossed = firstRoutes.some((route) => route.routeDistinguisher === second.routeDistinguisher)
+        || secondRoutes.some((route) => route.routeDistinguisher === first.routeDistinguisher);
+      const distinctPolicy = first.routeDistinguisher !== second.routeDistinguisher
+        && !first.importRouteTargets.some((target) => second.exportRouteTargets.includes(target))
+        && !second.importRouteTargets.some((target) => first.exportRouteTargets.includes(target));
+      const passed = firstRoutes.length > 0 && secondRoutes.length > 0 && distinctPolicy && !crossed;
+      return result(check, passed, `Overlapping IPv6 ${check.configuration.network}/${check.configuration.prefixLength} ${passed ? "is isolated by VRF" : "is not safely isolated"}`, {
         firstRouteCount: firstRoutes.length,
         secondRouteCount: secondRoutes.length,
         distinctPolicy,

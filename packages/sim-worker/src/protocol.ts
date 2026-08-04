@@ -62,7 +62,11 @@ import type {
   LdpLabelBinding,
   Vpnv4Route,
   VrfRoute,
+  BgpUnicastAddressFamily,
+  Vpnv6Route,
+  VrfIpv6Route,
 } from "@sim/sim-core";
+export type { BgpUnicastAddressFamily } from "@sim/sim-core";
 export type { ServerServiceRuntimeSnapshot } from "@sim/sim-core";
 
 export type EngineUiState = "idle" | "running" | "paused" | "error";
@@ -246,7 +250,7 @@ export interface DeviceInspection {
       state: string;
     }>;
     routes: Array<{
-      kind: "connected" | "static" | "ospfv3";
+      kind: "connected" | "static" | "ospfv3" | "bgp";
       network: string;
       prefixLength: number;
       nextHop?: string;
@@ -331,7 +335,14 @@ export interface HostNetworkWarning {
     | "vpnv4-extended-community-disabled"
     | "l3vpn-transport-label-unavailable"
     | "bgp"
-    | "bgp-policy";
+    | "bgp-policy"
+    // --- M10.13 MP-BGP IPv6 unicast and MPLS VPNv6 ---
+    | "bgp-ipv6-neighbor-unreachable"
+    | "bgp-ipv6-address-family-inactive"
+    | "bgp-ipv6-network-route-missing"
+    | "vpnv6-extended-community-disabled"
+    | "vpnv6-label-unavailable"
+    | "vrf-overlapping-ipv6-prefix";
   message: string;
   address?: string;
   deviceIds: readonly string[];
@@ -662,6 +673,27 @@ export interface BgpStateView {
   asPathLists: AsPathList[];
   aggregates: BgpAggregateSummary[];
   suppressedRoutes: BgpSuppressedRoute[];
+  /**
+   * M10.13 address families. One BGP process and one TCP session can carry
+   * several activated families, so the RIBs are reported per family instead of
+   * being duplicated into a second view. `ipv4Unicast` stays in the flat fields
+   * above so an older panel keeps working unchanged.
+   */
+  ipv6Unicast: BgpUnicastFamilyView;
+  /** Which families this device has activated on at least one neighbor. */
+  addressFamilies: BgpUnicastAddressFamily[];
+}
+
+/** Per-address-family RIB snapshot. Runtime only: never persisted or trusted. */
+export interface BgpUnicastFamilyView {
+  addressFamily: BgpUnicastAddressFamily;
+  routes: BgpRibEntry[];
+  adjRibIn: BgpRoute[];
+  adjRibOut: BgpRoute[];
+  ribFailures: Array<{ routeId: string; reason: string }>;
+  /** Neighbors that negotiated this family, by transport address. */
+  neighbors: string[];
+  communities: Array<{ community: string; routes: number }>;
 }
 
 /** Router-only MPLS/LDP/L3VPN inspection. Runtime tables are never persisted. */
@@ -681,7 +713,14 @@ export interface MplsL3VpnView {
   }>;
   vrfRoutes: Record<string, VrfRoute[]>;
   vpnv4Routes: Vpnv4Route[];
-  vpnLabelBindings: Array<{ label: number; vrfId: string }>;
+  /**
+   * M10.13: a VPN label is allocated per VRF *and* address family, so IPv4 and
+   * IPv6 delivery on the same VRF are explicitly separate label values.
+   */
+  vpnLabelBindings: Array<{ label: number; vrfId: string; addressFamily: "ipv4" | "ipv6" }>;
+  /** M10.13 VRF IPv6 tables, keyed by VRF id exactly like `vrfRoutes`. */
+  vrfIpv6Routes: Record<string, VrfIpv6Route[]>;
+  vpnv6Routes: Vpnv6Route[];
 }
 
 /**
@@ -876,6 +915,9 @@ export type SimWorkerRequest =
     neighbor?: string;
     direction?: "in" | "out" | "both";
   }
+  // --- M10.13 MP-BGP IPv6 unicast inspection ---
+  | { type: "GET_BGP_IPV6_TABLE"; requestId: string; deviceId: string }
+  | { type: "GET_BGP_IPV6_NEIGHBORS"; requestId: string; deviceId: string }
   // --- M10.11 Router-only MPLS, LDP and L3VPN inspection ---
   | { type: "GET_MPLS_INTERFACES"; requestId: string; deviceId: string }
   | { type: "GET_MPLS_FORWARDING_TABLE"; requestId: string; deviceId: string }
@@ -885,6 +927,10 @@ export type SimWorkerRequest =
   | { type: "GET_VRF_ROUTES"; requestId: string; deviceId: string; vrfId?: string }
   | { type: "GET_VPNV4_TABLE"; requestId: string; deviceId: string }
   | { type: "GET_VPN_LABEL_BINDINGS"; requestId: string; deviceId: string }
+  // --- M10.13 VRF IPv6 and VPNv6 inspection ---
+  | { type: "GET_VRF_IPV6_ROUTES"; requestId: string; deviceId: string; vrfId?: string }
+  | { type: "GET_VPNV6_TABLE"; requestId: string; deviceId: string }
+  | { type: "GET_VPNV6_LABEL_BINDINGS"; requestId: string; deviceId: string }
   | { type: "RESTART_LDP"; requestId: string; deviceId: string }
   | { type: "RESET_MPLS_RUNTIME"; requestId: string; deviceId: string }
   // --- M10.7 management plane (inspection + bounded runtime actions) ---
@@ -1058,6 +1104,8 @@ export interface SimWorkerPayloadByType {
   GET_BGP_SUPPRESSED_ROUTES: BgpStateView;
   GET_BGP_POLICY_COUNTERS: BgpStateView;
   SOFT_RESET_BGP_NEIGHBOR: BgpStateView;
+  GET_BGP_IPV6_TABLE: BgpStateView;
+  GET_BGP_IPV6_NEIGHBORS: BgpStateView;
   GET_MPLS_INTERFACES: MplsL3VpnView;
   GET_MPLS_FORWARDING_TABLE: MplsL3VpnView;
   GET_LDP_NEIGHBORS: MplsL3VpnView;
@@ -1066,6 +1114,9 @@ export interface SimWorkerPayloadByType {
   GET_VRF_ROUTES: MplsL3VpnView;
   GET_VPNV4_TABLE: MplsL3VpnView;
   GET_VPN_LABEL_BINDINGS: MplsL3VpnView;
+  GET_VRF_IPV6_ROUTES: MplsL3VpnView;
+  GET_VPNV6_TABLE: MplsL3VpnView;
+  GET_VPNV6_LABEL_BINDINGS: MplsL3VpnView;
   RESTART_LDP: MplsL3VpnView;
   RESET_MPLS_RUNTIME: MplsL3VpnView;
   GET_REMOTE_SESSIONS: RemoteSessionsView;

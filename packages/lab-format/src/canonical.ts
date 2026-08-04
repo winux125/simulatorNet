@@ -65,6 +65,14 @@ import {
 import { parseLabDocument } from "./parse";
 import { validateLabSemantics } from "./semantic";
 
+/** Deterministic ordering across both families: IPv4 first, then IPv6. */
+function compareIpAddressText(left: string, right: string): number {
+  const leftV6 = left.includes(":");
+  const rightV6 = right.includes(":");
+  if (leftV6 !== rightV6) return leftV6 ? 1 : -1;
+  return leftV6 ? left.localeCompare(right) : ipToInt(left) - ipToInt(right);
+}
+
 const byId = <T extends { id: string }>(a: T, b: T): number => a.id.localeCompare(b.id);
 
 function canonicalInterfaces(nodes: readonly NodeSpec[]): NodeSpec[] {
@@ -316,7 +324,7 @@ function canonicalDiscovery(discovery: NeighborDiscoveryConfig | undefined): Nei
 function canonicalRoutedProtocols(
   config: Partial<Pick<
     RouterDeviceConfig,
-    "loopbacks" | "ospf" | "ospfv3" | "bgp" | "prefixLists" | "routeMaps" | "communityLists" | "asPathLists"
+    "loopbacks" | "ospf" | "ospfv3" | "bgp" | "prefixLists" | "ipv6PrefixLists" | "routeMaps" | "communityLists" | "asPathLists"
   >> | undefined,
 ) {
   return {
@@ -351,10 +359,21 @@ function canonicalRoutedProtocols(
         },
     bgp: config?.bgp === undefined ? undefined : {
       ...config.bgp,
-      neighbors: [...config.bgp.neighbors].sort((a, b) => ipToInt(a.address) - ipToInt(b.address)).map((neighbor) => ({ ...neighbor })),
+      // A neighbor address may now be IPv6, so ordering is family-aware and
+      // IPv4 peers keep their existing position ahead of IPv6 ones.
+      neighbors: [...config.bgp.neighbors]
+        .map((neighbor) => ({
+          ...neighbor,
+          address: neighbor.address.includes(":") ? normalizeIpv6(neighbor.address) : neighbor.address,
+          ...(neighbor.ipv6 ? { ipv6: { ...neighbor.ipv6 } } : {}),
+        }))
+        .sort((a, b) => compareIpAddressText(a.address, b.address)),
       networks: [...config.bgp.networks]
         .sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || a.prefixLength - b.prefixLength)
         .map((network) => ({ ...network })),
+      ipv6Networks: config.bgp.ipv6Networks === undefined ? undefined : [...config.bgp.ipv6Networks]
+        .map((network) => ({ ...network, network: normalizeIpv6(network.network) }))
+        .sort((a, b) => a.network.localeCompare(b.network) || a.prefixLength - b.prefixLength),
       aggregates: config.bgp.aggregates === undefined ? undefined : [...config.bgp.aggregates]
         .sort((a, b) => ipToInt(a.prefix) - ipToInt(b.prefix) || a.prefixLength - b.prefixLength)
         .map((aggregate) => ({ ...aggregate })),
@@ -365,6 +384,14 @@ function canonicalRoutedProtocols(
     prefixLists: [...(config?.prefixLists ?? [])]
       .sort(byId)
       .map((list) => ({ ...list, entries: [...list.entries].sort((a, b) => a.sequence - b.sequence).map((entry) => ({ ...entry })) })),
+    ipv6PrefixLists: config?.ipv6PrefixLists === undefined ? undefined : [...config.ipv6PrefixLists]
+      .sort(byId)
+      .map((list) => ({
+        ...list,
+        entries: [...list.entries]
+          .sort((a, b) => a.sequence - b.sequence)
+          .map((entry) => ({ ...entry, prefix: normalizeIpv6(entry.prefix) })),
+      })),
     routeMaps: [...(config?.routeMaps ?? [])]
       .sort(byId)
       .map((map) => ({ ...map, sequences: [...map.sequences].sort((a, b) => a.sequence - b.sequence).map((sequence) => ({
@@ -372,6 +399,7 @@ function canonicalRoutedProtocols(
         match: sequence.match ? {
           ...sequence.match,
           prefixListIds: sequence.match.prefixListIds ? [...sequence.match.prefixListIds].sort() : undefined,
+          ipv6PrefixListIds: sequence.match.ipv6PrefixListIds ? [...sequence.match.ipv6PrefixListIds].sort() : undefined,
           communityListIds: sequence.match.communityListIds ? [...sequence.match.communityListIds].sort() : undefined,
           asPathListIds: sequence.match.asPathListIds ? [...sequence.match.asPathListIds].sort() : undefined,
         } : undefined,

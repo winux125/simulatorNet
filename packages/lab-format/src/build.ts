@@ -71,6 +71,7 @@ import {
   serializeOspfv3Configuration,
   serializeBgpConfiguration,
   serializePrefixLists,
+  serializeIpv6PrefixLists,
   serializeRouteMaps,
   serializeCommunityLists,
   serializeAsPathLists,
@@ -640,7 +641,7 @@ function applyConfiguration(device: Device, config: DeviceConfig, node: NodeSpec
     if (config.ospf) applyOspfConfiguration(device, config.ospf);
     if (config.ospfv3) applyOspfv3Configuration(device, config.ospfv3);
     if (!deferBgp && config.kind === "router") {
-      applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists);
+      applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists, config.ipv6PrefixLists);
     }
   }
 }
@@ -750,15 +751,15 @@ function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3Swit
   applyLoopbackConfiguration(device, config.loopbacks ?? []);
   if (config.ospf) applyOspfConfiguration(device, config.ospf);
   if (config.ospfv3) applyOspfv3Configuration(device, config.ospfv3);
-  if (!deferBgp) applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists);
+  if (!deferBgp) applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists, config.ipv6PrefixLists);
 }
 
 /** Apply the TCP-based routing process only after the complete underlay exists. */
 export function applyPostLinkRoutingConfiguration(device: Device, config: DeviceConfig): void {
   if (device instanceof Layer3Switch && config.kind === "l3-switch") {
-    applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists);
+    applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists, config.ipv6PrefixLists);
   } else if (device instanceof Router && config.kind === "router") {
-    applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists);
+    applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists, config.ipv6PrefixLists);
   }
 }
 
@@ -1167,6 +1168,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       ospfv3: serializeOspfv3Configuration(device),
       bgp: serializeBgpConfiguration(device),
       prefixLists: serializePrefixLists(device),
+      ipv6PrefixLists: serializeIpv6PrefixLists(device),
       routeMaps: serializeRouteMaps(device),
       communityLists: serializeCommunityLists(device),
       asPathLists: serializeAsPathLists(device),
@@ -1322,6 +1324,7 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
     ospfv3: serializeOspfv3Configuration(device),
     bgp: serializeBgpConfiguration(device),
     prefixLists: serializePrefixLists(device),
+    ipv6PrefixLists: serializeIpv6PrefixLists(device),
     routeMaps: serializeRouteMaps(device),
     communityLists: serializeCommunityLists(device),
     asPathLists: serializeAsPathLists(device),

@@ -291,7 +291,9 @@ function ConfigSection(props: DeviceWindowProps & { section: DeviceWindowSection
     "etherchannel-config": { title: "EtherChannel", keys: ["etherChannels", "interfaces"] },
     "ospf-config": { title: "OSPF", keys: ["ospf", "ospfv3"] },
     "mpls-config": { title: "MPLS & LDP", keys: ["interfaces", "ldp"] },
-    "vrfs-config": { title: "VRFs", keys: ["vrfs", "interfaces", "subinterfaces"] },
+    // `vrfs` carries RD/RT and both address families; per-VRF redistribution is
+    // a BGP address-family setting, so `bgp` is included to make it visible here.
+    "vrfs-config": { title: "VRFs", keys: ["vrfs", "interfaces", "subinterfaces", "bgp"] },
     "l3vpn-config": { title: "Layer 3 VPN", keys: ["vrfs", "bgp"] },
     "remote-access-config": { title: "Remote Access", keys: ["remoteAccess", "vtyLines"] },
     "aaa-config": { title: "AAA", keys: ["aaa"] },
@@ -365,7 +367,8 @@ function MonitorSection(props: DeviceWindowProps & { section: DeviceWindowSectio
     ? <BgpRuntimePanel client={props.client} deviceId={props.node.id} onError={props.onError} />
     : <DraftRuntimeNotice />;
   if (section === "mpls-runtime" || section === "ldp-runtime" || section === "vrf-runtime"
-    || section === "vpnv4-runtime" || section === "vpn-label-runtime") return props.runtimeAvailable
+    || section === "vpnv4-runtime" || section === "vpnv6-runtime"
+    || section === "vpn-label-runtime") return props.runtimeAvailable
     ? <MplsL3VpnRuntimePanel client={props.client} deviceId={props.node.id} section={section} onError={props.onError} />
     : <DraftRuntimeNotice />;
   if (section === "protocols-runtime") return props.runtimeAvailable
@@ -530,7 +533,7 @@ function MplsL3VpnRuntimePanel({
 }: {
   client: SimulatorClient;
   deviceId: string;
-  section: "mpls-runtime" | "ldp-runtime" | "vrf-runtime" | "vpnv4-runtime" | "vpn-label-runtime";
+  section: "mpls-runtime" | "ldp-runtime" | "vrf-runtime" | "vpnv4-runtime" | "vpnv6-runtime" | "vpn-label-runtime";
   onError(message: string): void;
 }) {
   const [state, setState] = useState<MplsL3VpnView>();
@@ -549,13 +552,17 @@ function MplsL3VpnRuntimePanel({
     "ldp-runtime": "LDP Neighbors & Bindings",
     "vrf-runtime": "VRF Routes",
     "vpnv4-runtime": "VPNv4 Routes",
+    "vpnv6-runtime": "VPNv6 Routes",
     "vpn-label-runtime": "VPN Labels",
   } as const;
+  // VRF Routes shows both families side by side; a VPN label is allocated per
+  // VRF *and* address family, so the bindings table reports which one it serves.
   const value = section === "mpls-runtime" ? { interfaces: state.interfaces, forwardingTable: state.forwardingTable }
     : section === "ldp-runtime" ? { routerId: state.ldpRouterId, neighbors: state.ldpNeighbors, bindings: state.ldpBindings }
-      : section === "vrf-runtime" ? { vrfs: state.vrfs, routes: state.vrfRoutes }
+      : section === "vrf-runtime" ? { vrfs: state.vrfs, ipv4Routes: state.vrfRoutes, ipv6Routes: state.vrfIpv6Routes }
         : section === "vpnv4-runtime" ? state.vpnv4Routes
-          : state.vpnLabelBindings;
+          : section === "vpnv6-runtime" ? state.vpnv6Routes
+            : state.vpnLabelBindings;
   return <div className="device-window-section">
     <p className="section-eyebrow">Deterministic provider runtime</p>
     <h2>{titles[section]}</h2>

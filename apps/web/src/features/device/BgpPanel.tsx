@@ -1,5 +1,5 @@
 import type { LabDocument } from "@sim/contracts";
-import type { BgpStateView } from "@sim/sim-worker";
+import type { BgpStateView, BgpUnicastAddressFamily } from "@sim/sim-worker";
 import { useEffect, useState } from "react";
 import type { SimulatorClient } from "../../app/simulator-client";
 
@@ -83,6 +83,7 @@ export function BgpConfigurationPanel({ document, deviceId }: { document: LabDoc
   const configuration = document.configurations[deviceId];
   const bgp = configuration && "bgp" in configuration ? configuration.bgp : undefined;
   const prefixLists = configuration && "prefixLists" in configuration ? configuration.prefixLists ?? [] : [];
+  const ipv6PrefixLists = configuration && "ipv6PrefixLists" in configuration ? configuration.ipv6PrefixLists ?? [] : [];
   const routeMaps = configuration && "routeMaps" in configuration ? configuration.routeMaps ?? [] : [];
   const communityLists = configuration && "communityLists" in configuration ? configuration.communityLists ?? [] : [];
   const asPathLists = configuration && "asPathLists" in configuration ? configuration.asPathLists ?? [] : [];
@@ -129,16 +130,62 @@ export function BgpConfigurationPanel({ document, deviceId }: { document: LabDoc
         </tr>)}</tbody>
       </table>}
 
-      {section === "address-families" && <table className="data-table">
-        <thead><tr><th>Neighbor</th><th>IPv4 unicast</th><th>VPNv4</th><th>send-community</th><th>default-originate</th></tr></thead>
-        <tbody>{bgp.neighbors.map((neighbor) => <tr key={neighbor.address}>
-          <td><code>{neighbor.address}</code></td>
-          <td>active</td>
-          <td>{neighbor.vpnv4Activated ? "active" : "—"}</td>
-          <td>{[neighbor.sendCommunityStandard && "standard", neighbor.sendCommunityExtended && "extended"].filter(Boolean).join(" + ") || "none"}</td>
-          <td>{neighbor.defaultOriginate ? (neighbor.defaultOriginateRouteMap ?? "yes") : "—"}</td>
-        </tr>)}</tbody>
-      </table>}
+      {section === "address-families" && <>
+        <p className="section-note">
+          One BGP process and one TCP session per neighbor carry every activated
+          address family. IPv4 unicast is implicit on an IPv4-transport neighbor;
+          an IPv6-transport neighbor carries IPv6 unicast instead.
+        </p>
+        <table className="data-table" aria-label="BGP address families">
+          <thead><tr>
+            <th>Neighbor</th><th>IPv4 unicast</th><th>IPv6 unicast</th><th>VPNv4</th><th>VPNv6</th>
+            <th>send-community</th><th>default-originate</th>
+          </tr></thead>
+          <tbody>{bgp.neighbors.map((neighbor) => {
+            const ipv6Transport = neighbor.address.includes(":");
+            const ipv6Active = ipv6Transport || neighbor.ipv6?.activated === true;
+            return <tr key={neighbor.address}>
+              <td><code>{neighbor.address}</code></td>
+              <td>{ipv6Transport ? "—" : "active"}</td>
+              <td>{ipv6Active ? "active" : "—"}</td>
+              <td>{neighbor.vpnv4Activated ? "active" : "—"}</td>
+              <td>{neighbor.vpnv6Activated ? "active" : "—"}</td>
+              <td>{[
+                (neighbor.sendCommunityStandard || neighbor.ipv6?.sendCommunityStandard) && "standard",
+                neighbor.sendCommunityExtended && "extended",
+              ].filter(Boolean).join(" + ") || "none"}</td>
+              <td>{[
+                neighbor.defaultOriginate && `IPv4 ${neighbor.defaultOriginateRouteMap ?? "yes"}`,
+                neighbor.ipv6?.defaultOriginate && `IPv6 ${neighbor.ipv6.defaultOriginateRouteMap ?? "yes"}`,
+              ].filter(Boolean).join(", ") || "—"}</td>
+            </tr>;
+          })}</tbody>
+        </table>
+        <h3>IPv6 unicast policies</h3>
+        {bgp.neighbors.some((neighbor) => neighbor.ipv6) ? <table className="data-table">
+          <thead><tr><th>Neighbor</th><th>Next-hop-self</th><th>RR client</th><th>Policies</th></tr></thead>
+          <tbody>{bgp.neighbors.filter((neighbor) => neighbor.ipv6).map((neighbor) => <tr key={neighbor.address}>
+            <td><code>{neighbor.address}</code></td>
+            <td>{neighbor.ipv6?.nextHopSelf ? "yes" : "no"}</td>
+            <td>{neighbor.ipv6?.routeReflectorClient ? "yes" : "no"}</td>
+            <td>{[
+              neighbor.ipv6?.prefixListIn && `prefix-list ${neighbor.ipv6.prefixListIn} in`,
+              neighbor.ipv6?.prefixListOut && `prefix-list ${neighbor.ipv6.prefixListOut} out`,
+              neighbor.ipv6?.routeMapIn && `route-map ${neighbor.ipv6.routeMapIn} in`,
+              neighbor.ipv6?.routeMapOut && `route-map ${neighbor.ipv6.routeMapOut} out`,
+            ].filter(Boolean).join(", ") || "—"}</td>
+          </tr>)}</tbody>
+        </table> : <Empty text="No neighbor has an IPv6 unicast address-family block." />}
+        <h3>VRF address families</h3>
+        {bgp.vrfAddressFamilies.length ? <table className="data-table">
+          <thead><tr><th>VRF</th><th>IPv4 redistribution</th><th>IPv6 redistribution</th></tr></thead>
+          <tbody>{bgp.vrfAddressFamilies.map((family) => <tr key={family.vrfId}>
+            <td><code>{family.vrfId}</code></td>
+            <td>{[family.redistributeConnected && "connected", family.redistributeStatic && "static"].filter(Boolean).join(", ") || "—"}</td>
+            <td>{[family.redistributeConnectedIpv6 && "connected", family.redistributeStaticIpv6 && "static"].filter(Boolean).join(", ") || "—"}</td>
+          </tr>)}</tbody>
+        </table> : <Empty text="No per-VRF address family is configured." />}
+      </>}
 
       {section === "route-reflection" && <>
         <p>Cluster ID <code>{bgp.clusterId ?? bgp.routerId ?? "automatic (router ID)"}</code></p>
@@ -151,10 +198,14 @@ export function BgpConfigurationPanel({ document, deviceId }: { document: LabDoc
       </>}
 
       {section === "networks" && <>
-        <h3>Network statements</h3>
+        <h3>IPv4 unicast network statements</h3>
         {bgp.networks.length
           ? <p>{bgp.networks.map((network) => `${network.network}/${network.prefixLength}`).join(", ")}</p>
           : <Empty text="No network statements." />}
+        <h3>IPv6 unicast network statements</h3>
+        {(bgp.ipv6Networks ?? []).length
+          ? <p>{(bgp.ipv6Networks ?? []).map((network) => `${network.network}/${network.prefixLength}`).join(", ")}</p>
+          : <Empty text="No IPv6 network statements. A prefix is advertised only when an exact IPv6 route exists locally." />}
         <h3>Aggregates</h3>
         {(bgp.aggregates ?? []).length ? <table className="data-table">
           <thead><tr><th>Prefix</th><th>summary-only</th><th>as-set</th></tr></thead>
@@ -174,6 +225,16 @@ export function BgpConfigurationPanel({ document, deviceId }: { document: LabDoc
         {prefixLists.map((list) => <p key={list.id}>
           <code>{list.id}</code>: {list.entries.map((entry) => `${entry.sequence} ${entry.action} ${entry.prefix}/${entry.prefixLength}`).join("; ")}
         </p>)}
+        <h3>IPv6 prefix lists ({ipv6PrefixLists.length})</h3>
+        {ipv6PrefixLists.length ? ipv6PrefixLists.map((list) => <p key={list.id}>
+          <code>{list.id}</code>: {list.entries.map((entry) => [
+            entry.sequence,
+            entry.action,
+            `${entry.prefix}/${entry.prefixLength}`,
+            entry.ge !== undefined && `ge ${entry.ge}`,
+            entry.le !== undefined && `le ${entry.le}`,
+          ].filter(Boolean).join(" ")).join("; ")}
+        </p>) : <Empty text="No IPv6 prefix lists. An IPv6 prefix list never uses a wildcard mask." />}
         <h3>Community lists ({communityLists.length})</h3>
         {communityLists.map((list) => <p key={list.id}>
           <code>{list.id}</code>: {list.entries.map((entry) => `${entry.sequence} ${entry.action} ${entry.communities.join(" ")}`).join("; ")}
@@ -217,6 +278,9 @@ export function BgpRuntimePanel({
 }) {
   const [state, setState] = useState<BgpStateView>();
   const [section, setSection] = useState<BgpMonitorSection>("summary");
+  // Which address family is on screen is local UI state: it never reaches a
+  // LabDocument, a submission, grading or the database.
+  const [addressFamily, setAddressFamily] = useState<BgpUnicastAddressFamily>("ipv4-unicast");
 
   const apply = (pending: Promise<BgpStateView>) =>
     void pending.then(setState).catch((error) =>
@@ -234,15 +298,38 @@ export function BgpRuntimePanel({
 
   if (!state) return <div className="device-window-section">Loading BGP runtime…</div>;
   const established = state.neighbors.filter((neighbor) => neighbor.state === "established").length;
+  // The RIBs are per address family; the FSM, the TCP session and the policy
+  // engine are shared, so the neighbor list stays whole and is only annotated.
+  const family = addressFamily === "ipv6-unicast"
+    ? state.ipv6Unicast
+    : { routes: state.routes, adjRibIn: state.adjRibIn, adjRibOut: state.adjRibOut, ribFailures: state.ribFailures, communities: state.communities };
+  const familyNeighbors = state.neighbors.filter((neighbor) => neighbor.addressFamilies.includes(addressFamily));
 
   return <div className="qos-panel">
     <Nav sections={MONITOR_SECTIONS} section={section} onSelect={(next) => setSection(next)} label="BGP monitor sections" />
     <div className="qos-panel__body" role="tabpanel">
+      <div className="toolbar-row" data-testid="bgp-address-family-selector">
+        <label htmlFor="bgp-address-family">Address family</label>
+        <select
+          id="bgp-address-family"
+          value={addressFamily}
+          onChange={(event) => setAddressFamily(event.target.value as BgpUnicastAddressFamily)}
+        >
+          <option value="ipv4-unicast">IPv4 unicast</option>
+          <option value="ipv6-unicast">IPv6 unicast</option>
+        </select>
+        <span className="section-note">
+          {familyNeighbors.length} neighbor(s) negotiated this family · {family.routes.length} RIB entr(y/ies)
+        </span>
+      </div>
       {section === "summary" && <>
         <p className="section-eyebrow">BGP monitor</p>
         <p>{state.configuration
           ? `Local AS ${state.configuration.localAs} · ${established}/${state.neighbors.length} Established`
           : "BGP is not configured."}</p>
+        <p className="section-note">
+          Active address families: {state.addressFamilies.join(", ") || "none"}
+        </p>
         <div className="toolbar-row">
           <button type="button" onClick={() => apply(client.request({ type: "RESET_BGP_PROCESS", deviceId }))}>Reset process</button>
           <button type="button" onClick={() => apply(client.request({ type: "SOFT_RESET_BGP_NEIGHBOR", deviceId, direction: "both" }))}>Soft reevaluate policy</button>
@@ -253,9 +340,9 @@ export function BgpRuntimePanel({
         </p>
       </>}
 
-      {section === "table" && <table className="data-table">
+      {section === "table" && <table className="data-table" aria-label="BGP table">
         <thead><tr><th>Best</th><th>Prefix</th><th>Next hop</th><th>Weight</th><th>Local pref</th><th>MED</th><th>Communities</th><th>AS path</th></tr></thead>
-        <tbody>{state.routes.map((route) => <tr key={`${route.routeId}:${route.neighborAddress ?? "local"}`}>
+        <tbody>{family.routes.map((route) => <tr key={`${route.routeId}:${route.neighborAddress ?? "local"}`}>
           <td>{route.best ? "✓" : ""}</td>
           <td><code>{route.network}/{route.prefixLength}</code></td>
           <td><code>{route.nextHop}</code></td>
@@ -267,14 +354,15 @@ export function BgpRuntimePanel({
         </tr>)}</tbody>
       </table>}
 
-      {section === "neighbors" && <table className="data-table">
-        <thead><tr><th>Neighbor</th><th>AS</th><th>State</th><th>RR client</th><th>Prefixes</th><th>Action</th></tr></thead>
+      {section === "neighbors" && <table className="data-table" aria-label="BGP neighbors">
+        <thead><tr><th>Neighbor</th><th>AS</th><th>State</th><th>Address families</th><th>RR client</th><th>Prefixes</th><th>Action</th></tr></thead>
         <tbody>{state.neighbors.map((neighbor) => <tr key={neighbor.address}>
           <td><code>{neighbor.address}</code></td>
           <td>{neighbor.remoteAs}</td>
           <td>{neighbor.state}</td>
+          <td>{neighbor.addressFamilies.join(", ") || "—"}</td>
           <td>{state.routeReflection.clients.includes(neighbor.address) ? "yes" : "no"}</td>
-          <td>{state.adjRibIn.filter((route) => route.neighborAddress === neighbor.address).length}</td>
+          <td>{family.adjRibIn.filter((route) => route.neighborAddress === neighbor.address).length}</td>
           <td>
             <button type="button" onClick={() => apply(client.request({ type: "RESET_BGP_NEIGHBOR", deviceId, neighbor: neighbor.address }))}>Reset</button>
             <button type="button" onClick={() => apply(client.request({ type: "SOFT_RESET_BGP_NEIGHBOR", deviceId, neighbor: neighbor.address, direction: "both" }))}>Soft</button>
@@ -283,12 +371,12 @@ export function BgpRuntimePanel({
       </table>}
 
       {section === "advertised" && <>
-        <p>{state.adjRibOut.length} advertised · {state.adjRibIn.length} received · {state.ribFailures.length} RIB failure(s)</p>
-        <table className="data-table">
+        <p>{family.adjRibOut.length} advertised · {family.adjRibIn.length} received · {family.ribFailures.length} RIB failure(s)</p>
+        <table className="data-table" aria-label="Advertised and received routes">
           <thead><tr><th>Direction</th><th>Neighbor</th><th>Prefix</th><th>Communities</th><th>Originator</th><th>Cluster list</th></tr></thead>
           <tbody>{[
-            ...state.adjRibOut.map((route) => ["out", route] as const),
-            ...state.adjRibIn.map((route) => ["in", route] as const),
+            ...family.adjRibOut.map((route) => ["out", route] as const),
+            ...family.adjRibIn.map((route) => ["in", route] as const),
           ].map(([direction, route], index) => <tr key={`${direction}-${route.routeId}-${index}`}>
             <td>{direction}</td>
             <td><code>{route.neighborAddress ?? "—"}</code></td>
@@ -300,10 +388,10 @@ export function BgpRuntimePanel({
         </table>
       </>}
 
-      {section === "communities" && (state.communities.length
+      {section === "communities" && (family.communities.length
         ? <table className="data-table">
           <thead><tr><th>Community</th><th>Routes</th></tr></thead>
-          <tbody>{state.communities.map((entry) => <tr key={entry.community}>
+          <tbody>{family.communities.map((entry) => <tr key={entry.community}>
             <td><code>{entry.community}</code></td><td>{entry.routes}</td>
           </tr>)}</tbody>
         </table>

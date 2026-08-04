@@ -3,6 +3,7 @@ import {
   type BgpConfiguration,
   type BgpNeighborConfiguration,
   type CommunityList,
+  type Ipv6PrefixList,
   type Layer3Switch,
   type PrefixList,
   type RouteMap,
@@ -18,7 +19,7 @@ import {
 import { InvalidModeError, ValidationError } from "../errors/errors";
 import { table } from "../formatter/tables";
 import type { CommandSpec, SessionApi } from "../types";
-import { isOspfDevice, isRouter, parseIpv4 } from "./helpers";
+import { isOspfDevice, isRouter, parseIpv4, parseIpv6, parseIpv6Prefix } from "./helpers";
 
 function deviceOf(session: SessionApi): Router | Layer3Switch {
   if (!isOspfDevice(session.device)) throw new InvalidModeError("BGP requires a Router or an L3 Switch");
@@ -37,13 +38,18 @@ function updateBgp(session: SessionApi, mutate: (configuration: BgpConfiguration
   device.bgp.configure(mutate(configuration));
 }
 
+/** A BGP neighbor address may be IPv4 or IPv6; the text itself decides. */
+function parseNeighborAddress(value: string): string {
+  return value.includes(":") ? parseIpv6(value) : parseIpv4(value);
+}
+
 function updateNeighbor(
   session: SessionApi,
   address: string,
   mutate: (neighbor: BgpNeighborConfiguration | undefined) => BgpNeighborConfiguration,
 ): void {
   updateBgp(session, (configuration) => {
-    const parsed = parseIpv4(address);
+    const parsed = parseNeighborAddress(address);
     const existing = configuration.neighbors?.find((neighbor) => neighbor.address === parsed);
     const next = mutate(existing);
     return {
@@ -51,6 +57,27 @@ function updateNeighbor(
       neighbors: [...(configuration.neighbors ?? []).filter((neighbor) => neighbor.address !== parsed), next],
     };
   });
+}
+
+/** Update just the `address-family ipv6 unicast` block of one neighbor. */
+function updateIpv6Neighbor(
+  session: SessionApi,
+  address: string,
+  mutate: (family: NonNullable<BgpNeighborConfiguration["ipv6"]>) => NonNullable<BgpNeighborConfiguration["ipv6"]>,
+): void {
+  updateNeighbor(session, address, (neighbor) => ({
+    ...requireNeighbor(neighbor),
+    ipv6: mutate(neighbor?.ipv6 ?? {}),
+  }));
+}
+
+/** The address family a `config-router` subcommand is currently editing. */
+function requireAddressFamily(session: SessionApi, family: "ipv6-unicast" | "vpnv4-unicast" | "vpnv6-unicast"): void {
+  if (session.routerCtx?.addressFamily !== family) {
+    const command = family === "ipv6-unicast" ? "address-family ipv6 unicast"
+      : family === "vpnv4-unicast" ? "address-family vpnv4" : "address-family vpnv6";
+    throw new InvalidModeError(`Enter '${command}' first`);
+  }
 }
 
 function prefixLength(mask: string): number {
@@ -154,6 +181,35 @@ function parseAction(value: string | undefined): "permit" | "deny" {
   return value;
 }
 
+function parseDirection(value: string | undefined): "in" | "out" {
+  if (value !== "in" && value !== "out") throw new ValidationError("Direction must be in or out.");
+  return value;
+}
+
+function setIpv6PrefixListEntry(session: SessionApi, parameters: Readonly<Record<string, string | undefined>>): void {
+  const action = parseAction(parameters.action);
+  const sequence = Number(parameters.sequence);
+  if (!Number.isInteger(sequence) || sequence < 1) throw new ValidationError("Prefix-list sequence must be positive.");
+  const { network, prefixLength: length } = parseIpv6Prefix(parameters.prefix!);
+  const ge = parameters.ge === undefined ? undefined : Number(parameters.ge);
+  const le = parameters.le === undefined ? undefined : Number(parameters.le);
+  const device = deviceOf(session);
+  const lists = device.bgp.routingPolicy.ipv6PrefixListConfigurations();
+  const current = lists.find((list) => list.id === parameters.name);
+  const updated: Ipv6PrefixList = {
+    id: parameters.name!,
+    entries: [
+      ...(current?.entries.filter((entry) => entry.sequence !== sequence) ?? []),
+      { sequence, action, prefix: network, prefixLength: length, ge, le },
+    ],
+  };
+  try {
+    device.bgp.routingPolicy.setIpv6PrefixLists([...lists.filter((list) => list.id !== parameters.name), updated]);
+  } catch (error) {
+    throw new ValidationError(error instanceof ControlProtocolConfigurationError ? error.message : "Invalid IPv6 prefix-list entry.");
+  }
+}
+
 function routeText(route: { asPath: readonly number[]; origin: string; communities: readonly string[] }): string {
   const origin = route.origin === "igp" ? "i" : route.origin === "egp" ? "e" : "?";
   return `${route.asPath.join(" ")} ${origin}`.trim();
@@ -227,6 +283,24 @@ export const bgpCommands: CommandSpec[] = [
     },
   },
   {
+    pattern: "address-family vpnv6", modes: ["config-router"], device: "router",
+    run: (s) => {
+      bgpOf(s);
+      s.routerCtx!.addressFamily = "vpnv6-unicast";
+      s.routerCtx!.vrfId = undefined;
+    },
+  },
+  {
+    // IPv6 unicast is a global address family, so it is available wherever BGP
+    // is — Router and L3 Switch alike — unlike the Router-only VPN families.
+    pattern: "address-family ipv6 unicast", modes: ["config-router"], device: "ospf",
+    run: (s) => {
+      bgpOf(s);
+      s.routerCtx!.addressFamily = "ipv6-unicast";
+      s.routerCtx!.vrfId = undefined;
+    },
+  },
+  {
     pattern: "address-family ipv4 vrf {name}", modes: ["config-router"], device: "router",
     run: (s, p) => {
       bgpOf(s);
@@ -239,30 +313,67 @@ export const bgpCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "neighbor {address} activate", modes: ["config-router"], device: "router",
+    pattern: "address-family ipv6 vrf {name}", modes: ["config-router"], device: "router",
     run: (s, p) => {
-      if (s.routerCtx?.addressFamily !== "vpnv4-unicast") throw new InvalidModeError("Enter 'address-family vpnv4' first");
-      updateNeighbor(s, p.address!, (neighbor) => {
-        if (!neighbor) throw new ValidationError("Configure neighbor remote-as first.");
-        return { ...neighbor, vpnv4Activated: true };
-      });
+      bgpOf(s);
+      const vrf = isRouter(s.device)
+        ? s.device.vrfConfigurations().find((entry) => entry.id === p.name || entry.name === p.name)
+        : undefined;
+      if (!vrf) throw new ValidationError(`VRF '${p.name}' is not defined.`);
+      if (!vrf.addressFamilyIpv6) throw new ValidationError(`VRF '${vrf.name}' has no IPv6 address family.`);
+      s.routerCtx!.addressFamily = "ipv6-vrf";
+      s.routerCtx!.vrfId = vrf.id;
+    },
+  },
+  {
+    pattern: "neighbor {address} activate", modes: ["config-router"], device: "ospf",
+    run: (s, p) => {
+      const family = s.routerCtx?.addressFamily;
+      if (family === "ipv6-unicast") {
+        updateIpv6Neighbor(s, p.address!, (ipv6) => ({ ...ipv6, activated: true }));
+        return;
+      }
+      if (family === "vpnv6-unicast") {
+        updateNeighbor(s, p.address!, (neighbor) => ({ ...requireNeighbor(neighbor), vpnv6Activated: true }));
+        return;
+      }
+      requireAddressFamily(s, "vpnv4-unicast");
+      updateNeighbor(s, p.address!, (neighbor) => ({ ...requireNeighbor(neighbor), vpnv4Activated: true }));
     },
   },
   {
     pattern: "neighbor {address} send-community extended", modes: ["config-router"], device: "router",
     run: (s, p) => {
-      if (s.routerCtx?.addressFamily !== "vpnv4-unicast") throw new InvalidModeError("Enter 'address-family vpnv4' first");
-      updateNeighbor(s, p.address!, (neighbor) => {
-        if (!neighbor) throw new ValidationError("Configure neighbor remote-as first.");
-        return { ...neighbor, sendCommunityExtended: true };
-      });
+      if (s.routerCtx?.addressFamily !== "vpnv4-unicast" && s.routerCtx?.addressFamily !== "vpnv6-unicast") {
+        throw new InvalidModeError("Enter 'address-family vpnv4' or 'address-family vpnv6' first");
+      }
+      updateNeighbor(s, p.address!, (neighbor) => ({ ...requireNeighbor(neighbor), sendCommunityExtended: true }));
     },
   },
   {
     pattern: "redistribute {source}", modes: ["config-router"], device: "router",
     run: (s, p) => {
-      if (s.routerCtx?.addressFamily !== "ipv4-vrf" || !s.routerCtx.vrfId) throw new InvalidModeError("Enter 'address-family ipv4 vrf <name>' first");
+      const family = s.routerCtx?.addressFamily;
       if (p.source !== "connected" && p.source !== "static") throw new ValidationError("Only connected and static VRF routes can be redistributed.");
+      if (family === "ipv6-vrf" && s.routerCtx?.vrfId) {
+        updateBgp(s, (configuration) => {
+          const current = configuration.vrfAddressFamilies?.find((entry) => entry.vrfId === s.routerCtx!.vrfId);
+          return {
+            ...configuration,
+            vrfAddressFamilies: [
+              ...(configuration.vrfAddressFamilies ?? []).filter((entry) => entry.vrfId !== s.routerCtx!.vrfId),
+              {
+                ...current,
+                vrfId: s.routerCtx!.vrfId!,
+                redistributeConnectedIpv6: p.source === "connected" ? true : current?.redistributeConnectedIpv6,
+                redistributeStaticIpv6: p.source === "static" ? true : current?.redistributeStaticIpv6,
+              },
+            ],
+          };
+        });
+        return;
+      }
+      if (family !== "ipv4-vrf" || !s.routerCtx?.vrfId) throw new InvalidModeError("Enter 'address-family ipv4 vrf <name>' first");
       updateBgp(s, (configuration) => {
         const current = configuration.vrfAddressFamilies?.find((family) => family.vrfId === s.routerCtx!.vrfId);
         return {
@@ -270,6 +381,7 @@ export const bgpCommands: CommandSpec[] = [
           vrfAddressFamilies: [
             ...(configuration.vrfAddressFamilies ?? []).filter((family) => family.vrfId !== s.routerCtx!.vrfId),
             {
+              ...current,
               vrfId: s.routerCtx!.vrfId!,
               redistributeConnected: p.source === "connected" ? true : current?.redistributeConnected,
               redistributeStatic: p.source === "static" ? true : current?.redistributeStatic,
@@ -290,11 +402,60 @@ export const bgpCommands: CommandSpec[] = [
   },
   {
     pattern: "neighbor {address} route-reflector-client", modes: ["config-router"], device: "ospf",
-    run: (s, p) => updateNeighbor(s, p.address!, (neighbor) => ({ ...requireNeighbor(neighbor), routeReflectorClient: true })),
+    run: (s, p) => {
+      if (s.routerCtx?.addressFamily === "ipv6-unicast") {
+        updateIpv6Neighbor(s, p.address!, (ipv6) => ({ ...ipv6, routeReflectorClient: true }));
+        return;
+      }
+      updateNeighbor(s, p.address!, (neighbor) => ({ ...requireNeighbor(neighbor), routeReflectorClient: true }));
+    },
   },
   {
     pattern: "neighbor {address} send-community", modes: ["config-router"], device: "ospf",
-    run: (s, p) => updateNeighbor(s, p.address!, (neighbor) => ({ ...requireNeighbor(neighbor), sendCommunityStandard: true })),
+    run: (s, p) => {
+      if (s.routerCtx?.addressFamily === "ipv6-unicast") {
+        updateIpv6Neighbor(s, p.address!, (ipv6) => ({ ...ipv6, sendCommunityStandard: true }));
+        return;
+      }
+      updateNeighbor(s, p.address!, (neighbor) => ({ ...requireNeighbor(neighbor), sendCommunityStandard: true }));
+    },
+  },
+  {
+    pattern: "neighbor {address} next-hop-self", modes: ["config-router"], device: "ospf",
+    run: (s, p) => {
+      if (s.routerCtx?.addressFamily === "ipv6-unicast") {
+        updateIpv6Neighbor(s, p.address!, (ipv6) => ({ ...ipv6, nextHopSelf: true }));
+        return;
+      }
+      updateNeighbor(s, p.address!, (neighbor) => ({ ...requireNeighbor(neighbor), nextHopSelf: true }));
+    },
+  },
+  {
+    pattern: "network {prefix}", usage: "network <prefix>/<length>",
+    modes: ["config-router"], device: "ospf",
+    run: (s, p) => {
+      requireAddressFamily(s, "ipv6-unicast");
+      const { network, prefixLength: length } = parseIpv6Prefix(p.prefix!);
+      updateBgp(s, (configuration) => ({
+        ...configuration,
+        ipv6Networks: [
+          ...(configuration.ipv6Networks ?? []).filter((entry) => entry.network !== network || entry.prefixLength !== length),
+          { network, prefixLength: length },
+        ],
+      }));
+    },
+  },
+  {
+    pattern: "no network {prefix}", modes: ["config-router"], device: "ospf",
+    run: (s, p) => {
+      requireAddressFamily(s, "ipv6-unicast");
+      const { network, prefixLength: length } = parseIpv6Prefix(p.prefix!);
+      updateBgp(s, (configuration) => ({
+        ...configuration,
+        ipv6Networks: (configuration.ipv6Networks ?? [])
+          .filter((entry) => entry.network !== network || entry.prefixLength !== length),
+      }));
+    },
   },
   {
     pattern: "neighbor {address} send-community both", modes: ["config-router"], device: "ospf",
@@ -406,29 +567,36 @@ export const bgpCommands: CommandSpec[] = [
     }),
   },
   {
-    pattern: "neighbor {address} next-hop-self", modes: ["config-router"], device: "ospf",
-    run: (s, p) => updateNeighbor(s, p.address!, (neighbor) => {
-      if (!neighbor) throw new ValidationError("Configure neighbor remote-as first.");
-      return { ...neighbor, nextHopSelf: true };
-    }),
-  },
-  {
+    // Inside `address-family ipv6 unicast` a policy binding belongs to that
+    // family; everywhere else it keeps its pre-M10.13 IPv4 meaning.
     pattern: "neighbor {address} prefix-list {name} {direction}", modes: ["config-router"], device: "ospf",
-    run: (s, p) => updateNeighbor(s, p.address!, (neighbor) => {
-      if (!neighbor) throw new ValidationError("Configure neighbor remote-as first.");
-      if (p.direction === "in") return { ...neighbor, prefixListIn: p.name };
-      if (p.direction === "out") return { ...neighbor, prefixListOut: p.name };
-      throw new ValidationError("Direction must be in or out.");
-    }),
+    run: (s, p) => {
+      const direction = parseDirection(p.direction);
+      if (s.routerCtx?.addressFamily === "ipv6-unicast") {
+        updateIpv6Neighbor(s, p.address!, (ipv6) => direction === "in"
+          ? { ...ipv6, prefixListIn: p.name }
+          : { ...ipv6, prefixListOut: p.name });
+        return;
+      }
+      updateNeighbor(s, p.address!, (neighbor) => direction === "in"
+        ? { ...requireNeighbor(neighbor), prefixListIn: p.name }
+        : { ...requireNeighbor(neighbor), prefixListOut: p.name });
+    },
   },
   {
     pattern: "neighbor {address} route-map {name} {direction}", modes: ["config-router"], device: "ospf",
-    run: (s, p) => updateNeighbor(s, p.address!, (neighbor) => {
-      if (!neighbor) throw new ValidationError("Configure neighbor remote-as first.");
-      if (p.direction === "in") return { ...neighbor, routeMapIn: p.name };
-      if (p.direction === "out") return { ...neighbor, routeMapOut: p.name };
-      throw new ValidationError("Direction must be in or out.");
-    }),
+    run: (s, p) => {
+      const direction = parseDirection(p.direction);
+      if (s.routerCtx?.addressFamily === "ipv6-unicast") {
+        updateIpv6Neighbor(s, p.address!, (ipv6) => direction === "in"
+          ? { ...ipv6, routeMapIn: p.name }
+          : { ...ipv6, routeMapOut: p.name });
+        return;
+      }
+      updateNeighbor(s, p.address!, (neighbor) => direction === "in"
+        ? { ...requireNeighbor(neighbor), routeMapIn: p.name }
+        : { ...requireNeighbor(neighbor), routeMapOut: p.name });
+    },
   },
   {
     pattern: "network {network} mask {mask}", modes: ["config-router"], device: "ospf",
@@ -453,6 +621,26 @@ export const bgpCommands: CommandSpec[] = [
     run: setPrefixListEntry,
   },
   {
+    // IPv6 has no wildcard-mask form, so the entry is prefix-only with the
+    // same ge/le window rule the IPv4 list uses.
+    pattern: "ipv6 prefix-list {name} seq {sequence} {action} {prefix} ge {ge} le {le}",
+    usage: "ipv6 prefix-list <name> seq <n> permit|deny <prefix>/<length> [ge <n>] [le <n>]",
+    modes: ["config"], device: "ospf",
+    run: setIpv6PrefixListEntry,
+  },
+  {
+    pattern: "ipv6 prefix-list {name} seq {sequence} {action} {prefix} ge {ge}", modes: ["config"], device: "ospf",
+    run: setIpv6PrefixListEntry,
+  },
+  {
+    pattern: "ipv6 prefix-list {name} seq {sequence} {action} {prefix} le {le}", modes: ["config"], device: "ospf",
+    run: setIpv6PrefixListEntry,
+  },
+  {
+    pattern: "ipv6 prefix-list {name} seq {sequence} {action} {prefix}", modes: ["config"], device: "ospf",
+    run: setIpv6PrefixListEntry,
+  },
+  {
     pattern: "match neighbor {address}", modes: ["config-route-map"], device: "ospf",
     run: (s, p) => updateRouteMap(s, (sequence) => ({ ...sequence, match: { ...sequence.match, neighbor: parseIpv4(p.address!) } })),
   },
@@ -470,6 +658,10 @@ export const bgpCommands: CommandSpec[] = [
   {
     pattern: "match ip address prefix-list {name}", modes: ["config-route-map"], device: "ospf",
     run: (s, p) => updateRouteMap(s, (sequence) => ({ ...sequence, match: { ...sequence.match, prefixListIds: [p.name!] } })),
+  },
+  {
+    pattern: "match ipv6 address prefix-list {name}", modes: ["config-route-map"], device: "ospf",
+    run: (s, p) => updateRouteMap(s, (sequence) => ({ ...sequence, match: { ...sequence.match, ipv6PrefixListIds: [p.name!] } })),
   },
   {
     pattern: "match route-type {type}", usage: "match route-type local|ebgp|ibgp",
@@ -668,6 +860,96 @@ export const bgpCommands: CommandSpec[] = [
         route.clusterList.length ? `    Cluster list: ${route.clusterList.join(" ")}` : "",
       ].filter(Boolean).join("\n")).join("\n");
     },
+  },
+  {
+    pattern: "show bgp ipv6 unicast summary", modes: ["exec", "privileged"], device: "ospf",
+    run: (s) => {
+      const device = deviceOf(s);
+      const configuration = device.bgp.configurationSnapshot();
+      if (!configuration) return "% BGP is not running.";
+      const peers = device.bgp.summaries().filter((peer) => peer.addressFamilies.includes("ipv6-unicast"));
+      if (!peers.length) return "% No IPv6 unicast neighbors activated.";
+      return [
+        `BGP router identifier ${configuration.routerId ?? "unassigned"}, local AS number ${configuration.localAs}`,
+        table(["Neighbor", "V", "AS", "State/PfxRcd", "MsgRcvd", "MsgSent"], peers.map((peer) => [
+          peer.address, "4", String(peer.remoteAs),
+          peer.state === "established" ? String(device.bgp.adjRibInEntries(peer.address, "ipv6-unicast").length) : peer.state,
+          String(peer.messagesReceived), String(peer.messagesSent),
+        ])),
+      ].join("\n");
+    },
+  },
+  {
+    pattern: "show bgp ipv6 unicast neighbors", modes: ["exec", "privileged"], device: "ospf",
+    run: (s) => {
+      const device = deviceOf(s);
+      const configuration = device.bgp.configurationSnapshot();
+      const peers = device.bgp.summaries().filter((peer) => peer.addressFamilies.includes("ipv6-unicast"));
+      if (!peers.length) return "% No IPv6 unicast neighbors activated.";
+      return peers.map((peer) => {
+        const neighbor = configuration?.neighbors?.find((entry) => entry.address === peer.address);
+        return [
+          `BGP neighbor is ${peer.address}, remote AS ${peer.remoteAs}`,
+          `  BGP state = ${peer.state}`,
+          `  Address families: ${peer.addressFamilies.join(", ")}`,
+          neighbor?.ipv6?.routeReflectorClient ? `  Route-Reflector Client, cluster ID ${device.bgp.clusterIdentity}` : "",
+          `  Community attribute sent: ${neighbor?.ipv6?.sendCommunityStandard ? "standard" : "none"}`,
+          `  Messages: sent ${peer.messagesSent}, received ${peer.messagesReceived}`,
+          peer.lastError ? `  Last error: ${peer.lastError}` : "",
+        ].filter(Boolean).join("\n");
+      }).join("\n\n");
+    },
+  },
+  {
+    pattern: "show bgp ipv6 unicast {prefix}", modes: ["exec", "privileged"], device: "ospf",
+    run: (s, p) => {
+      const { network, prefixLength: length } = parseIpv6Prefix(p.prefix!);
+      const routes = deviceOf(s).bgp.routes("ipv6-unicast")
+        .filter((entry) => entry.network === network && entry.prefixLength === length);
+      if (!routes.length) return `% Network ${p.prefix} not in BGP table.`;
+      return routes.map((route) => [
+        `${route.best ? ">" : " "} ${route.nextHop} ${route.localPreference} ${route.weight} ${route.asPath.join(" ")} ${route.origin}`,
+        route.communities.length ? `    Community: ${route.communities.join(" ")}` : "",
+        route.originatorId ? `    Originator: ${route.originatorId}` : "",
+        route.clusterList.length ? `    Cluster list: ${route.clusterList.join(" ")}` : "",
+      ].filter(Boolean).join("\n")).join("\n");
+    },
+  },
+  {
+    pattern: "show bgp ipv6 unicast", modes: ["exec", "privileged"], device: "ospf",
+    run: (s) => {
+      const device = deviceOf(s);
+      const configuration = device.bgp.configurationSnapshot();
+      if (!configuration) return "% BGP is not running.";
+      const rows = device.bgp.routes("ipv6-unicast");
+      if (!rows.length) return `BGP IPv6 unicast table is empty, local router ID ${configuration.routerId ?? "unassigned"}`;
+      return [
+        `BGP table, local router ID ${configuration.routerId ?? "unassigned"}, local AS ${configuration.localAs}`,
+        table(["Status", "Network", "Next Hop", "Weight", "LocPrf", "Communities", "Path"], rows.map((route) => [
+          `${route.valid ? "*" : " "}${route.best ? ">" : " "}`,
+          `${route.network}/${route.prefixLength}`,
+          route.nextHop,
+          String(route.weight),
+          String(route.localPreference),
+          route.communities.join(" ") || "—",
+          routeText(route),
+        ])),
+      ].join("\n");
+    },
+  },
+  {
+    pattern: "show ipv6 route bgp", modes: ["exec", "privileged"], device: "ospf",
+    run: (s) => deviceOf(s).ipv6RoutingTable().filter((route) => route.kind === "bgp").map((route) =>
+      `B    ${route.network}/${route.prefixLength} [${route.administrativeDistance}/${route.metric}] via ${route.viaIp}, ${route.egressName}`)
+      .join("\n") || "% No BGP routes installed.",
+  },
+  {
+    pattern: "show ipv6 prefix-list", modes: ["exec", "privileged"], device: "ospf",
+    run: (s) => deviceOf(s).bgp.routingPolicy.ipv6PrefixListConfigurations().flatMap((list) => [
+      `ipv6 prefix-list ${list.id}: ${list.entries.length} entries`,
+      ...list.entries.map((entry) => ` seq ${entry.sequence} ${entry.action} ${entry.prefix}/${entry.prefixLength}`
+        + `${entry.ge === undefined ? "" : ` ge ${entry.ge}`}${entry.le === undefined ? "" : ` le ${entry.le}`}`),
+    ]).join("\n") || "% No prefix-lists configured.",
   },
   {
     pattern: "show ip route bgp", modes: ["exec", "privileged"], device: "ospf",

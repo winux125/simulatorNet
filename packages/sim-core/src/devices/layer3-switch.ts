@@ -3,6 +3,7 @@ import { EthernetInterface } from "../net/interface";
 import { ipToInt, type Ipv4 } from "../util/ipv4";
 import type { Ipv6 } from "../util/ipv6";
 import { isIpv6Multicast } from "../util/ipv6";
+import type { IpAddress } from "../util/ip-address";
 import type { Dhcpv6PoolConfig } from "../protocols/dhcpv6";
 import type { Mac } from "../util/mac";
 import { normalizeMac } from "../util/mac";
@@ -167,6 +168,24 @@ export class Layer3Switch extends L2Switch {
   get bgp(): Router["bgp"] {
     this.syncRoutingPlane();
     return this.routingPlane.bgp;
+  }
+
+  /**
+   * A BGP peering is a real path, so reachability and the exact-route rule are
+   * answered by the routed plane rather than re-derived by a caller.
+   */
+  bgpRouteReachable(address: IpAddress): boolean {
+    this.syncRoutingPlane();
+    return this.routingPlane.bgpRouteReachable(address);
+  }
+
+  bgpExactRouteExists(
+    network: IpAddress,
+    prefixLength: number,
+    family: "ipv4-unicast" | "ipv6-unicast" = "ipv4-unicast",
+  ): boolean {
+    this.syncRoutingPlane();
+    return this.routingPlane.bgpExactRouteExists(network, prefixLength, family);
   }
 
   addStaticRoute(network: Ipv4, mask: Ipv4 | number, nextHop: Ipv4): void {

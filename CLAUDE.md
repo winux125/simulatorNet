@@ -246,10 +246,21 @@ link, never a cable workflow. NAT-T is not modelled. See `docs/vpn-tunnels.md`.
 
 ### BGP and multi-AS routing
 
-BGP is an IPv4-unicast control-plane process for Router and L3 Switch with
-`ip routing`; Firewall and Cloud / ISP do not speak BGP. It uses the shared
-simulated TCP stack on port 179, so reachability, ACL/firewall policy and link
-state remain part of the session. Structured OPEN, KEEPALIVE, UPDATE and
+BGP is a control-plane process for Router and L3 Switch with `ip routing`;
+Firewall and Cloud / ISP do not speak BGP. It uses the shared simulated TCP
+stack on port 179, so reachability, ACL/firewall policy and link state remain
+part of the session.
+
+There is **one** BGP process, one FSM and one TCP session per neighbor; a
+session carries several **address families** — `ipv4-unicast`, `ipv6-unicast`,
+`vpnv4-unicast`, `vpnv6-unicast`. Only the RIBs are per family. Do not fork the
+FSM, the policy engine or the best-path comparator for a new family. A neighbor
+address may be IPv4 or IPv6, and an IPv6 peering depends on real IPv6
+reachability, NDP, interface state, IPv6 ACLs and TCP/179 — never a direct call
+between devices. IPv4 unicast stays implicit on an IPv4-transport neighbor so a
+pre-M10.13 document is unchanged; every other family is activated explicitly.
+An `ipv6 prefix-list` is prefix-only with the same `ge`/`le` window and never a
+wildcard mask. Aggregation stays IPv4-only by decision, not by omission. Structured OPEN, KEEPALIVE, UPDATE and
 NOTIFICATION messages run through a bounded activity window: Auto and verifier
 execution must always drain, while explicit virtual-time advancement can expire
 the Hold timer.
@@ -284,13 +295,14 @@ An **aggregate** exists only while a contributing more-specific path does.
 forwarding table. `default-originate` is per neighbor and is never installed
 locally. Soft reevaluation re-runs policy without resetting TCP.
 
-`LabDocument` stores the BGP process, peers, exact network statements, cluster
-ID, route-reflector-client and send-community flags, default-originate,
-aggregates, prefix lists, community lists, AS-path lists, route maps and
-bindings. It must never store TCP/FSM state, learned RIBs, `ORIGINATOR_ID` or
-`CLUSTER_LIST` state, reflected-route flags, communities learned through BGP,
-aggregate contribution, suppressed routes, message counters, policy counters or
-browser execution mode. The verifier rebuilds these from structured
+`LabDocument` stores the BGP process, peers, exact network statements (IPv4 and
+IPv6), cluster ID, per-family activation and neighbor policy blocks,
+route-reflector-client and send-community flags, default-originate, aggregates,
+prefix lists, IPv6 prefix lists, community lists, AS-path lists, route maps and
+bindings. It must never store TCP/FSM state, learned RIBs of any family,
+`ORIGINATOR_ID` or `CLUSTER_LIST` state, reflected-route flags, communities
+learned through BGP, aggregate contribution, suppressed routes, message
+counters, policy counters or browser execution mode. The verifier rebuilds these from structured
 configuration and ignores client-provided routes, trace and score. See
 `docs/routing-bgp.md`.
 
@@ -596,12 +608,27 @@ MPLS, LDP and VRF/L3VPN are Router-only capabilities. MPLS endpoints remain
 ordinary physical topology links; labels and logical VPN relations never
 become cables. The global RIB and every VRF RIB are explicit routing contexts.
 P routers must not learn customer prefixes. LDP distributes only connected and
-OSPF core FECs; MP-BGP distributes customer VPNv4 NLRI with RD/RT and a
-deterministic per-VRF label.
+OSPF core FECs; MP-BGP distributes customer VPNv4/VPNv6 NLRI with RD/RT and a
+deterministic label.
+
+An MPLS payload is `IPv4Packet | IPv6Packet`. There is one forwarding engine and
+one LFIB — do not add an MPLSv6 engine. The LDP core stays IPv4: PE/P loopbacks
+and every FEC are IPv4, and the outer transport label resolves the remote PE's
+IPv4 loopback while the inner payload may be IPv6. A P router reads its LFIB
+only; it performs no customer IPv6 lookup and holds no customer IPv6 route.
+
+Each VRF carries a separate IPv6 table behind an explicit `address-family
+ipv6`. Every lookup takes an explicit `RoutingContext` and there is **no**
+fallback from a missing VRF route to the global IPv6 table. Overlapping IPv6
+prefixes across VRFs are legal; duplicates inside one VRF are not. A VPN label
+is allocated **per VRF and address family**, so IPv4 and IPv6 delivery are
+explicitly separate; the VPNv6 transport next hop is the PE's IPv4 loopback, a
+documented educational simplification. Manual inter-VRF leaking is not modelled.
 
 Persist only configuration: MPLS-enabled interfaces, LDP router-ID source,
-VRF/RD/RT, VRF membership and static routes, redistribution flags and VPNv4
-neighbor settings. LFIB, LDP state/bindings, VPNv4 RIB and allocated labels are
+VRF/RD/RT, VRF membership, IPv4 and IPv6 VRF static routes, the VRF IPv6
+address-family flag, redistribution flags and VPNv4/VPNv6 neighbor settings.
+LFIB, LDP state/bindings, VPNv4/VPNv6 RIBs, allocated labels and NDP state are
 runtime-only and are rebuilt by both browser worker and verifier. See
 `docs/mpls-l3vpn.md`.
 

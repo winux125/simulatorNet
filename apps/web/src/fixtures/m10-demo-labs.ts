@@ -9,6 +9,7 @@ import { QOS_DEMO_LABS } from "./qos-demo-labs";
 import { VPN_DEMO_LABS } from "./vpn-demo-labs";
 import { BGP_DEMO_LABS } from "./bgp-demo-labs";
 import { MPLS_DEMO_LABS } from "./mpls-demo-labs";
+import { MBGP_IPV6_DEMO_LABS } from "./mbgp-ipv6-demo-labs";
 import { ALL_DEVICES_ICON_DEMO } from "./icon-profile-demo";
 
 function ports(prefix: string, count: number): Array<{ id: string }> {
@@ -331,6 +332,8 @@ export const DEMO_LABS = [
   ...BGP_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
   // M10.11 deterministic MPLS, LDP and MP-BGP Layer 3 VPN.
   ...MPLS_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
+  // M10.13 MP-BGP IPv6 unicast and MPLS VPNv6.
+  ...MBGP_IPV6_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
 ] as const;
 
 export type DemoLabId = (typeof DEMO_LABS)[number]["id"];

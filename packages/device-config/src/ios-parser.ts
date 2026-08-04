@@ -17,6 +17,7 @@ import {
   type LdpConfig,
   type AsPathListConfig,
   type CommunityListConfig,
+  type Ipv6PrefixListConfig,
   type PrefixListConfig,
   type RouteMapConfig,
   type RouteMapSequenceConfig,
@@ -177,6 +178,7 @@ export interface ImportedDeviceConfiguration {
   ldp?: LdpConfig;
   vrfs: VrfConfig[];
   prefixLists: PrefixListConfig[];
+  ipv6PrefixLists: Ipv6PrefixListConfig[];
   routeMaps: RouteMapConfig[];
   communityLists: CommunityListConfig[];
   asPathLists: AsPathListConfig[];
@@ -207,6 +209,19 @@ function ipv6Cidr(value: string | undefined): { address: string; prefixLength: n
   if (!parsed.success) return undefined;
   const slash = parsed.data.lastIndexOf("/");
   return { address: parsed.data.slice(0, slash), prefixLength: Number(parsed.data.slice(slash + 1)) };
+}
+
+function isIpv6Text(value: string): boolean {
+  return Ipv6Schema.safeParse(value).success;
+}
+
+/**
+ * Lower-cased text only. This package stays free of the engine, so the full
+ * canonical form is applied where it belongs: `BgpProcess.configure` and the
+ * `LabDocument` canonicalizer.
+ */
+function normalizeIpv6Text(value: string): string {
+  return value.toLowerCase();
 }
 
 function ipv6Matcher(tokens: string[], start: number) {
@@ -562,6 +577,7 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     ipv6Acls: [],
     ipv6AclBindings: [],
     prefixLists: [],
+    ipv6PrefixLists: [],
     routeMaps: [],
     communityLists: [],
     asPathLists: [],
@@ -583,7 +599,13 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
   let inOspf = false;
   let inOspfv3 = false;
   let inBgp = false;
-  let currentBgpAddressFamily: { type: "vpnv4" } | { type: "ipv4-vrf"; vrfId: string } | undefined;
+  let currentBgpAddressFamily:
+    | { type: "vpnv4" }
+    | { type: "vpnv6" }
+    | { type: "ipv6-unicast" }
+    | { type: "ipv4-vrf"; vrfId: string }
+    | { type: "ipv6-vrf"; vrfId: string }
+    | undefined;
   let currentVrf: VrfConfig | undefined;
   let currentRouteMap: RouteMapSequenceConfig | undefined;
   let currentRouteMapId: string | undefined;
@@ -905,6 +927,32 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       } else unparsed(line);
       continue;
     }
+    if (head === "ipv6" && tokens[1]?.toLowerCase() === "prefix-list" && tokens[2]
+      && tokens[3]?.toLowerCase() === "seq" && /^\d+$/u.test(tokens[4] ?? "")
+      && (tokens[5]?.toLowerCase() === "permit" || tokens[5]?.toLowerCase() === "deny")) {
+      const prefix = ipv6Cidr(tokens[6]);
+      const sequence = Number(tokens[4]);
+      const geIndex = tokens.findIndex((token) => token.toLowerCase() === "ge");
+      const leIndex = tokens.findIndex((token) => token.toLowerCase() === "le");
+      const ge = geIndex >= 0 ? Number(tokens[geIndex + 1]) : undefined;
+      const le = leIndex >= 0 ? Number(tokens[leIndex + 1]) : undefined;
+      const bounded = (value: number | undefined) => value === undefined
+        || (Number.isInteger(value) && value >= 0 && value <= 128);
+      if (prefix && bounded(ge) && bounded(le)) {
+        const list = result.ipv6PrefixLists.find((entry) => entry.id === tokens[2]) ?? { id: tokens[2]!, entries: [] };
+        if (!result.ipv6PrefixLists.includes(list)) result.ipv6PrefixLists.push(list);
+        list.entries.push({
+          sequence,
+          action: tokens[5]!.toLowerCase() as "permit" | "deny",
+          prefix: prefix.address,
+          prefixLength: prefix.prefixLength,
+          ge,
+          le,
+        });
+        applied(line);
+      } else unparsed(line);
+      continue;
+    }
     if (head === "ip" && tokens[1]?.toLowerCase() === "community-list" && tokens[2]?.toLowerCase() === "standard"
       && tokens[3] && (tokens[4]?.toLowerCase() === "permit" || tokens[4]?.toLowerCase() === "deny")) {
       const communities = tokens.slice(5).map((value) => canonicalCommunity(value));
@@ -956,6 +1004,11 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       continue;
     }
     if (currentRouteMap && currentRouteMapId && isIndented) {
+      if (head === "match" && tokens[1]?.toLowerCase() === "ipv6" && tokens[2]?.toLowerCase() === "address"
+        && tokens[3]?.toLowerCase() === "prefix-list" && tokens.length > 4) {
+        currentRouteMap.match = { ...currentRouteMap.match, ipv6PrefixListIds: tokens.slice(4) };
+        applied(line); continue;
+      }
       if (head === "match" && tokens[1]?.toLowerCase() === "ip" && tokens[2]?.toLowerCase() === "address"
         && tokens[3]?.toLowerCase() === "prefix-list" && tokens[4]) {
         currentRouteMap.match = { ...currentRouteMap.match, prefixListIds: tokens.slice(4) };
@@ -1056,15 +1109,40 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     if (head === "router") { inOspf = false; current = undefined; unparsed(line); continue; }
 
     if (inBgp && result.bgp && isIndented) {
-      if (head === "address-family" && tokens[1]?.toLowerCase() === "vpnv4") {
-        currentBgpAddressFamily = { type: "vpnv4" };
+      // A sub-address-family we do not model — `labeled-unicast`, `multicast`,
+      // `l2vpn evpn` — must never be mistaken for the plain family it starts
+      // with, so each form is matched on its exact token count.
+      if (head === "address-family" && (tokens[1]?.toLowerCase() === "vpnv4" || tokens[1]?.toLowerCase() === "vpnv6")) {
+        const unicast = tokens.length === 2 || (tokens.length === 3 && tokens[2]?.toLowerCase() === "unicast");
+        if (!unicast) { unparsed(line); continue; }
+        currentBgpAddressFamily = { type: tokens[1]!.toLowerCase() === "vpnv4" ? "vpnv4" : "vpnv6" };
+        applied(line);
+        continue;
+      }
+      if (head === "address-family" && tokens[1]?.toLowerCase() === "ipv6" && tokens[2]?.toLowerCase() === "unicast") {
+        if (tokens.length !== 3) { unparsed(line); continue; }
+        currentBgpAddressFamily = { type: "ipv6-unicast" };
         applied(line);
         continue;
       }
       if (head === "address-family" && tokens[1]?.toLowerCase() === "ipv4" && tokens[2]?.toLowerCase() === "vrf" && tokens[3]) {
+        if (tokens.length !== 4) { unparsed(line); continue; }
         currentBgpAddressFamily = { type: "ipv4-vrf", vrfId: tokens[3] };
         if (!result.bgp.vrfAddressFamilies.some((family) => family.vrfId === tokens[3])) {
           result.bgp.vrfAddressFamilies.push({ vrfId: tokens[3] });
+        }
+        applied(line);
+        continue;
+      }
+      if (head === "address-family" && tokens[1]?.toLowerCase() === "ipv6" && tokens[2]?.toLowerCase() === "vrf" && tokens[3]) {
+        if (tokens.length !== 4) { unparsed(line); continue; }
+        // Only a VRF that declares `address-family ipv6` can redistribute into
+        // VPNv6; anything else stays unparsed and is reported honestly.
+        const vrf = result.vrfs.find((entry) => entry.id === tokens[3] || entry.name === tokens[3]);
+        if (!vrf?.addressFamilyIpv6) { unparsed(line); continue; }
+        currentBgpAddressFamily = { type: "ipv6-vrf", vrfId: vrf.id };
+        if (!result.bgp.vrfAddressFamilies.some((family) => family.vrfId === vrf.id)) {
+          result.bgp.vrfAddressFamilies.push({ vrfId: vrf.id });
         }
         applied(line);
         continue;
@@ -1099,8 +1177,20 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
         ];
         applied(line); continue;
       }
-      if (head === "neighbor" && isIpv4(tokens[1])) {
-        const address = tokens[1];
+      if (currentBgpAddressFamily?.type === "ipv6-unicast" && head === "network") {
+        const prefix = ipv6Cidr(tokens[1]);
+        if (prefix) {
+          result.bgp.ipv6Networks = [
+            ...(result.bgp.ipv6Networks ?? []).filter((entry) =>
+              entry.network !== prefix.address || entry.prefixLength !== prefix.prefixLength),
+            { network: prefix.address, prefixLength: prefix.prefixLength },
+          ];
+          applied(line);
+        } else unparsed(line);
+        continue;
+      }
+      if (head === "neighbor" && (isIpv4(tokens[1]) || isIpv6Text(tokens[1] ?? ""))) {
+        const address = isIpv4(tokens[1]) ? tokens[1]! : normalizeIpv6Text(tokens[1]!);
         const existing = result.bgp.neighbors.find((neighbor) => neighbor.address === address);
         if (tokens[2]?.toLowerCase() === "remote-as" && /^\d+$/u.test(tokens[3] ?? "")) {
           const remoteAs = Number(tokens[3]);
@@ -1110,10 +1200,36 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
           applied(line); continue;
         }
         if (!existing) { unparsed(line); continue; }
+        // Inside `address-family ipv6 unicast` every neighbor setting belongs
+        // to that family's own block rather than to the flat IPv4 fields.
+        if (currentBgpAddressFamily?.type === "ipv6-unicast") {
+          const ipv6 = { ...(existing.ipv6 ?? {}) };
+          const keyword = tokens[2]?.toLowerCase();
+          if (keyword === "activate") ipv6.activated = true;
+          else if (keyword === "next-hop-self" && tokens.length === 3) ipv6.nextHopSelf = true;
+          else if (keyword === "route-reflector-client" && tokens.length === 3) ipv6.routeReflectorClient = true;
+          else if (keyword === "send-community" && tokens.length === 3) ipv6.sendCommunityStandard = true;
+          else if (keyword === "default-originate" && tokens.length === 3) ipv6.defaultOriginate = true;
+          else if (keyword === "default-originate" && tokens[3]?.toLowerCase() === "route-map" && tokens[4]) {
+            ipv6.defaultOriginate = true;
+            ipv6.defaultOriginateRouteMap = tokens[4];
+          } else if ((keyword === "prefix-list" || keyword === "route-map")
+            && tokens[3] && (tokens[4]?.toLowerCase() === "in" || tokens[4]?.toLowerCase() === "out")) {
+            const key = `${keyword === "prefix-list" ? "prefixList" : "routeMap"}${tokens[4]!.toLowerCase() === "in" ? "In" : "Out"}` as
+              "prefixListIn" | "prefixListOut" | "routeMapIn" | "routeMapOut";
+            ipv6[key] = tokens[3];
+          } else { unparsed(line); continue; }
+          existing.ipv6 = ipv6;
+          applied(line); continue;
+        }
+        if (currentBgpAddressFamily?.type === "vpnv6" && tokens[2]?.toLowerCase() === "activate") {
+          existing.vpnv6Activated = true; applied(line); continue;
+        }
         if (currentBgpAddressFamily?.type === "vpnv4" && tokens[2]?.toLowerCase() === "activate") {
           existing.vpnv4Activated = true; applied(line); continue;
         }
-        if (currentBgpAddressFamily?.type === "vpnv4" && tokens[2]?.toLowerCase() === "send-community" && tokens[3]?.toLowerCase() === "extended") {
+        if ((currentBgpAddressFamily?.type === "vpnv4" || currentBgpAddressFamily?.type === "vpnv6")
+          && tokens[2]?.toLowerCase() === "send-community" && tokens[3]?.toLowerCase() === "extended") {
           existing.sendCommunityExtended = true; applied(line); continue;
         }
         if (tokens[2]?.toLowerCase() === "description" && tokens[3]) {
@@ -1150,11 +1266,16 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
           existing[key] = tokens[3]; applied(line); continue;
         }
       }
-      if (currentBgpAddressFamily?.type === "ipv4-vrf" && head === "redistribute"
+      if ((currentBgpAddressFamily?.type === "ipv4-vrf" || currentBgpAddressFamily?.type === "ipv6-vrf")
+        && head === "redistribute"
         && (tokens[1]?.toLowerCase() === "connected" || tokens[1]?.toLowerCase() === "static")) {
         const vrfId = currentBgpAddressFamily.vrfId;
         const family = result.bgp.vrfAddressFamilies.find((entry) => entry.vrfId === vrfId)!;
-        if (tokens[1]!.toLowerCase() === "connected") family.redistributeConnected = true;
+        const connected = tokens[1]!.toLowerCase() === "connected";
+        if (currentBgpAddressFamily.type === "ipv6-vrf") {
+          if (connected) family.redistributeConnectedIpv6 = true;
+          else family.redistributeStaticIpv6 = true;
+        } else if (connected) family.redistributeConnected = true;
         else family.redistributeStatic = true;
         applied(line);
         continue;

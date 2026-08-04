@@ -61,6 +61,8 @@ import {
   type Mac,
   type SnmpOperation,
   type TraceEntry,
+  type BgpNeighborSummary,
+  type BgpUnicastAddressFamily,
 } from "@sim/sim-core";
 import { SimulationWorkerError, serializeWorkerError } from "./errors";
 import type {
@@ -96,6 +98,7 @@ import type {
   VpnTunnelView,
   LinkPerformanceView,
   BgpStateView,
+  BgpUnicastFamilyView,
   MplsL3VpnView,
   Ospfv3View,
   RemoteSessionsView,
@@ -452,6 +455,8 @@ export class SimulationWorkerRuntime {
       case "GET_BGP_AGGREGATES":
       case "GET_BGP_SUPPRESSED_ROUTES":
       case "GET_BGP_POLICY_COUNTERS":
+      case "GET_BGP_IPV6_TABLE":
+      case "GET_BGP_IPV6_NEIGHBORS":
         return this.bgpState(requireString(request, "deviceId"));
       case "SOFT_RESET_BGP_NEIGHBOR": {
         // Policy reevaluation only: the TCP session and the stored
@@ -482,6 +487,9 @@ export class SimulationWorkerRuntime {
       case "GET_VRF_ROUTES":
       case "GET_VPNV4_TABLE":
       case "GET_VPN_LABEL_BINDINGS":
+      case "GET_VRF_IPV6_ROUTES":
+      case "GET_VPNV6_TABLE":
+      case "GET_VPNV6_LABEL_BINDINGS":
         return this.mplsL3VpnState(requireString(request, "deviceId"));
       case "RESTART_LDP": {
         const deviceId = requireString(request, "deviceId");
@@ -1921,6 +1929,7 @@ export class SimulationWorkerRuntime {
         for (const problem of this.bgpPolicyProblems(device)) {
           warnings.push({ code: "bgp-policy", message: `${device.name} ${problem}`, deviceIds: [device.id] });
         }
+        warnings.push(...this.bgpIpv6Problems(device));
         for (const problem of device.qosProblems()) {
           warnings.push({ code: "qos-policy", message: problem.message, deviceIds: [device.id] });
         }
@@ -1958,6 +1967,7 @@ export class SimulationWorkerRuntime {
               deviceIds: [device.id],
             });
           }
+          warnings.push(...this.vpnv6Problems(device, bgp?.neighbors ?? [], summaries));
         }
         for (const iface of device.interfaces.values()) {
           const snapshot = iface.egress.snapshot();
@@ -2402,6 +2412,101 @@ export class SimulationWorkerRuntime {
     return problems;
   }
 
+  /**
+   * M10.13 IPv6 unicast problems. Everything here is derived from configuration
+   * plus current runtime state; nothing is stored, and a missing IPv6 route or
+   * an unactivated family is reported rather than silently ignored.
+   */
+  private bgpIpv6Problems(device: Router | Layer3Switch): HostNetworkWarning[] {
+    const configuration = device.bgp.configurationSnapshot();
+    if (!configuration) return [];
+    const warnings: HostNetworkWarning[] = [];
+    const summaries = new Map(device.bgp.summaries().map((entry) => [entry.address, entry]));
+    for (const neighbor of configuration.neighbors ?? []) {
+      const ipv6Transport = neighbor.address.includes(":");
+      const activated = ipv6Transport || neighbor.ipv6?.activated === true;
+      if (!activated) continue;
+      // An IPv6 peering is a real path: without an IPv6 route the TCP/179
+      // session can never leave Active, whatever the rest of the config says.
+      if (ipv6Transport && !device.bgpRouteReachable(neighbor.address)) {
+        warnings.push({
+          code: "bgp-ipv6-neighbor-unreachable",
+          message: `${device.name} has no IPv6 route to BGP neighbor ${neighbor.address}; the TCP/179 session cannot be established.`,
+          deviceIds: [device.id],
+        });
+      }
+      if (!ipv6Transport && !summaries.get(neighbor.address)?.addressFamilies.includes("ipv6-unicast")
+        && summaries.get(neighbor.address)?.state === "established") {
+        warnings.push({
+          code: "bgp-ipv6-address-family-inactive",
+          message: `${device.name} neighbor ${neighbor.address} is Established but IPv6 unicast is not activated on both ends.`,
+          deviceIds: [device.id],
+        });
+      }
+    }
+    // A `network` statement advertises only when an exact IPv6 route exists.
+    for (const network of configuration.ipv6Networks ?? []) {
+      if (device.bgpExactRouteExists(network.network, network.prefixLength, "ipv6-unicast")) continue;
+      warnings.push({
+        code: "bgp-ipv6-network-route-missing",
+        message: `${device.name} advertises IPv6 network ${network.network}/${network.prefixLength}, but no exact matching route exists locally.`,
+        deviceIds: [device.id],
+      });
+    }
+    return warnings;
+  }
+
+  /** Router-only VPNv6 problems: route targets, labels and overlapping prefixes. */
+  private vpnv6Problems(
+    device: Router,
+    neighbors: readonly { address: string; vpnv6Activated?: boolean; sendCommunityExtended?: boolean }[],
+    summaries: Map<string, BgpNeighborSummary>,
+  ): HostNetworkWarning[] {
+    const warnings: HostNetworkWarning[] = [];
+    for (const neighbor of neighbors) {
+      if (!neighbor.vpnv6Activated) continue;
+      if (!neighbor.sendCommunityExtended) warnings.push({
+        code: "vpnv6-extended-community-disabled",
+        message: `${device.name} VPNv6 neighbor ${neighbor.address} is not sending extended communities; route targets cannot be imported.`,
+        deviceIds: [device.id],
+      });
+      if (
+        summaries.get(neighbor.address)?.state === "established"
+        && device.ldp.outgoingLabelFor(`${neighbor.address}/32`) === undefined
+      ) warnings.push({
+        code: "l3vpn-transport-label-unavailable",
+        message: `${device.name} has VPNv6 control-plane reachability to ${neighbor.address}, but no LDP transport label.`,
+        deviceIds: [device.id],
+      });
+    }
+    const bindings = device.vpnLabelBindings();
+    for (const vrf of device.vrfConfigurations()) {
+      // A VRF that carries IPv6 routes but has no IPv6 VPN label cannot deliver
+      // a customer IPv6 packet, even while its control plane looks healthy.
+      const hasIpv6 = device.vrfIpv6RoutingTable(vrf.id).length > 0;
+      if (hasIpv6 && !bindings.some((entry) => entry.vrfId === vrf.id && entry.addressFamily === "ipv6")) {
+        warnings.push({
+          code: "vpnv6-label-unavailable",
+          message: `${device.name} VRF ${vrf.name} has IPv6 routes but no VPNv6 label; IPv6 traffic cannot be delivered over MPLS.`,
+          deviceIds: [device.id],
+        });
+      }
+      const seen = new Map<string, number>();
+      for (const route of device.vrfIpv6RoutingTable(vrf.id)) {
+        const key = `${route.network}/${route.prefixLength}`;
+        seen.set(key, (seen.get(key) ?? 0) + 1);
+      }
+      for (const [key, count] of seen) {
+        if (count > 1) warnings.push({
+          code: "vrf-overlapping-ipv6-prefix",
+          message: `${device.name} VRF ${vrf.name} holds ${count} routes for ${key}; the same prefix cannot be duplicated inside one VRF.`,
+          deviceIds: [device.id],
+        });
+      }
+    }
+    return warnings;
+  }
+
   private bgpState(deviceId: string): BgpStateView {
     const bgp = this.requireOspf(deviceId).bgp;
     const configuration = bgp.configurationSnapshot();
@@ -2415,6 +2520,9 @@ export class SimulationWorkerRuntime {
     for (const route of routes) {
       for (const community of route.communities) communities.set(community, (communities.get(community) ?? 0) + 1);
     }
+    const summaries = bgp.summaries();
+    const activeFamilies = new Set<string>();
+    for (const summary of summaries) for (const family of summary.addressFamilies) activeFamilies.add(family);
     return {
       deviceId,
       configuration: configuration === undefined ? undefined : {
@@ -2423,8 +2531,9 @@ export class SimulationWorkerRuntime {
         networks: [...(configuration.networks ?? [])],
         aggregates: configuration.aggregates === undefined ? undefined : [...configuration.aggregates],
         vrfAddressFamilies: [...(configuration.vrfAddressFamilies ?? [])],
+        ipv6Networks: configuration.ipv6Networks === undefined ? undefined : [...configuration.ipv6Networks],
       },
-      neighbors: bgp.summaries(),
+      neighbors: summaries,
       routes,
       adjRibIn: bgp.adjRibInEntries(),
       adjRibOut: bgp.adjRibOutEntries(),
@@ -2448,6 +2557,40 @@ export class SimulationWorkerRuntime {
       asPathLists: bgp.routingPolicy.asPathListConfigurations(),
       aggregates: bgp.aggregateSummaries(),
       suppressedRoutes: bgp.suppressedRoutes(),
+      ipv6Unicast: this.bgpFamilyView(bgp, summaries, "ipv6-unicast"),
+      // Ordered so the UI's family selector is stable regardless of which
+      // neighbor happened to negotiate first.
+      addressFamilies: (["ipv4-unicast", "ipv6-unicast"] as const).filter((family) => activeFamilies.has(family)),
+    };
+  }
+
+  /**
+   * One address family's RIBs. The FSM, the TCP session and the policy engine
+   * are shared: only the RIBs are per family, so this reads them rather than
+   * duplicating any BGP state.
+   */
+  private bgpFamilyView(
+    bgp: Router["bgp"],
+    summaries: BgpNeighborSummary[],
+    addressFamily: BgpUnicastAddressFamily,
+  ): BgpUnicastFamilyView {
+    const routes = bgp.routes(addressFamily);
+    const communities = new Map<string, number>();
+    for (const route of routes) {
+      for (const community of route.communities) communities.set(community, (communities.get(community) ?? 0) + 1);
+    }
+    return {
+      addressFamily,
+      routes,
+      adjRibIn: bgp.adjRibInEntries(undefined, addressFamily),
+      adjRibOut: bgp.adjRibOutEntries(undefined, addressFamily),
+      ribFailures: bgp.ribFailureSummaries(addressFamily),
+      neighbors: summaries
+        .filter((summary) => summary.addressFamilies.includes(addressFamily))
+        .map((summary) => summary.address),
+      communities: [...communities.entries()]
+        .map(([community, count]) => ({ community, routes: count }))
+        .sort((a, b) => a.community.localeCompare(b.community)),
     };
   }
 
@@ -2493,6 +2636,18 @@ export class SimulationWorkerRuntime {
         path: { ...route.path, asPath: [...route.path.asPath] },
       })),
       vpnLabelBindings: router.vpnLabelBindings().map((entry) => ({ ...entry })),
+      vrfIpv6Routes: Object.fromEntries(vrfs.map((vrf) => [
+        vrf.id,
+        router.vrfIpv6RoutingTable(vrf.id).map((route) => ({
+          ...route,
+          routeTargets: route.routeTargets ? [...route.routeTargets] : undefined,
+        })),
+      ])),
+      vpnv6Routes: router.bgp.vpnv6Routes().map((route) => ({
+        ...route,
+        routeTargets: [...route.routeTargets],
+        path: { ...route.path, asPath: [...route.path.asPath] },
+      })),
     };
   }
 

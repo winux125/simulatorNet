@@ -48,6 +48,16 @@ Counters are runtime-only. There is no hidden NDP/RA exception: explicitly
 blocking essential ICMPv6 can break neighbor discovery or autoconfiguration,
 and the runtime reports that likely cause.
 
+## IPv6 routing protocols
+
+Beyond static routes and OSPFv3, IPv6 prefixes also reach the routing table
+through MP-BGP. A BGP neighbor may use an IPv6 transport address, and one BGP
+session can carry IPv4 unicast, IPv6 unicast, VPNv4 and VPNv6 at the same time
+with separate RIBs per family. Inside a VRF, IPv6 gets its own table — never a
+fallback to the global one — so two customers may reuse the same prefix. See
+`docs/routing-bgp.md` for the address-family model and `docs/mpls-l3vpn.md` for
+VPNv6 over the IPv4 MPLS core.
+
 ## Integration boundary
 
 Schema-v1 `LabDocument` stores IPv6 configuration only: host mode and static
@@ -59,12 +69,15 @@ configuration/status requests; the main thread never mutates an `EndHost`.
 The verifier rebuilds the submitted document and supports `ipv6-address`,
 `ipv6-neighbor`, `slaac-address`, `dhcpv6-address`, `ipv6-route`,
 `ipv6-connectivity`, `ospfv3-neighbor`, `ospfv3-route`, `ipv6-acl-rule`,
-`ipv6-packet-permitted` and `ipv6-packet-denied`. It ignores browser runtime
-state and redacts hidden expectations from student results.
+`ipv6-packet-permitted` and `ipv6-packet-denied`, plus the M10.13 IPv6 BGP and
+VPNv6 checks documented in `docs/routing-bgp.md` and `docs/mpls-l3vpn.md`. It
+ignores browser runtime state and redacts hidden expectations from student
+results.
 
 Four explicit demos are available from Load Demo Lab: IPv6 Static LAN, SLAAC
-and Router Advertisement, DHCPv6 and DNS AAAA, and OSPFv3 and IPv6 ACL. They
-are never loaded automatically.
+and Router Advertisement, DHCPv6 and DNS AAAA, and OSPFv3 and IPv6 ACL; M10.13
+adds eBGP over IPv6, Dual-Stack BGP and VPNv6 Over MPLS. None is ever loaded
+automatically.
 
 Known limits include no IPv6 extension-header chains, fragmentation, IPsec,
 privacy/temporary addresses, MLD, DHCPv6 prefix delegation or relay, OSPFv3

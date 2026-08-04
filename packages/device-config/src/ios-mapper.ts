@@ -244,6 +244,9 @@ function bgpFrom(applied: ImportedDeviceConfiguration): BgpProcessConfig | undef
     ...applied.bgp,
     neighbors: [...applied.bgp.neighbors].sort((left, right) => left.address.localeCompare(right.address)),
     networks: [...applied.bgp.networks].sort((left, right) => left.network.localeCompare(right.network) || left.prefixLength - right.prefixLength),
+    ipv6Networks: applied.bgp.ipv6Networks === undefined
+      ? undefined
+      : [...applied.bgp.ipv6Networks].sort((left, right) => left.network.localeCompare(right.network) || left.prefixLength - right.prefixLength),
     aggregates: applied.bgp.aggregates === undefined
       ? undefined
       : [...applied.bgp.aggregates].sort((left, right) => left.prefix.localeCompare(right.prefix) || left.prefixLength - right.prefixLength),
@@ -402,6 +405,7 @@ export function buildDeviceConfigFromIos(
       discovery: discoveryFrom(applied),
       loopbacks: loopbacksFrom(applied),
       prefixLists: applied.prefixLists,
+      ipv6PrefixLists: applied.ipv6PrefixLists.length ? applied.ipv6PrefixLists : undefined,
       routeMaps: applied.routeMaps,
       communityLists: applied.communityLists.length ? applied.communityLists : undefined,
       asPathLists: applied.asPathLists.length ? applied.asPathLists : undefined,
@@ -480,6 +484,7 @@ export function buildDeviceConfigFromIos(
         ospfv3: ospfv3From(applied),
         bgp: bgpFrom(applied),
         prefixLists: applied.prefixLists,
+        ipv6PrefixLists: applied.ipv6PrefixLists.length ? applied.ipv6PrefixLists : undefined,
         routeMaps: applied.routeMaps,
         communityLists: applied.communityLists.length ? applied.communityLists : undefined,
         asPathLists: applied.asPathLists.length ? applied.asPathLists : undefined,

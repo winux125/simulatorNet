@@ -1188,6 +1188,116 @@ export const OverlappingPrefixIsolationGradingCheckSchema = CheckIdentitySchema.
   type: z.literal("overlapping-prefix-isolation"), deviceId: z.string().min(1), firstVrfId: z.string().min(1), secondVrfId: z.string().min(1), network: Ipv4Schema, prefixLength: z.number().int().min(0).max(32),
 }).strict();
 
+// --- M10.13 MP-BGP IPv6 unicast and MPLS VPNv6 ---------------------------
+
+const BgpIpv6PrefixExpectationSchema = z.object({
+  network: Ipv6Schema,
+  prefixLength: Ipv6PrefixLengthSchema,
+});
+
+export const BgpIpv6NeighborStateGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-ipv6-neighbor-state"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    /** The peer's transport address: an IPv6 session, or IPv6 over IPv4 transport. */
+    neighborAddress: IpAddressSchema,
+    expectedState: z.enum(["idle", "connect", "active", "open-sent", "open-confirm", "established"]),
+  }).strict(),
+}).strict();
+
+export const BgpIpv6RouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-ipv6-route"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    expectedNextHop: Ipv6Schema.optional(),
+    expected: z.enum(["present", "absent"]).default("present"),
+  }).merge(BgpIpv6PrefixExpectationSchema).strict(),
+}).strict();
+
+export const BgpIpv6BestPathGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-ipv6-best-path"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    expectedNeighborAddress: IpAddressSchema.optional(),
+    expectedAsPath: z.array(z.number().int().min(1).max(4_294_967_295)).optional(),
+  }).merge(BgpIpv6PrefixExpectationSchema).strict(),
+}).strict();
+
+export const Ipv6PrefixListEntryGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("ipv6-prefix-list-entry"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    prefixListId: z.string().min(1),
+    sequence: z.number().int().min(1),
+    expectedAction: z.enum(["permit", "deny"]),
+  }).strict(),
+}).strict();
+
+export const BgpIpv6PolicyResultGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("bgp-ipv6-policy-result"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    neighborAddress: IpAddressSchema,
+    direction: z.enum(["in", "out"]),
+    expected: z.enum(["permitted", "denied"]),
+  }).merge(BgpIpv6PrefixExpectationSchema).strict(),
+}).strict();
+
+/**
+ * A VPNv6 NLRI reached this PE with the expected RD. RD, route targets and the
+ * VPN label are hidden expected values: a student result never echoes them.
+ */
+export const Vpnv6RouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("vpnv6-route"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    routeDistinguisher: RouteDistinguisherSchema,
+    expectedRouteTarget: RouteTargetSchema.optional(),
+  }).merge(BgpIpv6PrefixExpectationSchema).strict(),
+}).strict();
+
+export const Vpnv6LabelGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("vpnv6-label"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    vrfId: z.string().min(1),
+    /** Optional: an exact label value is a hidden expectation when present. */
+    expectedLabel: z.number().int().min(16).max(1_048_575).optional(),
+  }).strict(),
+}).strict();
+
+export const VrfIpv6RouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("vrf-ipv6-route"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    vrfId: z.string().min(1),
+    expectedSource: z.enum(["connected", "static", "bgp-vpn"]).optional(),
+    expected: z.enum(["present", "absent"]).default("present"),
+  }).merge(BgpIpv6PrefixExpectationSchema).strict(),
+}).strict();
+
+export const Vpnv6ConnectivityGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("vpnv6-connectivity"),
+  configuration: z.object({
+    sourceDeviceId: z.string().min(1),
+    destinationIp: Ipv6Schema,
+    expected: z.enum(["success", "failure"]).default("success"),
+  }).strict(),
+}).strict();
+
+/**
+ * The same IPv6 prefix lives in two VRFs and stays separate. Both VRFs must
+ * hold it and the two entries must not resolve to the same next hop.
+ */
+export const OverlappingIpv6PrefixIsolationGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("overlapping-ipv6-prefix-isolation"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    firstVrfId: z.string().min(1),
+    secondVrfId: z.string().min(1),
+  }).merge(BgpIpv6PrefixExpectationSchema).strict(),
+}).strict();
+
 /**
  * `copy running-config startup-config` was actually run on this device.
  *
@@ -1236,6 +1346,16 @@ export const GradingCheckSchema = z.discriminatedUnion("type", [
   BgpAggregateGradingCheckSchema,
   BgpSpecificSuppressedGradingCheckSchema,
   BgpDefaultAdvertisedGradingCheckSchema,
+  BgpIpv6NeighborStateGradingCheckSchema,
+  BgpIpv6RouteGradingCheckSchema,
+  BgpIpv6BestPathGradingCheckSchema,
+  Ipv6PrefixListEntryGradingCheckSchema,
+  BgpIpv6PolicyResultGradingCheckSchema,
+  Vpnv6RouteGradingCheckSchema,
+  Vpnv6LabelGradingCheckSchema,
+  VrfIpv6RouteGradingCheckSchema,
+  Vpnv6ConnectivityGradingCheckSchema,
+  OverlappingIpv6PrefixIsolationGradingCheckSchema,
   ConfigurationSavedGradingCheckSchema,
   GreTunnelConfiguredGradingCheckSchema,
   GreTunnelOperationalGradingCheckSchema,

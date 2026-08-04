@@ -8,6 +8,7 @@ import type {
   VpnConfiguration,
   BgpProcessConfig,
   PrefixListConfig,
+  Ipv6PrefixListConfig,
   RouteMapConfig,
   CommunityListConfig,
   AsPathListConfig,
@@ -265,10 +266,12 @@ export function applyBgpConfiguration(
   routeMaps: readonly RouteMapConfig[] = [],
   communityLists: readonly CommunityListConfig[] = [],
   asPathLists: readonly AsPathListConfig[] = [],
+  ipv6PrefixLists: readonly Ipv6PrefixListConfig[] = [],
 ): void {
   // Reusable lists come first: a route map may reference any of them, and the
   // engine denies a route that names a list it cannot resolve.
   device.bgp.routingPolicy.setPrefixLists(prefixLists);
+  device.bgp.routingPolicy.setIpv6PrefixLists(ipv6PrefixLists);
   device.bgp.routingPolicy.setCommunityLists(communityLists as readonly CommunityList[]);
   device.bgp.routingPolicy.setAsPathLists(asPathLists as readonly AsPathList[]);
   device.bgp.routingPolicy.setRouteMaps(routeMaps);
@@ -417,6 +420,11 @@ export function serializeBgpConfiguration(device: Router | Layer3Switch): BgpPro
 
 export function serializePrefixLists(device: Router | Layer3Switch): PrefixListConfig[] | undefined {
   const lists = device.bgp.routingPolicy.prefixListConfigurations() as PrefixListConfig[];
+  return lists.length ? lists : undefined;
+}
+
+export function serializeIpv6PrefixLists(device: Router | Layer3Switch): Ipv6PrefixListConfig[] | undefined {
+  const lists = device.bgp.routingPolicy.ipv6PrefixListConfigurations() as Ipv6PrefixListConfig[];
   return lists.length ? lists : undefined;
 }
 

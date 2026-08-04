@@ -199,7 +199,52 @@ Six explicit demos are available and are never auto-loaded:
 - iBGP and Route Policies;
 - iBGP Route Reflector;
 - BGP Communities;
-- Aggregation and Advanced Policy.
+- Aggregation and Advanced Policy;
+- eBGP over IPv6 (M10.13);
+- Dual-Stack BGP (M10.13);
+- VPNv6 Over MPLS (M10.13).
+
+## Address families (M10.13)
+
+BGP is one process, one FSM and one TCP session per neighbor. What M10.13 adds
+is that a single session can carry several **address families**:
+`ipv4-unicast`, `ipv6-unicast`, `vpnv4-unicast` and `vpnv6-unicast`. Only the
+RIBs are per family — raw Adj-RIB-In, policy-filtered Adj-RIB-In, Loc-RIB and
+Adj-RIB-Out each exist once per family. The FSM, the keepalive and hold timers,
+the routing-policy engine and the best-path comparator are shared, never forked.
+
+A family is offered in OPEN and used only if both ends offer it. IPv4 unicast
+stays implicit on an IPv4-transport neighbor — that is exactly what a document
+written before M10.13 means — while an IPv6-transport neighbor has no IPv4 next
+hop to give and carries IPv6 unicast instead. Every other family is activated
+explicitly with `neighbor <a> activate` inside its address-family block.
+
+A neighbor address may be IPv4 or IPv6. An IPv6 peering is a real path: it
+depends on IPv6 reachability, NDP, interface state, IPv6 ACLs, simulated
+TCP/179, `update-source` and `ebgp-multihop`. There is no direct call between
+devices. The IGP metric to an IPv6 next hop is read from the IPv6 routing table.
+
+IPv6 NLRI carries the ordinary attributes — `AS_PATH`, `NEXT_HOP`,
+`LOCAL_PREF`, `MED`, `WEIGHT`, `ORIGIN`, standard communities, `ORIGINATOR_ID`
+and `CLUSTER_LIST` — and reuses the documented deterministic best-path
+comparator unchanged. A prefix is advertised only when an exact matching IPv6
+route already exists in the local RIB.
+
+`ipv6 prefix-list` is the IPv6 counterpart of `ip prefix-list`: prefix, length
+and the same `ge`/`le` window, first match wins, implicit deny at the end, and
+never a wildcard mask. `match ipv6 address prefix-list` binds it into the one
+routing-policy engine, and it only ever matches an IPv6 route. eBGP/iBGP, route
+reflection, `ORIGINATOR_ID`/`CLUSTER_LIST`, standard communities, `no-export`,
+`no-advertise`, route maps, AS-path prepending and `default-originate` all work
+per family without a second implementation.
+
+Existing BGP trace events gained an `addressFamily` field rather than a second
+near-identical set of event names, and Packet Trace shows it as a Family column.
+
+Aggregation stays deliberately IPv4-only. A generic refactor of the aggregate
+implementation was judged riskier than the parity was worth, and copying it for
+IPv6 purely for formal symmetry would have created the second implementation
+this document exists to prevent.
 
 ## Grading and verifier behavior
 
@@ -210,14 +255,16 @@ advertised/received prefixes, route-reflector clients, the cluster ID, a
 reflected path and its attributes, originator/cluster loop prevention, a
 route's communities, community-list and AS-path-list entries, route-map match
 counts, aggregates, suppressed more-specific routes and per-neighbor default
-origination. Browser-provided session state, routes, counters, trace and scores
-are ignored. Hidden expected values — including expected communities and policy
-identities — are removed from the student result.
+origination. M10.13 adds `bgp-ipv6-neighbor-state`, `bgp-ipv6-route`,
+`bgp-ipv6-best-path`, `ipv6-prefix-list-entry` and `bgp-ipv6-policy-result`.
+Browser-provided session state, routes, counters, trace and scores are ignored.
+Hidden expected values — including expected communities and policy identities —
+are removed from the student result.
 
 ## Deliberate limitations
 
-BGP here is IPv4 unicast plus the VPNv4 address family MPLS L3VPN needs. It
-omits IPv6 address families, confederations, large and extended communities
+BGP here covers IPv4 unicast, IPv6 unicast, VPNv4 and VPNv6. It omits
+confederations, IPv6 aggregation, large and extended communities
 beyond route targets, expanded (regex) community lists, unrestricted AS-path
 regular expressions, `local-AS`/`no-export-subconfed`, `advertise-map`
 conditional advertisement, `suppress-map`/`unsuppress-map`, redistribution into

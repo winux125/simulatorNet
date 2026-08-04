@@ -60,7 +60,13 @@ export interface AclContext {
 export interface RouterProcessContext {
   processId: number;
   family: "ipv4" | "ipv6" | "bgp";
-  addressFamily?: "ipv4-unicast" | "vpnv4-unicast" | "ipv4-vrf";
+  addressFamily?:
+    | "ipv4-unicast"
+    | "ipv6-unicast"
+    | "vpnv4-unicast"
+    | "vpnv6-unicast"
+    | "ipv4-vrf"
+    | "ipv6-vrf";
   vrfId?: string;
 }
 

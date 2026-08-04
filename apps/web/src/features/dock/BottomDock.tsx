@@ -126,7 +126,7 @@ export const TRACE_PROTOCOL_FILTERS = [
   "STP", "RSTP", "LACP", "PAGP", "CDP", "LLDP", "OSPF",
   "BGP", "BGP Session", "BGP Updates", "Route Policy",
   "Route Reflection", "Community", "Aggregation",
-  "MPLS", "LDP", "VPNv4", "L3VPN",
+  "MPLS", "LDP", "VPNv4", "VPNv6", "L3VPN",
   "IPv6", "ICMPv6", "NDP", "SLAAC", "DHCPv6", "OSPFv3", "IPv6 ACL",
   "Wireless", "Beacon", "Probe", "Authentication", "Association", "Roaming",
   "Telnet", "SSH", "AAA", "RADIUS", "TACACS+", "SNMP",
@@ -338,7 +338,7 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
       || event.type.startsWith("community-list-") || event.type.startsWith("as-path-list-");
     return protocol === filter;
   });
-  return <div className="dock-table-wrap"><div className="trace-filter"><label>Protocol filter <select aria-label="Packet trace protocol filter" value={filter} onChange={(event) => setFilter(event.target.value)}>{TRACE_PROTOCOL_FILTERS.map((protocol) => <option key={protocol}>{protocol}</option>)}</select></label><span>{visible.length} records</span></div><table className="data-table packet-table"><thead><tr><th>Time</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Ports</th><th>Event</th><th>QoS</th><th>Result</th></tr></thead><tbody>{visible.slice(-300).reverse().map((event, index) => {
+  return <div className="dock-table-wrap"><div className="trace-filter"><label>Protocol filter <select aria-label="Packet trace protocol filter" value={filter} onChange={(event) => setFilter(event.target.value)}>{TRACE_PROTOCOL_FILTERS.map((protocol) => <option key={protocol}>{protocol}</option>)}</select></label><span>{visible.length} records</span></div><table className="data-table packet-table"><thead><tr><th>Time</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Family</th><th>Ports</th><th>Event</th><th>QoS</th><th>Result</th></tr></thead><tbody>{visible.slice(-300).reverse().map((event, index) => {
     const detail = event.detail ?? {};
     const source = String(detail.src ?? detail.sourceAddress ?? detail.localAddress ?? event.deviceId);
     const destination = String(detail.dst ?? detail.destinationAddress ?? detail.remoteAddress ?? detail.targetIp ?? "—");
@@ -348,7 +348,10 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
     const ports = sourcePort === undefined && destinationPort === undefined ? "—" : `${String(sourcePort ?? "*")} → ${String(destinationPort ?? "*")}`;
     const result = event.type.includes("success") || event.type.includes("response") || event.type.includes("received") || event.type.includes("established") || event.type.includes("permitted") || event.type.includes("completed") || event.type.includes("conform") ? "success" : event.type.includes("error") || event.type.includes("timeout") || event.type.includes("reset") || event.type.includes("unreachable") || event.type.includes("denied") || event.type.includes("dropped") || event.type.includes("exceed") || event.type.includes("no-translation") ? "error" : "observed";
     const qos = qosSummary(detail);
-    return <tr key={`${event.sequence}-${index}`} data-event-type={event.type}><td><code>{timeLabel(event.virtualTime)}</code></td><td><code>{source}</code></td><td><code>{destination}</code></td><td>{protocol}</td><td><code>{ports}</code></td><td>{event.type}</td><td><code>{qos || "—"}</code></td><td><span className={`trace-result trace-result--${result}`}>{result}</span></td></tr>;
+    // One BGP session carries several address families, so the row reports the
+    // family the engine actually stamped rather than guessing from the event name.
+    const addressFamily = typeof detail.addressFamily === "string" ? detail.addressFamily : "—";
+    return <tr key={`${event.sequence}-${index}`} data-event-type={event.type} data-address-family={addressFamily}><td><code>{timeLabel(event.virtualTime)}</code></td><td><code>{source}</code></td><td><code>{destination}</code></td><td>{protocol}</td><td>{addressFamily}</td><td><code>{ports}</code></td><td>{event.type}</td><td><code>{qos || "—"}</code></td><td><span className={`trace-result trace-result--${result}`}>{result}</span></td></tr>;
   })}</tbody></table></div>;
 }
 
@@ -377,6 +380,7 @@ function traceProtocol(event: SimulationTraceEvent): string {
   if (type.startsWith("snmp-")) return "SNMP";
   if (type === "aaa-accounting") return "AAA";
   if (type.startsWith("bgp-vpnv4-")) return "VPNv4";
+  if (type.startsWith("bgp-vpnv6-")) return "VPNv6";
   // M10.12 families come before the generic BGP prefixes so each one keeps its
   // own filter while "BGP" still selects the whole family.
   if (type === "bgp-route-reflected" || type === "bgp-route-reflection-rejected"

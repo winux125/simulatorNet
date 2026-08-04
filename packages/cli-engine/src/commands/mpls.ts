@@ -108,6 +108,40 @@ function showVpnv4Neighbors(session: SessionApi): string {
   ]));
 }
 
+/** The VPNv6 table; the columns mirror VPNv4 so the two read the same way. */
+function showVpnv6(session: SessionApi, vrfId?: string): string {
+  const router = routerOf(session);
+  const allowedRds = vrfId === undefined
+    ? undefined
+    : new Set(router.vrfConfigurations().filter((vrf) => vrf.id === vrfId || vrf.name === vrfId).map((vrf) => vrf.routeDistinguisher));
+  const routes = router.bgp.vpnv6Routes().filter((route) => allowedRds === undefined || allowedRds.has(route.routeDistinguisher));
+  if (!routes.length) return "% VPNv6 table is empty.";
+  return table(["Status", "RD", "Prefix", "Next Hop", "VPN Label", "Route Targets", "Originator", "Cluster list"], routes.map((route) => [
+    route.best ? "*>" : "*",
+    route.routeDistinguisher,
+    `${route.network}/${route.prefixLength}`,
+    route.nextHop,
+    String(route.vpnLabel),
+    route.routeTargets.join(","),
+    route.originatorId ?? "—",
+    route.clusterList.join(" ") || "—",
+  ]));
+}
+
+function showVpnv6Neighbors(session: SessionApi): string {
+  const router = routerOf(session);
+  const configuration = router.bgp.configurationSnapshot();
+  const summaries = new Map(router.bgp.summaries().map((summary) => [summary.address, summary]));
+  const neighbors = (configuration?.neighbors ?? []).filter((neighbor) => neighbor.vpnv6Activated);
+  if (!neighbors.length) return "% No VPNv6 neighbors configured.";
+  return table(["Neighbor", "State", "Remote AS", "Extended community"], neighbors.map((neighbor) => [
+    neighbor.address,
+    summaries.get(neighbor.address)?.state ?? "idle",
+    String(neighbor.remoteAs),
+    neighbor.sendCommunityExtended ? "sent" : "disabled",
+  ]));
+}
+
 export const mplsCommands: CommandSpec[] = [
   {
     pattern: "mpls label protocol ldp", modes: ["config"], device: "router",
@@ -276,6 +310,9 @@ export const mplsCommands: CommandSpec[] = [
   { pattern: "show ip bgp vpnv4 all", modes: ["exec", "privileged"], device: "router", run: (s) => showVpnv4(s) },
   { pattern: "show bgp vpnv4 unicast vrf {name}", modes: ["exec", "privileged"], device: "router", run: (s, p) => showVpnv4(s, p.name) },
   { pattern: "show bgp vpnv4 unicast neighbors", modes: ["exec", "privileged"], device: "router", run: showVpnv4Neighbors },
+  { pattern: "show bgp vpnv6 unicast all", modes: ["exec", "privileged"], device: "router", run: (s) => showVpnv6(s) },
+  { pattern: "show bgp vpnv6 unicast vrf {name}", modes: ["exec", "privileged"], device: "router", run: (s, p) => showVpnv6(s, p.name) },
+  { pattern: "show bgp vpnv6 unicast neighbors", modes: ["exec", "privileged"], device: "router", run: showVpnv6Neighbors },
   {
     pattern: "clear mpls ldp neighbor *", modes: ["privileged"], device: "router",
     run: (s) => s.requestConfirmation("Restart all LDP sessions? [yes/no]: ", () => {

@@ -58,6 +58,7 @@ export type DeviceWindowSectionId =
   | "ldp-runtime"
   | "vrf-runtime"
   | "vpnv4-runtime"
+  | "vpnv6-runtime"
   | "vpn-label-runtime"
   | "sessions-runtime"
   | "nat-runtime"
@@ -216,6 +217,7 @@ function monitorSections(type: DeviceType): DeviceWindowSectionDefinition[] {
       sections.push({ id: "ldp-runtime", label: "LDP Neighbors & Bindings", group: "MPLS & L3VPN" });
       sections.push({ id: "vrf-runtime", label: "VRF Routes", group: "MPLS & L3VPN" });
       sections.push({ id: "vpnv4-runtime", label: "VPNv4 Routes", group: "MPLS & L3VPN" });
+      sections.push({ id: "vpnv6-runtime", label: "VPNv6 Routes", group: "MPLS & L3VPN" });
       sections.push({ id: "vpn-label-runtime", label: "VPN Labels", group: "MPLS & L3VPN" });
     }
   }
