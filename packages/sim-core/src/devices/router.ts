@@ -55,7 +55,7 @@ import {
   Ospfv3Process,
   type Ospfv3InterfaceDescriptor,
 } from "../protocols/ospfv3";
-import { BgpProcess, type Vpnv4Route, type Vpnv6Route } from "../protocols/bgp";
+import { BgpProcess, type EvpnRoute, type Vpnv4Route, type Vpnv6Route } from "../protocols/bgp";
 import {
   LdpProcess,
   type LdpFecRoute,
@@ -249,6 +249,19 @@ export interface TunnelSummary {
 /** Outer IPv4 header plus the GRE header a tunnel adds to every packet. */
 const WIRE_SIZE_GRE_OVERHEAD_BYTES = 24;
 
+/**
+ * The seam between the shared BGP process and a device that actually owns an
+ * EVPN overlay.
+ *
+ * A Router speaks `l2vpn-evpn` — it can carry and reflect the routes — but it
+ * is never a VTEP, so it originates nothing and programs nothing. The L3 Switch
+ * installs a provider and does both.
+ */
+export interface EvpnOverlayProvider {
+  exports(): readonly EvpnRoute[];
+  onImported(routes: readonly EvpnRoute[]): void;
+}
+
 export type RouteSource = "connected" | "static" | "ospf" | "bgp";
 
 /** Cisco-like administrative distances for the sources this release models. */
@@ -385,6 +398,8 @@ export class Router extends Device {
    * protection. See `docs/vpn-tunnels.md`.
    */
   readonly ipsec = new IpsecEngine();
+  /** Set only by a device that owns a VXLAN overlay; a Router never does. */
+  private evpnOverlay: EvpnOverlayProvider | undefined;
   private readonly l3 = new Map<string, L3Interface>();
   private readonly loopbacks = new Map<number, LoopbackInterface>();
   private readonly tunnelInterfaces = new Map<string, TunnelInterface>();
@@ -3150,6 +3165,19 @@ export class Router extends Device {
     return routes.sort((a, b) => a.routeDistinguisher.localeCompare(b.routeDistinguisher)
       || a.network.localeCompare(b.network)
       || b.prefixLength - a.prefixLength);
+  }
+
+  /** Attach an EVPN overlay owner. Only the L3 Switch ever installs one. */
+  useEvpnOverlayProvider(provider: EvpnOverlayProvider): void {
+    this.evpnOverlay = provider;
+  }
+
+  bgpEvpnExports(): readonly EvpnRoute[] {
+    return this.evpnOverlay?.exports() ?? [];
+  }
+
+  bgpEvpnRoutesChanged(routes: readonly EvpnRoute[]): void {
+    this.evpnOverlay?.onImported(routes);
   }
 
   bgpVpnv6RoutesChanged(routes: readonly Vpnv6Route[]): void {

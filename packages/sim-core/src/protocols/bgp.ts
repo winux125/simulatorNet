@@ -9,6 +9,9 @@ import {
   type BgpNotificationMessage,
   type BgpPathAttributes,
   type BgpUnicastAddressFamily,
+  evpnRouteKey,
+  type EvpnNlri,
+  type EvpnWithdrawnNlri,
   type Vpnv4Nlri,
   type Vpnv6Nlri,
 } from "../packets/bgp";
@@ -81,6 +84,8 @@ export interface BgpNeighborConfiguration {
   readonly routeMapOut?: string;
   readonly vpnv4Activated?: boolean;
   readonly vpnv6Activated?: boolean;
+  /** `neighbor <a> activate` under `address-family l2vpn evpn`. */
+  readonly evpnActivated?: boolean;
   readonly sendCommunityExtended?: boolean;
   /** `neighbor <a> send-community`: standard communities may leave this device. */
   readonly sendCommunityStandard?: boolean;
@@ -197,6 +202,13 @@ export interface VpnRoutePathState {
 export interface Vpnv4Route extends Vpnv4Nlri, VpnRoutePathState {}
 
 /**
+ * An EVPN route in a RIB: the advertised NLRI plus the same runtime path state
+ * every other family carries. Route reflection, best-path selection and the
+ * policy engine are shared — only the NLRI shape and the RIBs are per family.
+ */
+export type EvpnRoute = EvpnNlri & VpnRoutePathState;
+
+/**
  * A VPNv6 route. `nextHop` is the advertising PE's IPv4 loopback: the transport
  * LSP is resolved by the IPv4 OSPF/LDP core, which is the deliberate
  * simplification of this educational model.
@@ -248,6 +260,10 @@ export interface BgpHost {
   bgpVpnv4RoutesChanged(routes: readonly Vpnv4Route[]): void;
   bgpVpnv6Exports(): readonly Vpnv6Route[];
   bgpVpnv6RoutesChanged(routes: readonly Vpnv6Route[]): void;
+  /** Locally originated EVPN Type 2 and Type 3 routes, in canonical order. */
+  bgpEvpnExports(): readonly EvpnRoute[];
+  /** The selected EVPN routes this device learned from its peers. */
+  bgpEvpnRoutesChanged(routes: readonly EvpnRoute[]): void;
 }
 
 interface NeighborRuntime {
@@ -310,6 +326,76 @@ export function compareVpnv4Paths(left: Vpnv4Route, right: Vpnv4Route): number {
 /** The same deterministic comparator; only the prefix family differs. */
 export function compareVpnv6Paths(left: Vpnv6Route, right: Vpnv6Route): number {
   return compareBgpPaths(vpnComparable(left), vpnComparable(right));
+}
+
+/**
+ * The one best-path comparator again, for EVPN. An EVPN NLRI has no prefix, so
+ * the advertising VTEP breaks the final tie — which is what makes a duplicate
+ * MAC resolve to the same winner regardless of UPDATE arrival order.
+ */
+export function compareEvpnPaths(left: EvpnRoute, right: EvpnRoute): number {
+  const decided = compareBgpPaths(evpnComparable(left), evpnComparable(right));
+  if (decided !== 0) return decided;
+  return ipToInt(evpnOriginatingVtep(left)) - ipToInt(evpnOriginatingVtep(right));
+}
+
+/** Which VTEP an EVPN route points at: the IMET originator or the next hop. */
+export function evpnOriginatingVtep(route: EvpnNlri): Ipv4 {
+  return route.type === 3 ? route.originatingVtep : route.nextHop;
+}
+
+/** Exactly the fields that cross the wire; runtime path state stays local. */
+function evpnNlriOf(route: EvpnRoute): EvpnNlri {
+  if (route.type === 3) {
+    return {
+      type: 3,
+      routeDistinguisher: route.routeDistinguisher,
+      ethernetTag: route.ethernetTag,
+      vni: route.vni,
+      routeTargets: [...route.routeTargets],
+      originatingVtep: route.originatingVtep,
+      nextHop: route.nextHop,
+      pathAttributes: route.pathAttributes,
+      routeId: route.routeId,
+    };
+  }
+  return {
+    type: 2,
+    routeDistinguisher: route.routeDistinguisher,
+    ethernetTag: route.ethernetTag,
+    macAddress: route.macAddress,
+    ipAddress: route.ipAddress,
+    vni: route.vni,
+    routeTargets: [...route.routeTargets],
+    nextHop: route.nextHop,
+    label: route.label,
+    pathAttributes: route.pathAttributes,
+    routeId: route.routeId,
+  };
+}
+
+function evpnComparable(route: EvpnRoute): BgpRoute {
+  return {
+    addressFamily: "ipv4-unicast",
+    network: route.nextHop,
+    prefixLength: 32,
+    origin: route.pathAttributes.origin,
+    asPath: route.pathAttributes.asPath,
+    nextHop: route.nextHop,
+    localPreference: route.localPreference,
+    med: route.med,
+    weight: route.weight,
+    source: route.source,
+    neighborAddress: route.neighborAddress,
+    neighborAs: route.neighborAs,
+    neighborRouterId: route.neighborRouterId,
+    learnedAtNs: route.learnedAtNs,
+    routeId: route.routeId,
+    igpMetric: route.igpMetric,
+    communities: route.communities,
+    originatorId: route.originatorId,
+    clusterList: route.clusterList,
+  };
 }
 
 function vpnComparable(route: Vpnv4Route | Vpnv6Route): BgpRoute {
@@ -383,6 +469,9 @@ export class BgpProcess {
   private readonly vpnv6AdjRibIn = new Map<IpAddress, Map<string, Vpnv6Route>>();
   private readonly vpnv6LocRib = new Map<string, Vpnv6Route>();
   private readonly vpnv6AdjRibOut = new Map<IpAddress, Map<string, Vpnv6Route>>();
+  private readonly evpnAdjRibIn = new Map<IpAddress, Map<string, EvpnRoute>>();
+  private readonly evpnLocRib = new Map<string, EvpnRoute>();
+  private readonly evpnAdjRibOut = new Map<IpAddress, Map<string, EvpnRoute>>();
   /** Aggregates that currently have a contributing route, for change tracing. */
   private readonly activeAggregates = new Set<string>();
   private listening = false;
@@ -553,8 +642,12 @@ export class BgpProcess {
     this.vpnv6AdjRibIn.clear();
     this.vpnv6LocRib.clear();
     this.vpnv6AdjRibOut.clear();
+    this.evpnAdjRibIn.clear();
+    this.evpnLocRib.clear();
+    this.evpnAdjRibOut.clear();
     this.host.bgpVpnv4RoutesChanged([]);
     this.host.bgpVpnv6RoutesChanged([]);
+    this.host.bgpEvpnRoutesChanged([]);
   }
 
   start(): void {
@@ -624,6 +717,7 @@ export class BgpProcess {
     if (neighbor.ipv6?.activated || ipFamilyOf(neighbor.address) === "ipv6") families.push("ipv6-unicast");
     if (neighbor.vpnv4Activated) families.push("vpnv4-unicast");
     if (neighbor.vpnv6Activated) families.push("vpnv6-unicast");
+    if (neighbor.evpnActivated) families.push("l2vpn-evpn");
     return families;
   }
 
@@ -700,6 +794,29 @@ export class BgpProcess {
       || a.routeId.localeCompare(b.routeId));
   }
 
+  /** Every EVPN route this device knows: locally originated plus learned. */
+  evpnRoutes(): Array<EvpnRoute & { best: boolean }> {
+    this.expireHoldTimers();
+    const all = new Map<string, EvpnRoute>();
+    for (const route of this.host.bgpEvpnExports()) all.set(route.routeId, route);
+    for (const rib of this.evpnAdjRibIn.values()) {
+      for (const route of rib.values()) all.set(`${route.routeId}|${route.neighborAddress ?? ""}`, route);
+    }
+    return [...all.values()]
+      .map((route) => ({ ...route, best: this.evpnLocRib.get(evpnRouteKey(route))?.routeId === route.routeId }))
+      .sort((a, b) => a.type - b.type
+        || a.vni - b.vni
+        || a.routeDistinguisher.localeCompare(b.routeDistinguisher)
+        || evpnRouteKey(a).localeCompare(evpnRouteKey(b))
+        || compareEvpnPaths(a, b));
+  }
+
+  selectedEvpnRoutes(): EvpnRoute[] {
+    this.expireHoldTimers();
+    return [...this.evpnLocRib.values()]
+      .sort((a, b) => a.type - b.type || a.vni - b.vni || evpnRouteKey(a).localeCompare(evpnRouteKey(b)));
+  }
+
   adjRibInEntries(address?: IpAddress, family: BgpUnicastAddressFamily = "ipv4-unicast"): BgpRoute[] {
     this.expireHoldTimers();
     const rib = this.unicast[family].adjIn;
@@ -725,6 +842,7 @@ export class BgpProcess {
     for (const family of UNICAST_FAMILIES) this.recomputeLocRib(family);
     this.recomputeVpnv4LocRib();
     this.recomputeVpnv6LocRib();
+    this.recomputeEvpnLocRib();
     this.advertiseRoutes();
   }
 
@@ -931,6 +1049,7 @@ export class BgpProcess {
       ["ipv6-unicast", message.ipv6Nlri?.length ?? 0, message.ipv6Withdrawn?.length ?? 0],
       ["vpnv4-unicast", message.vpnv4Nlri?.length ?? 0, message.vpnv4Withdrawn?.length ?? 0],
       ["vpnv6-unicast", message.vpnv6Nlri?.length ?? 0, message.vpnv6Withdrawn?.length ?? 0],
+      ["l2vpn-evpn", message.evpnNlri?.length ?? 0, message.evpnWithdrawn?.length ?? 0],
     ] as const) {
       if (announced === 0 && withdrawn === 0 && family !== "ipv4-unicast") continue;
       this.trace("bgp-update-received", {
@@ -966,6 +1085,8 @@ export class BgpProcess {
         vpnv4Withdrawn: message.vpnv4Withdrawn?.length ?? 0,
         vpnv6Announced: message.vpnv6Nlri?.length ?? 0,
         vpnv6Withdrawn: message.vpnv6Withdrawn?.length ?? 0,
+        evpnAnnounced: message.evpnNlri?.length ?? 0,
+        evpnWithdrawn: message.evpnWithdrawn?.length ?? 0,
       } : {}),
     });
   }
@@ -1011,6 +1132,11 @@ export class BgpProcess {
     const vpn6InboundChanged = this.vpnv6AdjRibIn.delete(address);
     const vpn6OutboundChanged = this.vpnv6AdjRibOut.delete(address);
     if (vpn6InboundChanged || vpn6OutboundChanged) this.recomputeVpnv6LocRib();
+    // Losing the session removes every EVPN route it carried, so remote MAC and
+    // replication state disappear with it instead of lingering.
+    const evpnInboundChanged = this.evpnAdjRibIn.delete(address);
+    const evpnOutboundChanged = this.evpnAdjRibOut.delete(address);
+    if (evpnInboundChanged || evpnOutboundChanged) this.recomputeEvpnLocRib();
   }
 
   private transition(runtime: NeighborRuntime, state: BgpSessionState, reason?: string): void {
@@ -1095,7 +1221,175 @@ export class BgpProcess {
     }
     this.applyVpnv4Update(runtime, message);
     this.applyVpnv6Update(runtime, message);
+    this.applyEvpnUpdate(runtime, message);
     this.advertiseRoutes();
+  }
+
+  /**
+   * The inbound EVPN path. It reuses the shared AS-loop check and reflection
+   * loop prevention: only the NLRI shape is EVPN-specific, and a route whose
+   * route targets do not intersect a local VNI still enters the RIB — it simply
+   * never programs anything.
+   */
+  private applyEvpnUpdate(runtime: NeighborRuntime, message: Extract<BgpMessage, { kind: "bgp-update" }>): void {
+    if (!this.familyNegotiated(runtime, "l2vpn-evpn")) return;
+    const withdrawn = message.evpnWithdrawn ?? [];
+    const announced = message.evpnNlri ?? [];
+    if (withdrawn.length === 0 && announced.length === 0) return;
+    const rib = this.evpnAdjRibIn.get(runtime.configuration.address) ?? new Map<string, EvpnRoute>();
+    for (const entry of withdrawn) {
+      if (rib.delete(evpnRouteKey(entry))) {
+        this.trace("evpn-mac-route-withdrawn", {
+          neighbor: runtime.configuration.address,
+          addressFamily: "l2vpn-evpn",
+          routeType: entry.type,
+          vni: entry.vni,
+          mac: entry.macAddress,
+          rd: entry.routeDistinguisher,
+        });
+      }
+    }
+    enforceStructuralLimit("maximumEvpnRoutesPerDevice", rib.size + announced.length);
+    for (const nlri of announced) {
+      if (this.configuration && nlri.pathAttributes.asPath.includes(this.configuration.localAs)) {
+        this.trace("bgp-loop-rejected", {
+          neighbor: runtime.configuration.address,
+          addressFamily: "l2vpn-evpn",
+          routeId: nlri.routeId,
+        });
+        continue;
+      }
+      if (this.rejectReflectionLoop(runtime, nlri.routeId, nlri.pathAttributes, "l2vpn-evpn")) continue;
+      const metric = this.host.bgpIgpMetric(nlri.nextHop);
+      const route: EvpnRoute = {
+        ...nlri,
+        routeTargets: [...nlri.routeTargets],
+        pathAttributes: { ...nlri.pathAttributes, asPath: [...nlri.pathAttributes.asPath] },
+        communities: normalizeBgpCommunities(nlri.pathAttributes.communities),
+        originatorId: nlri.pathAttributes.originatorId,
+        clusterList: [...(nlri.pathAttributes.clusterList ?? [])],
+        source: runtime.configuration.remoteAs === this.configuration?.localAs ? "ibgp" : "ebgp",
+        neighborAddress: runtime.configuration.address,
+        neighborAs: runtime.configuration.remoteAs,
+        neighborRouterId: runtime.remoteRouterId,
+        learnedAtNs: this.host.engine.now(),
+        localPreference: nlri.pathAttributes.localPreference ?? 100,
+        med: nlri.pathAttributes.med ?? 0,
+        weight: 0,
+        igpMetric: metric ?? Number.MAX_SAFE_INTEGER,
+      };
+      rib.set(evpnRouteKey(route), route);
+      this.host.engine.controlProtocolBudget.consume("evpnUpdates", this.host.id);
+      this.trace(route.type === 2 ? "evpn-mac-route-imported" : "evpn-imet-imported", {
+        neighbor: runtime.configuration.address,
+        addressFamily: "l2vpn-evpn",
+        routeType: route.type,
+        rd: route.routeDistinguisher,
+        vni: route.vni,
+        mac: route.type === 2 ? route.macAddress : undefined,
+        vtep: evpnOriginatingVtep(route),
+        routeTargets: route.routeTargets,
+      });
+    }
+    this.evpnAdjRibIn.set(runtime.configuration.address, rib);
+    this.recomputeEvpnLocRib();
+  }
+
+  private recomputeEvpnLocRib(): void {
+    const groups = new Map<string, EvpnRoute[]>();
+    const learned = [...this.evpnAdjRibIn.values()].flatMap((rib) => [...rib.values()]);
+    for (const route of [...this.host.bgpEvpnExports(), ...learned]) {
+      // A remote EVPN route is only usable while its VTEP is reachable through
+      // the underlay; a locally originated one needs no resolution.
+      if (route.source !== "local" && this.host.bgpIgpMetric(route.nextHop) === undefined) continue;
+      const key = evpnRouteKey(route);
+      const list = groups.get(key) ?? [];
+      list.push({ ...route, igpMetric: route.source === "local" ? 0 : (this.host.bgpIgpMetric(route.nextHop) ?? route.igpMetric) });
+      groups.set(key, list);
+    }
+    const next = new Map<string, EvpnRoute>();
+    for (const [key, candidates] of groups) {
+      const best = [...candidates].sort(compareEvpnPaths)[0];
+      if (best) next.set(key, best);
+    }
+    if (JSON.stringify([...next]) === JSON.stringify([...this.evpnLocRib])) return;
+    this.evpnLocRib.clear();
+    for (const [key, route] of next) this.evpnLocRib.set(key, route);
+    this.host.bgpEvpnRoutesChanged([...next.values()].filter((route) => route.source !== "local"));
+    this.trace("bgp-best-path-changed", { addressFamily: "l2vpn-evpn", routes: next.size });
+  }
+
+  /**
+   * The outbound EVPN path. Reflection and extended communities behave exactly
+   * as they do for VPNv4 — route targets only cross a session with
+   * `send-community extended` — because both are family-independent.
+   */
+  private advertiseEvpn(
+    runtime: NeighborRuntime,
+    peerIsIbgp: boolean,
+    sendsCommunities: boolean,
+  ): { announcements: EvpnNlri[]; withdrawn: EvpnWithdrawnNlri[] } {
+    const previous = this.evpnAdjRibOut.get(runtime.configuration.address) ?? new Map<string, EvpnRoute>();
+    const desired = new Map<string, EvpnRoute>();
+    const announcements: EvpnNlri[] = [];
+    if (this.configuration && this.familyNegotiated(runtime, "l2vpn-evpn")) {
+      for (const route of this.evpnLocRib.values()) {
+        if (route.neighborAddress === runtime.configuration.address) continue;
+        const reflection = this.reflectionDecision(route, runtime, peerIsIbgp);
+        if (!reflection.advertise) continue;
+        if (communityBlocksAdvertisement(route.communities, peerIsIbgp) !== undefined) continue;
+        const reflectedAttributes = this.reflectAttributes(route, reflection.reflect, peerIsIbgp);
+        if (reflectedAttributes === undefined) continue;
+        const key = evpnRouteKey(route);
+        const advertised: EvpnRoute = {
+          ...route,
+          ...reflectedAttributes,
+          communities: sendsCommunities ? [...route.communities] : [],
+          // A reflector never rewrites the next hop, so the VTEP a remote leaf
+          // learns is always the leaf that owns the MAC.
+          routeTargets: runtime.configuration.sendCommunityExtended ? [...route.routeTargets] : [],
+          pathAttributes: {
+            ...route.pathAttributes,
+            asPath: peerIsIbgp ? [...route.pathAttributes.asPath] : [this.configuration.localAs, ...route.pathAttributes.asPath],
+            localPreference: peerIsIbgp ? route.localPreference : undefined,
+            communities: sendsCommunities && route.communities.length ? [...route.communities] : undefined,
+            originatorId: reflectedAttributes.originatorId,
+            clusterList: reflectedAttributes.clusterList.length ? [...reflectedAttributes.clusterList] : undefined,
+            reflected: reflection.reflect ? true : undefined,
+          },
+          routeId: `${this.configuration.routerId ?? this.host.id}:evpn:${key}`,
+        };
+        if (reflection.reflect) {
+          this.host.engine.controlProtocolBudget.consume("bgpReflectedUpdates", this.host.id);
+          this.trace("bgp-route-reflected", {
+            neighbor: runtime.configuration.address,
+            direction: "out",
+            addressFamily: "l2vpn-evpn",
+            routeType: route.type,
+            rd: route.routeDistinguisher,
+            vni: route.vni,
+            originatorId: advertised.originatorId,
+            clusterList: advertised.clusterList,
+          });
+        }
+        desired.set(key, advertised);
+        if (JSON.stringify(previous.get(key)) !== JSON.stringify(advertised)) {
+          announcements.push(evpnNlriOf(advertised));
+        }
+      }
+    }
+    const withdrawn = [...previous.entries()]
+      .filter(([key]) => !desired.has(key))
+      .map(([, route]): EvpnWithdrawnNlri => ({
+        type: route.type,
+        routeDistinguisher: route.routeDistinguisher,
+        ethernetTag: route.ethernetTag,
+        vni: route.vni,
+        macAddress: route.type === 2 ? route.macAddress : undefined,
+        originatingVtep: route.type === 3 ? route.originatingVtep : undefined,
+      }));
+    this.evpnAdjRibOut.set(runtime.configuration.address, desired);
+    return { announcements, withdrawn };
   }
 
   /**
@@ -1548,10 +1842,12 @@ export class BgpProcess {
           prefixLength: route.prefixLength,
         }));
       const vpn6 = this.advertiseVpnv6(runtime, peerIsIbgp, sendsCommunities);
+      const evpn = this.advertiseEvpn(runtime, peerIsIbgp, sendsCommunities);
       const carries = ipv4.announcements.length || ipv4.withdrawn.length
         || ipv6.announcements.length || ipv6.withdrawn.length
         || vpnAnnouncements.length || vpnWithdrawn.length
-        || vpn6.announcements.length || vpn6.withdrawn.length;
+        || vpn6.announcements.length || vpn6.withdrawn.length
+        || evpn.announcements.length || evpn.withdrawn.length;
       if (carries) {
         this.send(runtime, {
           kind: "bgp-update",
@@ -1563,6 +1859,8 @@ export class BgpProcess {
           vpnv4Nlri: vpnAnnouncements,
           vpnv6Withdrawn: vpn6.withdrawn,
           vpnv6Nlri: vpn6.announcements,
+          evpnWithdrawn: evpn.withdrawn,
+          evpnNlri: evpn.announcements,
         });
       }
       this.vpnv4AdjRibOut.set(runtime.configuration.address, vpnDesired);

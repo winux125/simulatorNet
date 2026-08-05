@@ -334,6 +334,7 @@ export class VxlanEngine {
     const next = new Set([...addresses].sort(compareAddresses)
       .slice(0, DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumRemoteVtepsPerVni));
     const current = this.evpnPeers.get(vni);
+    if (!current && next.size === 0) return false;
     if (current && current.size === next.size && [...next].every((address) => current.has(address))) return false;
     if (next.size === 0) this.evpnPeers.delete(vni);
     else this.evpnPeers.set(vni, next);

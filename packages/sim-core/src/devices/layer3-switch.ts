@@ -6,6 +6,7 @@ import {
   vxlanSourcePort,
   type VxlanPacket,
 } from "../packets/vxlan";
+import { DEFAULT_CONTROL_PROTOCOL_LIMITS } from "../protocols/limits";
 import {
   VxlanEngine,
   type EvpnVniConfiguration,
@@ -37,6 +38,11 @@ import type {
   QosProblem,
   QosServicePolicyBinding,
 } from "../qos";
+import {
+  compareEvpnPaths,
+  evpnOriginatingVtep,
+  type EvpnRoute,
+} from "../protocols/bgp";
 import {
   Router,
   type Ipv6RouteRow,
@@ -110,6 +116,9 @@ export class Layer3Switch extends L2Switch {
   private vxlanListening = false;
   /** Bounded, deduplicated overlay diagnostics; runtime only. */
   private readonly vxlanFaults = new Map<string, string>();
+  private readonly evpnFaults = new Map<string, string>();
+  /** Last originated EVPN route set, so a MAC learn only re-advertises once. */
+  private evpnExportSignature = "";
 
   constructor(id: string, name: string) {
     super(id, name);
@@ -117,6 +126,12 @@ export class Layer3Switch extends L2Switch {
     this.routingPlane.setForwardingEnabled(false);
     // The overlay never reaches into the switch: it asks these five questions
     // and derives its operational state from the answers alone.
+    // BGP owns no overlay of its own: it asks this seam what to originate and
+    // hands back what it selected. A Router never installs one.
+    this.routingPlane.useEvpnOverlayProvider({
+      exports: () => this.evpnExports(),
+      onImported: (routes) => this.programEvpnRoutes(routes),
+    });
     this.vxlan.useHooks({
       interfaceAddress: (name) => {
         const row = this.routingPlane.interfaceSummaries().find((entry) => entry.name === name);
@@ -397,6 +412,8 @@ export class Layer3Switch extends L2Switch {
     this.syncRoutingPlane();
     this.vxlan.configure(configuration);
     this.vxlanFaults.clear();
+    this.evpnFaults.clear();
+    this.evpnExportSignature = "";
     this.ensureVxlanListener();
   }
 
@@ -461,9 +478,26 @@ export class Layer3Switch extends L2Switch {
 
   /** Bounded overlay diagnostics for Problems; never a credential or a packet. */
   vxlanProblems(): string[] {
-    const problems = [...this.vxlanFaults.values()];
+    const problems = [...this.vxlanFaults.values(), ...this.evpnFaults.values()];
     const configuration = this.vxlan.configurationSnapshot();
     if (configuration) {
+      const evpnActive = this.evpnAddressFamilyActive();
+      const usesEvpn = configuration.members.some((member) => member.replication.type === "bgp-evpn");
+      if (usesEvpn && !evpnActive) {
+        problems.push(`${this.name} uses BGP EVPN ingress replication but no neighbor activates 'address-family l2vpn evpn'.`);
+      }
+      if (evpnActive) {
+        for (const neighbor of this.routingPlane.bgp.configurationSnapshot()?.neighbors ?? []) {
+          if (neighbor.evpnActivated && !neighbor.sendCommunityExtended) {
+            problems.push(`${this.name} neighbor ${neighbor.address} activates EVPN without 'send-community extended', so no route target is advertised.`);
+          }
+        }
+        for (const member of configuration.members) {
+          if (this.vxlan.evpnVni(member.vni) === undefined) {
+            problems.push(`${this.name} VNI ${member.vni} has no 'evpn vni ${member.vni} l2' block, so it advertises no RD or route target.`);
+          }
+        }
+      }
       this.syncRoutingPlane();
       const state = this.vxlan.state();
       if (!state.up && state.reason !== "administratively-down") {
@@ -491,6 +525,8 @@ export class Layer3Switch extends L2Switch {
   resetVxlanRuntime(): void {
     this.vxlan.resetRuntime();
     this.vxlanFaults.clear();
+    this.evpnFaults.clear();
+    this.evpnExportSignature = "";
   }
 
   /** `shutdown`/`no shutdown` on nve1, as one bounded restart. */
@@ -534,7 +570,12 @@ export class Layer3Switch extends L2Switch {
       innerSource: packet.innerFrame.src,
       innerDestination: packet.innerFrame.dst,
     });
-    if (this.vxlan.learnRemoteMac(packet.vni, packet.innerFrame.src, source, this.engine.now(), "data-plane")) {
+    // A VNI that runs BGP EVPN has a control plane: its remote MAC table is
+    // owned by Type 2 routes, so data-plane learning would leave an entry that
+    // no withdrawal could ever remove. A static VNI has no control plane and
+    // therefore learns from the overlay exactly as a bridge does.
+    if (member.replication.type === "static"
+      && this.vxlan.learnRemoteMac(packet.vni, packet.innerFrame.src, source, this.engine.now(), "data-plane")) {
       this.traceVxlan("vxlan-mac-learned-remote", {
         vni: packet.vni,
         mac: normalizeMac(packet.innerFrame.src),
@@ -689,8 +730,206 @@ export class Layer3Switch extends L2Switch {
     this.onOverlayMacTableChanged();
   }
 
-  /** Extension point: the EVPN control plane reacts to a local MAC change. */
-  protected onOverlayMacTableChanged(): void {}
+  // --- BGP EVPN control plane ----------------------------------------------
+
+  /** `true` once at least one neighbor has `l2vpn evpn` activated. */
+  evpnAddressFamilyActive(): boolean {
+    return (this.routingPlane.bgp.configurationSnapshot()?.neighbors ?? [])
+      .some((neighbor) => neighbor.evpnActivated === true);
+  }
+
+  /** Every EVPN route this VTEP knows, locally originated and learned. */
+  evpnRoutes(): ReturnType<Router["bgp"]["evpnRoutes"]> {
+    this.syncRoutingPlane();
+    return this.routingPlane.bgp.evpnRoutes();
+  }
+
+  /**
+   * The routes this VTEP originates.
+   *
+   * A Type 3 exists for every operational VNI that has an EVPN block, so the
+   * remote leaves know to replicate BUM traffic here. A Type 2 exists for every
+   * MAC this VTEP learned locally on a mapped VLAN — never for a MAC it learned
+   * from another VTEP.
+   */
+  private evpnExports(): EvpnRoute[] {
+    if (!this.evpnAddressFamilyActive()) return [];
+    const state = this.vxlan.state();
+    if (!state.up || state.sourceAddress === undefined) return [];
+    const localAs = this.routingPlane.bgp.localAs ?? 0;
+    const routerId = this.routingPlane.bgp.configurationSnapshot()?.routerId ?? state.sourceAddress;
+    const localMacs = new Map<number, Array<{ mac: Mac; vlan: number }>>();
+    for (const row of this.macAddressTable()) {
+      const member = this.vxlan.memberForVlan(row.vlan);
+      if (!member) continue;
+      const list = localMacs.get(member.vni) ?? [];
+      if (list.length < DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumEvpnMacRoutesPerVni) {
+        list.push({ mac: normalizeMac(row.mac), vlan: row.vlan });
+      }
+      localMacs.set(member.vni, list);
+    }
+    const routes: EvpnRoute[] = [];
+    for (const vni of this.vxlan.vniStates()) {
+      if (!vni.up) continue;
+      const evpn = this.vxlan.evpnVni(vni.vni);
+      if (!evpn) continue;
+      const shared = {
+        routeDistinguisher: evpn.routeDistinguisher,
+        ethernetTag: 0,
+        vni: vni.vni,
+        routeTargets: [...evpn.exportRouteTargets],
+        nextHop: state.sourceAddress,
+        pathAttributes: {
+          origin: "igp" as const,
+          asPath: [] as readonly number[],
+          nextHop: state.sourceAddress,
+          localPreference: 100,
+          med: 0,
+        },
+        ...this.localEvpnPathState(routerId),
+      };
+      routes.push({
+        ...shared,
+        type: 3,
+        originatingVtep: state.sourceAddress,
+        routeId: `local:evpn:3:${evpn.routeDistinguisher}:${vni.vni}`,
+      });
+      if (evpn.exportRouteTargets.length === 0) continue;
+      for (const entry of localMacs.get(vni.vni) ?? []) {
+        routes.push({
+          ...shared,
+          type: 2,
+          macAddress: entry.mac,
+          // The VNI is the delivery label in a VXLAN fabric.
+          label: vni.vni,
+          routeId: `local:evpn:2:${evpn.routeDistinguisher}:${vni.vni}:${entry.mac}`,
+        });
+      }
+    }
+    void localAs;
+    return routes.sort((a, b) => a.type - b.type || a.vni - b.vni || a.routeId.localeCompare(b.routeId));
+  }
+
+  /** The path state a locally originated EVPN route carries. */
+  private localEvpnPathState(routerId: Ipv4) {
+    return {
+      source: "local" as const,
+      neighborRouterId: routerId,
+      learnedAtNs: 0,
+      localPreference: 100,
+      med: 0,
+      weight: 32_768,
+      igpMetric: 0,
+      communities: [] as readonly string[],
+      clusterList: [] as readonly string[],
+    };
+  }
+
+  /**
+   * Program the selected remote EVPN routes into the overlay.
+   *
+   * A route is imported only when its route targets intersect a local VNI's
+   * import list; otherwise it stays in the EVPN RIB and programs nothing. That
+   * intersection — not the VNI number — is what makes RT the control point.
+   */
+  private programEvpnRoutes(routes: readonly EvpnRoute[]): void {
+    this.vxlan.forgetRemoteMacsFrom("bgp-evpn");
+    this.evpnFaults.clear();
+    const membership = new Map<number, Ipv4[]>();
+    const macCandidates = new Map<string, EvpnRoute[]>();
+    for (const route of routes) {
+      const vni = this.importVniFor(route.routeTargets);
+      if (vni === undefined) {
+        this.traceVxlan("evpn-rt-rejected", {
+          addressFamily: "l2vpn-evpn",
+          routeType: route.type,
+          rd: route.routeDistinguisher,
+          vni: route.vni,
+          routeTargets: route.routeTargets,
+        });
+        this.recordEvpnFault(
+          `rt-${route.routeDistinguisher}-${route.vni}`,
+          `${this.name} did not import EVPN route ${route.routeDistinguisher} (VNI ${route.vni}): no local import route target matches.`,
+        );
+        continue;
+      }
+      if (route.type === 3) {
+        const peers = membership.get(vni) ?? [];
+        const vtep = evpnOriginatingVtep(route);
+        if (!peers.includes(vtep)) peers.push(vtep);
+        membership.set(vni, peers);
+        continue;
+      }
+      const key = `${vni} ${normalizeMac(route.macAddress)}`;
+      macCandidates.set(key, [...(macCandidates.get(key) ?? []), route]);
+    }
+    for (const [key, candidates] of macCandidates) {
+      const [vniText, mac] = key.split(" ") as [string, Mac];
+      const vni = Number(vniText);
+      // A duplicate MAC resolves through the one best-path comparator, so the
+      // same winner is chosen no matter which UPDATE arrived first.
+      const ordered = [...candidates].sort(compareEvpnPaths);
+      const winner = ordered[0]!;
+      if (ordered.length > 1) {
+        this.traceVxlan("evpn-duplicate-mac-detected", {
+          vni,
+          mac,
+          vteps: ordered.map((route) => evpnOriginatingVtep(route)),
+          selected: evpnOriginatingVtep(winner),
+        });
+        this.recordEvpnFault(
+          `duplicate-${vni}-${mac}`,
+          `${this.name} received MAC ${mac} in VNI ${vni} from ${ordered.length} VTEPs; ${evpnOriginatingVtep(winner)} was selected.`,
+        );
+      }
+      if (this.vxlan.learnRemoteMac(vni, mac, evpnOriginatingVtep(winner), this.engine.now(), "bgp-evpn")) {
+        this.traceVxlan("vxlan-mac-learned-remote", {
+          vni,
+          mac,
+          remoteVtep: evpnOriginatingVtep(winner),
+          source: "bgp-evpn",
+        });
+      }
+    }
+    for (const member of this.vxlan.members()) {
+      if (member.replication.type !== "bgp-evpn") continue;
+      const peers = membership.get(member.vni) ?? [];
+      if (this.vxlan.replaceEvpnPeers(member.vni, peers)) {
+        this.traceVxlan("evpn-imet-membership-changed", {
+          vni: member.vni,
+          peers: [...peers].sort(),
+        });
+      }
+    }
+  }
+
+  /** The local VNI whose import route targets intersect an advertised set. */
+  private importVniFor(routeTargets: readonly string[]): number | undefined {
+    const targets = new Set(routeTargets);
+    return this.vxlan.evpnVniConfigurations()
+      .filter((entry) => entry.importRouteTargets.some((target) => targets.has(target)))
+      .map((entry) => entry.vni)
+      .find((vni) => this.vxlan.memberForVni(vni) !== undefined);
+  }
+
+  /** The EVPN control plane reacts to a local MAC change. */
+  private onOverlayMacTableChanged(): void {
+    if (!this.evpnAddressFamilyActive()) return;
+    const signature = this.evpnExports().map((route) => route.routeId).join("\n");
+    if (signature === this.evpnExportSignature) return;
+    this.evpnExportSignature = signature;
+    this.traceVxlan("evpn-mac-route-originated", {
+      addressFamily: "l2vpn-evpn",
+      routeType: 2,
+      routes: this.evpnExports().filter((route) => route.type === 2).length,
+    });
+    this.routingPlane.bgp.refreshRoutes();
+  }
+
+  private recordEvpnFault(key: string, message: string): void {
+    if (this.evpnFaults.size >= 64 && !this.evpnFaults.has(key)) return;
+    this.evpnFaults.set(key, message);
+  }
 
   private ensureVxlanListener(): void {
     if (this.vxlanListening) return;

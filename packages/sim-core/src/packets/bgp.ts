@@ -14,7 +14,8 @@ export type BgpAddressFamily =
   | "ipv4-unicast"
   | "ipv6-unicast"
   | "vpnv4-unicast"
-  | "vpnv6-unicast";
+  | "vpnv6-unicast"
+  | "l2vpn-evpn";
 
 /** The two families whose NLRI is a plain unicast prefix. */
 export type BgpUnicastAddressFamily = Extract<BgpAddressFamily, "ipv4-unicast" | "ipv6-unicast">;
@@ -96,6 +97,78 @@ export interface Vpnv6Nlri {
   readonly routeId: string;
 }
 
+/**
+ * EVPN Route Type 2 — MAC/IP Advertisement.
+ *
+ * The path attributes keep their own field name rather than the `path` used by
+ * the unicast and VPN NLRI shapes, because an EVPN route is keyed by its route
+ * type and MAC rather than by a prefix. `label` is the VNI-scoped delivery
+ * label; in a VXLAN fabric it is the VNI itself.
+ */
+export interface EvpnMacIpRoute {
+  readonly type: 2;
+  readonly routeDistinguisher: string;
+  readonly ethernetTag: number;
+  readonly macAddress: string;
+  /** Optional IPv4 binding. IPv6 bindings and ARP suppression are not modelled. */
+  readonly ipAddress?: Ipv4;
+  readonly vni: number;
+  readonly routeTargets: readonly string[];
+  readonly nextHop: Ipv4;
+  readonly label: number;
+  readonly pathAttributes: BgpPathAttributes;
+  readonly routeId: string;
+}
+
+/**
+ * EVPN Route Type 3 — Inclusive Multicast Ethernet Tag. It is what builds the
+ * head-end replication list: a VTEP that advertises one for a VNI is asking to
+ * receive that VNI's BUM traffic.
+ */
+export interface EvpnImetRoute {
+  readonly type: 3;
+  readonly routeDistinguisher: string;
+  readonly ethernetTag: number;
+  readonly vni: number;
+  readonly routeTargets: readonly string[];
+  readonly originatingVtep: Ipv4;
+  readonly nextHop: Ipv4;
+  readonly pathAttributes: BgpPathAttributes;
+  readonly routeId: string;
+}
+
+export type EvpnNlri = EvpnMacIpRoute | EvpnImetRoute;
+
+/** The identity an EVPN withdrawal names; never the whole advertised route. */
+export interface EvpnWithdrawnNlri {
+  readonly type: 2 | 3;
+  readonly routeDistinguisher: string;
+  readonly ethernetTag: number;
+  readonly vni: number;
+  readonly macAddress?: string;
+  /** Type 3 only: the originating router address is part of the NLRI. */
+  readonly originatingVtep?: Ipv4;
+}
+
+/**
+ * The stable RIB key of one EVPN route.
+ *
+ * A Type 3 is keyed by its originating router as well as its RD, exactly as the
+ * NLRI carries it — two VTEPs that share one route distinguisher still each
+ * announce their own membership. A Type 2 is keyed by RD and MAC, so the same
+ * MAC advertised twice under one RD collapses into a single best path.
+ */
+export function evpnRouteKey(route: EvpnWithdrawnNlri): string {
+  return [
+    route.type,
+    route.routeDistinguisher,
+    route.ethernetTag,
+    route.vni,
+    route.macAddress ?? "",
+    route.type === 3 ? route.originatingVtep ?? "" : "",
+  ].join("|");
+}
+
 export interface BgpUpdateMessage {
   readonly kind: "bgp-update";
   readonly withdrawn: readonly Pick<BgpNlri, "network" | "prefixLength">[];
@@ -106,6 +179,8 @@ export interface BgpUpdateMessage {
   readonly vpnv4Nlri?: readonly Vpnv4Nlri[];
   readonly vpnv6Withdrawn?: readonly Pick<Vpnv6Nlri, "routeDistinguisher" | "network" | "prefixLength">[];
   readonly vpnv6Nlri?: readonly Vpnv6Nlri[];
+  readonly evpnWithdrawn?: readonly EvpnWithdrawnNlri[];
+  readonly evpnNlri?: readonly EvpnNlri[];
 }
 
 export interface BgpNotificationMessage {
