@@ -65,9 +65,30 @@ export interface RouterProcessContext {
     | "ipv6-unicast"
     | "vpnv4-unicast"
     | "vpnv6-unicast"
+    | "l2vpn-evpn"
     | "ipv4-vrf"
     | "ipv6-vrf";
   vrfId?: string;
+}
+
+/**
+ * The `interface nve1` context, and the `member vni <n>` selected inside it.
+ *
+ * The VNI's VLAN arrives from a separate `vlan configuration <id>` block, so a
+ * member with no VLAN yet is held here until one binds it.
+ */
+export interface NveContext {
+  memberVni: number | undefined;
+}
+
+/** The `vlan configuration <id>` context: a VLAN waiting for its VNI. */
+export interface VlanConfigurationContext {
+  vlanId: number;
+}
+
+/** The `evpn` block, and the `vni <n> l2` selected inside it. */
+export interface EvpnContext {
+  vni: number | undefined;
 }
 
 export interface VrfContext {
@@ -133,6 +154,9 @@ export interface SessionApi {
   policyMapCtx: QosPolicyMapContext | undefined;
   cryptoCtx: CryptoContext | undefined;
   routeMapCtx: RouteMapContext | undefined;
+  nveCtx: NveContext | undefined;
+  vlanConfigCtx: VlanConfigurationContext | undefined;
+  evpnCtx: EvpnContext | undefined;
   /** Transition to another mode (clears context as appropriate). */
   enter(mode: CliMode): void;
   /**

@@ -16,6 +16,11 @@ export type CliMode =
   | "config-ipsec-profile" // IPsec profile: Router(ipsec-profile)#
   | "config-route-map" // route-map sequence configuration
   | "config-vrf" // VRF definition configuration
+  | "config-nve" // interface nve1: Switch(config-if-nve)#
+  | "config-nve-vni" // member vni <n>: Switch(config-if-nve-vni)#
+  | "config-vlan-config" // vlan configuration <id>: Switch(config-vlan-config)#
+  | "config-evpn" // evpn: Switch(config-evpn)#
+  | "config-evpn-vni" // vni <n> l2: Switch(config-evpn-vni)#
   | "config-router"; // routing process config: Router(config-router)#
 
 /** The prompt suffix for a mode, appended after the device hostname. */
@@ -53,6 +58,16 @@ export function promptSuffix(mode: CliMode): string {
       return "(config-route-map)#";
     case "config-vrf":
       return "(config-vrf)#";
+    case "config-nve":
+      return "(config-if-nve)#";
+    case "config-nve-vni":
+      return "(config-if-nve-vni)#";
+    case "config-vlan-config":
+      return "(config-vlan-config)#";
+    case "config-evpn":
+      return "(config-evpn)#";
+    case "config-evpn-vni":
+      return "(config-evpn-vni)#";
     case "config-router":
       return "(config-router)#";
   }

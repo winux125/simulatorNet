@@ -632,6 +632,59 @@ LFIB, LDP state/bindings, VPNv4/VPNv6 RIBs, allocated labels and NDP state are
 runtime-only and are rebuilt by both browser worker and verifier. See
 `docs/mpls-l3vpn.md`.
 
+### VXLAN and EVPN Layer 2 overlays
+
+A VXLAN tunnel is a **logical overlay, not a cable**. `nve1` has an
+administrative state, an IPv4 source Loopback and VLAN-to-VNI members — but it
+never appears in the connection modal, never anchors a canvas edge and never
+becomes a `topology.links` entry. The canvas overlay is derived presentation,
+exactly like a wireless association.
+
+The VTEP capability belongs to the **L3 Switch alone**. A Router is the underlay
+and may be a BGP EVPN Route Reflector, but is never a VTEP; an L2 Switch stays an
+access/aggregation switch. A reflector carries and reflects EVPN routes without
+holding an overlay or a tenant MAC.
+
+The outer transport is the ordinary simulated UDP stack on port 4789, so an ACL,
+the firewall, QoS, interface state and packet loss all apply to the overlay.
+`estimateVxlanOuterSizeBytes` is the one size API; an outer packet over the
+underlay MTU is dropped and reported, never fragmented. A peer needs an underlay
+route that does not egress the overlay, so no recursive route can form. One VLAN
+maps to at most one VNI and one VNI to at most one VLAN; VNI 0 is always
+rejected.
+
+BUM traffic is replicated head-end, in stable address order and bounded per
+operation. A frame that arrived from a remote VTEP is never re-encapsulated
+towards another: the runtime `FrameOrigin` is simulator metadata, not an Ethernet
+field, and it is what stops an overlay loop.
+
+**EVPN is an address family on the existing BGP process** — `l2vpn-evpn`. Do not
+fork the FSM, the TCP session, the policy engine or the best-path comparator;
+only the RIBs are per family. Type 3 advertises VTEP membership and builds
+head-end replication before any traffic; Type 2 advertises one locally learned
+MAC, never a remote-learned one. A route is imported only when its route targets
+intersect a local VNI's import list, and route targets cross a session only with
+`send-community extended`. A Type 3 route is keyed by its originating VTEP, not
+by RD alone, because two leaves normally share one RD. On a `bgp-evpn` VNI the
+remote MAC table is control-plane owned, so a withdrawal genuinely removes an
+entry. A duplicate MAC resolves through the one documented comparator, never by
+arrival order.
+
+`LabDocument` stores the NVE block, the source Loopback, VLAN-to-VNI mappings,
+static peers, the replication mode, per-VNI RD and import/export route targets,
+and the neighbor's EVPN activation and extended-community flags — all optional,
+so a pre-M10.14 lab opens unchanged. It must never store the remote MAC table,
+learned Type 2/3 routes, VTEP membership, BUM replication state, VXLAN counters
+or the EVPN RIB; the browser worker and the verifier rebuild every one of them.
+
+A managed L3 Switch window carries one `VXLAN & EVPN` section under `Config`,
+with runtime tables reachable from `Monitor`; the secondary navigation stays
+inside the reusable panel, as with QoS and VPN, and the selected section never
+reaches `LabDocument`, a submission, grading or the database. L3VNI, IRB,
+Anycast Gateway, Route Types 1/4/5, ESI/multihoming, multicast underlay,
+ARP/ND suppression, EVPN over MPLS and EVPN-VPWS are not modelled. See
+`docs/vxlan-evpn.md`.
+
 ## TypeScript and code conventions
 
 - ESM packages use explicit, acyclic boundaries.

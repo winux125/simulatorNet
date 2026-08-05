@@ -381,6 +381,90 @@ function validateLayer3Switch(config: Layer3SwitchDeviceConfig, node: NodeSpec, 
     fail("bgp-requires-ip-routing", `${path}.bgp`, "BGP on an L3 Switch requires 'ip routing'");
   }
   validateRoutedProtocols(config, node, path, l3Interfaces, true);
+  validateVxlan(config, path, vlans, connected);
+}
+
+/**
+ * VXLAN and BGP EVPN semantics.
+ *
+ * Only an L3 Switch reaches this function, which is the VTEP boundary itself:
+ * `Layer3SwitchDeviceConfig` is the one device configuration that carries `nve`,
+ * so a Router or an L2 Switch can never declare one.
+ */
+function validateVxlan(
+  config: Layer3SwitchDeviceConfig,
+  path: string,
+  vlans: ReadonlySet<number>,
+  connected: ReadonlyArray<{ address: string; prefixLength: number }>,
+): void {
+  const evpnVnis = new Map((config.evpn?.vnis ?? []).map((vni) => [vni.vni, vni]));
+  (config.evpn?.vnis ?? []).forEach((vni, index) => {
+    const vniPath = `${path}.evpn.vnis[${index}]`;
+    if ((config.evpn?.vnis ?? []).filter((entry) => entry.vni === vni.vni).length > 1) {
+      fail("duplicate-evpn-vni", `${vniPath}.vni`, `Duplicate 'evpn vni ${vni.vni} l2' block`);
+    }
+    if (vni.importRouteTargets.length === 0 && vni.exportRouteTargets.length === 0) {
+      fail("evpn-vni-without-route-target", vniPath, `EVPN VNI ${vni.vni} has no import or export route target`);
+    }
+  });
+
+  const nve = config.nve;
+  if (!nve) return;
+  const nvePath = `${path}.nve`;
+  const loopbacks = new Set((config.loopbacks ?? []).map((loopback) => `Loopback${loopback.id}`));
+  if (!loopbacks.has(nve.sourceInterfaceId)) {
+    // A VTEP sources from a Loopback so the tunnel endpoint survives any single
+    // physical port going down; a routed port or an SVI is not a valid source.
+    fail("invalid-nve-source", `${nvePath}.sourceInterfaceId`,
+      `NVE source '${nve.sourceInterfaceId}' must be a configured Loopback interface`);
+  }
+  const localAddresses = new Set([
+    ...(config.loopbacks ?? []).flatMap((loopback) => (loopback.ipv4 ? [loopback.ipv4.address] : [])),
+    ...connected.map((entry) => entry.address),
+  ]);
+  const seenVnis = new Set<number>();
+  const seenVlans = new Set<number>();
+  nve.members.forEach((member, index) => {
+    const memberPath = `${nvePath}.members[${index}]`;
+    // One VLAN maps to at most one VNI, and one VNI to at most one VLAN.
+    if (seenVnis.has(member.vni)) fail("duplicate-vni-mapping", `${memberPath}.vni`, `VNI ${member.vni} is already mapped`);
+    if (seenVlans.has(member.vlanId)) {
+      fail("duplicate-vlan-vni-mapping", `${memberPath}.vlanId`, `VLAN ${member.vlanId} is already mapped to a VNI`);
+    }
+    seenVnis.add(member.vni);
+    seenVlans.add(member.vlanId);
+    if (!vlans.has(member.vlanId)) {
+      fail("unknown-vni-vlan", `${memberPath}.vlanId`, `VNI ${member.vni} maps undefined VLAN ${member.vlanId}`);
+    }
+    if (member.replication.type === "static") {
+      // A repeated peer address is deduplicated by canonicalization and by the
+      // engine alike, so only a peer that is *this* switch is an error.
+      member.replication.peerAddresses.forEach((peer, peerIndex) => {
+        if (localAddresses.has(peer)) {
+          fail("local-vtep-peer", `${memberPath}.replication.peerAddresses[${peerIndex}]`,
+            `Remote VTEP '${peer}' is a local address of this switch`);
+        }
+      });
+      return;
+    }
+    // BGP EVPN ingress replication needs the control plane that carries it.
+    if (!evpnVnis.has(member.vni)) {
+      fail("evpn-vni-not-defined", `${memberPath}.vni`,
+        `VNI ${member.vni} uses BGP EVPN ingress replication but has no 'evpn vni ${member.vni} l2' block`);
+    }
+    const evpnNeighbors = (config.bgp?.neighbors ?? []).filter((neighbor) => neighbor.evpnActivated);
+    if (evpnNeighbors.length === 0) {
+      fail("evpn-address-family-inactive", `${memberPath}.replication`,
+        `VNI ${member.vni} uses BGP EVPN ingress replication but no neighbor activates 'address-family l2vpn evpn'`);
+    }
+    const withoutExtended = evpnNeighbors.find((neighbor) => !neighbor.sendCommunityExtended);
+    if (withoutExtended) {
+      // Without extended communities no route target crosses the session, so
+      // every EVPN route would be advertised and then silently rejected.
+      fail("evpn-extended-community-required", `${path}.bgp.neighbors`,
+        `EVPN neighbor ${withoutExtended.address} needs 'send-community extended' to carry route targets`);
+    }
+  });
 }
 
 function validateRouter(config: RouterDeviceConfig, node: NodeSpec, path: string): void {

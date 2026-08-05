@@ -15,6 +15,10 @@ export const PrefixLengthSchema = z.number().int().min(0).max(32);
 export const Ipv6PrefixLengthSchema = z.number().int().min(0).max(128);
 export const VlanIdSchema = z.number().int().min(1).max(4094);
 
+/** Canonical lowercase colon form, exactly what `normalizeMac` produces. */
+export const MacAddressSchema = z.string()
+  .regex(/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/, "Invalid MAC address");
+
 export const Ipv6Schema = z.string().refine(isIpv6Text, "Invalid IPv6 address");
 export const IpAddressSchema = z.union([Ipv4Schema, Ipv6Schema]);
 

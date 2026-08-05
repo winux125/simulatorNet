@@ -100,6 +100,8 @@ import type {
   BgpStateView,
   BgpUnicastFamilyView,
   MplsL3VpnView,
+  VxlanEvpnView,
+  LabUiVxlanTunnel,
   Ospfv3View,
   RemoteSessionsView,
   SnmpOperationView,
@@ -505,6 +507,26 @@ export class SimulationWorkerRuntime {
         router.resetMplsRuntime();
         this.runProtocolConvergence();
         return this.mplsL3VpnState(deviceId);
+      }
+      case "GET_NVE_INTERFACES":
+      case "GET_VXLAN_VNIS":
+      case "GET_VXLAN_PEERS":
+      case "GET_VXLAN_REMOTE_MACS":
+      case "GET_EVPN_ROUTES":
+      case "GET_EVPN_VNI_MEMBERS":
+        return this.vxlanEvpnState(requireString(request, "deviceId"));
+      case "CLEAR_VXLAN_RUNTIME": {
+        const deviceId = requireString(request, "deviceId");
+        // Configuration is untouched: only the learned overlay tables go.
+        this.requireVtep(deviceId).resetVxlanRuntime();
+        this.runProtocolConvergence();
+        return this.vxlanEvpnState(deviceId);
+      }
+      case "RESTART_NVE": {
+        const deviceId = requireString(request, "deviceId");
+        this.requireVtep(deviceId).restartNve();
+        this.runProtocolConvergence();
+        return this.vxlanEvpnState(deviceId);
       }
       case "GET_REMOTE_SESSIONS":
         return this.remoteSessions(requireString(request, "deviceId"));
@@ -1301,7 +1323,75 @@ export class SimulationWorkerRuntime {
       vpnTunnels: this.vpnTunnelOverlays(),
       mplsLinkLabels: this.mplsLinkLabelOverlays(),
       l3VpnRelations: this.l3VpnRelationOverlays(),
+      vxlanTunnels: this.vxlanTunnelOverlays(),
     };
+  }
+
+  /**
+   * Derive one logical overlay per VTEP pair that shares a VNI.
+   *
+   * The relation is presentation only: it is never a `topology.links` entry, it
+   * never opens the cable modal and it never changes LabDocument connectivity.
+   */
+  private vxlanTunnelOverlays(): LabUiVxlanTunnel[] {
+    const built = this.requireBuiltLab();
+    const vteps: Layer3Switch[] = [];
+    const owners = new Map<string, Layer3Switch>();
+    for (const device of built.devices.values()) {
+      if (!(device instanceof Layer3Switch) || !device.vxlan.configured) continue;
+      vteps.push(device);
+      const address = device.nveSummaries()[0]?.sourceAddress;
+      if (address !== undefined && !owners.has(address)) owners.set(address, device);
+    }
+    const result: LabUiVxlanTunnel[] = [];
+    const seen = new Set<string>();
+    for (const local of vteps) {
+      for (const peer of local.vxlanPeerSummaries()) {
+        const remote = owners.get(peer.address);
+        if (!remote || remote.id === local.id) continue;
+        const key = [local.id, remote.id].sort().join(" ");
+        const id = `vxlan:${peer.vni}:${key.replace(" ", ":")}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const up = local.vniSummaries().find((row) => row.vni === peer.vni)?.up === true && peer.reachable;
+        result.push({
+          id,
+          localDeviceId: local.id,
+          remoteDeviceId: remote.id,
+          label: `VNI ${peer.vni}`,
+          source: peer.source,
+          state: up ? "operational" : "down",
+        });
+      }
+    }
+    // Two VTEPs that both run BGP EVPN but import no shared route target never
+    // become peers at all, so the mismatch is reported as its own relation
+    // rather than silently leaving the canvas empty.
+    for (const local of vteps) {
+      if (!local.evpnAddressFamilyActive()) continue;
+      for (const remote of vteps) {
+        if (remote.id === local.id || !remote.evpnAddressFamilyActive()) continue;
+        const key = [local.id, remote.id].sort().join(" ");
+        const shared = local.evpnVniConfigurations().some((entry) =>
+          remote.evpnVniConfigurations().some((candidate) =>
+            candidate.exportRouteTargets.some((target) => entry.importRouteTargets.includes(target))));
+        if (shared) continue;
+        const vni = local.vxlan.members()[0]?.vni;
+        if (vni === undefined) continue;
+        const id = `vxlan:rt-mismatch:${key.replace(" ", ":")}`;
+        if (seen.has(id) || result.some((entry) => entry.localDeviceId === local.id && entry.remoteDeviceId === remote.id)) continue;
+        seen.add(id);
+        result.push({
+          id,
+          localDeviceId: local.id,
+          remoteDeviceId: remote.id,
+          label: `VNI ${vni} route-target mismatch`,
+          source: "bgp-evpn",
+          state: "rt-mismatch",
+        });
+      }
+    }
+    return result.sort((left, right) => left.id.localeCompare(right.id));
   }
 
   /**
@@ -1932,6 +2022,14 @@ export class SimulationWorkerRuntime {
         warnings.push(...this.bgpIpv6Problems(device));
         for (const problem of device.qosProblems()) {
           warnings.push({ code: "qos-policy", message: problem.message, deviceIds: [device.id] });
+        }
+        // VXLAN/EVPN diagnostics: an unreachable VTEP, a missing VNI mapping,
+        // an inactive EVPN family or an RT mismatch explains itself in Problems
+        // rather than being thrown mid-packet.
+        if (device instanceof Layer3Switch) {
+          for (const problem of device.vxlanProblems()) {
+            warnings.push({ code: "vxlan-evpn", message: problem, deviceIds: [device.id] });
+          }
         }
         if (device instanceof Router && device.deviceType === "router") {
           const mplsInterfaces = device.mplsInterfaceSummaries();
@@ -2648,6 +2746,63 @@ export class SimulationWorkerRuntime {
         routeTargets: [...route.routeTargets],
         path: { ...route.path, asPath: [...route.path.asPath] },
       })),
+    };
+  }
+
+  /** The VTEP capability belongs to the L3 Switch, and to nothing else. */
+  private requireVtep(deviceId: string): Layer3Switch {
+    const device = this.requireBuiltLab().getDevice(deviceId);
+    if (device instanceof Layer3Switch) return device;
+    throw new SimulationWorkerError("vxlan-not-supported", `Device '${deviceId}' is not a VXLAN tunnel endpoint`);
+  }
+
+  private vxlanEvpnState(deviceId: string): VxlanEvpnView {
+    const device = this.requireVtep(deviceId);
+    const evpnVnis = new Map(device.evpnVniConfigurations().map((entry) => [entry.vni, entry]));
+    return {
+      deviceId,
+      nve: device.nveSummaries().map((row) => ({
+        id: row.id,
+        sourceInterfaceId: row.sourceInterfaceId,
+        adminUp: row.adminUp,
+        vniCount: row.vniCount,
+        up: row.up,
+        sourceAddress: row.sourceAddress,
+        reason: row.reason,
+      })),
+      vnis: device.vniSummaries().map((row) => {
+        const evpn = evpnVnis.get(row.vni);
+        return {
+          vni: row.vni,
+          vlanId: row.vlanId,
+          replication: row.replication,
+          up: row.up,
+          sourceAddress: row.sourceAddress,
+          reason: row.reason,
+          routeDistinguisher: evpn?.routeDistinguisher,
+          importRouteTargets: [...(evpn?.importRouteTargets ?? [])],
+          exportRouteTargets: [...(evpn?.exportRouteTargets ?? [])],
+        };
+      }),
+      peers: device.vxlanPeerSummaries().map((row) => ({ ...row })),
+      remoteMacs: device.remoteMacEntries().map((row) => ({ ...row })),
+      evpnRoutes: device.evpnRoutes().map((route) => ({
+        type: route.type,
+        routeDistinguisher: route.routeDistinguisher,
+        vni: route.vni,
+        best: route.best,
+        nextHop: route.nextHop,
+        routeTargets: [...route.routeTargets],
+        macAddress: route.type === 2 ? route.macAddress : undefined,
+        ipAddress: route.type === 2 ? route.ipAddress : undefined,
+        originatingVtep: route.type === 3 ? route.originatingVtep : undefined,
+        originatorId: route.originatorId,
+        clusterList: [...route.clusterList],
+        source: route.source,
+        neighborAddress: route.neighborAddress,
+      })),
+      evpnAddressFamilyActive: device.evpnAddressFamilyActive(),
+      problems: device.vxlanProblems(),
     };
   }
 

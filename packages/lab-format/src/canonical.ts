@@ -794,10 +794,49 @@ function layer3SwitchConfiguration(
     qos: canonicalQos(config?.qos),
     ...canonicalSwitchProtocols(config),
     ...canonicalRoutedProtocols(config),
+    ...canonicalVxlan(config),
     consoleAccess: canonicalConsoleAccess(config),
     remoteAccess: canonicalRemoteAccess(config),
     aaa: canonicalAaa(config),
     snmp: canonicalSnmp(config),
+  };
+}
+
+/**
+ * VXLAN members order by VNI, static peers by address and route targets are
+ * deduplicated and sorted, so an identical overlay always serializes to
+ * identical bytes. An absent block stays absent: a pre-M10.14 lab is unchanged.
+ */
+function canonicalVxlan(config: Layer3SwitchDeviceConfig | undefined) {
+  return {
+    nve: config?.nve === undefined ? undefined : {
+      id: "nve1" as const,
+      sourceInterfaceId: config.nve.sourceInterfaceId,
+      shutdown: config.nve.shutdown,
+      members: [...config.nve.members]
+        .sort((a, b) => a.vni - b.vni)
+        .map((member) => ({
+          vni: member.vni,
+          vlanId: member.vlanId,
+          replication: member.replication.type === "static"
+            ? {
+                type: "static" as const,
+                peerAddresses: [...new Set(member.replication.peerAddresses)]
+                  .sort((a, b) => ipToInt(a) - ipToInt(b)),
+              }
+            : { type: "bgp-evpn" as const },
+        })),
+    },
+    evpn: config?.evpn === undefined ? undefined : {
+      vnis: [...config.evpn.vnis]
+        .sort((a, b) => a.vni - b.vni)
+        .map((vni) => ({
+          vni: vni.vni,
+          routeDistinguisher: vni.routeDistinguisher,
+          importRouteTargets: [...new Set(vni.importRouteTargets)].sort(),
+          exportRouteTargets: [...new Set(vni.exportRouteTargets)].sort(),
+        })),
+    },
   };
 }
 

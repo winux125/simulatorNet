@@ -1,5 +1,7 @@
 import type {
   EtherChannelConfig,
+  EvpnConfig,
+  NveInterfaceConfig,
   LoopbackInterfaceConfig,
   NeighborDiscoveryConfig,
   OspfProcessConfig,
@@ -220,6 +222,70 @@ export function serializeVpnConfiguration(device: Router): VpnConfiguration | un
     })),
   };
   return isDefaultVpnConfiguration(configuration) ? undefined : configuration;
+}
+
+/**
+ * VXLAN tunnel-endpoint configuration.
+ *
+ * The `evpn` blocks are applied before the NVE members that reference their
+ * VNIs, so an `ingress-replication protocol bgp` member always finds its RD and
+ * route targets. Nothing runtime crosses this boundary: the remote MAC table,
+ * EVPN-learned membership and every counter are relearned from scratch, exactly
+ * as they are in the verifier.
+ */
+export function applyVxlanConfiguration(
+  device: Layer3Switch,
+  nve: NveInterfaceConfig | undefined,
+  evpn: EvpnConfig | undefined,
+): void {
+  for (const vni of evpn?.vnis ?? []) {
+    device.defineEvpnVni({
+      vni: vni.vni,
+      routeDistinguisher: vni.routeDistinguisher,
+      importRouteTargets: [...vni.importRouteTargets],
+      exportRouteTargets: [...vni.exportRouteTargets],
+    });
+  }
+  if (!nve) return;
+  device.configureNve({
+    id: nve.id,
+    sourceInterfaceId: nve.sourceInterfaceId,
+    adminUp: !nve.shutdown,
+    members: nve.members.map((member) => ({
+      vni: member.vni,
+      vlanId: member.vlanId,
+      replication: member.replication.type === "static"
+        ? { type: "static", peerAddresses: [...member.replication.peerAddresses] }
+        : { type: "bgp-evpn" },
+    })),
+  });
+}
+
+export function serializeNveConfiguration(device: Layer3Switch): NveInterfaceConfig | undefined {
+  const nve = device.nveConfiguration();
+  if (!nve) return undefined;
+  return {
+    id: "nve1",
+    sourceInterfaceId: nve.sourceInterfaceId,
+    shutdown: !nve.adminUp,
+    members: nve.members.map((member) => ({
+      vni: member.vni,
+      vlanId: member.vlanId,
+      replication: member.replication.type === "static"
+        ? { type: "static" as const, peerAddresses: [...member.replication.peerAddresses] }
+        : { type: "bgp-evpn" as const },
+    })),
+  };
+}
+
+export function serializeEvpnConfiguration(device: Layer3Switch): EvpnConfig | undefined {
+  const vnis = device.evpnVniConfigurations().map((entry) => ({
+    vni: entry.vni,
+    routeDistinguisher: entry.routeDistinguisher,
+    importRouteTargets: [...entry.importRouteTargets],
+    exportRouteTargets: [...entry.exportRouteTargets],
+  }));
+  return vnis.length > 0 ? { vnis } : undefined;
 }
 
 export function applyOspfConfiguration(device: Router | Layer3Switch, config: OspfProcessConfig): void {

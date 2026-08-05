@@ -64,7 +64,10 @@ import {
   applyBgpConfiguration,
   applySpanningTreeConfiguration,
   applyVpnConfiguration,
+  applyVxlanConfiguration,
   serializeDiscoveryConfiguration,
+  serializeEvpnConfiguration,
+  serializeNveConfiguration,
   serializeEtherChannelConfiguration,
   serializeLoopbackConfiguration,
   serializeOspfConfiguration,
@@ -749,6 +752,10 @@ function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3Swit
   applySpanningTreeConfiguration(device, config.spanningTree ?? DEFAULT_SPANNING_TREE_CONFIG);
   applyDiscoveryConfiguration(device, config.discovery ?? DEFAULT_NEIGHBOR_DISCOVERY_CONFIG);
   applyLoopbackConfiguration(device, config.loopbacks ?? []);
+  // The NVE sources from a Loopback and maps VLANs that must already exist, so
+  // the overlay is configured after both — and before BGP, which may activate
+  // the EVPN address family that advertises it.
+  applyVxlanConfiguration(device, config.nve, config.evpn);
   if (config.ospf) applyOspfConfiguration(device, config.ospf);
   if (config.ospfv3) applyOspfv3Configuration(device, config.ospfv3);
   if (!deferBgp) applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists, config.ipv6PrefixLists);
@@ -1172,6 +1179,8 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
       routeMaps: serializeRouteMaps(device),
       communityLists: serializeCommunityLists(device),
       asPathLists: serializeAsPathLists(device),
+      nve: serializeNveConfiguration(device),
+      evpn: serializeEvpnConfiguration(device),
       consoleAccess: device.consoleAccess.snapshot(),
       remoteAccess: serializeRemoteAccess(device.remoteAccess),
       aaa: serializeAaa(device.aaa),

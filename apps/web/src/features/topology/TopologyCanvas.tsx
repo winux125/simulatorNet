@@ -119,6 +119,8 @@ interface TopologyCanvasProps {
   mplsLabelsShown: boolean;
   /** View → Protocol Overlays → L3VPN. Local workspace state only. */
   l3VpnShown: boolean;
+  /** View → Protocol Overlays → VXLAN Tunnels. Local workspace state only. */
+  vxlanTunnelsShown: boolean;
   fitRequest: number;
   zoomResetRequest: number;
   zoomInRequest: number;
@@ -449,6 +451,9 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
         : [],
       l3VpnRelations: props.l3VpnShown
         ? props.snapshot?.l3VpnRelations?.map((relation) => ({ ...relation }))
+        : [],
+      vxlanTunnels: props.vxlanTunnelsShown
+        ? props.snapshot?.vxlanTunnels?.map((tunnel) => ({ ...tunnel }))
         : [],
     };
     if (!props.document) return result;

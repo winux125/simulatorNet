@@ -147,6 +147,21 @@ export interface LabUiL3VpnRelation {
   state: "operational" | "control-plane-only" | "unavailable";
 }
 
+/**
+ * A derived VXLAN tunnel between two VTEPs, drawn like a wireless association:
+ * presentation only. It is never a `topology.links` entry, never opens the cable
+ * modal and never changes `LabDocument` connectivity.
+ */
+export interface LabUiVxlanTunnel {
+  id: string;
+  localDeviceId: string;
+  remoteDeviceId: string;
+  label: string;
+  source: "static" | "bgp-evpn";
+  /** `rt-mismatch` means both sides run EVPN but import no shared route target. */
+  state: "operational" | "down" | "rt-mismatch";
+}
+
 export interface LabUiSnapshot {
   labId: string;
   title: string;
@@ -159,6 +174,7 @@ export interface LabUiSnapshot {
   vpnTunnels?: LabUiVpnTunnel[];
   mplsLinkLabels?: LabUiMplsLinkLabel[];
   l3VpnRelations?: LabUiL3VpnRelation[];
+  vxlanTunnels?: LabUiVxlanTunnel[];
 }
 
 export interface SimulationTraceEvent {
@@ -342,7 +358,9 @@ export interface HostNetworkWarning {
     | "bgp-ipv6-network-route-missing"
     | "vpnv6-extended-community-disabled"
     | "vpnv6-label-unavailable"
-    | "vrf-overlapping-ipv6-prefix";
+    | "vrf-overlapping-ipv6-prefix"
+    // --- M10.14 VXLAN and BGP EVPN Layer 2 overlays ---
+    | "vxlan-evpn";
   message: string;
   address?: string;
   deviceIds: readonly string[];
@@ -724,6 +742,70 @@ export interface MplsL3VpnView {
 }
 
 /**
+ * L3-Switch VXLAN/EVPN inspection, as plain JSON.
+ *
+ * Every table here is runtime: the remote MAC table, EVPN-derived membership
+ * and the EVPN RIB are rebuilt from structured configuration by the browser
+ * worker and the verifier alike, and none of them reaches a `LabDocument`.
+ */
+export interface VxlanEvpnView {
+  deviceId: string;
+  nve: Array<{
+    id: string;
+    sourceInterfaceId: string;
+    adminUp: boolean;
+    vniCount: number;
+    up: boolean;
+    sourceAddress?: string;
+    reason?: string;
+  }>;
+  vnis: Array<{
+    vni: number;
+    vlanId: number;
+    replication: "static" | "bgp-evpn";
+    up: boolean;
+    sourceAddress?: string;
+    reason?: string;
+    /** The RD and route targets this VNI advertises with, when configured. */
+    routeDistinguisher?: string;
+    importRouteTargets: string[];
+    exportRouteTargets: string[];
+  }>;
+  peers: Array<{
+    vni: number;
+    address: string;
+    source: "static" | "bgp-evpn";
+    reachable: boolean;
+  }>;
+  remoteMacs: Array<{
+    vni: number;
+    mac: string;
+    remoteVtep: string;
+    source: "data-plane" | "bgp-evpn";
+    lastSeenNs: number;
+  }>;
+  evpnRoutes: Array<{
+    type: 2 | 3;
+    routeDistinguisher: string;
+    vni: number;
+    best: boolean;
+    nextHop: string;
+    routeTargets: string[];
+    /** Type 2 only. */
+    macAddress?: string;
+    ipAddress?: string;
+    /** Type 3 only. */
+    originatingVtep?: string;
+    originatorId?: string;
+    clusterList: string[];
+    source: string;
+    neighborAddress?: string;
+  }>;
+  evpnAddressFamilyActive: boolean;
+  problems: string[];
+}
+
+/**
  * Read-only management views. Everything here is runtime state recomputed from
  * the engine on demand: it never reaches a `LabDocument`, a submission or the
  * database, and it never carries a password, shared key or community string.
@@ -933,6 +1015,15 @@ export type SimWorkerRequest =
   | { type: "GET_VPNV6_LABEL_BINDINGS"; requestId: string; deviceId: string }
   | { type: "RESTART_LDP"; requestId: string; deviceId: string }
   | { type: "RESET_MPLS_RUNTIME"; requestId: string; deviceId: string }
+  // --- M10.14 VXLAN and BGP EVPN inspection (runtime, never persisted) ---
+  | { type: "GET_NVE_INTERFACES"; requestId: string; deviceId: string }
+  | { type: "GET_VXLAN_VNIS"; requestId: string; deviceId: string }
+  | { type: "GET_VXLAN_PEERS"; requestId: string; deviceId: string }
+  | { type: "GET_VXLAN_REMOTE_MACS"; requestId: string; deviceId: string }
+  | { type: "GET_EVPN_ROUTES"; requestId: string; deviceId: string }
+  | { type: "GET_EVPN_VNI_MEMBERS"; requestId: string; deviceId: string }
+  | { type: "CLEAR_VXLAN_RUNTIME"; requestId: string; deviceId: string }
+  | { type: "RESTART_NVE"; requestId: string; deviceId: string }
   // --- M10.7 management plane (inspection + bounded runtime actions) ---
   | { type: "GET_REMOTE_SESSIONS"; requestId: string; deviceId: string }
   | { type: "CLEAR_REMOTE_LINE"; requestId: string; deviceId: string; line: number }
@@ -991,6 +1082,7 @@ export type SimWorkerPayload =
   | Ospfv3View
   | BgpStateView
   | MplsL3VpnView
+  | VxlanEvpnView
   | RemoteSessionsView
   | AaaStatusResponse
   | SnmpAgentStatusView
@@ -1119,6 +1211,14 @@ export interface SimWorkerPayloadByType {
   GET_VPNV6_LABEL_BINDINGS: MplsL3VpnView;
   RESTART_LDP: MplsL3VpnView;
   RESET_MPLS_RUNTIME: MplsL3VpnView;
+  GET_NVE_INTERFACES: VxlanEvpnView;
+  GET_VXLAN_VNIS: VxlanEvpnView;
+  GET_VXLAN_PEERS: VxlanEvpnView;
+  GET_VXLAN_REMOTE_MACS: VxlanEvpnView;
+  GET_EVPN_ROUTES: VxlanEvpnView;
+  GET_EVPN_VNI_MEMBERS: VxlanEvpnView;
+  CLEAR_VXLAN_RUNTIME: VxlanEvpnView;
+  RESTART_NVE: VxlanEvpnView;
   GET_REMOTE_SESSIONS: RemoteSessionsView;
   CLEAR_REMOTE_LINE: RemoteSessionsView;
   GET_AAA_STATUS: AaaStatusResponse;

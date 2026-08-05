@@ -20,8 +20,10 @@ import {
   VlanIdSchema,
 } from "./primitives";
 import {
+  EvpnConfigSchema,
   LdpConfigSchema,
   NeighborDiscoveryConfigSchema,
+  NveInterfaceConfigSchema,
   RoutedControlProtocolShape,
   SwitchControlProtocolShape,
   VrfConfigSchema,
@@ -586,6 +588,15 @@ export const Layer3SwitchDeviceConfigSchema = z.object({
   ...RoutedQosConfigShape,
   ...SwitchControlProtocolShape,
   ...RoutedControlProtocolShape,
+  /**
+   * M10.14 VXLAN tunnel endpoint. Both blocks are optional, so every lab
+   * written before this milestone opens unchanged and without a migration.
+   * Only configuration lives here: the remote MAC table, learned Type 2/3
+   * routes, VTEP membership, BUM replication state, counters and the EVPN RIB
+   * are runtime and are rebuilt by the browser worker and the verifier alike.
+   */
+  nve: NveInterfaceConfigSchema.optional(),
+  evpn: EvpnConfigSchema.optional(),
   consoleAccess: ConsoleAccessConfigurationSchema.optional(),
   remoteAccess: RemoteAccessConfigurationSchema.optional(),
   aaa: AaaConfigurationSchema.optional(),

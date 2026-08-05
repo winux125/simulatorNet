@@ -118,11 +118,24 @@ export const navigationCommands: CommandSpec[] = [
     modes: [
       "config-if", "config-vlan", "config-acl", "config-line", "config-aaa-server",
       "config-cmap", "config-pmap", "config-router", "config-route-map",
-      "config-vrf",
+      "config-vrf", "config-nve", "config-vlan-config", "config-evpn",
       "config-ikev2-proposal", "config-ikev2-peer", "config-ipsec-profile",
     ],
     device: "network",
     run: (s) => s.enter("config"),
+  },
+  // A VNI sub-mode exits back into the block that owns it, not to global config.
+  {
+    pattern: "exit",
+    modes: ["config-nve-vni"],
+    device: "network",
+    run: (s) => s.enter("config-nve"),
+  },
+  {
+    pattern: "exit",
+    modes: ["config-evpn-vni"],
+    device: "network",
+    run: (s) => s.enter("config-evpn"),
   },
   {
     pattern: "exit-address-family",
@@ -148,7 +161,8 @@ export const navigationCommands: CommandSpec[] = [
     modes: [
       "config", "config-if", "config-vlan", "config-acl", "config-line", "config-aaa-server",
       "config-cmap", "config-pmap", "config-pmap-c", "config-router", "config-route-map",
-      "config-vrf",
+      "config-vrf", "config-nve", "config-nve-vni", "config-vlan-config",
+      "config-evpn", "config-evpn-vni",
       "config-ikev2-proposal", "config-ikev2-peer", "config-ipsec-profile",
     ],
     device: "network",

@@ -40,6 +40,7 @@ export type DeviceWindowSectionId =
   | "policies-config"
   | "qos-config"
   | "vpn-config"
+  | "vxlan-evpn-config"
   | "console-config"
   | "configuration-files"
   | "remote-access-config"
@@ -65,6 +66,12 @@ export type DeviceWindowSectionId =
   | "firewall-runtime"
   | "qos-runtime"
   | "vpn-runtime"
+  | "nve-runtime"
+  | "vxlan-peers-runtime"
+  | "vxlan-macs-runtime"
+  | "evpn-type2-runtime"
+  | "evpn-type3-runtime"
+  | "evpn-vni-runtime"
   | "aaa-runtime"
   | "snmp-runtime";
 
@@ -163,6 +170,9 @@ function configSections(type: DeviceType): DeviceWindowSectionDefinition[] {
   if (deviceTypeHasCapability(type, "static-routing")) {
     sections.push({ id: "routing-config", label: "Routing" });
   }
+  // The VTEP capability is the L3 Switch's alone, so VXLAN sits between its
+  // VLANs and its routing — a Router is only ever the underlay or a reflector.
+  if (type === "l3-switch") sections.push({ id: "vxlan-evpn-config", label: "VXLAN & EVPN" });
   if (type === "router" || type === "l3-switch") {
     sections.push({ id: "ospf-config", label: "OSPFv2 & OSPFv3", group: "Routing" });
     sections.push({ id: "bgp-config", label: "BGP", group: "Routing" });
@@ -212,6 +222,14 @@ function monitorSections(type: DeviceType): DeviceWindowSectionDefinition[] {
     sections.push({ id: "neighbors-runtime", label: "ARP / NDP" });
     sections.push({ id: "protocols-runtime", label: "Protocol Neighbors" });
     if (type === "router" || type === "l3-switch") sections.push({ id: "bgp-runtime", label: "BGP" });
+    if (type === "l3-switch") {
+      sections.push({ id: "nve-runtime", label: "NVE Status", group: "VXLAN & EVPN" });
+      sections.push({ id: "vxlan-peers-runtime", label: "VXLAN Peers", group: "VXLAN & EVPN" });
+      sections.push({ id: "vxlan-macs-runtime", label: "Remote MACs", group: "VXLAN & EVPN" });
+      sections.push({ id: "evpn-type2-runtime", label: "EVPN Type 2", group: "VXLAN & EVPN" });
+      sections.push({ id: "evpn-type3-runtime", label: "EVPN Type 3", group: "VXLAN & EVPN" });
+      sections.push({ id: "evpn-vni-runtime", label: "VNI Membership", group: "VXLAN & EVPN" });
+    }
     if (type === "router") {
       sections.push({ id: "mpls-runtime", label: "MPLS Forwarding", group: "MPLS & L3VPN" });
       sections.push({ id: "ldp-runtime", label: "LDP Neighbors & Bindings", group: "MPLS & L3VPN" });

@@ -301,6 +301,16 @@ export const bgpCommands: CommandSpec[] = [
     },
   },
   {
+    // L2VPN EVPN rides the same session as every other family. An L3 Switch
+    // originates into it as a VTEP; a Router only ever carries or reflects.
+    pattern: "address-family l2vpn evpn", modes: ["config-router"], device: "ospf",
+    run: (s) => {
+      bgpOf(s);
+      s.routerCtx!.addressFamily = "l2vpn-evpn";
+      s.routerCtx!.vrfId = undefined;
+    },
+  },
+  {
     pattern: "address-family ipv4 vrf {name}", modes: ["config-router"], device: "router",
     run: (s, p) => {
       bgpOf(s);
@@ -337,15 +347,22 @@ export const bgpCommands: CommandSpec[] = [
         updateNeighbor(s, p.address!, (neighbor) => ({ ...requireNeighbor(neighbor), vpnv6Activated: true }));
         return;
       }
+      if (family === "l2vpn-evpn") {
+        updateNeighbor(s, p.address!, (neighbor) => ({ ...requireNeighbor(neighbor), evpnActivated: true }));
+        return;
+      }
       requireAddressFamily(s, "vpnv4-unicast");
       updateNeighbor(s, p.address!, (neighbor) => ({ ...requireNeighbor(neighbor), vpnv4Activated: true }));
     },
   },
   {
-    pattern: "neighbor {address} send-community extended", modes: ["config-router"], device: "router",
+    // EVPN carries its route targets as extended communities too, so an L3
+    // Switch VTEP needs this command as much as a Router PE does.
+    pattern: "neighbor {address} send-community extended", modes: ["config-router"], device: "ospf",
     run: (s, p) => {
-      if (s.routerCtx?.addressFamily !== "vpnv4-unicast" && s.routerCtx?.addressFamily !== "vpnv6-unicast") {
-        throw new InvalidModeError("Enter 'address-family vpnv4' or 'address-family vpnv6' first");
+      const family = s.routerCtx?.addressFamily;
+      if (family !== "vpnv4-unicast" && family !== "vpnv6-unicast" && family !== "l2vpn-evpn") {
+        throw new InvalidModeError("Enter 'address-family vpnv4', 'address-family vpnv6' or 'address-family l2vpn evpn' first");
       }
       updateNeighbor(s, p.address!, (neighbor) => ({ ...requireNeighbor(neighbor), sendCommunityExtended: true }));
     },

@@ -1,9 +1,14 @@
 import { z } from "zod";
 import { DeviceCapabilitySchema, DeviceTypeSchema } from "./devices";
 import { WirelessSecurityModeSchema } from "./wireless";
-import { IpAddressSchema } from "./primitives";
+import { IpAddressSchema, MacAddressSchema } from "./primitives";
 import { CosValueSchema, DscpValueSchema } from "./qos";
-import { BgpCommunitySchema, RouteDistinguisherSchema, RouteTargetSchema } from "./protocols";
+import {
+  BgpCommunitySchema,
+  RouteDistinguisherSchema,
+  RouteTargetSchema,
+  VniSchema,
+} from "./protocols";
 import {
   Ipv4Schema,
   Ipv6CidrSchema,
@@ -1298,6 +1303,128 @@ export const OverlappingIpv6PrefixIsolationGradingCheckSchema = CheckIdentitySch
   }).merge(BgpIpv6PrefixExpectationSchema).strict(),
 }).strict();
 
+// --- M10.14 VXLAN and BGP EVPN Layer 2 overlays -------------------------
+
+/**
+ * Every VXLAN/EVPN expectation is a *hidden* value: an RD, a route target and a
+ * MAC address name the answer, so a student result reports only whether the
+ * check passed and never echoes the expected value back.
+ */
+const VniExpectationSchema = z.object({ vni: VniSchema });
+
+export const NveConfiguredGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("nve-configured"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    /** The Loopback the NVE sources from, e.g. "Loopback0". */
+    expectedSourceInterfaceId: z.string().min(1).max(64).optional(),
+    expected: z.enum(["operational", "configured", "down"]).default("operational"),
+  }).strict(),
+}).strict();
+
+export const VxlanVniMappingGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("vxlan-vni-mapping"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    vlanId: VlanIdSchema,
+    expectedReplication: z.enum(["static", "bgp-evpn"]).optional(),
+  }).merge(VniExpectationSchema).strict(),
+}).strict();
+
+export const VxlanPeerStateGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("vxlan-peer-state"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    peerAddress: Ipv4Schema,
+    expected: z.enum(["reachable", "unreachable", "absent"]).default("reachable"),
+  }).merge(VniExpectationSchema).strict(),
+}).strict();
+
+export const VxlanRemoteMacGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("vxlan-remote-mac"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    macAddress: MacAddressSchema,
+    expectedRemoteVtep: Ipv4Schema.optional(),
+    expectedSource: z.enum(["data-plane", "bgp-evpn"]).optional(),
+    expected: z.enum(["present", "absent"]).default("present"),
+  }).merge(VniExpectationSchema).strict(),
+}).strict();
+
+export const EvpnType2RouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-type2-route"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    macAddress: MacAddressSchema,
+    routeDistinguisher: RouteDistinguisherSchema.optional(),
+    expectedNextHop: Ipv4Schema.optional(),
+    expected: z.enum(["present", "absent"]).default("present"),
+  }).merge(VniExpectationSchema).strict(),
+}).strict();
+
+export const EvpnType3RouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-type3-route"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    /** The VTEP that originated the Inclusive Multicast route. */
+    originatingVtep: Ipv4Schema.optional(),
+    routeDistinguisher: RouteDistinguisherSchema.optional(),
+    expected: z.enum(["present", "absent"]).default("present"),
+  }).merge(VniExpectationSchema).strict(),
+}).strict();
+
+export const EvpnRouteTargetGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-route-target"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    direction: z.enum(["import", "export"]),
+    routeTarget: RouteTargetSchema,
+  }).merge(VniExpectationSchema).strict(),
+}).strict();
+
+export const VxlanL2ConnectivityGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("vxlan-l2-connectivity"),
+  configuration: z.object({
+    sourceDeviceId: z.string().min(1),
+    destinationIp: Ipv4Schema,
+    expected: z.enum(["success", "failure"]).default("success"),
+    /** Require the delivery to have actually crossed a VXLAN tunnel. */
+    requireEncapsulation: z.boolean().default(true),
+  }).strict(),
+}).strict();
+
+/**
+ * An EVPN route reached this device *through* a reflector, evidenced by the
+ * `ORIGINATOR_ID` and `CLUSTER_LIST` the reflector stamped on it. Like
+ * `bgp-route-reflected`, the device named here is the one holding the
+ * reflected route — the reflector itself is identified by `expectedClusterId`.
+ */
+export const EvpnRouteReflectedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-route-reflected"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    routeType: z.union([z.literal(2), z.literal(3)]).optional(),
+    expectedOriginatorId: Ipv4Schema.optional(),
+    expectedClusterId: Ipv4Schema.optional(),
+  }).strict(),
+}).strict();
+
+/**
+ * A tenant's Layer 2 segment stays inside its VNI: the underlay Spine/P device
+ * learns no tenant MAC, and a VTEP holds no remote MAC whose route target it
+ * never imported.
+ */
+export const EvpnCustomerIsolationGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-customer-isolation"),
+  configuration: z.object({
+    /** An underlay device that must not hold any tenant MAC of this VNI. */
+    underlayDeviceId: z.string().min(1),
+    /** Optional VTEP that must not have imported the foreign VNI. */
+    vtepDeviceId: z.string().min(1).optional(),
+    foreignVni: VniSchema.optional(),
+  }).strict(),
+}).strict();
+
 /**
  * `copy running-config startup-config` was actually run on this device.
  *
@@ -1356,6 +1483,16 @@ export const GradingCheckSchema = z.discriminatedUnion("type", [
   VrfIpv6RouteGradingCheckSchema,
   Vpnv6ConnectivityGradingCheckSchema,
   OverlappingIpv6PrefixIsolationGradingCheckSchema,
+  NveConfiguredGradingCheckSchema,
+  VxlanVniMappingGradingCheckSchema,
+  VxlanPeerStateGradingCheckSchema,
+  VxlanRemoteMacGradingCheckSchema,
+  EvpnType2RouteGradingCheckSchema,
+  EvpnType3RouteGradingCheckSchema,
+  EvpnRouteTargetGradingCheckSchema,
+  VxlanL2ConnectivityGradingCheckSchema,
+  EvpnRouteReflectedGradingCheckSchema,
+  EvpnCustomerIsolationGradingCheckSchema,
   ConfigurationSavedGradingCheckSchema,
   GreTunnelConfiguredGradingCheckSchema,
   GreTunnelOperationalGradingCheckSchema,

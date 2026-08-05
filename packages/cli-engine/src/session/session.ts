@@ -27,6 +27,9 @@ import type {
   RouterProcessContext,
   RouteMapContext,
   SessionApi,
+  EvpnContext,
+  NveContext,
+  VlanConfigurationContext,
   VrfContext,
   VtyLineContext,
 } from "../types";
@@ -59,6 +62,9 @@ export class CliSession implements SessionApi {
   classMapCtx: QosClassMapContext | undefined;
   policyMapCtx: QosPolicyMapContext | undefined;
   cryptoCtx: CryptoContext | undefined;
+  nveCtx: NveContext | undefined;
+  vlanConfigCtx: VlanConfigurationContext | undefined;
+  evpnCtx: EvpnContext | undefined;
   private pendingInput: "ping-target" | undefined;
   private executionMode: NetworkExecutionMode = "auto";
   private pendingOperation: (() => string | undefined) | undefined;
@@ -184,6 +190,13 @@ export class CliSession implements SessionApi {
     // The policy-map context survives `class <name>`, which nests inside it.
     if (mode !== "config-pmap" && mode !== "config-pmap-c") this.policyMapCtx = undefined;
     if (mode === "config-pmap" && this.policyMapCtx) this.policyMapCtx.className = undefined;
+    // The NVE and EVPN contexts survive their own `member vni`/`vni <n> l2`
+    // sub-mode, exactly as the policy-map context survives `class`.
+    if (mode !== "config-nve" && mode !== "config-nve-vni") this.nveCtx = undefined;
+    if (mode === "config-nve" && this.nveCtx) this.nveCtx.memberVni = undefined;
+    if (mode !== "config-evpn" && mode !== "config-evpn-vni") this.evpnCtx = undefined;
+    if (mode === "config-evpn" && this.evpnCtx) this.evpnCtx.vni = undefined;
+    if (mode !== "config-vlan-config") this.vlanConfigCtx = undefined;
     this.mode = mode;
   }
 

@@ -10,6 +10,7 @@ import { VPN_DEMO_LABS } from "./vpn-demo-labs";
 import { BGP_DEMO_LABS } from "./bgp-demo-labs";
 import { MPLS_DEMO_LABS } from "./mpls-demo-labs";
 import { MBGP_IPV6_DEMO_LABS } from "./mbgp-ipv6-demo-labs";
+import { VXLAN_EVPN_DEMO_LABS } from "./vxlan-evpn-demo-labs";
 import { ALL_DEVICES_ICON_DEMO } from "./icon-profile-demo";
 
 function ports(prefix: string, count: number): Array<{ id: string }> {
@@ -334,6 +335,8 @@ export const DEMO_LABS = [
   ...MPLS_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
   // M10.13 MP-BGP IPv6 unicast and MPLS VPNv6.
   ...MBGP_IPV6_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
+  // M10.14 deterministic VXLAN and BGP EVPN Layer 2 overlays.
+  ...VXLAN_EVPN_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
 ] as const;
 
 export type DemoLabId = (typeof DEMO_LABS)[number]["id"];

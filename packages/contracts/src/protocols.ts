@@ -225,6 +225,8 @@ export const BgpNeighborConfigSchema = z.object({
   routeMapOut: z.string().min(1).max(64).optional(),
   vpnv4Activated: z.boolean().optional(),
   vpnv6Activated: z.boolean().optional(),
+  /** `address-family l2vpn evpn` → `neighbor <a> activate`. */
+  evpnActivated: z.boolean().optional(),
   sendCommunityExtended: z.boolean().optional(),
   /** `neighbor <a> send-community`: standard communities leave this device. */
   sendCommunityStandard: z.boolean().optional(),
@@ -334,6 +336,64 @@ export const VrfConfigSchema = z.object({
   ipv6StaticRoutes: z.array(VrfIpv6StaticRouteConfigSchema).max(4_096).optional(),
 }).strict();
 export type VrfConfig = z.infer<typeof VrfConfigSchema>;
+
+// --- VXLAN and BGP EVPN ---------------------------------------------------
+
+/** A 24-bit VXLAN Network Identifier. VNI 0 is reserved and never accepted. */
+export const VniSchema = z.number().int().min(1).max(16_777_215);
+
+/**
+ * How one VNI reaches the remote VTEPs that share its broadcast domain.
+ *
+ * `static` is a hand-written ingress-replication list; `bgp-evpn` defers the
+ * list to Inclusive Multicast (Type 3) routes. Multicast underlay replication is
+ * deliberately not modelled, so there is no third variant.
+ */
+export const NveReplicationConfigSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("static"),
+    peerAddresses: z.array(Ipv4Schema).max(64).default([]),
+  }).strict(),
+  z.object({ type: z.literal("bgp-evpn") }).strict(),
+]);
+export type NveReplicationConfig = z.infer<typeof NveReplicationConfigSchema>;
+
+export const NveMemberConfigSchema = z.object({
+  vni: VniSchema,
+  vlanId: VlanIdSchema,
+  replication: NveReplicationConfigSchema,
+}).strict();
+export type NveMemberConfig = z.infer<typeof NveMemberConfigSchema>;
+
+/**
+ * `interface nve1`: the one logical overlay interface a VTEP owns.
+ *
+ * It has an administrative state, an IPv4 source loopback and a set of VNI
+ * members — but it is never a cable: it has no topology link, never appears in
+ * the connection modal and never anchors a canvas edge. Only an L3 Switch may
+ * carry one.
+ */
+export const NveInterfaceConfigSchema = z.object({
+  id: z.literal("nve1"),
+  sourceInterfaceId: z.string().min(1).max(64),
+  shutdown: z.boolean().default(false),
+  members: z.array(NveMemberConfigSchema).max(64).default([]),
+}).strict();
+export type NveInterfaceConfig = z.infer<typeof NveInterfaceConfigSchema>;
+
+/** `evpn` → `vni <id> l2`: the RD and route targets one VNI advertises with. */
+export const EvpnVniConfigSchema = z.object({
+  vni: VniSchema,
+  routeDistinguisher: RouteDistinguisherSchema,
+  importRouteTargets: z.array(RouteTargetSchema).max(64).default([]),
+  exportRouteTargets: z.array(RouteTargetSchema).max(64).default([]),
+}).strict();
+export type EvpnVniConfig = z.infer<typeof EvpnVniConfigSchema>;
+
+export const EvpnConfigSchema = z.object({
+  vnis: z.array(EvpnVniConfigSchema).max(64).default([]),
+}).strict();
+export type EvpnConfig = z.infer<typeof EvpnConfigSchema>;
 
 export const PrefixListEntryConfigSchema = z.object({
   sequence: z.number().int().min(1).max(4_294_967_295),

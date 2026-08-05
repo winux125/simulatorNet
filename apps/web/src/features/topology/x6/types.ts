@@ -90,6 +90,19 @@ export interface TopologyView {
     label: string;
     state: "operational" | "control-plane-only" | "unavailable";
   }>;
+  /**
+   * Logical VTEP-to-VTEP VXLAN tunnels derived from worker runtime. Like every
+   * protocol overlay they are presentation only: never a `topology.links` entry,
+   * never a cable workflow, never part of LabDocument connectivity.
+   */
+  vxlanTunnels?: Array<{
+    id: string;
+    localDeviceId: string;
+    remoteDeviceId: string;
+    label: string;
+    source: "static" | "bgp-evpn";
+    state: "operational" | "down" | "rt-mismatch";
+  }>;
   /** `editing` blanks the rendered text while the inline editor draws it live. */
   annotations?: Record<string, { selected: boolean; editing?: boolean }>;
 }

@@ -26,6 +26,7 @@ import {
   type ConsoleAccessConfiguration,
   type DeviceConfig,
   type DeviceType,
+  type EvpnConfig,
   type FirewallDeviceConfig,
   type Ipv4AclConfig,
   type Ipv6AclConfig,
@@ -33,6 +34,7 @@ import {
   type Layer3SwitchDeviceConfig,
   type LoopbackInterfaceConfig,
   type NeighborDiscoveryConfig,
+  type NveInterfaceConfig,
   type OspfProcessConfig,
   type Ospfv3ProcessConfig,
   type BgpProcessConfig,
@@ -556,6 +558,63 @@ function bgpProcessLines(bgp: BgpProcessConfig | undefined): string[] {
       out.push(" exit-address-family");
     }
   }
+  out.push(...evpnAddressFamilyLines(bgp));
+  out.push("!");
+  return out;
+}
+
+/**
+ * `address-family l2vpn evpn` for one BGP process.
+ *
+ * The family rides the existing session, so only the per-neighbor activation
+ * and the extended-community flag live inside the block; nothing about the
+ * neighbor itself is repeated.
+ */
+function evpnAddressFamilyLines(bgp: BgpProcessConfig | undefined): string[] {
+  const neighbors = sorted(bgp?.neighbors?.filter((neighbor) => neighbor.evpnActivated), (a, b) => byString(a.address, b.address));
+  if (neighbors.length === 0) return [];
+  const out = [" address-family l2vpn evpn"];
+  for (const neighbor of neighbors) {
+    out.push(`  neighbor ${neighbor.address} activate`);
+    if (neighbor.routeReflectorClient) out.push(`  neighbor ${neighbor.address} route-reflector-client`);
+    if (neighbor.sendCommunityExtended) out.push(`  neighbor ${neighbor.address} send-community extended`);
+  }
+  out.push(" exit-address-family");
+  return out;
+}
+
+/** `interface nve1` plus the `vlan configuration <id>` mappings it implies. */
+function nveLines(nve: NveInterfaceConfig | undefined): string[] {
+  if (!nve) return [];
+  const members = sorted(nve.members, (a, b) => a.vni - b.vni);
+  const out = [`interface ${nve.id}`];
+  out.push(nve.shutdown ? " shutdown" : " no shutdown");
+  out.push(` source-interface ${nve.sourceInterfaceId}`);
+  for (const member of members) {
+    out.push(` member vni ${member.vni}`);
+    if (member.replication.type === "bgp-evpn") {
+      out.push("  ingress-replication protocol bgp");
+      continue;
+    }
+    for (const peer of sorted(member.replication.peerAddresses, byString)) out.push(`  peer-ip ${peer}`);
+  }
+  out.push("!");
+  for (const member of members) {
+    out.push(`vlan configuration ${member.vlanId}`, ` member vni ${member.vni}`, "!");
+  }
+  return out;
+}
+
+/** The `evpn` block: one `vni <id> l2` per VNI with its RD and route targets. */
+function evpnLines(evpn: EvpnConfig | undefined): string[] {
+  const vnis = sorted(evpn?.vnis, (a, b) => a.vni - b.vni);
+  if (vnis.length === 0) return [];
+  const out = ["evpn"];
+  for (const vni of vnis) {
+    out.push(` vni ${vni.vni} l2`, `  rd ${vni.routeDistinguisher}`);
+    for (const target of sorted(vni.importRouteTargets, byString)) out.push(`  route-target import ${target}`);
+    for (const target of sorted(vni.exportRouteTargets, byString)) out.push(`  route-target export ${target}`);
+  }
   out.push("!");
   return out;
 }
@@ -1000,6 +1059,9 @@ function renderLayer3Switch(config: Layer3SwitchDeviceConfig): string[] {
     out.push(...adminStateLines(!svi.adminUp), "!");
   }
   out.push(...loopbackLines(config.loopbacks));
+  // The NVE names its source Loopback and its VLANs, so it renders after both.
+  out.push(...nveLines(config.nve));
+  out.push(...evpnLines(config.evpn));
   out.push(...ospfProcessLines(config.ospf));
   out.push(...ospfv3ProcessLines(config.ospfv3));
   out.push(...routePolicyLines(config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists, config.ipv6PrefixLists));

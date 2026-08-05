@@ -27,6 +27,7 @@ import {
 import { BgpConfigurationPanel, BgpRuntimePanel } from "./BgpPanel";
 import { QosPanel } from "./QosPanel";
 import { VpnPanel } from "./VpnPanel";
+import { VxlanEvpnPanel, type VxlanSection } from "./VxlanEvpnPanel";
 import { ConfigurationPanel, ConfigurationStatusBadge } from "./ConfigurationPanel";
 import {
   getDeviceWindowDefinition,
@@ -263,6 +264,14 @@ function ConfigSection(props: DeviceWindowProps & { section: DeviceWindowSection
         onError={props.onError}
       />
     : <DraftRuntimeNotice />;
+  if (section === "vxlan-evpn-config") return props.runtimeAvailable
+    ? <VxlanEvpnPanel
+        client={props.client}
+        deviceId={props.node.id}
+        deviceType={props.node.type}
+        onError={props.onError}
+      />
+    : <DraftRuntimeNotice />;
 
   const securitySection: Partial<Record<DeviceWindowSectionId, SecuritySection>> = {
     "routing-config": "routing",
@@ -364,6 +373,26 @@ function MonitorSection(props: DeviceWindowProps & { section: DeviceWindowSectio
     : <DraftRuntimeNotice />;
   if (section === "bgp-runtime") return props.runtimeAvailable
     ? <BgpRuntimePanel client={props.client} deviceId={props.node.id} onError={props.onError} />
+    : <DraftRuntimeNotice />;
+  // One reusable panel serves both Config and Monitor; only the opening
+  // secondary section differs, exactly as it does for QoS and VPN.
+  const vxlanRuntimeSection: Partial<Record<DeviceWindowSectionId, VxlanSection>> = {
+    "nve-runtime": "nve",
+    "vxlan-peers-runtime": "peers",
+    "vxlan-macs-runtime": "remote-macs",
+    "evpn-type2-runtime": "type2",
+    "evpn-type3-runtime": "type3",
+    "evpn-vni-runtime": "mappings",
+  };
+  const vxlanSection = vxlanRuntimeSection[section];
+  if (vxlanSection) return props.runtimeAvailable
+    ? <VxlanEvpnPanel
+        client={props.client}
+        deviceId={props.node.id}
+        deviceType={props.node.type}
+        initialSection={vxlanSection}
+        onError={props.onError}
+      />
     : <DraftRuntimeNotice />;
   if (section === "mpls-runtime" || section === "ldp-runtime" || section === "vrf-runtime"
     || section === "vpnv4-runtime" || section === "vpnv6-runtime"

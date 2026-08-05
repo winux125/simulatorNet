@@ -12,6 +12,7 @@ import type {
   EtherChannelConfig,
   LoopbackInterfaceConfig,
   NeighborDiscoveryConfig,
+  NveInterfaceConfig,
   OspfProcessConfig,
   Ospfv3ProcessConfig,
   BgpProcessConfig,
@@ -116,6 +117,24 @@ function loopbacksFrom(applied: ImportedDeviceConfiguration): LoopbackInterfaceC
     ipv4: loopback.ipv4,
     ipv6: loopback.ipv6,
   }));
+}
+
+/**
+ * Map the recognised VXLAN subset onto an L3 Switch.
+ *
+ * A VNI whose VLAN the file never defined is dropped rather than mapped onto an
+ * invented VLAN, and a source that is not a Loopback has already been rejected
+ * by the parser, so what survives here is always buildable.
+ */
+function nveFrom(
+  applied: ImportedDeviceConfiguration,
+  knownVlans: ReadonlySet<number>,
+): NveInterfaceConfig | undefined {
+  const nve = applied.nve;
+  if (!nve) return undefined;
+  const members = nve.members.filter((member) => knownVlans.has(member.vlanId));
+  if (members.length === 0) return undefined;
+  return { ...nve, members };
 }
 
 /**
@@ -483,6 +502,10 @@ export function buildDeviceConfigFromIos(
         ospf: ospfFrom(applied),
         ospfv3: ospfv3From(applied),
         bgp: bgpFrom(applied),
+        // The VTEP is an L3 Switch capability, so the overlay is mapped only
+        // here; a Router or an L2 Switch never receives one.
+        nve: nveFrom(applied, knownVlans),
+        evpn: applied.evpn,
         prefixLists: applied.prefixLists,
         ipv6PrefixLists: applied.ipv6PrefixLists.length ? applied.ipv6PrefixLists : undefined,
         routeMaps: applied.routeMaps,

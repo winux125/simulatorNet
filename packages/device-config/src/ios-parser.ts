@@ -14,7 +14,11 @@ import {
   MINIMUM_VPN_LIFETIME_SECONDS,
   type Ipv6AclConfig,
   type BgpProcessConfig,
+  type EvpnConfig,
+  type EvpnVniConfig,
   type LdpConfig,
+  type NveInterfaceConfig,
+  type NveMemberConfig,
   type AsPathListConfig,
   type CommunityListConfig,
   type Ipv6PrefixListConfig,
@@ -176,6 +180,15 @@ export interface ImportedDeviceConfiguration {
   ospfv3?: Ospfv3ProcessConfig;
   bgp?: BgpProcessConfig;
   ldp?: LdpConfig;
+  /**
+   * The recognised VXLAN subset: `interface nve1`, `source-interface`,
+   * `member vni`, `peer-ip`, `ingress-replication protocol bgp` and the
+   * `vlan configuration <id>` → `member vni` binding. EVPN multihoming/ESI,
+   * L3VNI, anycast gateway, ARP suppression, multicast replication, VXLAN
+   * routing/IRB and Type 5 are not mapped; they stay in `unparsedLines`.
+   */
+  nve?: NveInterfaceConfig;
+  evpn?: EvpnConfig;
   vrfs: VrfConfig[];
   prefixLists: PrefixListConfig[];
   ipv6PrefixLists: Ipv6PrefixListConfig[];
@@ -290,6 +303,11 @@ function isIpv4(value: string | undefined): value is string {
   if (!value) return false;
   const octets = value.split(".");
   return octets.length === 4 && octets.every((part) => /^\d{1,3}$/u.test(part) && Number(part) <= 255);
+}
+
+/** A 24-bit VXLAN Network Identifier. VNI 0 is reserved and never accepted. */
+function isValidVniNumber(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= 16_777_215;
 }
 
 /** Convert a dotted subnet mask to a prefix length, or undefined if not a mask. */
@@ -603,6 +621,7 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     | { type: "vpnv4" }
     | { type: "vpnv6" }
     | { type: "ipv6-unicast" }
+    | { type: "l2vpn-evpn" }
     | { type: "ipv4-vrf"; vrfId: string }
     | { type: "ipv6-vrf"; vrfId: string }
     | undefined;
@@ -617,6 +636,26 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
   let currentProposal: ImportedIkeProposalConfig | undefined;
   let currentPeer: ImportedIkePeerConfig | undefined;
   let currentProfile: ImportedIpsecProfileConfig | undefined;
+  // --- VXLAN / EVPN parse contexts ---------------------------------------
+  // `interface nve1` declares each VNI and how it replicates; the VLAN it maps
+  // is bound separately by `vlan configuration <id>` → `member vni <n>`, so the
+  // two halves are collected apart and reconciled once the file has been read.
+  let inNve = false;
+  let nveSourceInterfaceId: string | undefined;
+  let nveShutdown = false;
+  let currentNveVni: number | undefined;
+  const nveMembers = new Map<number, { replication: NveMemberConfig["replication"] }>();
+  const vniToVlan = new Map<number, number>();
+  let currentVlanConfiguration: number | undefined;
+  let inEvpn = false;
+  let currentEvpnVni: EvpnVniConfig | undefined;
+  const clearVxlanContext = (): void => {
+    inNve = false;
+    currentNveVni = undefined;
+    currentVlanConfiguration = undefined;
+    inEvpn = false;
+    currentEvpnVni = undefined;
+  };
   // The source line currently being read, so every outcome can be reported with
   // an exact 1-based line number without threading it through every branch.
   let lineNumber = 0;
@@ -668,6 +707,7 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       currentIpv6Acl = undefined;
       clearQosContext();
       clearCryptoContext();
+      clearVxlanContext();
       continue;
     }
     const tokens = trimmed.split(/\s+/u);
@@ -720,12 +760,115 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       applied(line);
       continue;
     }
+    // --- VXLAN: interface nve1 body ---------------------------------------
+    if (inNve && isIndented) {
+      if (head === "source-interface" && tokens[1]) {
+        const actual = resolve.get(normalizeInterfaceName(tokens[1]))
+          ?? (/^lo(?:opback)?\d+$/u.test(normalizeInterfaceName(tokens[1]))
+            ? `Loopback${/(\d+)$/u.exec(tokens[1])?.[1]}`
+            : undefined);
+        // A VTEP sources from a Loopback; anything else is reported, not mapped.
+        if (actual?.startsWith("Loopback")) { nveSourceInterfaceId = actual; applied(line); } else unparsed(line);
+        continue;
+      }
+      if (head === "shutdown" && tokens.length === 1) { nveShutdown = true; applied(line); continue; }
+      if (head === "no" && tokens[1]?.toLowerCase() === "shutdown") { nveShutdown = false; applied(line); continue; }
+      // Exactly `member vni <n>`: `associate-vrf` declares an L3VNI, which is
+      // not modelled, so it is reported rather than mistaken for an L2 member.
+      if (head === "member" && tokens[1]?.toLowerCase() === "vni" && /^\d+$/u.test(tokens[2] ?? "")) {
+        const vni = Number(tokens[2]);
+        if (tokens.length !== 3 || !isValidVniNumber(vni)) { unparsed(line); continue; }
+        currentNveVni = vni;
+        if (!nveMembers.has(vni)) nveMembers.set(vni, { replication: { type: "static", peerAddresses: [] } });
+        applied(line);
+        continue;
+      }
+      if (currentNveVni !== undefined && head === "ingress-replication"
+        && tokens[1]?.toLowerCase() === "protocol" && tokens[2]?.toLowerCase() === "bgp") {
+        nveMembers.set(currentNveVni, { replication: { type: "bgp-evpn" } });
+        applied(line);
+        continue;
+      }
+      if (currentNveVni !== undefined && head === "peer-ip" && isIpv4(tokens[1])) {
+        const member = nveMembers.get(currentNveVni)!;
+        if (member.replication.type !== "static") { unparsed(line); continue; }
+        if (!member.replication.peerAddresses.includes(tokens[1]!)) member.replication.peerAddresses.push(tokens[1]!);
+        applied(line);
+        continue;
+      }
+      // Multicast replication, ARP suppression, L3VNI and IRB are deliberately
+      // not mapped; they stay unparsed and are reported honestly.
+      unparsed(line);
+      continue;
+    }
+    // --- VXLAN: vlan configuration <id> body ------------------------------
+    if (currentVlanConfiguration !== undefined && isIndented) {
+      if (head === "member" && tokens[1]?.toLowerCase() === "vni" && /^\d+$/u.test(tokens[2] ?? "")) {
+        const vni = Number(tokens[2]);
+        if (tokens.length !== 3 || !isValidVniNumber(vni)) { unparsed(line); continue; }
+        vniToVlan.set(vni, currentVlanConfiguration);
+        applied(line);
+        continue;
+      }
+      unparsed(line);
+      continue;
+    }
+    if (head === "vlan" && tokens[1]?.toLowerCase() === "configuration" && /^\d+$/u.test(tokens[2] ?? "")) {
+      const vlanId = Number(tokens[2]);
+      if (vlanId < 1 || vlanId > 4_094) { unparsed(line); continue; }
+      clearVxlanContext();
+      current = undefined;
+      currentVlan = undefined;
+      currentVlanConfiguration = vlanId;
+      applied(line);
+      continue;
+    }
+    // --- BGP EVPN: the evpn block -----------------------------------------
+    if (inEvpn && isIndented) {
+      if (head === "vni" && /^\d+$/u.test(tokens[1] ?? "") && tokens[2]?.toLowerCase() === "l2") {
+        const vni = Number(tokens[1]);
+        if (!isValidVniNumber(vni)) { unparsed(line); continue; }
+        result.evpn ??= { vnis: [] };
+        currentEvpnVni = result.evpn.vnis.find((entry) => entry.vni === vni)
+          ?? { vni, routeDistinguisher: "0:0", importRouteTargets: [], exportRouteTargets: [] };
+        if (!result.evpn.vnis.includes(currentEvpnVni)) result.evpn.vnis.push(currentEvpnVni);
+        applied(line);
+        continue;
+      }
+      if (currentEvpnVni && head === "rd" && tokens[1]) {
+        currentEvpnVni.routeDistinguisher = tokens[1];
+        applied(line);
+        continue;
+      }
+      if (currentEvpnVni && head === "route-target"
+        && (tokens[1] === "import" || tokens[1] === "export") && tokens[2]) {
+        const list = tokens[1] === "import" ? currentEvpnVni.importRouteTargets : currentEvpnVni.exportRouteTargets;
+        if (!list.includes(tokens[2])) list.push(tokens[2]);
+        applied(line);
+        continue;
+      }
+      unparsed(line);
+      continue;
+    }
+    if (head === "evpn" && tokens.length === 1) {
+      clearVxlanContext();
+      current = undefined;
+      currentLoopback = undefined;
+      inBgp = false;
+      inOspf = false;
+      inOspfv3 = false;
+      inEvpn = true;
+      result.evpn ??= { vnis: [] };
+      applied(line);
+      continue;
+    }
     if (head === "interface") {
       const spec = tokens.slice(1).join("");
       currentVlan = undefined;
       inOspf = false;
       inOspfv3 = false;
       inBgp = false;
+      clearVxlanContext();
       currentRouteMap = undefined;
       currentRouteMapId = undefined;
       inBgp = false;
@@ -735,6 +878,18 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       clearQosContext();
       clearCryptoContext();
       currentVrf = undefined;
+      // `interface nve1`: a logical overlay interface, not a cabled port. Only
+      // nve1 exists, so any other number is reported rather than invented.
+      if (/^nve\d+$/u.test(normalizeInterfaceName(spec))) {
+        if (normalizeInterfaceName(spec) !== "nve1") { current = undefined; unparsed(line); continue; }
+        inNve = true;
+        currentNveVni = undefined;
+        current = undefined;
+        currentLoopback = undefined;
+        currentTunnel = undefined;
+        applied(line);
+        continue;
+      }
       const loopbackMatch = /^lo(?:opback)?(\d+)$/u.exec(normalizeInterfaceName(spec));
       if (loopbackMatch) {
         const id = Number(loopbackMatch[1]);
@@ -1125,6 +1280,14 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
         applied(line);
         continue;
       }
+      // `address-family l2vpn evpn` rides the existing session; EVPN-VPWS and
+      // every other l2vpn sub-family stays unparsed and is reported honestly.
+      if (head === "address-family" && tokens[1]?.toLowerCase() === "l2vpn") {
+        if (tokens.length !== 3 || tokens[2]?.toLowerCase() !== "evpn") { unparsed(line); continue; }
+        currentBgpAddressFamily = { type: "l2vpn-evpn" };
+        applied(line);
+        continue;
+      }
       if (head === "address-family" && tokens[1]?.toLowerCase() === "ipv4" && tokens[2]?.toLowerCase() === "vrf" && tokens[3]) {
         if (tokens.length !== 4) { unparsed(line); continue; }
         currentBgpAddressFamily = { type: "ipv4-vrf", vrfId: tokens[3] };
@@ -1221,6 +1384,17 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
           } else { unparsed(line); continue; }
           existing.ipv6 = ipv6;
           applied(line); continue;
+        }
+        if (currentBgpAddressFamily?.type === "l2vpn-evpn") {
+          const keyword = tokens[2]?.toLowerCase();
+          if (keyword === "activate" && tokens.length === 3) { existing.evpnActivated = true; applied(line); continue; }
+          if (keyword === "send-community" && tokens[3]?.toLowerCase() === "extended") {
+            existing.sendCommunityExtended = true; applied(line); continue;
+          }
+          if (keyword === "route-reflector-client" && tokens.length === 3) {
+            existing.routeReflectorClient = true; applied(line); continue;
+          }
+          unparsed(line); continue;
         }
         if (currentBgpAddressFamily?.type === "vpnv6" && tokens[2]?.toLowerCase() === "activate") {
           existing.vpnv6Activated = true; applied(line); continue;
@@ -1589,6 +1763,27 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
 
   result.interfaces = [...interfaces.values()];
   result.loopbacks = [...loopbacks.values()].sort((a, b) => a.id - b.id);
+  // A VNI declared on nve1 needs a VLAN before it means anything, and the VLAN
+  // arrives from a separate `vlan configuration` block. A VNI that never got
+  // one is dropped rather than mapped to an invented VLAN.
+  if (nveSourceInterfaceId !== undefined) {
+    const members: NveMemberConfig[] = [...nveMembers.entries()]
+      .flatMap(([vni, member]) => {
+        const vlanId = vniToVlan.get(vni);
+        if (vlanId === undefined) return [];
+        return [{
+          vni,
+          vlanId,
+          replication: member.replication.type === "static"
+            ? { type: "static" as const, peerAddresses: [...member.replication.peerAddresses].sort() }
+            : { type: "bgp-evpn" as const },
+        }];
+      })
+      .sort((a, b) => a.vni - b.vni);
+    result.nve = { id: "nve1", sourceInterfaceId: nveSourceInterfaceId, shutdown: nveShutdown, members };
+  }
+  if (result.evpn && result.evpn.vnis.length === 0) result.evpn = undefined;
+  else if (result.evpn) result.evpn.vnis.sort((a, b) => a.vni - b.vni);
   result.vpn.tunnels = [...tunnels.values()].sort((a, b) => a.id - b.id);
   // A tunnel that names a profile the file never defined keeps its other
   // settings but loses the binding: an invented profile would be a lie.

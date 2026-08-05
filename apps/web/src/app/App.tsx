@@ -83,6 +83,7 @@ const WIRELESS_ASSOCIATIONS_KEY = "simulatornet.wirelessAssociations";
 const VPN_TUNNEL_OVERLAY_KEY = "simulatornet.vpnTunnelOverlay";
 const MPLS_LABEL_OVERLAY_KEY = "simulatornet.mplsLabelOverlay";
 const L3VPN_OVERLAY_KEY = "simulatornet.l3VpnOverlay";
+const VXLAN_OVERLAY_KEY = "simulatornet.vxlanOverlay";
 const INSPECTOR_AUTO_OPEN_KEY = "simulatornet.inspectorAutoOpen";
 
 interface AppProps { client: SimulatorClient }
@@ -260,6 +261,12 @@ export function App({ client }: AppProps) {
   const chooseL3Vpn = (shown: boolean) => {
     window.localStorage.setItem(L3VPN_OVERLAY_KEY, shown ? "show" : "hide");
     setL3VpnShown(shown);
+  };
+  const [vxlanTunnelsShown, setVxlanTunnelsShown] = useState(() =>
+    window.localStorage.getItem(VXLAN_OVERLAY_KEY) === "show");
+  const chooseVxlanTunnels = (shown: boolean) => {
+    window.localStorage.setItem(VXLAN_OVERLAY_KEY, shown ? "show" : "hide");
+    setVxlanTunnelsShown(shown);
   };
   const chooseTerminalAppearance = (id: TerminalAppearance) => { applyTerminalAppearance(id); setTerminalAppearanceState(id); };
   // Local-only terminal preference: never part of LabDocument or a submission.
@@ -837,6 +844,10 @@ export function App({ client }: AppProps) {
           { id: "l3vpn-show", label: "Show", checked: l3VpnShown, onSelect: () => chooseL3Vpn(true) },
           { id: "l3vpn-hide", label: "Hide", checked: !l3VpnShown, onSelect: () => chooseL3Vpn(false) },
         ] },
+        { id: "view-vxlan-tunnels", label: "VXLAN Tunnels", submenu: [
+          { id: "vxlan-tunnels-show", label: "Show", checked: vxlanTunnelsShown, onSelect: () => chooseVxlanTunnels(true) },
+          { id: "vxlan-tunnels-hide", label: "Hide", checked: !vxlanTunnelsShown, onSelect: () => chooseVxlanTunnels(false) },
+        ] },
       ] },
       { id: "view-bottom-panel", label: "Bottom Panel", icon: <PanelBottom size={14} />, submenu: [
         { id: "bottom-panel-show", label: "Show", shortcut: "Ctrl J", checked: bottomPanelExpanded, disabled: !labOpen, onSelect: () => setBottomPanel("expanded") },
@@ -1293,6 +1304,7 @@ export function App({ client }: AppProps) {
       vpnTunnelsShown,
       mplsLabelsShown,
       l3VpnShown,
+      vxlanTunnelsShown,
       fitRequest: workspace.fitRequest,
       zoomResetRequest: workspace.zoomResetRequest,
       zoomInRequest: workspace.zoomInRequest,

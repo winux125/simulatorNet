@@ -47,6 +47,11 @@ import {
   l3VpnEdgeId,
   type L3VpnRelationView,
 } from "./l3vpn-overlay";
+import {
+  vxlanEdgeAppearance,
+  vxlanEdgeId,
+  type VxlanTunnelView,
+} from "./vxlan-overlay";
 
 export interface CreateControllerOptions {
   container: HTMLElement;
@@ -705,6 +710,7 @@ export function createTopologyGraphController(options: CreateControllerOptions):
         wirelessAssociationEdgeId(association.id)),
       ...(state.view.vpnTunnels ?? []).map((tunnel) => vpnTunnelEdgeId(tunnel.id)),
       ...(state.view.l3VpnRelations ?? []).map((relation) => l3VpnEdgeId(relation.id)),
+      ...(state.view.vxlanTunnels ?? []).map((tunnel) => vxlanEdgeId(tunnel.id)),
       ...annotations
         .filter((annotation) => annotation.type === "line" || annotation.type === "arrow")
         .map((annotation) => annotationCellId(annotation.id)),
@@ -725,6 +731,9 @@ export function createTopologyGraphController(options: CreateControllerOptions):
     }
     for (const relation of state.view.l3VpnRelations ?? []) {
       renderL3VpnRelation(relation);
+    }
+    for (const tunnel of state.view.vxlanTunnels ?? []) {
+      renderVxlanTunnel(tunnel);
     }
     for (const cell of graph.getEdges()) {
       if (!linkIds.has(cell.id)) graph.removeCell(cell);
@@ -799,6 +808,86 @@ export function createTopologyGraphController(options: CreateControllerOptions):
       id: appearance.id,
       source: endpoint(relation.localDeviceId),
       target: endpoint(relation.remoteDeviceId),
+      data: metadata,
+      attrs,
+      labels,
+      connector: { name: "smooth" },
+      zIndex: TOPOLOGY_EDGE_Z_INDEX - 3,
+    });
+  }
+
+  /**
+   * A logical VXLAN tunnel between two VTEPs. It reuses the same dashed,
+   * port-less presentation as the VPN and L3VPN overlays, so it can never be
+   * mistaken for a cable and never enters LabDocument connectivity.
+   */
+  function renderVxlanTunnel(tunnel: VxlanTunnelView): void {
+    if (!graph.getCellById(tunnel.localDeviceId) || !graph.getCellById(tunnel.remoteDeviceId)) return;
+    const appearance = vxlanEdgeAppearance(tunnel);
+    const endpoint = (cell: string) => ({
+      cell,
+      anchor: { name: "center" },
+      connectionPoint: { name: "boundary" },
+    });
+    const attrs = {
+      line: {
+        stroke: appearance.stroke,
+        strokeWidth: 2,
+        strokeDasharray: appearance.dashArray,
+        sourceMarker: null,
+        targetMarker: null,
+        pointerEvents: "none",
+        "data-vxlan-tunnel": tunnel.id,
+        "data-vxlan-state": tunnel.state,
+      },
+      wrap: { stroke: "transparent", strokeWidth: 0, pointerEvents: "none" },
+    };
+    const labels = [{
+      attrs: {
+        label: {
+          text: appearance.label,
+          fill: "var(--color-text-muted, #52657a)",
+          fontSize: 10,
+          fontWeight: 600,
+          pointerEvents: "none",
+        },
+        body: {
+          fill: "var(--color-surface-raised, #f4f7fa)",
+          stroke: appearance.stroke,
+          strokeWidth: 1,
+          rx: 4,
+          ry: 4,
+          ref: "label",
+          refWidth: "120%",
+          refHeight: "150%",
+          refX: "-10%",
+          refY: "-25%",
+          pointerEvents: "none",
+        },
+      },
+      position: { distance: 0.5, offset: -18 },
+    }];
+    const metadata = {
+      kind: "vxlan-tunnel",
+      localDeviceId: tunnel.localDeviceId,
+      remoteDeviceId: tunnel.remoteDeviceId,
+      state: tunnel.state,
+    };
+    const existing = graph.getCellById(appearance.id);
+    if (existing?.isEdge()) {
+      existing.setSource(endpoint(tunnel.localDeviceId));
+      existing.setTarget(endpoint(tunnel.remoteDeviceId));
+      existing.setData(metadata, { overwrite: true });
+      existing.setAttrs(attrs);
+      existing.setLabels(labels);
+      existing.setConnector("smooth");
+      existing.setZIndex(TOPOLOGY_EDGE_Z_INDEX - 3);
+      return;
+    }
+    graph.addEdge({
+      id: appearance.id,
+      source: endpoint(tunnel.localDeviceId),
+      target: endpoint(tunnel.remoteDeviceId),
       data: metadata,
       attrs,
       labels,

@@ -106,7 +106,8 @@ describe("IOS MP-BGP IPv6 and VPNv6 import", () => {
   });
 
   it.each([
-    ["EVPN address family", " address-family l2vpn evpn"],
+    // `l2vpn evpn` became supported in M10.14; EVPN-VPWS did not.
+    ["EVPN-VPWS address family", " address-family l2vpn vpws"],
     ["labeled unicast", " address-family ipv6 unicast labeled-unicast"],
     ["dynamic PE-CE redistribution", " redistribute ospf 1"],
   ])("reports %s as unsupported instead of applying it", (_label, line) => {

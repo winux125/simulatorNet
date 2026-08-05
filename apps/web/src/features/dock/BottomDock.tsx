@@ -115,7 +115,9 @@ function isPacketTraceEvent(event: SimulationTraceEvent): boolean {
     || type.startsWith("wireless-")
     || type.startsWith("mpls-")
     || type.startsWith("ldp-")
-    || type.startsWith("l3vpn-");
+    || type.startsWith("l3vpn-")
+    || type.startsWith("vxlan-")
+    || type.startsWith("evpn-");
 }
 
 /** Packet-trace protocol filters, in the order the dropdown lists them. */
@@ -127,6 +129,7 @@ export const TRACE_PROTOCOL_FILTERS = [
   "BGP", "BGP Session", "BGP Updates", "Route Policy",
   "Route Reflection", "Community", "Aggregation",
   "MPLS", "LDP", "VPNv4", "VPNv6", "L3VPN",
+  "VXLAN", "EVPN", "BUM", "VTEP",
   "IPv6", "ICMPv6", "NDP", "SLAAC", "DHCPv6", "OSPFv3", "IPv6 ACL",
   "Wireless", "Beacon", "Probe", "Authentication", "Association", "Roaming",
   "Telnet", "SSH", "AAA", "RADIUS", "TACACS+", "SNMP",
@@ -359,6 +362,11 @@ function isVpnTraceEvent(type: string): boolean {
   return vpnPacketPrefixes.some((prefix) => type.toLowerCase().startsWith(prefix));
 }
 
+/** True when a BGP event names the `l2vpn-evpn` address family. */
+function evpnFamily(event: SimulationTraceEvent): boolean {
+  return (event.detail as { addressFamily?: unknown } | undefined)?.addressFamily === "l2vpn-evpn";
+}
+
 function traceProtocol(event: SimulationTraceEvent): string {
   const type = event.type.toLowerCase();
   // Site-to-site VPN first: GRE encapsulation, IKEv2 negotiation and simulated
@@ -381,6 +389,9 @@ function traceProtocol(event: SimulationTraceEvent): string {
   if (type === "aaa-accounting") return "AAA";
   if (type.startsWith("bgp-vpnv4-")) return "VPNv4";
   if (type.startsWith("bgp-vpnv6-")) return "VPNv6";
+  // M10.14 EVPN rides the ordinary BGP events, so the family is carried in the
+  // detail rather than in a distinct event name; the filter follows it there.
+  if (type.startsWith("bgp-") && evpnFamily(event)) return "EVPN";
   // M10.12 families come before the generic BGP prefixes so each one keeps its
   // own filter while "BGP" still selects the whole family.
   if (type === "bgp-route-reflected" || type === "bgp-route-reflection-rejected"
@@ -397,6 +408,13 @@ function traceProtocol(event: SimulationTraceEvent): string {
     || type.startsWith("bgp-keepalive-") || type.startsWith("bgp-session-") || type.startsWith("bgp-notification")
     || type.startsWith("bgp-hold-")) return "BGP Session";
   if (type.startsWith("bgp-")) return "BGP";
+  // VXLAN families come before the generic prefixes so BUM replication and the
+  // tunnel endpoints each keep a filter, while "VXLAN" selects the whole family.
+  if (type === "vxlan-bum-replicated" || type === "vxlan-split-horizon-dropped") return "BUM";
+  if (type === "vxlan-underlay-unreachable" || type === "vxlan-mac-learned-remote"
+    || type === "vxlan-mac-moved-local" || type === "vxlan-vni-not-found") return "VTEP";
+  if (type.startsWith("evpn-")) return "EVPN";
+  if (type.startsWith("vxlan-")) return "VXLAN";
   if (type.startsWith("ldp-")) return "LDP";
   if (type.startsWith("l3vpn-")) return "L3VPN";
   if (type.startsWith("mpls-")) return "MPLS";

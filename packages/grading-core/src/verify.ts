@@ -27,6 +27,7 @@ import {
   maskToInt,
   normalizeDnsName,
   normalizeIpv6,
+  normalizeMac,
   ipFamilyOf,
   ipv6InPrefix,
   ipv6Network,
@@ -284,6 +285,12 @@ function ospfDeviceOf(built: BuiltLab, deviceId: string): Router | Layer3Switch 
 function mplsRouterOf(built: BuiltLab, deviceId: string): Router | undefined {
   const device = built.getDevice(deviceId);
   return device instanceof Router && device.deviceType === "router" ? device : undefined;
+}
+
+/** The VTEP capability belongs to the L3 Switch, and to nothing else. */
+function vtepOf(built: BuiltLab, deviceId: string): Layer3Switch | undefined {
+  const device = built.getDevice(deviceId);
+  return device instanceof Layer3Switch ? device : undefined;
 }
 
 /**
@@ -1198,6 +1205,178 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
         secondRouteCount: secondRoutes.length,
         distinctPolicy,
         crossed,
+      });
+    }
+    // --- M10.14 VXLAN and BGP EVPN Layer 2 overlays -----------------------
+    // Every diagnostic below names only what the submission actually holds:
+    // the expected RD, route target and MAC stay in the hidden spec and are
+    // never echoed back into a result.
+    case "nve-configured": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const nve = device.nveSummaries()[0];
+      const sourceMatches = check.configuration.expectedSourceInterfaceId === undefined
+        || nve?.sourceInterfaceId === check.configuration.expectedSourceInterfaceId;
+      const passed = check.configuration.expected === "down"
+        ? nve !== undefined && !nve.up
+        : nve !== undefined && sourceMatches && (check.configuration.expected === "configured" || nve.up);
+      return result(check, passed, `nve1 ${nve ? (nve.up ? "is operational" : `is down: ${nve.reason}`) : "is not configured"}`, {
+        configured: nve !== undefined,
+        up: nve?.up ?? false,
+        actualSourceInterfaceId: nve?.sourceInterfaceId,
+        sourceAddress: nve?.sourceAddress,
+        reason: nve?.reason,
+        expected: check.configuration.expected,
+      });
+    }
+    case "vxlan-vni-mapping": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const mapping = device.vniSummaries().find((entry) => entry.vni === check.configuration.vni);
+      const passed = mapping !== undefined
+        && mapping.vlanId === check.configuration.vlanId
+        && (check.configuration.expectedReplication === undefined
+          || mapping.replication === check.configuration.expectedReplication);
+      return result(check, passed, `VNI ${check.configuration.vni} ${mapping ? `maps VLAN ${mapping.vlanId}` : "is not mapped"}`, {
+        actualVlanId: mapping?.vlanId,
+        actualReplication: mapping?.replication,
+        up: mapping?.up ?? false,
+        reason: mapping?.reason,
+      });
+    }
+    case "vxlan-peer-state": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const peer = device.vxlanPeerSummaries()
+        .find((entry) => entry.vni === check.configuration.vni && entry.address === check.configuration.peerAddress);
+      const passed = check.configuration.expected === "absent"
+        ? peer === undefined
+        : peer !== undefined && (check.configuration.expected === "unreachable" ? !peer.reachable : peer.reachable);
+      return result(check, passed, `VTEP ${check.configuration.peerAddress} ${peer ? (peer.reachable ? "is reachable" : "has no underlay route") : "is not a peer"}`, {
+        found: peer !== undefined,
+        reachable: peer?.reachable ?? false,
+        learnedFrom: peer?.source,
+        expected: check.configuration.expected,
+      });
+    }
+    case "vxlan-remote-mac": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const entry = device.remoteMacEntries().find((row) =>
+        row.vni === check.configuration.vni && row.mac === normalizeMac(check.configuration.macAddress));
+      const matches = entry !== undefined
+        && (check.configuration.expectedRemoteVtep === undefined || entry.remoteVtep === check.configuration.expectedRemoteVtep)
+        && (check.configuration.expectedSource === undefined || entry.source === check.configuration.expectedSource);
+      const passed = check.configuration.expected === "present" ? matches : !matches;
+      return result(check, passed, `Remote MAC in VNI ${check.configuration.vni} ${entry ? `points to ${entry.remoteVtep}` : "is not installed"}`, {
+        found: entry !== undefined,
+        actualRemoteVtep: entry?.remoteVtep,
+        actualSource: entry?.source,
+        expected: check.configuration.expected,
+      });
+    }
+    case "evpn-type2-route":
+    case "evpn-type3-route": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const wantType = check.type === "evpn-type2-route" ? 2 : 3;
+      const candidates = device.evpnRoutes().filter((route) => route.type === wantType
+        && route.vni === check.configuration.vni
+        && (check.configuration.routeDistinguisher === undefined
+          || route.routeDistinguisher === check.configuration.routeDistinguisher));
+      const route = check.type === "evpn-type2-route"
+        ? candidates.find((entry) => entry.type === 2
+          && entry.macAddress === normalizeMac(check.configuration.macAddress)
+          && (check.configuration.expectedNextHop === undefined || entry.nextHop === check.configuration.expectedNextHop))
+        : candidates.find((entry) => entry.type === 3
+          && (check.configuration.originatingVtep === undefined
+            || entry.originatingVtep === check.configuration.originatingVtep));
+      const passed = check.configuration.expected === "present" ? route !== undefined : route === undefined;
+      return result(check, passed, `EVPN Type ${wantType} route for VNI ${check.configuration.vni} ${route ? "is present" : "is missing"}`, {
+        found: route !== undefined,
+        best: route?.best,
+        actualNextHop: route?.nextHop,
+        candidateCount: candidates.length,
+        expected: check.configuration.expected,
+      });
+    }
+    case "evpn-route-target": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const evpn = device.evpnVniConfigurations().find((entry) => entry.vni === check.configuration.vni);
+      const values = check.configuration.direction === "import" ? evpn?.importRouteTargets : evpn?.exportRouteTargets;
+      const found = values?.includes(check.configuration.routeTarget) ?? false;
+      return result(check, found, `VNI ${check.configuration.vni} ${check.configuration.direction} route target ${found ? "is configured" : "is missing"}`, {
+        found,
+        configuredCount: values?.length ?? 0,
+      });
+    }
+    case "vxlan-l2-connectivity": {
+      const outcome = executePing(runtime, check.configuration.sourceDeviceId, check.configuration.destinationIp);
+      if (!outcome) return errorResult(check, `Ping-capable device '${check.configuration.sourceDeviceId}' was not found`);
+      const overlayEvents = outcome.trace.filter((entry) => entry.type.startsWith("vxlan-"));
+      const encapsulated = overlayEvents.some((entry) => entry.type === "vxlan-packet-sent");
+      const reachable = outcome.success && (!check.configuration.requireEncapsulation || encapsulated);
+      const passed = check.configuration.expected === "success" ? reachable : !reachable;
+      return result(check, passed, `${outcome.source.name} ${outcome.success ? "reached" : "did not reach"} ${check.configuration.destinationIp}${encapsulated ? " through VXLAN" : ""}`, {
+        actual: outcome.success ? "success" : "failure",
+        expected: check.configuration.expected,
+        encapsulated,
+        overlayEvents: [...new Set(overlayEvents.map((entry) => entry.type))],
+        failure: outcome.failure,
+      });
+    }
+    case "evpn-route-reflected": {
+      // The reflector stamps ORIGINATOR_ID and CLUSTER_LIST on what it passes
+      // on, so the evidence lives on the client that received the route — the
+      // same convention `bgp-route-reflected` uses for IPv4 unicast.
+      const device = ospfDeviceOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "BGP-capable device was not found");
+      const route = device.bgp.evpnRoutes().find((entry) =>
+        (check.configuration.routeType === undefined || entry.type === check.configuration.routeType)
+        && entry.clusterList.length > 0
+        && (check.configuration.expectedOriginatorId === undefined
+          || entry.originatorId === check.configuration.expectedOriginatorId)
+        && (check.configuration.expectedClusterId === undefined
+          || entry.clusterList.includes(check.configuration.expectedClusterId)));
+      return result(check, route !== undefined, `EVPN route ${route ? "was reflected" : "was not reflected"}`, {
+        found: route !== undefined,
+        routeType: route?.type,
+        originatorId: route?.originatorId,
+        clusterList: route?.clusterList,
+      });
+    }
+    case "evpn-customer-isolation": {
+      // The underlay carries the outer IPv4/UDP only: a Spine or P device must
+      // never learn a tenant MAC, and a VTEP must never import a VNI whose
+      // route target it does not hold.
+      const underlay = built.getDevice(check.configuration.underlayDeviceId);
+      if (!underlay) return errorResult(check, "Underlay device was not found");
+      const tenantVnis = new Set<number>();
+      for (const device of built.devices.values()) {
+        if (!(device instanceof Layer3Switch)) continue;
+        for (const member of device.vxlan.members()) tenantVnis.add(member.vni);
+      }
+      const tenantMacs = new Set<string>();
+      for (const device of built.devices.values()) {
+        if (!(device instanceof Layer3Switch)) continue;
+        for (const row of device.macAddressTable()) {
+          if (device.vxlan.memberForVlan(row.vlan)) tenantMacs.add(normalizeMac(row.mac));
+        }
+      }
+      const underlayMacs = underlay instanceof L2Switch
+        ? underlay.macAddressTable().map((row) => normalizeMac(row.mac))
+        : [];
+      const leaked = underlayMacs.filter((mac) => tenantMacs.has(mac));
+      const foreignImport = check.configuration.vtepDeviceId === undefined
+        ? []
+        : (vtepOf(built, check.configuration.vtepDeviceId)?.remoteMacEntries() ?? [])
+          .filter((entry) => check.configuration.foreignVni !== undefined && entry.vni === check.configuration.foreignVni);
+      const passed = leaked.length === 0 && foreignImport.length === 0;
+      return result(check, passed, `Tenant Layer 2 ${passed ? "stayed inside its VNI" : "leaked into the underlay"}`, {
+        underlayTenantMacs: leaked.length,
+        foreignVniEntries: foreignImport.length,
+        tenantVnis: tenantVnis.size,
       });
     }
     // --- M10.13 MP-BGP IPv6 unicast and MPLS VPNv6 ------------------------
