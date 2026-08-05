@@ -68,6 +68,7 @@ export * from "./packets/icmp";
 export * from "./packets/icmpv6";
 export * from "./packets/ipv6";
 export * from "./packets/udp";
+export * from "./packets/vxlan";
 export * from "./packets/tcp";
 export * from "./packets/dhcp";
 export * from "./packets/dhcpv6";
@@ -83,6 +84,9 @@ export * from "./routing/vrf";
 // Deterministic MPLS label stack and LFIB forwarding
 export * from "./mpls/limits";
 export * from "./mpls/label-forwarding";
+
+// Deterministic VXLAN layer-2 overlays (see docs/vxlan-evpn.md)
+export * from "./overlay/vxlan";
 
 // Reusable deterministic quality of service
 export * from "./qos";

@@ -2994,6 +2994,17 @@ export class Router extends Device {
       : this.resolve(address, false, false) !== undefined;
   }
 
+  /**
+   * Underlay reachability for an overlay endpoint. A VXLAN tunnel is not an
+   * interface, so this is the ordinary IPv4 table — a remote VTEP is reachable
+   * exactly when a normal route resolves it, and the overlay can never appear
+   * as its own egress.
+   */
+  overlayUnderlayReachable(address: Ipv4): boolean {
+    const route = this.resolve(address);
+    return route !== undefined && !isTunnelInterface(route.egress.physical);
+  }
+
   bgpExactRouteExists(
     network: IpAddress,
     prefixLength: number,

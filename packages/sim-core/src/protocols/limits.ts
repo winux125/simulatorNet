@@ -74,6 +74,19 @@ export const DEFAULT_CONTROL_PROTOCOL_LIMITS = Object.freeze({
   maximumLdpBindingsPerRouter: 4_096,
   maximumLdpEventsPerOperation: 20_000,
   maximumLdpStateTransitionsPerOperation: 4_096,
+
+  // --- VXLAN overlays --------------------------------------------------
+  maximumVnisPerVtep: 128,
+  maximumRemoteVtepsPerVni: 32,
+  maximumRemoteMacsPerVtep: 4_096,
+  maximumBumReplicasPerOperation: 20_000,
+  maximumVxlanEventsPerOperation: 50_000,
+
+  // --- BGP EVPN --------------------------------------------------------
+  maximumEvpnRoutesPerDevice: 8_192,
+  maximumEvpnMacRoutesPerVni: 1_024,
+  maximumEvpnImetRoutesPerVni: 64,
+  maximumEvpnUpdatesPerOperation: 20_000,
 });
 
 export type ControlProtocolLimits = typeof DEFAULT_CONTROL_PROTOCOL_LIMITS;
@@ -96,7 +109,10 @@ export type ControlProtocolBudgetKey =
   | "bgpStateTransitions"
   | "bgpReflectedUpdates"
   | "ldpEvents"
-  | "ldpStateTransitions";
+  | "ldpStateTransitions"
+  | "vxlanEvents"
+  | "bumReplicas"
+  | "evpnUpdates";
 
 const BUDGET_LIMIT_KEYS: Readonly<Record<ControlProtocolBudgetKey, keyof ControlProtocolLimits>> = Object.freeze({
   bpduEvents: "maximumBpduEventsPerOperation",
@@ -117,6 +133,9 @@ const BUDGET_LIMIT_KEYS: Readonly<Record<ControlProtocolBudgetKey, keyof Control
   bgpReflectedUpdates: "maximumBgpReflectedUpdatesPerOperation",
   ldpEvents: "maximumLdpEventsPerOperation",
   ldpStateTransitions: "maximumLdpStateTransitionsPerOperation",
+  vxlanEvents: "maximumVxlanEventsPerOperation",
+  bumReplicas: "maximumBumReplicasPerOperation",
+  evpnUpdates: "maximumEvpnUpdatesPerOperation",
 });
 
 /** Raised when a lab exceeds a structural or per-operation protocol bound. */

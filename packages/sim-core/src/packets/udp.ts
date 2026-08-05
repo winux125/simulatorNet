@@ -9,6 +9,7 @@ import type {
 } from "../services/messages";
 import type { SnmpMessage } from "../management/snmp-messages";
 import type { IkeMessage } from "./ike";
+import type { VxlanPacket } from "./vxlan";
 
 /** Generic structured payload used by transport tests and simple applications. */
 export interface UdpApplicationPayload {
@@ -30,6 +31,8 @@ export type UdpPayload =
   | RadiusMessage
   | SnmpMessage
   | IkeMessage
+  /** A VXLAN-encapsulated Ethernet frame; the outer transport is real UDP. */
+  | VxlanPacket
   | UdpApplicationPayload;
 
 export interface UdpDatagram {

@@ -6,6 +6,7 @@ import type { Ipv6Packet } from "../packets/ipv6";
 import type { MplsPacket } from "../packets/mpls";
 import type { TcpSegment } from "../packets/tcp";
 import type { UdpDatagram } from "../packets/udp";
+import { VXLAN_HEADER_BYTES, type VxlanPacket } from "../packets/vxlan";
 
 /**
  * Deterministic educational wire-size model.
@@ -41,6 +42,8 @@ export const WIRE_SIZE_MODEL = Object.freeze({
   greHeaderBytes: GRE_HEADER_BYTES,
   /** Simulated ESP header, trailer and integrity value; never real protection. */
   espOverheadBytes: ESP_OVERHEAD_BYTES,
+  /** VXLAN flags, reserved fields and the 24-bit VNI. */
+  vxlanHeaderBytes: VXLAN_HEADER_BYTES,
 });
 
 /** Fixed educational sizes for the structured payloads the engine models. */
@@ -92,8 +95,15 @@ function udpBytes(datagram: UdpDatagram): number {
   const payload = datagram.payload;
   const inner = payload.kind === "udp-application"
     ? applicationBytes(payload)
-    : FIXED_PAYLOAD_BYTES[payload.kind] ?? WIRE_SIZE_MODEL.defaultApplicationBytes;
+    : payload.kind === "vxlan"
+      ? vxlanBytes(payload)
+      : FIXED_PAYLOAD_BYTES[payload.kind] ?? WIRE_SIZE_MODEL.defaultApplicationBytes;
   return WIRE_SIZE_MODEL.udpHeaderBytes + inner;
+}
+
+/** The VXLAN header plus the complete Ethernet frame it transports. */
+function vxlanBytes(packet: VxlanPacket): number {
+  return WIRE_SIZE_MODEL.vxlanHeaderBytes + estimatePacketWireSizeBytes(packet.innerFrame);
 }
 
 function tcpBytes(segment: TcpSegment): number {
@@ -165,6 +175,19 @@ function l2PayloadBytes(payload: L2Payload): number {
  */
 export function estimateIpPacketSizeBytes(packet: Ipv4Packet | Ipv6Packet): number {
   return packet.kind === "ipv4" ? ipv4Bytes(packet) : ipv6Bytes(packet);
+}
+
+/**
+ * The underlay packet a VTEP will put on the wire for one inner frame: outer
+ * IPv4 + UDP + VXLAN + the whole encapsulated frame. It is the same model the
+ * queue uses, so a `vxlan-mtu-exceeded` decision and a serialization delay can
+ * never disagree about how big the packet is.
+ */
+export function estimateVxlanOuterSizeBytes(innerFrame: EthernetFrame): number {
+  return WIRE_SIZE_MODEL.ipv4HeaderBytes
+    + WIRE_SIZE_MODEL.udpHeaderBytes
+    + WIRE_SIZE_MODEL.vxlanHeaderBytes
+    + estimatePacketWireSizeBytes(innerFrame);
 }
 
 /**

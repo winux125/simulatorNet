@@ -1,5 +1,20 @@
 import { type EthernetFrame, isControlPayload } from "../packets/ethernet";
 import { EthernetInterface } from "../net/interface";
+import { estimateVxlanOuterSizeBytes } from "../net/packet-size";
+import {
+  VXLAN_UDP_PORT,
+  vxlanSourcePort,
+  type VxlanPacket,
+} from "../packets/vxlan";
+import {
+  VxlanEngine,
+  type EvpnVniConfiguration,
+  type NveInterfaceConfiguration,
+  type NveOperationalState,
+  type RemoteMacEntry,
+  type VniOperationalState,
+  type VxlanPeerSummary,
+} from "../overlay/vxlan";
 import { ipToInt, type Ipv4 } from "../util/ipv4";
 import type { Ipv6 } from "../util/ipv6";
 import { isIpv6Multicast } from "../util/ipv6";
@@ -30,7 +45,24 @@ import {
   type RouterInterfaceRow,
   type RouteRow,
 } from "./router";
-import { L2Switch } from "./switch";
+import { L2Switch, type FrameOrigin } from "./switch";
+
+/**
+ * The underlay MTU a VXLAN outer packet has to fit into.
+ *
+ * This is an educational constant, not a hardware claim: it exists so a lab can
+ * observe that encapsulation costs bytes and that an oversized overlay frame is
+ * dropped and reported rather than fragmented.
+ */
+export const VXLAN_UNDERLAY_MTU_BYTES = 1_500;
+
+/** One row of `show nve interfaces`. */
+export interface NveInterfaceRow extends NveOperationalState {
+  readonly id: string;
+  readonly sourceInterfaceId: string;
+  readonly adminUp: boolean;
+  readonly vniCount: number;
+}
 
 export interface SviRow {
   readonly vlanId: number;
@@ -66,18 +98,43 @@ class SviInterface extends EthernetInterface {
 /** VLAN switching plus a composed Router control/data plane for SVIs and routed ports. */
 export class Layer3Switch extends L2Switch {
   override readonly deviceType = "l3-switch" as const;
+  /**
+   * The VXLAN tunnel endpoint. An L3 Switch is the only device that may be a
+   * VTEP: a Router stays an underlay router (and may reflect EVPN routes) and a
+   * plain L2 Switch stays an access/aggregation switch.
+   */
+  readonly vxlan = new VxlanEngine();
   private readonly routingPlane: Router;
   private readonly routedPorts = new Set<string>();
   private readonly svis = new Map<number, SviInterface>();
+  private vxlanListening = false;
+  /** Bounded, deduplicated overlay diagnostics; runtime only. */
+  private readonly vxlanFaults = new Map<string, string>();
 
   constructor(id: string, name: string) {
     super(id, name);
     this.routingPlane = new Router(id, name);
     this.routingPlane.setForwardingEnabled(false);
+    // The overlay never reaches into the switch: it asks these five questions
+    // and derives its operational state from the answers alone.
+    this.vxlan.useHooks({
+      interfaceAddress: (name) => {
+        const row = this.routingPlane.interfaceSummaries().find((entry) => entry.name === name);
+        return row?.operUp ? row.ip : undefined;
+      },
+      interfaceExists: (name) => this.routingPlane.interfaceSummaries().some((entry) => entry.name === name),
+      isLoopback: (name) => this.routingPlane.isLoopback(name),
+      hasVlan: (vlanId) => this.hasVlan(vlanId),
+      underlayReachable: (address) => {
+        this.syncRoutingPlane();
+        return this.routingPlane.overlayUnderlayReachable(address);
+      },
+    });
   }
 
   override onAddedToEngine(): void {
     this.syncRoutingPlane();
+    this.ensureVxlanListener();
   }
 
   override rename(name: string): void {
@@ -333,6 +390,327 @@ export class Layer3Switch extends L2Switch {
     return this.routingPlane.ipv6AclBindings();
   }
 
+  // --- VXLAN tunnel endpoint ----------------------------------------------
+
+  /** `interface nve1`: configure the one logical overlay interface. */
+  configureNve(configuration: NveInterfaceConfiguration): void {
+    this.syncRoutingPlane();
+    this.vxlan.configure(configuration);
+    this.vxlanFaults.clear();
+    this.ensureVxlanListener();
+  }
+
+  removeNve(): void {
+    this.vxlan.remove();
+    this.vxlanFaults.clear();
+    if (this.vxlanListening) {
+      this.routingPlane.management.udp.unbind(VXLAN_UDP_PORT);
+      this.vxlanListening = false;
+    }
+  }
+
+  nveConfiguration(): NveInterfaceConfiguration | undefined {
+    return this.vxlan.configurationSnapshot();
+  }
+
+  defineEvpnVni(configuration: EvpnVniConfiguration): void {
+    this.vxlan.defineEvpnVni(configuration);
+  }
+
+  removeEvpnVni(vni: number): void {
+    this.vxlan.removeEvpnVni(vni);
+  }
+
+  evpnVniConfigurations(): EvpnVniConfiguration[] {
+    return this.vxlan.evpnVniConfigurations();
+  }
+
+  /** `show nve interfaces`: the NVE and why it is or is not operational. */
+  nveSummaries(): NveInterfaceRow[] {
+    const configuration = this.vxlan.configurationSnapshot();
+    if (!configuration) return [];
+    this.syncRoutingPlane();
+    const state = this.vxlan.state();
+    return [{
+      id: configuration.id,
+      sourceInterfaceId: configuration.sourceInterfaceId,
+      adminUp: configuration.adminUp,
+      vniCount: configuration.members.length,
+      up: state.up,
+      sourceAddress: state.sourceAddress,
+      reason: state.reason,
+    }];
+  }
+
+  /** `show nve vni`: every VLAN-to-VNI mapping with its derived state. */
+  vniSummaries(): VniOperationalState[] {
+    this.syncRoutingPlane();
+    return this.vxlan.vniStates();
+  }
+
+  /** `show nve peers`: the remote VTEPs head-end replication will reach. */
+  vxlanPeerSummaries(): VxlanPeerSummary[] {
+    this.syncRoutingPlane();
+    return this.vxlan.peerSummaries();
+  }
+
+  /** `show mac address-table remote`: MACs learned behind a remote VTEP. */
+  remoteMacEntries(): RemoteMacEntry[] {
+    return this.vxlan.remoteMacEntries();
+  }
+
+  /** Bounded overlay diagnostics for Problems; never a credential or a packet. */
+  vxlanProblems(): string[] {
+    const problems = [...this.vxlanFaults.values()];
+    const configuration = this.vxlan.configurationSnapshot();
+    if (configuration) {
+      this.syncRoutingPlane();
+      const state = this.vxlan.state();
+      if (!state.up && state.reason !== "administratively-down") {
+        problems.push(`${this.name} ${configuration.id} source ${configuration.sourceInterfaceId} is unavailable (${state.reason}).`);
+      }
+      for (const vni of this.vxlan.vniStates()) {
+        if (vni.reason === "vlan-missing") {
+          problems.push(`${this.name} VNI ${vni.vni} maps VLAN ${vni.vlanId}, which is not in the VLAN database.`);
+        }
+        if (!vni.up) continue;
+        if (this.vxlan.peersForVni(vni.vni).length === 0) {
+          problems.push(`${this.name} VNI ${vni.vni} has no remote VTEP: configure a static peer or BGP EVPN ingress replication.`);
+        }
+        for (const peer of this.vxlan.peersForVni(vni.vni)) {
+          if (!this.routingPlane.overlayUnderlayReachable(peer)) {
+            problems.push(`${this.name} has no underlay route to VTEP ${peer} for VNI ${vni.vni}.`);
+          }
+        }
+      }
+    }
+    return [...new Set(problems)].sort();
+  }
+
+  /** Drop every learned overlay table; configuration is untouched. */
+  resetVxlanRuntime(): void {
+    this.vxlan.resetRuntime();
+    this.vxlanFaults.clear();
+  }
+
+  /** `shutdown`/`no shutdown` on nve1, as one bounded restart. */
+  restartNve(): void {
+    const configuration = this.vxlan.configurationSnapshot();
+    if (!configuration) return;
+    this.vxlan.configure(configuration);
+    this.vxlanFaults.clear();
+  }
+
+  /**
+   * A VXLAN datagram arrived on one of this VTEP's own addresses. The outer
+   * IPv4/UDP header has already been through routing, ACLs and QoS, so what
+   * remains is: match the local VNI, decapsulate, learn the remote MAC and hand
+   * the inner frame to ordinary local switching.
+   */
+  private onVxlanDatagram(datagram: { sourceAddress: string; destinationAddress: string; payload: unknown }): void {
+    const payload = datagram.payload as { kind?: string };
+    if (payload.kind !== "vxlan") return;
+    const packet = payload as VxlanPacket;
+    this.engine.controlProtocolBudget.consume("vxlanEvents", this.id);
+    const source = datagram.sourceAddress as Ipv4;
+    this.traceVxlan("vxlan-packet-received", {
+      vni: packet.vni,
+      sourceVtep: source,
+      destinationVtep: datagram.destinationAddress,
+      innerSource: packet.innerFrame.src,
+      innerDestination: packet.innerFrame.dst,
+    });
+    const member = this.vxlan.memberForVni(packet.vni);
+    const state = member ? this.vxlan.vniState(packet.vni) : undefined;
+    if (!member || !state?.up) {
+      this.traceVxlan("vxlan-vni-not-found", { vni: packet.vni, sourceVtep: source, reason: state?.reason ?? "not-mapped" });
+      this.recordVxlanFault(`vni-${packet.vni}-missing`, `${this.name} received VNI ${packet.vni} from ${source} but has no operational local mapping.`);
+      return;
+    }
+    this.traceVxlan("vxlan-decapsulated", {
+      vni: packet.vni,
+      vlan: member.vlanId,
+      sourceVtep: source,
+      innerSource: packet.innerFrame.src,
+      innerDestination: packet.innerFrame.dst,
+    });
+    if (this.vxlan.learnRemoteMac(packet.vni, packet.innerFrame.src, source, this.engine.now(), "data-plane")) {
+      this.traceVxlan("vxlan-mac-learned-remote", {
+        vni: packet.vni,
+        mac: normalizeMac(packet.innerFrame.src),
+        remoteVtep: source,
+        source: "data-plane",
+      });
+    }
+    const origin: FrameOrigin = { kind: "remote-vtep", peer: source, vni: packet.vni };
+    this.switchIntoVlan(packet.innerFrame, member.vlanId, origin);
+  }
+
+  protected override forwardToOverlay(
+    frame: EthernetFrame,
+    vlan: number,
+    destination: Mac,
+    origin: FrameOrigin,
+  ): boolean {
+    const member = this.vxlan.memberForVlan(vlan);
+    if (!member) return false;
+    const entry = this.vxlan.remoteMac(member.vni, destination);
+    if (!entry) return false;
+    if (origin.kind === "remote-vtep") {
+      // A frame decapsulated from one VTEP is never re-encapsulated towards
+      // another: that is exactly the overlay loop split horizon exists to stop.
+      this.traceVxlan("vxlan-split-horizon-dropped", {
+        vni: member.vni,
+        peer: origin.peer,
+        mac: normalizeMac(destination),
+        reason: "unicast-from-overlay",
+      });
+      return true;
+    }
+    return this.sendVxlan(member.vni, entry.remoteVtep, frame, "unicast");
+  }
+
+  protected override replicateToOverlay(frame: EthernetFrame, vlan: number, origin: FrameOrigin): void {
+    const member = this.vxlan.memberForVlan(vlan);
+    if (!member) return;
+    if (origin.kind === "remote-vtep") {
+      this.traceVxlan("vxlan-split-horizon-dropped", {
+        vni: member.vni,
+        peer: origin.peer,
+        reason: "bum-from-overlay",
+      });
+      return;
+    }
+    const state = this.vxlan.vniState(member.vni);
+    if (!state?.up) return;
+    const peers = this.vxlan.peersForVni(member.vni);
+    let replicas = 0;
+    for (const peer of peers) {
+      // Head-end replication is bounded per operation, so a broadcast storm can
+      // never make Auto execution unbounded.
+      if (!this.engine.controlProtocolBudget.tryConsume("bumReplicas", this.id)) break;
+      if (this.sendVxlan(member.vni, peer, frame, "bum")) replicas++;
+    }
+    this.traceVxlan("vxlan-bum-replicated", {
+      vni: member.vni,
+      vlan: member.vlanId,
+      replicas,
+      peers: peers.length,
+      replication: member.replication.type,
+    });
+    if (peers.length === 0) {
+      this.recordVxlanFault(
+        `vni-${member.vni}-no-peer`,
+        `${this.name} VNI ${member.vni} flooded locally only: no remote VTEP is known.`,
+      );
+    }
+  }
+
+  /**
+   * Encapsulate one frame and hand the outer packet to the ordinary underlay
+   * path, so interface state, ACLs, the firewall, QoS and packet loss all apply
+   * to it exactly as they do to any other IPv4/UDP traffic.
+   */
+  private sendVxlan(vni: number, destination: Ipv4, frame: EthernetFrame, kind: "unicast" | "bum"): boolean {
+    this.syncRoutingPlane();
+    const state = this.vxlan.vniState(vni);
+    if (!state?.up || state.sourceAddress === undefined) return false;
+    this.engine.controlProtocolBudget.consume("vxlanEvents", this.id);
+    // The VNI carries the segment identity, so the inner frame travels
+    // untagged and its 802.1p priority goes with the tag it no longer has.
+    const innerFrame: EthernetFrame = frame.vlan === undefined && frame.pcp === undefined
+      ? frame
+      : { ...frame, vlan: undefined, pcp: undefined };
+    this.traceVxlan("vxlan-encapsulation-started", {
+      vni,
+      kind,
+      sourceVtep: state.sourceAddress,
+      destinationVtep: destination,
+      innerSource: normalizeMac(innerFrame.src),
+      innerDestination: normalizeMac(innerFrame.dst),
+    });
+    const bytes = estimateVxlanOuterSizeBytes(innerFrame);
+    if (bytes > VXLAN_UNDERLAY_MTU_BYTES) {
+      this.traceVxlan("vxlan-mtu-exceeded", { vni, bytes, mtu: VXLAN_UNDERLAY_MTU_BYTES, destinationVtep: destination });
+      this.recordVxlanFault(
+        `vni-${vni}-mtu`,
+        `${this.name} dropped a VNI ${vni} frame: ${bytes} bytes exceeds the ${VXLAN_UNDERLAY_MTU_BYTES}-byte underlay MTU.`,
+      );
+      return false;
+    }
+    if (!this.routingPlane.overlayUnderlayReachable(destination)) {
+      this.traceVxlan("vxlan-underlay-unreachable", { vni, destinationVtep: destination });
+      this.recordVxlanFault(
+        `vtep-${destination}-unreachable`,
+        `${this.name} has no underlay route to VTEP ${destination}.`,
+      );
+      return false;
+    }
+    const packet: VxlanPacket = {
+      kind: "vxlan",
+      vni,
+      innerFrame,
+      sourceVtep: state.sourceAddress,
+      destinationVtep: destination,
+    };
+    this.routingPlane.management.udp.send({
+      destinationAddress: destination,
+      destinationPort: VXLAN_UDP_PORT,
+      sourcePort: vxlanSourcePort(vni, innerFrame),
+      sourceAddress: state.sourceAddress,
+      payload: packet,
+    });
+    this.traceVxlan("vxlan-packet-sent", {
+      vni,
+      kind,
+      sourceVtep: state.sourceAddress,
+      destinationVtep: destination,
+      bytes,
+    });
+    return true;
+  }
+
+  protected override onLocalMacLearned(vlan: number, mac: Mac, port: string): void {
+    const member = this.vxlan.memberForVlan(vlan);
+    if (!member) return;
+    // A local attachment always wins over a remote one: the station moved here,
+    // so the stale remote entry is dropped and the overlay is told about it.
+    const remote = this.vxlan.remoteMac(member.vni, mac);
+    if (remote) {
+      this.vxlan.forgetRemoteMac(member.vni, mac);
+      this.traceVxlan("vxlan-mac-moved-local", {
+        vni: member.vni,
+        mac: normalizeMac(mac),
+        port,
+        previousVtep: remote.remoteVtep,
+      });
+    }
+    this.traceVxlan("vxlan-mac-learned-local", { vni: member.vni, vlan, mac: normalizeMac(mac), port });
+    this.onOverlayMacTableChanged();
+  }
+
+  /** Extension point: the EVPN control plane reacts to a local MAC change. */
+  protected onOverlayMacTableChanged(): void {}
+
+  private ensureVxlanListener(): void {
+    if (this.vxlanListening) return;
+    this.routingPlane.management.udp.bind(
+      VXLAN_UDP_PORT,
+      (datagram) => this.onVxlanDatagram(datagram),
+      "vxlan",
+    );
+    this.vxlanListening = true;
+  }
+
+  private recordVxlanFault(key: string, message: string): void {
+    if (this.vxlanFaults.size >= 64 && !this.vxlanFaults.has(key)) return;
+    this.vxlanFaults.set(key, message);
+  }
+
+  protected traceVxlan(type: string, detail: Readonly<Record<string, unknown>>): void {
+    this.engine.trace({ time: this.engine.now(), type, device: this.id, detail });
+  }
+
   // --- quality of service (delegated to the composed routing plane) --------
 
   get qos(): Router["qos"] {
@@ -512,7 +890,7 @@ export class Layer3Switch extends L2Switch {
     return !this.routedPorts.has(port) && super.switchingEnabledOnPort(port);
   }
 
-  protected override receiveLocal(frame: EthernetFrame, _ingress: EthernetInterface, vlan: number): boolean {
+  protected override receiveLocal(frame: EthernetFrame, _ingress: EthernetInterface | undefined, vlan: number): boolean {
     const svi = this.svis.get(vlan);
     if (!svi?.operationalUp) return false;
     const destination = normalizeMac(frame.dst);

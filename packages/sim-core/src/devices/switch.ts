@@ -87,6 +87,19 @@ export interface MacAddressRow {
   port: string;
 }
 
+/**
+ * Where a frame entered this switch.
+ *
+ * This is simulator metadata, never an Ethernet field: it exists so a VXLAN
+ * VTEP can apply split horizon — a frame decapsulated from one remote VTEP is
+ * never re-encapsulated towards another — without inventing a wire header.
+ */
+export type FrameOrigin =
+  | { readonly kind: "local-port"; readonly port: string }
+  /** The device's own control/L3 plane (an SVI, the management plane). */
+  | { readonly kind: "local-device" }
+  | { readonly kind: "remote-vtep"; readonly peer: string; readonly vni: number };
+
 /** A row of `show interfaces` / port config, used by the CLI formatters. */
 export interface SwitchPortRow {
   name: string;
@@ -823,6 +836,7 @@ export class L2Switch extends Device {
       device: this.id,
       detail: { mac: src, port: logical, vlan },
     });
+    this.onLocalMacLearned(vlan, src, logical);
 
     // Learning state learns addresses but must not yet relay user data.
     if (!this.spanningTree.allowsForwarding(logical, vlan)) {
@@ -840,9 +854,13 @@ export class L2Switch extends Device {
     const dstEntry = isBroadcastMac(dst) ? undefined : this.fdb.lookup(vlan, dst, this.engine.now());
     if (consumed && !isBroadcastMac(dst)) return;
 
+    const origin: FrameOrigin = { kind: "local-port", port: logical };
     // Flood when broadcast or the destination is unknown within this VLAN.
     if (!dstEntry) {
-      this.flood(frame, vlan, ingress);
+      // A destination that is only known behind a remote VTEP is a known
+      // unicast for the overlay even though the local database has no port.
+      if (!isBroadcastMac(dst) && this.forwardToOverlay(frame, vlan, dst, origin)) return;
+      this.flood(frame, vlan, ingress, origin);
       return;
     }
 
@@ -894,7 +912,12 @@ export class L2Switch extends Device {
     return false;
   }
 
-  protected flood(frame: EthernetFrame, vlan: number, ingress?: EthernetInterface): void {
+  protected flood(
+    frame: EthernetFrame,
+    vlan: number,
+    ingress?: EthernetInterface,
+    origin: FrameOrigin = { kind: "local-device" },
+  ): void {
     this.engine.trace({
       time: this.engine.now(),
       type: "flood",
@@ -911,7 +934,30 @@ export class L2Switch extends Device {
       if (!iface?.operationalUp) continue;
       iface.transmit(this.egressFrame(logical, vlan, frame));
     }
+    // A stretched VLAN floods to its remote VTEPs too. Split horizon lives in
+    // the overlay hook, so the local data plane stays unaware of it.
+    this.replicateToOverlay(frame, vlan, origin);
   }
+
+  /**
+   * Overlay hook: deliver a known-unicast frame to the remote VTEP that owns
+   * the destination MAC. `false` means the overlay did not handle it and the
+   * ordinary local flood applies.
+   */
+  protected forwardToOverlay(
+    _frame: EthernetFrame,
+    _vlan: number,
+    _destination: Mac,
+    _origin: FrameOrigin,
+  ): boolean {
+    return false;
+  }
+
+  /** Overlay hook: head-end replication of BUM traffic beside the local flood. */
+  protected replicateToOverlay(_frame: EthernetFrame, _vlan: number, _origin: FrameOrigin): void {}
+
+  /** Overlay hook: a MAC was learned locally on a switchport in this VLAN. */
+  protected onLocalMacLearned(_vlan: number, _mac: Mac, _port: string): void {}
 
   /** The VLAN a frame belongs to on ingress, or `undefined` if it must be dropped. */
   protected ingressVlan(port: string, frame: EthernetFrame): number | undefined {
@@ -955,14 +1001,30 @@ export class L2Switch extends Device {
   }
 
   /** Hook for a local control/L3 plane. Broadcasts may be consumed and flooded. */
-  protected receiveLocal(frame: EthernetFrame, _ingress: EthernetInterface, vlan: number): boolean {
+  protected receiveLocal(frame: EthernetFrame, _ingress: EthernetInterface | undefined, vlan: number): boolean {
     if (!this.managementPlane) return false;
     this.management();
     return this.managementPlane.receive(frame, vlan);
   }
 
   protected transmitFromLocal(frame: EthernetFrame, vlan: number): void {
+    this.switchIntoVlan(frame, vlan, { kind: "local-device" });
+  }
+
+  /**
+   * Switch a frame that did not arrive on a switchport into one VLAN: the local
+   * control plane first, then the learned port, then the overlay, then a flood.
+   *
+   * A frame injected from a remote VTEP is deliberately *not* learned against a
+   * local port — its address belongs to the overlay's remote table — and its
+   * origin stops it from being sent back into the overlay.
+   */
+  protected switchIntoVlan(frame: EthernetFrame, vlan: number, origin: FrameOrigin): void {
     const destination = normalizeMac(frame.dst);
+    if (origin.kind === "remote-vtep") {
+      const consumed = this.receiveLocal(frame, undefined, vlan);
+      if (consumed && !isBroadcastMac(destination)) return;
+    }
     const learned = isBroadcastMac(destination) ? undefined : this.fdb.lookup(vlan, destination, this.engine.now());
     if (learned
       && this.portCarriesVlan(learned.port, vlan)
@@ -973,6 +1035,7 @@ export class L2Switch extends Device {
         return;
       }
     }
-    this.flood(frame, vlan);
+    if (!isBroadcastMac(destination) && this.forwardToOverlay(frame, vlan, destination, origin)) return;
+    this.flood(frame, vlan, undefined, origin);
   }
 }
