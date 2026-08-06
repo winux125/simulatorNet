@@ -3,19 +3,27 @@ import { EthernetInterface } from "../net/interface";
 import { estimateVxlanOuterSizeBytes } from "../net/packet-size";
 import {
   VXLAN_UDP_PORT,
+  vxlanInnerPayload,
   vxlanSourcePort,
+  type VxlanInnerPayload,
   type VxlanPacket,
 } from "../packets/vxlan";
+import { ArpOp } from "@sim/contracts";
+import type { ArpPacket } from "../packets/arp";
+import type { Ipv4Packet } from "../packets/ipv4";
 import { DEFAULT_CONTROL_PROTOCOL_LIMITS } from "../protocols/limits";
 import {
   VxlanEngine,
+  type EvpnFabricConfiguration,
   type EvpnVniConfiguration,
+  type L3VniOperationalState,
   type NveInterfaceConfiguration,
   type NveOperationalState,
   type RemoteMacEntry,
   type VniOperationalState,
   type VxlanPeerSummary,
 } from "../overlay/vxlan";
+import type { ImportedEvpnPrefixRoute, VrfConfiguration, VrfRoute } from "../routing/vrf";
 import { ipToInt, type Ipv4 } from "../util/ipv4";
 import type { Ipv6 } from "../util/ipv6";
 import { isIpv6Multicast } from "../util/ipv6";
@@ -119,6 +127,8 @@ export class Layer3Switch extends L2Switch {
   private readonly evpnFaults = new Map<string, string>();
   /** Last originated EVPN route set, so a MAC learn only re-advertises once. */
   private evpnExportSignature = "";
+  /** SVIs configured with `fabric forwarding mode anycast-gateway`. */
+  private readonly anycastGatewayVlans = new Set<number>();
 
   constructor(id: string, name: string) {
     super(id, name);
@@ -144,6 +154,13 @@ export class Layer3Switch extends L2Switch {
         this.syncRoutingPlane();
         return this.routingPlane.overlayUnderlayReachable(address);
       },
+      hasVrf: (vrfId) => this.routingPlane.vrfs.configuration(vrfId) !== undefined,
+    });
+    // Symmetric IRB reaches the wire through the one VXLAN send path below, so
+    // the routed plane never learns how to encapsulate and the overlay never
+    // learns how to route.
+    this.routingPlane.useEvpnRoutedOverlay({
+      encapsulate: (input) => this.sendRoutedVxlan(input),
     });
   }
 
@@ -405,6 +422,132 @@ export class Layer3Switch extends L2Switch {
     return this.routingPlane.ipv6AclBindings();
   }
 
+  // --- tenant VRFs ---------------------------------------------------------
+
+  /**
+   * Tenant VRFs on a VTEP.
+   *
+   * These delegate to the composed routing plane, so an L3 Switch gets exactly
+   * the routing contexts a Router already has — an EVPN tenant is not a second
+   * kind of VRF. MPLS/LDP stays Router-only; what an L3 Switch gains here is the
+   * VRF as the isolation boundary a VXLAN L3VNI transports.
+   */
+  defineVrf(configuration: VrfConfiguration): void {
+    this.syncRoutingPlane();
+    this.routingPlane.defineVrf(configuration);
+  }
+
+  removeVrf(vrfId: string): void {
+    this.routingPlane.vrfs.remove(vrfId);
+  }
+
+  vrfConfigurations(): readonly VrfConfiguration[] {
+    return this.routingPlane.vrfConfigurations();
+  }
+
+  assignInterfaceVrf(interfaceName: string, vrfId: string | undefined): void {
+    this.syncRoutingPlane();
+    this.routingPlane.assignInterfaceVrf(interfaceName, vrfId);
+  }
+
+  /** `interface Vlan<n>` → `vrf forwarding <name>`. */
+  setSviVrf(vlanId: number, vrfId: string | undefined): void {
+    this.defineSvi(vlanId);
+    this.routingPlane.assignInterfaceVrf(`Vlan${vlanId}`, vrfId);
+  }
+
+  interfaceVrf(interfaceName: string): string | undefined {
+    return this.routingPlane.interfaceVrf(interfaceName);
+  }
+
+  addVrfStaticRoute(vrfId: string, network: Ipv4, prefixLength: number, nextHop: Ipv4): void {
+    this.syncRoutingPlane();
+    this.routingPlane.addVrfStaticRoute(vrfId, network, prefixLength, nextHop);
+  }
+
+  vrfStaticRouteConfigurations(vrfId: string): readonly VrfRoute[] {
+    return this.routingPlane.vrfStaticRouteConfigurations(vrfId);
+  }
+
+  /** `show ip route vrf <name>`: connected, static and imported Type 5 prefixes. */
+  vrfRoutingTable(vrfId: string): readonly VrfRoute[] {
+    this.syncRoutingPlane();
+    return this.routingPlane.vrfRoutingTable(vrfId);
+  }
+
+  /**
+   * Install the EVPN Type 5 prefixes the control plane selected. Route targets
+   * decide which VRF each one lands in, so this is the single point where an
+   * overlay prefix becomes tenant forwarding state. Runtime only.
+   */
+  replaceImportedEvpnRoutes(routes: readonly ImportedEvpnPrefixRoute[]): void {
+    this.routingPlane.vrfs.replaceImportedEvpn(routes);
+  }
+
+  /** The Type 5 prefixes one VRF installed, for `show` and grading. */
+  importedEvpnRoutes(vrfId: string): readonly VrfRoute[] {
+    return this.routingPlane.vrfs.importedEvpnRouteConfigurations(vrfId);
+  }
+
+  // --- distributed anycast gateway -----------------------------------------
+
+  /** `fabric forwarding anycast-gateway-mac <mac>`. */
+  setFabricAnycastGatewayMac(mac: Mac | undefined): void {
+    this.vxlan.configureFabric({ anycastGatewayMac: mac });
+    this.refreshAnycastGatewayMacs();
+  }
+
+  fabricConfiguration(): EvpnFabricConfiguration {
+    return this.vxlan.fabricConfiguration();
+  }
+
+  /**
+   * `interface Vlan<n>` → `fabric forwarding mode anycast-gateway`.
+   *
+   * The SVI keeps its own IPv4 address but answers with the fabric-wide anycast
+   * MAC, so every leaf that carries this tenant VLAN presents the *same* gateway
+   * IP and MAC. A host therefore always talks to its own local leaf and its ARP
+   * cache stays valid if it moves — which is the whole point of a distributed
+   * gateway, and why this is never a duplicate-address conflict.
+   */
+  setSviAnycastGateway(vlanId: number, enabled: boolean): void {
+    this.defineSvi(vlanId);
+    if (enabled) this.anycastGatewayVlans.add(vlanId);
+    else this.anycastGatewayVlans.delete(vlanId);
+    this.refreshAnycastGatewayMacs();
+  }
+
+  isAnycastGateway(vlanId: number): boolean {
+    return this.anycastGatewayVlans.has(vlanId);
+  }
+
+  anycastGatewayVlanIds(): number[] {
+    return [...this.anycastGatewayVlans].sort((a, b) => a - b);
+  }
+
+  /** Re-stamp every anycast SVI, so the fabric MAC has exactly one owner. */
+  private refreshAnycastGatewayMacs(): void {
+    const anycast = this.vxlan.anycastGatewayMac;
+    for (const [vlanId, svi] of this.svis) {
+      const wanted = this.anycastGatewayVlans.has(vlanId) && anycast !== undefined
+        ? anycast
+        : this.sviMac(vlanId);
+      if (normalizeMac(svi.mac) !== normalizeMac(wanted)) svi.mac = wanted;
+    }
+  }
+
+  /** The IPv4 addresses this VTEP answers as a distributed gateway. */
+  private anycastGatewayAddresses(): Set<Ipv4> {
+    const addresses = new Set<Ipv4>();
+    if (this.vxlan.anycastGatewayMac === undefined) return addresses;
+    const rows = new Map(this.routingPlane.interfaceSummaries().map((row) => [row.name, row]));
+    for (const vlanId of this.anycastGatewayVlans) {
+      const ip = rows.get(`Vlan${vlanId}`)?.ip;
+      if (ip !== undefined) addresses.add(ip);
+    }
+    return addresses;
+  }
+
   // --- VXLAN tunnel endpoint ----------------------------------------------
 
   /** `interface nve1`: configure the one logical overlay interface. */
@@ -463,6 +606,22 @@ export class Layer3Switch extends L2Switch {
   vniSummaries(): VniOperationalState[] {
     this.syncRoutingPlane();
     return this.vxlan.vniStates();
+  }
+
+  /** True for an ARP request whose target is one of this leaf's gateway IPs. */
+  private isAnycastGatewayArpRequest(frame: EthernetFrame): boolean {
+    const payload = frame.payload;
+    if (payload.kind !== "arp") return false;
+    const arp = payload as ArpPacket;
+    if (arp.op !== ArpOp.Request) return false;
+    this.syncRoutingPlane();
+    return this.anycastGatewayAddresses().has(arp.targetIp);
+  }
+
+  /** `show nve vni`: the L3VNIs and the VRFs they transport. */
+  l3VniSummaries(): L3VniOperationalState[] {
+    this.syncRoutingPlane();
+    return this.vxlan.l3VniStates();
   }
 
   /** `show nve peers`: the remote VTEPs head-end replication will reach. */
@@ -549,13 +708,19 @@ export class Layer3Switch extends L2Switch {
     const packet = payload as VxlanPacket;
     this.engine.controlProtocolBudget.consume("vxlanEvents", this.id);
     const source = datagram.sourceAddress as Ipv4;
+    const inner = vxlanInnerPayload(packet);
     this.traceVxlan("vxlan-packet-received", {
       vni: packet.vni,
+      payloadKind: packet.payloadKind,
       sourceVtep: source,
       destinationVtep: datagram.destinationAddress,
-      innerSource: packet.innerFrame.src,
-      innerDestination: packet.innerFrame.dst,
+      innerSource: inner.src,
+      innerDestination: inner.dst,
     });
+    if (packet.payloadKind === "l3") {
+      this.receiveRoutedVxlan(packet, source);
+      return;
+    }
     const member = this.vxlan.memberForVni(packet.vni);
     const state = member ? this.vxlan.vniState(packet.vni) : undefined;
     if (!member || !state?.up) {
@@ -587,6 +752,52 @@ export class Layer3Switch extends L2Switch {
     this.switchIntoVlan(packet.innerFrame, member.vlanId, origin);
   }
 
+  /**
+   * The egress half of symmetric IRB: the VNI names the VRF, the VRF repeats
+   * the IPv4 lookup, and the packet leaves on an ordinary local interface with
+   * ordinary local ARP. There is no fallback to the global table — an L3VNI
+   * whose VRF is gone drops the packet rather than leaking a tenant into it.
+   */
+  private receiveRoutedVxlan(packet: Extract<VxlanPacket, { payloadKind: "l3" }>, source: Ipv4): void {
+    const vrfId = this.vxlan.vrfForL3Vni(packet.vni);
+    const state = vrfId === undefined ? undefined : this.vxlan.l3VniState(packet.vni);
+    if (vrfId === undefined || !state?.up) {
+      this.traceVxlan("evpn-tenant-isolation-drop", {
+        reason: vrfId === undefined ? "l3vni-not-mapped" : state?.reason ?? "l3vni-down",
+        l3Vni: packet.vni,
+        sourceVtep: source,
+        destination: packet.innerPacket.dst,
+      });
+      this.recordEvpnFault(
+        `l3vni-${packet.vni}-inbound`,
+        `${this.name} received L3VNI ${packet.vni} from ${source} but has no operational VRF association.`,
+      );
+      return;
+    }
+    this.engine.controlProtocolBudget.consume("routedVxlanPackets", this.id);
+    this.traceVxlan("evpn-l3vni-decapsulated", {
+      l3Vni: packet.vni,
+      vrfId,
+      sourceVtep: source,
+      source: packet.innerPacket.src,
+      destination: packet.innerPacket.dst,
+    });
+    this.syncRoutingPlane();
+    const outcome = this.routingPlane.receiveEvpnRoutedPacket(packet.innerPacket, vrfId);
+    if (outcome === "dropped") {
+      this.traceVxlan("evpn-tenant-isolation-drop", {
+        reason: "no-egress-vrf-route",
+        vrfId,
+        l3Vni: packet.vni,
+        destination: packet.innerPacket.dst,
+      });
+      this.recordEvpnFault(
+        `l3vni-${packet.vni}-egress-${packet.innerPacket.dst}`,
+        `${this.name} has no VRF ${vrfId} route to ${packet.innerPacket.dst} for traffic arriving on L3VNI ${packet.vni}.`,
+      );
+    }
+  }
+
   protected override forwardToOverlay(
     frame: EthernetFrame,
     vlan: number,
@@ -614,6 +825,20 @@ export class Layer3Switch extends L2Switch {
   protected override replicateToOverlay(frame: EthernetFrame, vlan: number, origin: FrameOrigin): void {
     const member = this.vxlan.memberForVlan(vlan);
     if (!member) return;
+    // A host always uses its own local leaf as the default gateway, so an ARP
+    // request for a distributed gateway address is answered here and never
+    // replicated across the fabric. This is gateway-only: an ordinary remote
+    // host is still resolved through the overlay, because ARP suppression for
+    // tenant hosts is deliberately not modelled.
+    if (this.isAnycastGatewayArpRequest(frame)) {
+      this.traceVxlan("evpn-anycast-gateway-replied", {
+        vlan,
+        vni: member.vni,
+        gateway: (frame.payload as ArpPacket).targetIp,
+        gatewayMac: this.vxlan.anycastGatewayMac,
+      });
+      return;
+    }
     if (origin.kind === "remote-vtep") {
       this.traceVxlan("vxlan-split-horizon-dropped", {
         vni: member.vni,
@@ -670,44 +895,112 @@ export class Layer3Switch extends L2Switch {
       innerSource: normalizeMac(innerFrame.src),
       innerDestination: normalizeMac(innerFrame.dst),
     });
-    const bytes = estimateVxlanOuterSizeBytes(innerFrame);
+    return this.transmitVxlan(
+      {
+        kind: "vxlan",
+        payloadKind: "l2",
+        vni,
+        innerFrame,
+        sourceVtep: state.sourceAddress,
+        destinationVtep: destination,
+      },
+      kind,
+    );
+  }
+
+  /**
+   * Symmetric IRB egress: this VTEP has already routed the packet in the tenant
+   * VRF, so what is encapsulated is a routed IPv4 packet inside the **L3VNI**,
+   * not the destination's L2VNI. The remote VTEP will repeat the VRF lookup, so
+   * neither side ever needs the other's bridging table.
+   */
+  private sendRoutedVxlan(input: {
+    vrfId: string;
+    l3Vni: number;
+    remoteVtep: Ipv4;
+    packet: Ipv4Packet;
+  }): boolean {
+    this.syncRoutingPlane();
+    const state = this.vxlan.l3VniState(input.l3Vni);
+    if (!state?.up || state.sourceAddress === undefined) {
+      this.traceVxlan("evpn-tenant-isolation-drop", {
+        reason: state === undefined ? "l3vni-not-configured" : state.reason ?? "l3vni-down",
+        vrfId: input.vrfId,
+        l3Vni: input.l3Vni,
+        destination: input.packet.dst,
+      });
+      this.recordEvpnFault(
+        `l3vni-${input.l3Vni}-down`,
+        `${this.name} cannot route VRF ${input.vrfId} over L3VNI ${input.l3Vni}: the VNI is not operational.`,
+      );
+      return false;
+    }
+    this.engine.controlProtocolBudget.consume("routedVxlanPackets", this.id);
+    this.traceVxlan("evpn-irb-routed", {
+      vrfId: input.vrfId,
+      l3Vni: input.l3Vni,
+      source: input.packet.src,
+      destination: input.packet.dst,
+      remoteVtep: input.remoteVtep,
+    });
+    const sent = this.transmitVxlan(
+      {
+        kind: "vxlan",
+        payloadKind: "l3",
+        vni: input.l3Vni,
+        innerPacket: input.packet,
+        innerSourceMac: this.overlayRouterMac(),
+        sourceVtep: state.sourceAddress,
+        destinationVtep: input.remoteVtep,
+      },
+      "routed",
+    );
+    if (sent) {
+      this.traceVxlan("evpn-l3vni-encapsulated", {
+        vrfId: input.vrfId,
+        l3Vni: input.l3Vni,
+        sourceVtep: state.sourceAddress,
+        destinationVtep: input.remoteVtep,
+        destination: input.packet.dst,
+      });
+    }
+    return sent;
+  }
+
+  /**
+   * The one place a VXLAN packet reaches the wire, bridged or routed. The outer
+   * IPv4/UDP datagram then travels the ordinary underlay path, so interface
+   * state, ACLs, the firewall, QoS and packet loss all apply to it exactly as
+   * they do to any other traffic.
+   */
+  private transmitVxlan(packet: VxlanPacket, kind: "unicast" | "bum" | "routed"): boolean {
+    const { vni, destinationVtep, sourceVtep } = packet;
+    const inner: VxlanInnerPayload = vxlanInnerPayload(packet);
+    const bytes = estimateVxlanOuterSizeBytes(inner);
     if (bytes > VXLAN_UNDERLAY_MTU_BYTES) {
-      this.traceVxlan("vxlan-mtu-exceeded", { vni, bytes, mtu: VXLAN_UNDERLAY_MTU_BYTES, destinationVtep: destination });
+      this.traceVxlan("vxlan-mtu-exceeded", { vni, bytes, mtu: VXLAN_UNDERLAY_MTU_BYTES, destinationVtep, kind });
       this.recordVxlanFault(
         `vni-${vni}-mtu`,
-        `${this.name} dropped a VNI ${vni} frame: ${bytes} bytes exceeds the ${VXLAN_UNDERLAY_MTU_BYTES}-byte underlay MTU.`,
+        `${this.name} dropped a VNI ${vni} packet: ${bytes} bytes exceeds the ${VXLAN_UNDERLAY_MTU_BYTES}-byte underlay MTU.`,
       );
       return false;
     }
-    if (!this.routingPlane.overlayUnderlayReachable(destination)) {
-      this.traceVxlan("vxlan-underlay-unreachable", { vni, destinationVtep: destination });
+    if (!this.routingPlane.overlayUnderlayReachable(destinationVtep)) {
+      this.traceVxlan("vxlan-underlay-unreachable", { vni, destinationVtep, kind });
       this.recordVxlanFault(
-        `vtep-${destination}-unreachable`,
-        `${this.name} has no underlay route to VTEP ${destination}.`,
+        `vtep-${destinationVtep}-unreachable`,
+        `${this.name} has no underlay route to VTEP ${destinationVtep}.`,
       );
       return false;
     }
-    const packet: VxlanPacket = {
-      kind: "vxlan",
-      vni,
-      innerFrame,
-      sourceVtep: state.sourceAddress,
-      destinationVtep: destination,
-    };
     this.routingPlane.management.udp.send({
-      destinationAddress: destination,
+      destinationAddress: destinationVtep,
       destinationPort: VXLAN_UDP_PORT,
-      sourcePort: vxlanSourcePort(vni, innerFrame),
-      sourceAddress: state.sourceAddress,
+      sourcePort: vxlanSourcePort(vni, inner),
+      sourceAddress: sourceVtep,
       payload: packet,
     });
-    this.traceVxlan("vxlan-packet-sent", {
-      vni,
-      kind,
-      sourceVtep: state.sourceAddress,
-      destinationVtep: destination,
-      bytes,
-    });
+    this.traceVxlan("vxlan-packet-sent", { vni, kind, sourceVtep, destinationVtep, bytes });
     return true;
   }
 
@@ -759,9 +1052,14 @@ export class Layer3Switch extends L2Switch {
     const localAs = this.routingPlane.bgp.localAs ?? 0;
     const routerId = this.routingPlane.bgp.configurationSnapshot()?.routerId ?? state.sourceAddress;
     const localMacs = new Map<number, Array<{ mac: Mac; vlan: number }>>();
+    const anycastMac = this.vxlan.anycastGatewayMac;
     for (const row of this.macAddressTable()) {
       const member = this.vxlan.memberForVlan(row.vlan);
       if (!member) continue;
+      // Every leaf owns the anycast gateway MAC, so advertising it would make
+      // the fabric argue about which VTEP it lives behind. It is deliberately
+      // never a Type 2 route.
+      if (anycastMac !== undefined && normalizeMac(row.mac) === anycastMac) continue;
       const list = localMacs.get(member.vni) ?? [];
       if (list.length < DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumEvpnMacRoutesPerVni) {
         list.push({ mac: normalizeMac(row.mac), vlan: row.vlan });
@@ -1155,6 +1453,15 @@ export class Layer3Switch extends L2Switch {
     this.routingPlane.engine = this.engine;
     this.routingPlane.useAclRuleBudget(this.engine.aclRuleBudget);
     this.routingPlane.qos.useOperationBudget(this.engine.qosBudget);
+  }
+
+  /**
+   * The router MAC an L3VNI packet is stamped with. It is trace metadata — a
+   * routed overlay packet carries no Ethernet header — so the fabric anycast
+   * MAC is used when one exists and a stable per-device value otherwise.
+   */
+  private overlayRouterMac(): Mac {
+    return normalizeMac(this.vxlan.anycastGatewayMac ?? this.sviMac(0));
   }
 
   private sviMac(vlanId: number): Mac {

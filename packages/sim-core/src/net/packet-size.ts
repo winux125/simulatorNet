@@ -6,7 +6,12 @@ import type { Ipv6Packet } from "../packets/ipv6";
 import type { MplsPacket } from "../packets/mpls";
 import type { TcpSegment } from "../packets/tcp";
 import type { UdpDatagram } from "../packets/udp";
-import { VXLAN_HEADER_BYTES, type VxlanPacket } from "../packets/vxlan";
+import {
+  VXLAN_HEADER_BYTES,
+  vxlanInnerPayload,
+  type VxlanInnerPayload,
+  type VxlanPacket,
+} from "../packets/vxlan";
 
 /**
  * Deterministic educational wire-size model.
@@ -101,9 +106,13 @@ function udpBytes(datagram: UdpDatagram): number {
   return WIRE_SIZE_MODEL.udpHeaderBytes + inner;
 }
 
-/** The VXLAN header plus the complete Ethernet frame it transports. */
+/** The VXLAN header plus whatever the VNI transports: a frame, or a routed packet. */
 function vxlanBytes(packet: VxlanPacket): number {
-  return WIRE_SIZE_MODEL.vxlanHeaderBytes + estimatePacketWireSizeBytes(packet.innerFrame);
+  return WIRE_SIZE_MODEL.vxlanHeaderBytes + vxlanInnerBytes(vxlanInnerPayload(packet));
+}
+
+function vxlanInnerBytes(inner: VxlanInnerPayload): number {
+  return "kind" in inner && inner.kind === "ipv4" ? ipv4Bytes(inner) : estimatePacketWireSizeBytes(inner as EthernetFrame);
 }
 
 function tcpBytes(segment: TcpSegment): number {
@@ -178,16 +187,18 @@ export function estimateIpPacketSizeBytes(packet: Ipv4Packet | Ipv6Packet): numb
 }
 
 /**
- * The underlay packet a VTEP will put on the wire for one inner frame: outer
- * IPv4 + UDP + VXLAN + the whole encapsulated frame. It is the same model the
- * queue uses, so a `vxlan-mtu-exceeded` decision and a serialization delay can
- * never disagree about how big the packet is.
+ * The underlay packet a VTEP will put on the wire for one inner payload: outer
+ * IPv4 + UDP + VXLAN + whatever the VNI carries. An L2VNI encapsulates a whole
+ * Ethernet frame; an L3VNI encapsulates a routed IPv4 packet and therefore
+ * costs the Ethernet header it left behind. This is the one size API both
+ * bridged and routed overlays use, so a `vxlan-mtu-exceeded` decision and a
+ * serialization delay can never disagree about how big the packet is.
  */
-export function estimateVxlanOuterSizeBytes(innerFrame: EthernetFrame): number {
+export function estimateVxlanOuterSizeBytes(inner: VxlanInnerPayload): number {
   return WIRE_SIZE_MODEL.ipv4HeaderBytes
     + WIRE_SIZE_MODEL.udpHeaderBytes
     + WIRE_SIZE_MODEL.vxlanHeaderBytes
-    + estimatePacketWireSizeBytes(innerFrame);
+    + vxlanInnerBytes(inner);
 }
 
 /**

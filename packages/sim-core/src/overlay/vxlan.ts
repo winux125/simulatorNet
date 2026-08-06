@@ -28,6 +28,18 @@ export interface NveMemberConfiguration {
 }
 
 /**
+ * `member vni <vni> associate-vrf`: an **L3VNI**.
+ *
+ * It has no VLAN and no broadcast domain — it is the transit segment symmetric
+ * IRB routes a tenant's packets through, and the VNI is what names the VRF on
+ * the egress VTEP.
+ */
+export interface NveVrfMemberConfiguration {
+  readonly vni: number;
+  readonly vrfId: string;
+}
+
+/**
  * `interface nve1`: a logical interface with no cable.
  *
  * It has an administrative state, an IPv4 source loopback and a set of VNI
@@ -39,6 +51,25 @@ export interface NveInterfaceConfiguration {
   readonly sourceInterfaceId: string;
   readonly adminUp: boolean;
   readonly members: readonly NveMemberConfiguration[];
+  /** L3VNIs. Absent — every lab written before M10.15 — means bridging only. */
+  readonly vrfMembers?: readonly NveVrfMemberConfiguration[];
+}
+
+/**
+ * `fabric forwarding anycast-gateway-mac`: the one MAC every leaf answers a
+ * tenant's default gateway with.
+ *
+ * It is deliberately fabric-wide rather than per-SVI: that is exactly what makes
+ * the gateway *distributed*, so a host keeps the same gateway MAC in its ARP
+ * cache no matter which leaf it is attached to.
+ */
+export interface EvpnFabricConfiguration {
+  readonly anycastGatewayMac?: Mac;
+}
+
+/** `fabric forwarding mode anycast-gateway` on one SVI. */
+export interface EvpnAnycastGatewayConfiguration {
+  readonly enabled: boolean;
 }
 
 /** `evpn` → `vni <id> l2`: the RD and route targets one VNI advertises with. */
@@ -55,7 +86,8 @@ export type NveDownReason =
   | "source-interface-missing"
   | "source-interface-down"
   | "source-not-loopback"
-  | "vlan-missing";
+  | "vlan-missing"
+  | "vrf-missing";
 
 export interface NveOperationalState {
   readonly up: boolean;
@@ -67,6 +99,16 @@ export interface VniOperationalState extends NveOperationalState {
   readonly vni: number;
   readonly vlanId: number;
   readonly replication: "static" | "bgp-evpn";
+}
+
+/**
+ * One L3VNI's derived state. It is operational only when the NVE itself is up
+ * and the VRF it names still exists — a VNI whose VRF was removed transports
+ * nothing rather than silently leaking into the global table.
+ */
+export interface L3VniOperationalState extends NveOperationalState {
+  readonly vni: number;
+  readonly vrfId: string;
 }
 
 /** A remote VTEP this device replicates BUM traffic to, and where it came from. */
@@ -88,9 +130,9 @@ export interface RemoteMacEntry {
 }
 
 /**
- * The four questions the overlay asks its device. The engine never reaches into
- * the switch: operational state is derived from these answers alone, exactly as
- * the GRE tunnel engine derives a tunnel's state from the underlay.
+ * The questions the overlay asks its device. The engine never reaches into the
+ * switch: operational state is derived from these answers alone, exactly as the
+ * GRE tunnel engine derives a tunnel's state from the underlay.
  */
 export interface VxlanHooks {
   /** The usable IPv4 address of a logical interface, or `undefined`. */
@@ -103,6 +145,8 @@ export interface VxlanHooks {
   hasVlan(vlanId: number): boolean;
   /** Whether the underlay routing table can reach a remote VTEP address. */
   underlayReachable(address: Ipv4): boolean;
+  /** Whether the VRF an L3VNI names is still defined on this device. */
+  hasVrf(vrfId: string): boolean;
 }
 
 function compareAddresses(left: Ipv4, right: Ipv4): number {
@@ -121,12 +165,15 @@ export class VxlanEngine {
   private readonly remoteMacs = new Map<string, RemoteMacEntry>();
   /** VNI → remote VTEPs learned from EVPN Type 3 routes. Runtime only. */
   private readonly evpnPeers = new Map<number, Set<Ipv4>>();
+  /** `fabric forwarding anycast-gateway-mac`. Persistent, never runtime. */
+  private fabric: EvpnFabricConfiguration = {};
   private hooks: VxlanHooks = {
     interfaceAddress: () => undefined,
     interfaceExists: () => false,
     isLoopback: () => false,
     hasVlan: () => false,
     underlayReachable: () => false,
+    hasVrf: () => false,
   };
 
   useHooks(hooks: VxlanHooks): void {
@@ -183,10 +230,56 @@ export class VxlanEngine {
         };
       })
       .sort((a, b) => a.vni - b.vni);
-    this.nve = { ...configuration, members };
+    const vrfMembers = this.normalizeVrfMembers(configuration.vrfMembers ?? [], vnis);
+    this.nve = { ...configuration, members, vrfMembers };
     // Runtime state never survives a configuration change: the browser worker
     // and the verifier both relearn it from the rebuilt overlay.
     this.resetRuntime();
+  }
+
+  /**
+   * `member vni <n> associate-vrf`. An L3VNI is unique per VTEP, belongs to
+   * exactly one VRF, a VRF carries at most one, and it can never reuse a VNI
+   * that already maps a VLAN — a segment is either bridged or routed.
+   */
+  private normalizeVrfMembers(
+    members: readonly NveVrfMemberConfiguration[],
+    l2Vnis: ReadonlySet<number>,
+  ): NveVrfMemberConfiguration[] {
+    enforceStructuralLimit("maximumL3VnisPerVtep", members.length);
+    const seenVnis = new Set<number>();
+    const seenVrfs = new Set<string>();
+    return members
+      .map((member): NveVrfMemberConfiguration => {
+        if (!isValidVni(member.vni)) {
+          throw new ControlProtocolConfigurationError(
+            `VNI must be between ${MINIMUM_VNI} and ${MAXIMUM_VNI}`,
+            "vni",
+          );
+        }
+        if (!member.vrfId.trim()) {
+          throw new ControlProtocolConfigurationError("An L3VNI needs a VRF", "vrfId");
+        }
+        if (l2Vnis.has(member.vni)) {
+          throw new ControlProtocolConfigurationError(
+            `VNI ${member.vni} already maps a VLAN and cannot also be an L3VNI`,
+            "vni",
+          );
+        }
+        if (seenVnis.has(member.vni)) {
+          throw new ControlProtocolConfigurationError(`VNI ${member.vni} is already mapped`, "vni");
+        }
+        if (seenVrfs.has(member.vrfId)) {
+          throw new ControlProtocolConfigurationError(
+            `VRF ${member.vrfId} already has an L3VNI`,
+            "vrfId",
+          );
+        }
+        seenVnis.add(member.vni);
+        seenVrfs.add(member.vrfId);
+        return { vni: member.vni, vrfId: member.vrfId };
+      })
+      .sort((a, b) => a.vni - b.vni);
   }
 
   remove(): void {
@@ -194,17 +287,89 @@ export class VxlanEngine {
     this.resetRuntime();
   }
 
+  // --- anycast gateway ------------------------------------------------------
+
+  /** `fabric forwarding anycast-gateway-mac <mac>`; `undefined` clears it. */
+  configureFabric(configuration: EvpnFabricConfiguration): void {
+    const mac = configuration.anycastGatewayMac;
+    if (mac === undefined) {
+      this.fabric = {};
+      return;
+    }
+    const normalized = normalizeMac(mac);
+    // A gateway MAC every host will send unicast frames to must itself be a
+    // unicast address: a group bit set here would never be a usable next hop.
+    const firstOctet = Number.parseInt(normalized.slice(0, 2), 16);
+    if (!Number.isInteger(firstOctet) || (firstOctet & 0x01) === 1) {
+      throw new ControlProtocolConfigurationError(
+        `Anycast gateway MAC '${mac}' must be a unicast address`,
+        "anycastGatewayMac",
+      );
+    }
+    if (/^0+(:0+)*$/u.test(normalized)) {
+      throw new ControlProtocolConfigurationError("Anycast gateway MAC must not be all zeroes", "anycastGatewayMac");
+    }
+    this.fabric = { anycastGatewayMac: normalized };
+  }
+
+  fabricConfiguration(): EvpnFabricConfiguration {
+    return { ...this.fabric };
+  }
+
+  get anycastGatewayMac(): Mac | undefined {
+    return this.fabric.anycastGatewayMac;
+  }
+
   configurationSnapshot(): NveInterfaceConfiguration | undefined {
     if (!this.nve) return undefined;
+    const { vrfMembers = [], ...nve } = this.nve;
     return {
-      ...this.nve,
+      ...nve,
       members: this.nve.members.map((member) => ({
         ...member,
         replication: member.replication.type === "static"
           ? { type: "static", peerAddresses: [...member.replication.peerAddresses] }
           : { type: "bgp-evpn" },
       })),
+      // A bridging-only NVE keeps exactly its pre-M10.15 shape, so an older lab
+      // round-trips without gaining an empty key.
+      ...(vrfMembers.length === 0 ? {} : { vrfMembers: vrfMembers.map((member) => ({ ...member })) }),
     };
+  }
+
+  // --- L3VNI ----------------------------------------------------------------
+
+  vrfMembers(): readonly NveVrfMemberConfiguration[] {
+    return this.nve?.vrfMembers ?? [];
+  }
+
+  /** The L3VNI that transports one VRF's routed traffic, if it has one. */
+  l3VniForVrf(vrfId: string): number | undefined {
+    return this.vrfMembers().find((member) => member.vrfId === vrfId)?.vni;
+  }
+
+  /** The VRF an arriving L3VNI packet must be routed in. */
+  vrfForL3Vni(vni: number): string | undefined {
+    return this.vrfMembers().find((member) => member.vni === vni)?.vrfId;
+  }
+
+  /** Per-L3VNI state: the NVE's state plus the named VRF still existing. */
+  l3VniStates(): L3VniOperationalState[] {
+    const base = this.state();
+    return this.vrfMembers().map((member) => {
+      const vrfPresent = this.hooks.hasVrf(member.vrfId);
+      return {
+        vni: member.vni,
+        vrfId: member.vrfId,
+        up: base.up && vrfPresent,
+        sourceAddress: base.sourceAddress,
+        reason: base.up ? (vrfPresent ? undefined : "vrf-missing") : base.reason,
+      };
+    });
+  }
+
+  l3VniState(vni: number): L3VniOperationalState | undefined {
+    return this.l3VniStates().find((state) => state.vni === vni);
   }
 
   defineEvpnVni(configuration: EvpnVniConfiguration): void {

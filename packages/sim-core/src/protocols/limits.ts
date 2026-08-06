@@ -82,11 +82,20 @@ export const DEFAULT_CONTROL_PROTOCOL_LIMITS = Object.freeze({
   maximumBumReplicasPerOperation: 20_000,
   maximumVxlanEventsPerOperation: 50_000,
 
+  // --- routed VXLAN overlays (symmetric IRB) ---------------------------
+  /** L3VNIs one VTEP may associate with a VRF. One VRF carries at most one. */
+  maximumL3VnisPerVtep: 64,
+  maximumRoutedVxlanPacketsPerOperation: 20_000,
+
   // --- BGP EVPN --------------------------------------------------------
   maximumEvpnRoutesPerDevice: 8_192,
   maximumEvpnMacRoutesPerVni: 1_024,
   maximumEvpnImetRoutesPerVni: 64,
   maximumEvpnUpdatesPerOperation: 20_000,
+  /** Type 5 IP Prefix routes, bounded per originating VRF and per device. */
+  maximumEvpnIpPrefixRoutesPerVrf: 1_024,
+  maximumEvpnIpPrefixRoutesPerDevice: 4_096,
+  maximumImportedEvpnRoutesPerVrf: 1_024,
 });
 
 export type ControlProtocolLimits = typeof DEFAULT_CONTROL_PROTOCOL_LIMITS;
@@ -112,6 +121,7 @@ export type ControlProtocolBudgetKey =
   | "ldpStateTransitions"
   | "vxlanEvents"
   | "bumReplicas"
+  | "routedVxlanPackets"
   | "evpnUpdates";
 
 const BUDGET_LIMIT_KEYS: Readonly<Record<ControlProtocolBudgetKey, keyof ControlProtocolLimits>> = Object.freeze({
@@ -135,6 +145,7 @@ const BUDGET_LIMIT_KEYS: Readonly<Record<ControlProtocolBudgetKey, keyof Control
   ldpStateTransitions: "maximumLdpStateTransitionsPerOperation",
   vxlanEvents: "maximumVxlanEventsPerOperation",
   bumReplicas: "maximumBumReplicasPerOperation",
+  routedVxlanPackets: "maximumRoutedVxlanPacketsPerOperation",
   evpnUpdates: "maximumEvpnUpdatesPerOperation",
 });
 

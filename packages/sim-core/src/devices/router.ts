@@ -262,6 +262,24 @@ export interface EvpnOverlayProvider {
   onImported(routes: readonly EvpnRoute[]): void;
 }
 
+/**
+ * The seam symmetric IRB reaches the overlay through.
+ *
+ * The routed plane makes the ordinary VRF forwarding decision and, when the
+ * chosen route is an EVPN Type 5 prefix, hands the packet to whoever owns the
+ * L3VNI. Only the L3 Switch ever installs one, so a Router keeps no overlay of
+ * its own and the encapsulation logic is never duplicated here.
+ */
+export interface EvpnRoutedOverlay {
+  /** Encapsulate one routed packet in an L3VNI; `false` when it was dropped. */
+  encapsulate(input: {
+    vrfId: string;
+    l3Vni: number;
+    remoteVtep: Ipv4;
+    packet: Ipv4Packet;
+  }): boolean;
+}
+
 export type RouteSource = "connected" | "static" | "ospf" | "bgp";
 
 /** Cisco-like administrative distances for the sources this release models. */
@@ -400,6 +418,7 @@ export class Router extends Device {
   readonly ipsec = new IpsecEngine();
   /** Set only by a device that owns a VXLAN overlay; a Router never does. */
   private evpnOverlay: EvpnOverlayProvider | undefined;
+  private evpnRoutedOverlay: EvpnRoutedOverlay | undefined;
   private readonly l3 = new Map<string, L3Interface>();
   private readonly loopbacks = new Map<number, LoopbackInterface>();
   private readonly tunnelInterfaces = new Map<string, TunnelInterface>();
@@ -1991,6 +2010,14 @@ export class Router extends Device {
 
   private forwardVrf(packet: Ipv4Packet, ingress: L3Interface, vrfId: string, decrementTtl: boolean): void {
     if (!this.forwardingEnabled) return;
+    // An interface can outlive the VRF it names — `no vrf definition` does not
+    // walk the interfaces. A dangling reference must drop the packet inside the
+    // tenant context, never fall back to the global table and never escape as a
+    // thrown error out of packet processing.
+    if (!this.vrfs.configuration(vrfId)) {
+      this.traceMpls("l3vpn-packet-dropped", { reason: "vrf-reference-missing", vrfId, destination: packet.dst });
+      return;
+    }
     const ttl = decrementTtl ? packet.ttl - 1 : packet.ttl;
     if (ttl <= 0) {
       this.sendIcmpError(IcmpType.TimeExceeded, IcmpCode.TtlExceeded, packet, ingress);
@@ -2003,6 +2030,25 @@ export class Router extends Device {
       return;
     }
     const outbound = { ...packet, ttl };
+    if (route.source === "evpn-type5") {
+      // Symmetric IRB: this VTEP has already routed in the tenant VRF, so what
+      // leaves is a routed IPv4 packet inside the L3VNI, never a bridged frame.
+      if (route.remoteVtep === undefined || route.l3Vni === undefined) {
+        this.traceMpls("evpn-tenant-isolation-drop", { reason: "l3vni-unavailable", vrfId, destination: packet.dst });
+        return;
+      }
+      if (!this.evpnRoutedOverlay) {
+        this.traceMpls("evpn-tenant-isolation-drop", { reason: "no-routed-overlay", vrfId, destination: packet.dst });
+        return;
+      }
+      this.evpnRoutedOverlay.encapsulate({
+        vrfId,
+        l3Vni: route.l3Vni,
+        remoteVtep: route.remoteVtep,
+        packet: outbound,
+      });
+      return;
+    }
     if (route.source === "bgp-vpn") {
       if (!route.remotePe || route.vpnLabel === undefined) {
         this.traceMpls("l3vpn-packet-dropped", { reason: "vpn-label-unavailable", vrfId, destination: packet.dst });
@@ -3170,6 +3216,39 @@ export class Router extends Device {
   /** Attach an EVPN overlay owner. Only the L3 Switch ever installs one. */
   useEvpnOverlayProvider(provider: EvpnOverlayProvider): void {
     this.evpnOverlay = provider;
+  }
+
+  /** Attach the L3VNI data plane symmetric IRB forwards through. */
+  useEvpnRoutedOverlay(overlay: EvpnRoutedOverlay): void {
+    this.evpnRoutedOverlay = overlay;
+  }
+
+  /**
+   * An L3VNI packet arrived and its VNI already named the VRF. The packet
+   * re-enters the ordinary IPv4 stack *inside that tenant context* — there is
+   * no fallback to the global table — so the egress VTEP repeats the routing
+   * decision the ingress VTEP started. That second lookup is what makes this
+   * symmetric IRB rather than a bridged shortcut.
+   */
+  receiveEvpnRoutedPacket(packet: Ipv4Packet, vrfId: string): "delivered" | "routed" | "dropped" {
+    if (!this.vrfs.configuration(vrfId)) return "dropped";
+    if (this.isOwnIpInContext(packet.dst, vrfId)) {
+      this.deliverLocal(packet);
+      return "delivered";
+    }
+    const ingress = this.vrfIngressInterfaceFor(vrfId);
+    if (!ingress) return "dropped";
+    // The overlay already decremented the TTL when it encapsulated, so the
+    // egress lookup must not charge for the same hop twice.
+    this.forwardVrf(packet, ingress, vrfId, false);
+    return "routed";
+  }
+
+  /** Any interface in one VRF, so a decapsulated packet has an ingress context. */
+  private vrfIngressInterfaceFor(vrfId: string): L3Interface | undefined {
+    return [...this.l3.values()]
+      .filter((iface) => iface.vrfId === vrfId)
+      .sort((a, b) => a.name.localeCompare(b.name))[0];
   }
 
   bgpEvpnExports(): readonly EvpnRoute[] {
