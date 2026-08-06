@@ -145,12 +145,14 @@ describe("VXLAN and EVPN CLI", () => {
     expect(session.execute("show mac address-table remote")).toMatch(/No remote MAC/i);
     expect(session.execute("show bgp l2vpn evpn")).toMatch(/EVPN table is empty/i);
     expect(session.execute("show bgp l2vpn evpn route-type 2")).toMatch(/EVPN table is empty/i);
-    expect(session.execute("show bgp l2vpn evpn route-type 5")).toMatch(/route types 2 and 3/i);
+    // M10.15 added Type 5; anything outside 2, 3 and 5 is still refused.
+    expect(session.execute("show bgp l2vpn evpn route-type 5")).toMatch(/EVPN table is empty/i);
+    expect(session.execute("show bgp l2vpn evpn route-type 4")).toMatch(/route types 2, 3 and 5/i);
     // Vendor VXLAN features SimulatorNet does not model stay unknown commands.
     for (const unsupported of [
       "show nve interface nve1 detail",
       "show l2route evpn mac all",
-      "show bgp l2vpn evpn route-type 5",
+      "show bgp l2vpn evpn route-type 1",
     ]) expect(session.execute(unsupported)).not.toMatch(/^VNI\b/m);
   });
 });

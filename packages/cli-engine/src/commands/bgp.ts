@@ -38,6 +38,29 @@ function updateBgp(session: SessionApi, mutate: (configuration: BgpConfiguration
   device.bgp.configure(mutate(configuration));
 }
 
+/** The device that owns IPv4 VRFs: a Router (L3VPN) or an L3 Switch (EVPN). */
+function vrfDeviceOf(session: SessionApi): Router | Layer3Switch | undefined {
+  return isOspfDevice(session.device) ? session.device : undefined;
+}
+
+/**
+ * `advertise l2vpn evpn` lives on the VRF rather than on the BGP process: it
+ * is a property of the tenant whose prefixes leave, and storing it once keeps
+ * the running config and the engine from drifting apart.
+ */
+function setVrfEvpnAdvertisement(session: SessionApi, enabled: boolean): void {
+  bgpOf(session);
+  const device = vrfDeviceOf(session);
+  const vrfId = session.routerCtx?.vrfId;
+  if (!device || session.routerCtx?.addressFamily !== "ipv4-vrf" || !vrfId) {
+    throw new InvalidModeError("Enter 'address-family ipv4 vrf <name>' first");
+  }
+  const current = device.vrfConfigurations().find((vrf) => vrf.id === vrfId);
+  if (!current) throw new ValidationError(`VRF '${vrfId}' is not defined.`);
+  device.defineVrf({ ...current, advertiseEvpn: enabled ? true : undefined });
+  device.bgp.refreshRoutes();
+}
+
 /** A BGP neighbor address may be IPv4 or IPv6; the text itself decides. */
 function parseNeighborAddress(value: string): string {
   return value.includes(":") ? parseIpv6(value) : parseIpv4(value);
@@ -311,16 +334,29 @@ export const bgpCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "address-family ipv4 vrf {name}", modes: ["config-router"], device: "router",
+    // Both a Router (MPLS L3VPN) and an L3 Switch (EVPN tenant) carry IPv4
+    // VRFs, so the address family opens on either.
+    pattern: "address-family ipv4 vrf {name}", modes: ["config-router"], device: "ospf",
     run: (s, p) => {
       bgpOf(s);
-      if (!isRouter(s.device) || !s.device.vrfConfigurations().some((vrf) => vrf.id === p.name || vrf.name === p.name)) {
-        throw new ValidationError(`VRF '${p.name}' is not defined.`);
-      }
-      const vrf = s.device.vrfConfigurations().find((entry) => entry.id === p.name || entry.name === p.name)!;
+      const vrf = vrfDeviceOf(s)?.vrfConfigurations().find((entry) => entry.id === p.name || entry.name === p.name);
+      if (!vrf) throw new ValidationError(`VRF '${p.name}' is not defined.`);
       s.routerCtx!.addressFamily = "ipv4-vrf";
       s.routerCtx!.vrfId = vrf.id;
     },
+  },
+  {
+    /**
+     * `advertise l2vpn evpn` is what turns a tenant's connected and static
+     * routes into EVPN Type 5 prefixes. It is always explicit: without it
+     * nothing leaves the VRF, so no redistribution is ever hidden.
+     */
+    pattern: "advertise l2vpn evpn", modes: ["config-router"], device: "l3-switch",
+    run: (s) => setVrfEvpnAdvertisement(s, true),
+  },
+  {
+    pattern: "no advertise l2vpn evpn", modes: ["config-router"], device: "l3-switch",
+    run: (s) => setVrfEvpnAdvertisement(s, false),
   },
   {
     pattern: "address-family ipv6 vrf {name}", modes: ["config-router"], device: "router",

@@ -14,6 +14,7 @@ import type {
   RouteMapConfig,
   CommunityListConfig,
   AsPathListConfig,
+  VrfConfig,
 } from "@sim/contracts";
 import {
   DEFAULT_STP_PORT_PRIORITY_VALUE,
@@ -246,6 +247,11 @@ export function applyVxlanConfiguration(
       exportRouteTargets: [...vni.exportRouteTargets],
     });
   }
+  // Setting the fabric MAC re-stamps every SVI already marked as an anycast
+  // gateway, so the two blocks may be applied in either order.
+  if (evpn?.anycastGatewayMac !== undefined) {
+    device.setFabricAnycastGatewayMac(evpn.anycastGatewayMac);
+  }
   if (!nve) return;
   device.configureNve({
     id: nve.id,
@@ -258,6 +264,7 @@ export function applyVxlanConfiguration(
         ? { type: "static", peerAddresses: [...member.replication.peerAddresses] }
         : { type: "bgp-evpn" },
     })),
+    vrfMembers: nve.vrfMembers?.map((member) => ({ vni: member.vni, vrfId: member.vrfId })),
   });
 }
 
@@ -275,7 +282,34 @@ export function serializeNveConfiguration(device: Layer3Switch): NveInterfaceCon
         ? { type: "static" as const, peerAddresses: [...member.replication.peerAddresses] }
         : { type: "bgp-evpn" as const },
     })),
+    vrfMembers: nve.vrfMembers === undefined || nve.vrfMembers.length === 0
+      ? undefined
+      : nve.vrfMembers.map((member) => ({ vni: member.vni, vrfId: member.vrfId })),
   };
+}
+
+/**
+ * The tenant VRFs an L3 Switch VTEP carries.
+ *
+ * Only configuration crosses this boundary: imported EVPN Type 5 prefixes and
+ * every routed-overlay counter are runtime, and the browser worker and the
+ * verifier each rebuild them from these definitions alone.
+ */
+export function serializeVtepVrfConfiguration(device: Layer3Switch): VrfConfig[] | undefined {
+  const vrfs = device.vrfConfigurations().map((vrf): VrfConfig => ({
+    id: vrf.id,
+    name: vrf.name,
+    routeDistinguisher: vrf.routeDistinguisher,
+    importRouteTargets: [...vrf.importRouteTargets],
+    exportRouteTargets: [...vrf.exportRouteTargets],
+    staticRoutes: device.vrfStaticRouteConfigurations(vrf.id).map((route) => ({
+      network: route.network,
+      prefixLength: route.prefixLength,
+      nextHop: route.nextHop!,
+    })),
+    advertiseEvpn: vrf.advertiseEvpn === true ? true : undefined,
+  }));
+  return vrfs.length > 0 ? vrfs : undefined;
 }
 
 export function serializeEvpnConfiguration(device: Layer3Switch): EvpnConfig | undefined {
@@ -285,7 +319,9 @@ export function serializeEvpnConfiguration(device: Layer3Switch): EvpnConfig | u
     importRouteTargets: [...entry.importRouteTargets],
     exportRouteTargets: [...entry.exportRouteTargets],
   }));
-  return vnis.length > 0 ? { vnis } : undefined;
+  const anycastGatewayMac = device.fabricConfiguration().anycastGatewayMac;
+  if (vnis.length === 0 && anycastGatewayMac === undefined) return undefined;
+  return { vnis, anycastGatewayMac };
 }
 
 export function applyOspfConfiguration(device: Router | Layer3Switch, config: OspfProcessConfig): void {

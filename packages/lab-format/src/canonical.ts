@@ -826,6 +826,10 @@ function canonicalVxlan(config: Layer3SwitchDeviceConfig | undefined) {
               }
             : { type: "bgp-evpn" as const },
         })),
+      // An absent L3VNI list stays absent, so a pre-M10.15 NVE is byte-identical.
+      vrfMembers: config.nve.vrfMembers === undefined ? undefined : [...config.nve.vrfMembers]
+        .sort((a, b) => a.vni - b.vni)
+        .map((member) => ({ vni: member.vni, vrfId: member.vrfId })),
     },
     evpn: config?.evpn === undefined ? undefined : {
       vnis: [...config.evpn.vnis]
@@ -836,7 +840,17 @@ function canonicalVxlan(config: Layer3SwitchDeviceConfig | undefined) {
           importRouteTargets: [...new Set(vni.importRouteTargets)].sort(),
           exportRouteTargets: [...new Set(vni.exportRouteTargets)].sort(),
         })),
+      anycastGatewayMac: config.evpn.anycastGatewayMac?.toLowerCase(),
     },
+    vrfs: config?.vrfs === undefined ? undefined : [...config.vrfs]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((vrf) => ({
+        ...vrf,
+        importRouteTargets: [...new Set(vrf.importRouteTargets)].sort(),
+        exportRouteTargets: [...new Set(vrf.exportRouteTargets)].sort(),
+        staticRoutes: [...vrf.staticRoutes]
+          .sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || a.prefixLength - b.prefixLength),
+      })),
   };
 }
 

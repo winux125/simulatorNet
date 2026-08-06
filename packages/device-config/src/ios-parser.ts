@@ -73,6 +73,8 @@ export interface ImportedInterfaceConfig {
   ipv6TrafficFilters?: Array<{ aclId: string; direction: "in" | "out" }>;
   /** `service-policy input|output <policy-map>`. */
   servicePolicies?: Array<{ direction: "input" | "output"; policyMapId: string }>;
+  /** `fabric forwarding mode anycast-gateway`, valid only on an SVI. */
+  anycastGateway?: boolean;
 }
 
 /** `interface Loopback<n>` recognised from an imported startup-config. */
@@ -308,6 +310,23 @@ function isIpv4(value: string | undefined): value is string {
 /** A 24-bit VXLAN Network Identifier. VNI 0 is reserved and never accepted. */
 function isValidVniNumber(value: number): boolean {
   return Number.isInteger(value) && value >= 1 && value <= 16_777_215;
+}
+
+/**
+ * Accept both the Cisco `0200.0000.0001` shape and the colon form, and return
+ * one canonical spelling — or `undefined` when the value could never be a
+ * gateway MAC, so the line is reported rather than half-understood.
+ */
+function normalizeFabricMac(value: string): string | undefined {
+  const dotted = /^([0-9a-f]{4})\.([0-9a-f]{4})\.([0-9a-f]{4})$/iu.exec(value);
+  const hex = dotted ? `${dotted[1]}${dotted[2]}${dotted[3]}`.toLowerCase() : undefined;
+  const colon = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/iu.test(value) ? value.toLowerCase() : undefined;
+  const normalized = hex ? (hex.match(/../gu) ?? []).join(":") : colon;
+  if (normalized === undefined) return undefined;
+  // A multicast or all-zero address could never be a usable next hop.
+  if ((Number.parseInt(normalized.slice(0, 2), 16) & 0x01) === 1) return undefined;
+  if (/^0{2}(:0{2}){5}$/u.test(normalized)) return undefined;
+  return normalized;
 }
 
 /** Convert a dotted subnet mask to a prefix length, or undefined if not a mask. */
@@ -645,6 +664,8 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
   let nveShutdown = false;
   let currentNveVni: number | undefined;
   const nveMembers = new Map<number, { replication: NveMemberConfig["replication"] }>();
+  /** L3VNI → VRF name, from `member vni <n> associate-vrf <name>`. */
+  const nveVrfMembers = new Map<number, string>();
   const vniToVlan = new Map<number, number>();
   let currentVlanConfiguration: number | undefined;
   let inEvpn = false;
@@ -773,8 +794,18 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       }
       if (head === "shutdown" && tokens.length === 1) { nveShutdown = true; applied(line); continue; }
       if (head === "no" && tokens[1]?.toLowerCase() === "shutdown") { nveShutdown = false; applied(line); continue; }
-      // Exactly `member vni <n>`: `associate-vrf` declares an L3VNI, which is
-      // not modelled, so it is reported rather than mistaken for an L2 member.
+      // `member vni <n> associate-vrf <name>` is an L3VNI: a routed transit
+      // segment with no VLAN, so it never becomes an L2 member.
+      if (head === "member" && tokens[1]?.toLowerCase() === "vni" && /^\d+$/u.test(tokens[2] ?? "")
+        && tokens[3]?.toLowerCase() === "associate-vrf") {
+        const vni = Number(tokens[2]);
+        if (tokens.length !== 5 || !isValidVniNumber(vni)) { unparsed(line); continue; }
+        currentNveVni = undefined;
+        nveVrfMembers.set(vni, tokens[4]!);
+        applied(line);
+        continue;
+      }
+      // Exactly `member vni <n>`: an L2VNI, whose VLAN arrives separately.
       if (head === "member" && tokens[1]?.toLowerCase() === "vni" && /^\d+$/u.test(tokens[2] ?? "")) {
         const vni = Number(tokens[2]);
         if (tokens.length !== 3 || !isValidVniNumber(vni)) { unparsed(line); continue; }
@@ -796,8 +827,8 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
         applied(line);
         continue;
       }
-      // Multicast replication, ARP suppression, L3VNI and IRB are deliberately
-      // not mapped; they stay unparsed and are reported honestly.
+      // Multicast replication and ARP suppression are deliberately not mapped;
+      // they stay unparsed and are reported honestly.
       unparsed(line);
       continue;
     }
@@ -848,6 +879,17 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
         continue;
       }
       unparsed(line);
+      continue;
+    }
+    // `fabric forwarding anycast-gateway-mac <mac>`: the one MAC every leaf
+    // answers the tenant default gateway with.
+    if (head === "fabric" && tokens[1]?.toLowerCase() === "forwarding"
+      && tokens[2]?.toLowerCase() === "anycast-gateway-mac") {
+      const mac = tokens.length === 4 ? normalizeFabricMac(tokens[3]!) : undefined;
+      if (mac === undefined) { unparsed(line); continue; }
+      result.evpn ??= { vnis: [] };
+      result.evpn.anycastGatewayMac = mac;
+      applied(line);
       continue;
     }
     if (head === "evpn" && tokens.length === 1) {
@@ -1310,6 +1352,14 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
         applied(line);
         continue;
       }
+      // `advertise l2vpn evpn` turns one tenant's connected and static routes
+      // into EVPN Type 5 prefixes. It is stored on the VRF that owns them.
+      if (head === "advertise" && tokens[1]?.toLowerCase() === "l2vpn" && tokens[2]?.toLowerCase() === "evpn") {
+        const vrfId = currentBgpAddressFamily?.type === "ipv4-vrf" ? currentBgpAddressFamily.vrfId : undefined;
+        const vrf = vrfId === undefined ? undefined : result.vrfs.find((entry) => entry.id === vrfId);
+        if (tokens.length === 3 && vrf) { vrf.advertiseEvpn = true; applied(line); } else unparsed(line);
+        continue;
+      }
       if (head === "exit-address-family") { currentBgpAddressFamily = undefined; applied(line); continue; }
       if (head === "bgp" && tokens[1]?.toLowerCase() === "router-id" && isIpv4(tokens[2])) {
         result.bgp.routerId = tokens[2]; applied(line); continue;
@@ -1624,6 +1674,20 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     if (head === "name" && currentVlan !== undefined && tokens[1]) { vlanNames.set(currentVlan, tokens.slice(1).join(" ")); applied(line); continue; }
 
     if (current && isIndented) {
+      // `vrf forwarding <name>` puts this interface in a tenant routing
+      // context; a VRF the file never defined is reported, never invented.
+      if (head === "vrf" && tokens[1]?.toLowerCase() === "forwarding" && tokens[2] && tokens.length === 3) {
+        const vrf = result.vrfs.find((entry) => entry.id === tokens[2] || entry.name === tokens[2]);
+        if (vrf) { current.vrfId = vrf.id; applied(line); } else unparsed(line);
+        continue;
+      }
+      if (head === "fabric" && tokens[1]?.toLowerCase() === "forwarding"
+        && tokens[2]?.toLowerCase() === "mode" && tokens[3]?.toLowerCase() === "anycast-gateway"
+        && tokens.length === 4) {
+        current.anycastGateway = true;
+        applied(line);
+        continue;
+      }
       if (head === "ipv6" && tokens[1]?.toLowerCase() === "address") {
         const address = ipv6Cidr(tokens[2]);
         if (address) {
@@ -1780,10 +1844,26 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
         }];
       })
       .sort((a, b) => a.vni - b.vni);
-    result.nve = { id: "nve1", sourceInterfaceId: nveSourceInterfaceId, shutdown: nveShutdown, members };
+    // An L3VNI that names a VRF the file never defined loses its association
+    // rather than inventing a routing context that does not exist.
+    const vrfMembers = [...nveVrfMembers.entries()]
+      .filter(([, vrfId]) => result.vrfs?.some((vrf) => vrf.id === vrfId || vrf.name === vrfId))
+      .map(([vni, vrfId]) => ({
+        vni,
+        vrfId: result.vrfs!.find((vrf) => vrf.id === vrfId || vrf.name === vrfId)!.id,
+      }))
+      .sort((a, b) => a.vni - b.vni);
+    result.nve = {
+      id: "nve1",
+      sourceInterfaceId: nveSourceInterfaceId,
+      shutdown: nveShutdown,
+      members,
+      vrfMembers: vrfMembers.length > 0 ? vrfMembers : undefined,
+    };
   }
-  if (result.evpn && result.evpn.vnis.length === 0) result.evpn = undefined;
-  else if (result.evpn) result.evpn.vnis.sort((a, b) => a.vni - b.vni);
+  if (result.evpn && result.evpn.vnis.length === 0 && result.evpn.anycastGatewayMac === undefined) {
+    result.evpn = undefined;
+  } else if (result.evpn) result.evpn.vnis.sort((a, b) => a.vni - b.vni);
   result.vpn.tunnels = [...tunnels.values()].sort((a, b) => a.id - b.id);
   // A tunnel that names a profile the file never defined keeps its other
   // settings but loses the binding: an invented profile would be a lie.

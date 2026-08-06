@@ -604,7 +604,8 @@ the verifier ignores it.
 
 ### MPLS and Layer 3 VPN boundary
 
-MPLS, LDP and VRF/L3VPN are Router-only capabilities. MPLS endpoints remain
+MPLS, LDP and L3VPN are Router-only capabilities. (Since M10.15 an L3 Switch
+also carries plain tenant VRFs, for EVPN; it never gains MPLS or a VPN label.) MPLS endpoints remain
 ordinary physical topology links; labels and logical VPN relations never
 become cables. The global RIB and every VRF RIB are explicit routing contexts.
 P routers must not learn customer prefixes. LDP distributes only connected and
@@ -680,10 +681,64 @@ or the EVPN RIB; the browser worker and the verifier rebuild every one of them.
 A managed L3 Switch window carries one `VXLAN & EVPN` section under `Config`,
 with runtime tables reachable from `Monitor`; the secondary navigation stays
 inside the reusable panel, as with QoS and VPN, and the selected section never
-reaches `LabDocument`, a submission, grading or the database. L3VNI, IRB,
-Anycast Gateway, Route Types 1/4/5, ESI/multihoming, multicast underlay,
-ARP/ND suppression, EVPN over MPLS and EVPN-VPWS are not modelled. See
-`docs/vxlan-evpn.md`.
+reaches `LabDocument`, a submission, grading or the database. Route Types 1/4,
+ESI/multihoming, multicast underlay, ARP/ND suppression, EVPN over MPLS and
+EVPN-VPWS are not modelled. See `docs/vxlan-evpn.md`.
+
+### Routed EVPN: anycast gateway, L3VNI and symmetric IRB
+
+A **distributed anycast gateway** is one fabric-wide MAC, not a per-leaf one.
+`fabric forwarding anycast-gateway-mac` sets it and
+`fabric forwarding mode anycast-gateway` adopts it on an SVI, so every leaf
+carrying a tenant VLAN presents the *same* gateway IP and MAC. That is
+deliberately **not** a duplicate-address conflict: a host always talks to its
+own local leaf and its ARP cache survives a move. An ARP request for a gateway
+address is answered locally and never replicated across the overlay; ARP
+suppression for ordinary tenant hosts is not modelled. The shared MAC is never
+advertised as a Type 2 route — every leaf owns it, so the fabric would
+otherwise argue about which VTEP it lives behind.
+
+Tenant **VRFs now exist on the L3 Switch**, because an EVPN tenant is the
+isolation boundary an L3VNI transports. MPLS, LDP and VPN labels stay
+Router-only: what the switch gains is the routing context, not L3VPN.
+
+An **L3VNI** is `member vni <n> associate-vrf <name>` on `nve1`: a routed
+transit segment with no VLAN and no broadcast domain. One L3VNI belongs to at
+most one VRF per VTEP, a VRF carries at most one, and a VNI is either bridged or
+routed — never both. It is operational only while the NVE is up and the VRF it
+names still exists; a dangling reference drops the packet inside the tenant
+context rather than leaking it into the global table.
+
+The VXLAN envelope is one engine with two payloads: an L2VNI carries an
+Ethernet frame, an L3VNI carries a routed `Ipv4Packet`. Do not add a second
+VXLAN engine. `estimateVxlanOuterSizeBytes` sizes both, so an oversized routed
+overlay packet is dropped and reported exactly as a bridged one is.
+
+**Symmetric IRB** means both ends route: the ingress VTEP looks up the tenant
+VRF and encapsulates into the **L3VNI**, and the egress VTEP maps that VNI back
+to its VRF and repeats the lookup. The destination's L2VNI is never the transit
+VNI. A destination that is local is routed locally and never encapsulated.
+Underlay routers see only outer IPv4/UDP 4789 and hold no tenant route or MAC.
+
+**EVPN Route Type 5** is IPv4-only and rides the existing `l2vpn-evpn` family —
+one FSM, one TCP session, one best-path comparator, one policy engine. A prefix
+is originated only when its VRF has an RD, an export route target, an
+operational L3VNI, an eligible connected or static route *and* an explicit
+`advertise l2vpn evpn`; there is no hidden redistribution, and an imported
+prefix is never re-originated. Type 5 uniqueness is **RD and prefix**, so two
+tenants may advertise the same network and stay two routes. Import is by the
+VRF's route targets alone — never by VNI number — and without a match the route
+stays in the EVPN RIB while installing nothing, which is what keeps overlapping
+tenants isolated. The global table is never a fallback. The existing route
+reflector reflects Type 5 unchanged, stamping `ORIGINATOR_ID` and
+`CLUSTER_LIST`, and needs no overlay of its own.
+
+`LabDocument` stores the fabric anycast MAC, the per-SVI anycast flag and VRF
+membership, tenant VRFs with their RD/RT and static routes, the NVE
+`associate-vrf` members and the VRF's `advertise l2vpn evpn` flag — all
+optional, so a pre-M10.15 lab opens unchanged. It must never store learned Type
+5 routes, imported VRF routes, routed-overlay runtime, ARP caches, counters or
+a remote-VTEP cache.
 
 ## TypeScript and code conventions
 

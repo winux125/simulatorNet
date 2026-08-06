@@ -133,8 +133,11 @@ function nveFrom(
   const nve = applied.nve;
   if (!nve) return undefined;
   const members = nve.members.filter((member) => knownVlans.has(member.vlanId));
-  if (members.length === 0) return undefined;
-  return { ...nve, members };
+  // An L3VNI has no VLAN, so it survives on its own: an NVE that only routes is
+  // still an NVE.
+  const vrfMembers = nve.vrfMembers ?? [];
+  if (members.length === 0 && vrfMembers.length === 0) return undefined;
+  return { ...nve, members, vrfMembers: vrfMembers.length > 0 ? vrfMembers : undefined };
 }
 
 /**
@@ -506,6 +509,9 @@ export function buildDeviceConfigFromIos(
         // here; a Router or an L2 Switch never receives one.
         nve: nveFrom(applied, knownVlans),
         evpn: applied.evpn,
+        // Tenant VRFs travel with the VTEP: an L3VNI is meaningless without the
+        // routing context it transports.
+        vrfs: applied.vrfs.length > 0 ? applied.vrfs : undefined,
         prefixLists: applied.prefixLists,
         ipv6PrefixLists: applied.ipv6PrefixLists.length ? applied.ipv6PrefixLists : undefined,
         routeMaps: applied.routeMaps,

@@ -27,6 +27,7 @@ import {
   type DeviceConfig,
   type DeviceType,
   type EvpnConfig,
+  type VrfConfig,
   type FirewallDeviceConfig,
   type Ipv4AclConfig,
   type Ipv6AclConfig,
@@ -466,7 +467,7 @@ function routePolicyLines(
   return out;
 }
 
-function bgpProcessLines(bgp: BgpProcessConfig | undefined): string[] {
+function bgpProcessLines(bgp: BgpProcessConfig | undefined, vrfs?: readonly VrfConfig[]): string[] {
   if (!bgp) return [];
   const out = [`router bgp ${bgp.localAs}`];
   if (bgp.routerId) out.push(` bgp router-id ${bgp.routerId}`);
@@ -544,11 +545,20 @@ function bgpProcessLines(bgp: BgpProcessConfig | undefined): string[] {
     }
     out.push(" exit-address-family");
   }
-  for (const family of sorted(bgp.vrfAddressFamilies, (a, b) => byString(a.vrfId, b.vrfId))) {
-    if (family.redistributeConnected || family.redistributeStatic) {
-      out.push(` address-family ipv4 vrf ${family.vrfId}`);
+  // A VRF that advertises into EVPN gets its own `address-family ipv4 vrf`
+  // block even when it redistributes nothing, so the flag is never lost.
+  const evpnVrfs = sorted(vrfs?.filter((vrf) => vrf.advertiseEvpn === true), (a, b) => byString(a.id, b.id));
+  const families = sorted(bgp.vrfAddressFamilies, (a, b) => byString(a.vrfId, b.vrfId));
+  const vrfIds = [...new Set([...families.map((family) => family.vrfId), ...evpnVrfs.map((vrf) => vrf.id)])].sort();
+  for (const vrfId of vrfIds) {
+    const family = families.find((entry) => entry.vrfId === vrfId)
+      ?? { vrfId, redistributeConnected: false, redistributeStatic: false };
+    const advertises = evpnVrfs.some((vrf) => vrf.id === vrfId);
+    if (family.redistributeConnected || family.redistributeStatic || advertises) {
+      out.push(` address-family ipv4 vrf ${vrfId}`);
       if (family.redistributeConnected) out.push("  redistribute connected");
       if (family.redistributeStatic) out.push("  redistribute static");
+      if (advertises) out.push("  advertise l2vpn evpn");
       out.push(" exit-address-family");
     }
     if (family.redistributeConnectedIpv6 || family.redistributeStaticIpv6) {
@@ -583,6 +593,31 @@ function evpnAddressFamilyLines(bgp: BgpProcessConfig | undefined): string[] {
   return out;
 }
 
+/**
+ * The tenant VRFs an L3 Switch VTEP carries, and their static routes.
+ *
+ * `advertise l2vpn evpn` renders under `router bgp` with the rest of the BGP
+ * process, so this block stays purely the routing context: name, RD and the
+ * route targets that decide what it may import and export.
+ */
+function vtepVrfLines(vrfs: readonly VrfConfig[] | undefined): string[] {
+  const sortedVrfs = sorted(vrfs, (a, b) => byString(a.id, b.id));
+  if (sortedVrfs.length === 0) return [];
+  const out: string[] = [];
+  for (const vrf of sortedVrfs) {
+    out.push(`vrf definition ${vrf.name}`, ` rd ${vrf.routeDistinguisher}`);
+    for (const target of sorted(vrf.importRouteTargets, byString)) out.push(` route-target import ${target}`);
+    for (const target of sorted(vrf.exportRouteTargets, byString)) out.push(` route-target export ${target}`);
+    out.push("!");
+  }
+  for (const vrf of sortedVrfs) {
+    for (const route of sorted(vrf.staticRoutes, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength)) {
+      out.push(`ip route vrf ${vrf.name} ${route.network} ${maskFromPrefixLength(route.prefixLength)} ${route.nextHop}`);
+    }
+  }
+  return out;
+}
+
 /** `interface nve1` plus the `vlan configuration <id>` mappings it implies. */
 function nveLines(nve: NveInterfaceConfig | undefined): string[] {
   if (!nve) return [];
@@ -597,6 +632,11 @@ function nveLines(nve: NveInterfaceConfig | undefined): string[] {
       continue;
     }
     for (const peer of sorted(member.replication.peerAddresses, byString)) out.push(`  peer-ip ${peer}`);
+  }
+  // L3VNIs come after the bridged members, exactly as they are entered: a
+  // routed transit segment has no VLAN and therefore no `vlan configuration`.
+  for (const member of sorted(nve.vrfMembers, (a, b) => a.vni - b.vni)) {
+    out.push(` member vni ${member.vni} associate-vrf ${member.vrfId}`);
   }
   out.push("!");
   for (const member of members) {
@@ -1013,8 +1053,14 @@ function renderLayer3Switch(config: Layer3SwitchDeviceConfig): string[] {
   out.push(...bannerLines(config.consoleAccess));
   out.push(config.ipRoutingEnabled ? "ip routing" : "no ip routing");
   if (config.ipv6UnicastRoutingEnabled) out.push("ipv6 unicast-routing");
+  // The fabric gateway MAC precedes every SVI that adopts it.
+  if (config.evpn?.anycastGatewayMac !== undefined) {
+    out.push(`fabric forwarding anycast-gateway-mac ${config.evpn.anycastGatewayMac}`);
+  }
   out.push("!");
   out.push(...aaaLines(config.aaa));
+  // Tenant VRFs precede the SVIs that join them and the NVE that carries them.
+  out.push(...vtepVrfLines(config.vrfs));
   for (const vlan of sorted(config.vlans, (a, b) => a.id - b.id)) {
     if (vlan.id === 1) continue;
     out.push(`vlan ${vlan.id}`, ` name ${vlan.name}`, "!");
@@ -1050,10 +1096,13 @@ function renderLayer3Switch(config: Layer3SwitchDeviceConfig): string[] {
   for (const svi of sorted(config.svis, (a, b) => a.vlanId - b.vlanId)) {
     out.push(`interface Vlan${svi.vlanId}`);
     if (svi.description) out.push(` description ${svi.description}`);
+    // The routing context precedes the address, exactly as it must be entered.
+    if (svi.vrfId !== undefined) out.push(` vrf forwarding ${svi.vrfId}`);
     if (svi.ipAddress !== undefined && svi.prefixLength !== undefined) {
       out.push(` ip address ${svi.ipAddress} ${maskFromPrefixLength(svi.prefixLength)}`);
     }
     out.push(...ipv6Lines(svi.ipv6));
+    if (svi.anycastGateway === true) out.push(" fabric forwarding mode anycast-gateway");
     out.push(...aclBindingLines(config.aclBindings, `Vlan${svi.vlanId}`, "ip access-group"));
     out.push(...ospfInterfaceLines(config.ospf, `Vlan${svi.vlanId}`));
     out.push(...adminStateLines(!svi.adminUp), "!");
@@ -1065,7 +1114,7 @@ function renderLayer3Switch(config: Layer3SwitchDeviceConfig): string[] {
   out.push(...ospfProcessLines(config.ospf));
   out.push(...ospfv3ProcessLines(config.ospfv3));
   out.push(...routePolicyLines(config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists, config.ipv6PrefixLists));
-  out.push(...bgpProcessLines(config.bgp));
+  out.push(...bgpProcessLines(config.bgp, config.vrfs));
   for (const route of sorted(config.staticRoutes, (a, b) => byString(a.network, b.network) || a.prefixLength - b.prefixLength)) {
     out.push(`ip route ${route.network} ${maskFromPrefixLength(route.prefixLength)} ${route.nextHop}`);
   }

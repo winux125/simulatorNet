@@ -68,6 +68,7 @@ import {
   serializeDiscoveryConfiguration,
   serializeEvpnConfiguration,
   serializeNveConfiguration,
+  serializeVtepVrfConfiguration,
   serializeEtherChannelConfiguration,
   serializeLoopbackConfiguration,
   serializeOspfConfiguration,
@@ -708,14 +709,37 @@ function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3Swit
       device.setTrunk(iface.id, { nativeVlan: iface.nativeVlan, allowedVlans: iface.allowedVlans });
     }
   }
+  // Tenant VRFs exist before any SVI joins one, and before the NVE associates
+  // an L3VNI with one.
+  for (const vrf of config.vrfs ?? []) {
+    device.defineVrf({
+      id: vrf.id,
+      name: vrf.name,
+      routeDistinguisher: vrf.routeDistinguisher,
+      importRouteTargets: [...vrf.importRouteTargets],
+      exportRouteTargets: [...vrf.exportRouteTargets],
+      advertiseEvpn: vrf.advertiseEvpn,
+    });
+  }
   for (const svi of config.svis) {
     device.defineSvi(svi.vlanId);
+    // The routing context is chosen before the address, so a tenant address is
+    // never briefly evaluated against the global table for duplicates.
+    if (svi.vrfId !== undefined) device.setSviVrf(svi.vlanId, svi.vrfId);
     if (svi.ipAddress !== undefined && svi.prefixLength !== undefined) {
       device.setSviIp(svi.vlanId, svi.ipAddress, svi.prefixLength);
     }
     for (const address of svi.ipv6 ?? []) device.setSviIpv6(svi.vlanId, address.address, address.prefixLength);
     device.setSviAdminState(svi.vlanId, svi.adminUp);
     if (svi.description) device.setSviDescription(svi.vlanId, svi.description);
+    // Order-independent: the fabric MAC arrives with the NVE block below and
+    // re-stamps every SVI already marked as an anycast gateway.
+    if (svi.anycastGateway === true) device.setSviAnycastGateway(svi.vlanId, true);
+  }
+  for (const vrf of config.vrfs ?? []) {
+    for (const route of vrf.staticRoutes) {
+      device.addVrfStaticRoute(vrf.id, route.network, route.prefixLength, route.nextHop);
+    }
   }
   for (const route of config.staticRoutes) device.addStaticRoute(route.network, route.prefixLength, route.nextHop);
   device.setIpRouting(config.ipRoutingEnabled);
@@ -1151,7 +1175,10 @@ function serializeConfiguration(device: Device, node: NodeSpec): DeviceConfig {
         adminUp: svi.adminUp,
         description: svi.description,
         ipv6: serializeStaticIpv6Addresses(ipv6.get(svi.name)),
+        vrfId: device.interfaceVrf(svi.name),
+        anycastGateway: device.isAnycastGateway(svi.vlanId) ? true : undefined,
       })),
+      vrfs: serializeVtepVrfConfiguration(device),
       staticRoutes: device.staticRouteConfigurations().map((route) => ({
         network: route.network,
         prefixLength: prefixLength(route.maskInt),

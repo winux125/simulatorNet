@@ -572,6 +572,14 @@ export const SviConfigSchema = z.object({
   adminUp: z.boolean().default(true),
   description: z.string().min(1).optional(),
   ipv6: z.array(Ipv6InterfaceAddressSchema).max(16).optional(),
+  /** `vrf forwarding <name>`: the tenant routing context this SVI belongs to. */
+  vrfId: z.string().min(1).max(64).optional(),
+  /**
+   * `fabric forwarding mode anycast-gateway` (M10.15). The SVI keeps its own
+   * IPv4 address but answers with the fabric-wide anycast MAC, so every leaf
+   * carrying this VLAN presents the same gateway. Absent means off.
+   */
+  anycastGateway: z.boolean().optional(),
 });
 export type SviConfig = z.infer<typeof SviConfigSchema>;
 
@@ -597,6 +605,12 @@ export const Layer3SwitchDeviceConfigSchema = z.object({
    */
   nve: NveInterfaceConfigSchema.optional(),
   evpn: EvpnConfigSchema.optional(),
+  /**
+   * M10.15 tenant VRFs. An EVPN fabric needs the routing context an L3VNI
+   * transports; MPLS and LDP stay Router-only, so this is deliberately just
+   * `vrfs` and not the whole L3VPN block. Optional, as everything else here.
+   */
+  vrfs: z.array(VrfConfigSchema).max(256).optional(),
   consoleAccess: ConsoleAccessConfigurationSchema.optional(),
   remoteAccess: RemoteAccessConfigurationSchema.optional(),
   aaa: AaaConfigurationSchema.optional(),

@@ -5,6 +5,7 @@ import {
   type NveInterfaceConfiguration,
   type NveMemberConfiguration,
   evpnRouteVni,
+  maskToInt,
   MAXIMUM_VNI,
   MINIMUM_VNI,
   NVE_INTERFACE_ID,
@@ -239,12 +240,17 @@ function showVxlan(session: SessionApi): string {
  * ordinary Router that carries these routes on its BGP process without ever
  * being a VTEP, so the routes come from BGP rather than from an overlay.
  */
-function showEvpnTable(session: SessionApi, filter: { routeType?: 2 | 3 | 5; vni?: number } = {}): string {
+function showEvpnTable(
+  session: SessionApi,
+  filter: { routeType?: 2 | 3 | 5; vni?: number; routeTargets?: readonly string[] } = {},
+): string {
   const device = session.device as { bgp?: Layer3Switch["bgp"] };
   if (!device.bgp) throw new InvalidModeError("BGP requires a Router or an L3 Switch");
+  const wanted = filter.routeTargets === undefined ? undefined : new Set(filter.routeTargets);
   const routes = (isLayer3Switch(session.device) ? session.device.evpnRoutes() : device.bgp.evpnRoutes())
     .filter((route) => filter.routeType === undefined || route.type === filter.routeType)
-    .filter((route) => filter.vni === undefined || evpnRouteVni(route) === filter.vni);
+    .filter((route) => filter.vni === undefined || evpnRouteVni(route) === filter.vni)
+    .filter((route) => wanted === undefined || route.routeTargets.some((target) => wanted.has(target)));
   if (!routes.length) return "% EVPN table is empty.";
   // One table for every route type: a Type 5 names a prefix where a Type 2
   // names a MAC and a Type 3 its originating VTEP.
@@ -267,7 +273,211 @@ function evpnRouteSubject(route: EvpnRoute): string {
   return route.originatingVtep;
 }
 
+/** A dotted subnet mask as a prefix length, rejecting a non-contiguous mask. */
+function maskPrefixLength(mask: string): number {
+  const value = maskToInt(parseIpv4(mask));
+  const length = 32 - Math.log2((~value >>> 0) + 1);
+  if (!Number.isInteger(length) || length < 0 || length > 32) {
+    throw new ValidationError(`'${mask}' is not a valid subnet mask.`);
+  }
+  return length;
+}
+
+/** The logical interface the current `config-if` context is editing. */
+function sviOrPortName(session: SessionApi): string {
+  const context = session.ifaceCtx;
+  if (!context) throw new InvalidModeError("Enter 'interface <name>' first");
+  if (context.sviVlan !== undefined) return `Vlan${context.sviVlan}`;
+  return context.isSubinterface ? context.label : context.physical;
+}
+
+function setSviAnycast(session: SessionApi, enabled: boolean): void {
+  const context = session.ifaceCtx;
+  if (!context || context.sviVlan === undefined) {
+    throw new InvalidModeError("Anycast gateway mode is only valid on an SVI");
+  }
+  vtepOf(session).setSviAnycastGateway(context.sviVlan, enabled);
+}
+
+/**
+ * Accept both the Cisco `0200.0000.0001` shape and the colon form the rest of
+ * SimulatorNet uses, and normalize to one canonical spelling.
+ */
+function parseFabricMac(value: string): string {
+  const dotted = /^([0-9a-f]{4})\.([0-9a-f]{4})\.([0-9a-f]{4})$/iu.exec(value);
+  const hex = dotted ? `${dotted[1]}${dotted[2]}${dotted[3]}`.toLowerCase() : undefined;
+  const colon = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/iu.test(value) ? value.toLowerCase() : undefined;
+  const normalized = hex ? (hex.match(/../gu) ?? []).join(":") : colon;
+  if (!normalized) throw new ValidationError(`'${value}' is not a MAC address.`);
+  return normalized;
+}
+
+/** `show forwarding distribution evpn`: what the distributed gateway is. */
+function showAnycastGateway(session: SessionApi): string {
+  const device = vtepOf(session);
+  const mac = device.fabricConfiguration().anycastGatewayMac;
+  if (mac === undefined) return "% No anycast gateway MAC is configured.";
+  const rows = device.sviSummaries()
+    .filter((svi) => device.isAnycastGateway(svi.vlanId))
+    .map((svi) => [
+      `Vlan${svi.vlanId}`,
+      svi.ip ?? "—",
+      mac,
+      device.interfaceVrf(`Vlan${svi.vlanId}`) ?? "default",
+      svi.operUp ? "up" : "down",
+    ]);
+  if (!rows.length) return `Anycast gateway MAC: ${mac}\n% No SVI runs in anycast-gateway mode.`;
+  return `Anycast gateway MAC: ${mac}\n${table(["Interface", "Gateway IP", "Gateway MAC", "VRF", "State"], rows)}`;
+}
+
+/** `show ip route vrf <name>`: one tenant's table, never the global one. */
+function showVrfRoutes(session: SessionApi, name: string): string {
+  const device = vtepOf(session);
+  const vrf = device.vrfConfigurations().find((entry) => entry.id === name || entry.name === name);
+  if (!vrf) throw new ValidationError(`Unknown VRF '${name}'.`);
+  const routes = device.vrfRoutingTable(vrf.id);
+  if (!routes.length) return `% VRF ${vrf.name} routing table is empty.`;
+  return table(["Source", "Network", "Next Hop", "L3VNI", "AD/Metric"], routes.map((route) => [
+    route.source,
+    `${route.network}/${route.prefixLength}`,
+    route.remoteVtep ?? route.nextHop ?? route.outgoingInterfaceId ?? "—",
+    route.l3Vni === undefined ? "—" : String(route.l3Vni),
+    `${route.administrativeDistance}/${route.metric}`,
+  ]));
+}
+
+/**
+ * Tenant VRFs on a VTEP.
+ *
+ * These mirror the Router's `vrf definition` subset, but they are scoped to the
+ * L3 Switch and carry no MPLS: an EVPN tenant is a routing context an L3VNI
+ * transports, never an LDP/VPN-label customer. MPLS and LDP stay Router-only.
+ */
+function updateVtepVrf(
+  session: SessionApi,
+  mutate: (current: ReturnType<Layer3Switch["vrfConfigurations"]>[number] | undefined) => Parameters<Layer3Switch["defineVrf"]>[0],
+): void {
+  const device = vtepOf(session);
+  const context = session.vrfCtx;
+  if (!context) throw new InvalidModeError("Enter 'vrf definition <name>' first");
+  const current = device.vrfConfigurations().find((vrf) => vrf.id === context.id);
+  const next = mutate(current);
+  device.defineVrf(next);
+  context.routeDistinguisher = next.routeDistinguisher;
+}
+
+/** Carry every setting the caller is not changing through `defineVrf`. */
+function vtepVrfBase(session: SessionApi, current: ReturnType<Layer3Switch["vrfConfigurations"]>[number] | undefined) {
+  return {
+    id: session.vrfCtx!.id,
+    name: session.vrfCtx!.name,
+    routeDistinguisher: current?.routeDistinguisher ?? session.vrfCtx!.routeDistinguisher!,
+    importRouteTargets: current?.importRouteTargets ?? [],
+    exportRouteTargets: current?.exportRouteTargets ?? [],
+    advertiseEvpn: current?.advertiseEvpn,
+  };
+}
+
 export const vxlanCommands: CommandSpec[] = [
+  // --- vrf definition <name> (tenant routing context) ---------------------
+  {
+    pattern: "vrf definition {name}", usage: "vrf definition <name>",
+    modes: ["config"], device: "l3-switch",
+    run: (s, p) => {
+      const device = vtepOf(s);
+      const existing = device.vrfConfigurations().find((vrf) => vrf.name === p.name || vrf.id === p.name);
+      s.vrfCtx = {
+        id: existing?.id ?? p.name!,
+        name: existing?.name ?? p.name!,
+        routeDistinguisher: existing?.routeDistinguisher,
+      };
+      s.enter("config-vrf");
+    },
+  },
+  {
+    pattern: "no vrf definition {name}", modes: ["config"], device: "l3-switch",
+    run: (s, p) => {
+      const device = vtepOf(s);
+      const vrf = device.vrfConfigurations().find((entry) => entry.id === p.name || entry.name === p.name);
+      if (vrf) device.removeVrf(vrf.id);
+    },
+  },
+  {
+    pattern: "rd {value}", usage: "rd <asn:number|ipv4:number>", modes: ["config-vrf"], device: "l3-switch",
+    run: (s, p) => updateVtepVrf(s, (current) => ({ ...vtepVrfBase(s, current), routeDistinguisher: p.value! })),
+  },
+  {
+    pattern: "route-target {direction} {value}", usage: "route-target import|export <asn:number|ipv4:number>",
+    modes: ["config-vrf"], device: "l3-switch",
+    run: (s, p) => updateVtepVrf(s, (current) => {
+      if (!current && !s.vrfCtx?.routeDistinguisher) throw new ValidationError("Configure the route distinguisher first.");
+      if (p.direction !== "import" && p.direction !== "export") {
+        throw new ValidationError("Route-target direction must be import or export.");
+      }
+      const imports = [...(current?.importRouteTargets ?? [])];
+      const exports = [...(current?.exportRouteTargets ?? [])];
+      const list = p.direction === "import" ? imports : exports;
+      if (!list.includes(p.value!)) list.push(p.value!);
+      return { ...vtepVrfBase(s, current), importRouteTargets: imports, exportRouteTargets: exports };
+    }),
+  },
+  {
+    pattern: "exit-address-family", modes: ["config-vrf"], device: "l3-switch",
+    run: () => undefined,
+  },
+  {
+    pattern: "ip route vrf {vrf} {network} {mask} {nextHop}",
+    usage: "ip route vrf <name> <network> <mask> <next-hop>",
+    modes: ["config"], device: "l3-switch",
+    run: (s, p) => {
+      const device = vtepOf(s);
+      const vrf = device.vrfConfigurations().find((entry) => entry.id === p.vrf || entry.name === p.vrf);
+      if (!vrf) throw new ValidationError(`VRF '${p.vrf}' is not defined.`);
+      device.addVrfStaticRoute(vrf.id, parseIpv4(p.network!), maskPrefixLength(p.mask!), parseIpv4(p.nextHop!));
+    },
+  },
+
+  // --- fabric forwarding (distributed anycast gateway) ---------------------
+  {
+    pattern: "fabric forwarding anycast-gateway-mac {mac}",
+    usage: "fabric forwarding anycast-gateway-mac <H.H.H|hh:hh:hh:hh:hh:hh>",
+    modes: ["config"], device: "l3-switch",
+    run: (s, p) => vtepOf(s).setFabricAnycastGatewayMac(parseFabricMac(p.mac!)),
+  },
+  {
+    pattern: "no fabric forwarding anycast-gateway-mac", modes: ["config"], device: "l3-switch",
+    run: (s) => vtepOf(s).setFabricAnycastGatewayMac(undefined),
+  },
+
+  // --- interface Vlan<n> (tenant SVI) -------------------------------------
+  {
+    pattern: "vrf forwarding {name}", usage: "vrf forwarding <vrf-name>",
+    modes: ["config-if"], device: "l3-switch",
+    run: (s, p) => {
+      const device = vtepOf(s);
+      const vrf = device.vrfConfigurations().find((entry) => entry.id === p.name || entry.name === p.name);
+      if (!vrf) throw new ValidationError(`Unknown VRF '${p.name}'. Configure 'vrf definition ${p.name}' first.`);
+      device.assignInterfaceVrf(sviOrPortName(s), vrf.id);
+    },
+  },
+  {
+    pattern: "no vrf forwarding {name}", modes: ["config-if"], device: "l3-switch",
+    run: (s) => vtepOf(s).assignInterfaceVrf(sviOrPortName(s), undefined),
+  },
+  {
+    /**
+     * `fabric forwarding mode anycast-gateway` makes this SVI answer with the
+     * fabric-wide MAC. Every leaf carrying the VLAN then presents the same
+     * gateway IP and MAC, which is why it is never a duplicate-address error.
+     */
+    pattern: "fabric forwarding mode anycast-gateway", modes: ["config-if"], device: "l3-switch",
+    run: (s) => setSviAnycast(s, true),
+  },
+  {
+    pattern: "no fabric forwarding mode anycast-gateway", modes: ["config-if"], device: "l3-switch",
+    run: (s) => setSviAnycast(s, false),
+  },
+
   // --- interface nve1 -----------------------------------------------------
   {
     pattern: "interface nve1", modes: ["config"], device: "l3-switch",
@@ -326,6 +536,40 @@ export const vxlanCommands: CommandSpec[] = [
       updateNve(s, (current) => {
         const base = nveBase(current);
         return { ...base, members: base.members.filter((member) => member.vni !== vni) };
+      });
+    },
+  },
+  {
+    /**
+     * `member vni <n> associate-vrf <name>` declares an **L3VNI**: a routed
+     * transit segment with no VLAN, which is what symmetric IRB forwards
+     * through. The VRF is named here rather than inferred from a separate
+     * `vni` line, so the NVE block stays the one place a VNI is bound to a
+     * routing context and the two can never drift apart.
+     */
+    pattern: "member vni {vni} associate-vrf {vrf}",
+    usage: "member vni <1-16777215> associate-vrf <vrf-name>",
+    modes: ["config-nve"], device: "l3-switch",
+    run: (s, p) => {
+      const vni = parseVni(p.vni!);
+      const device = vtepOf(s);
+      const target = device.vrfConfigurations().find((vrf) => vrf.id === p.vrf || vrf.name === p.vrf);
+      if (!target) throw new ValidationError(`Unknown VRF '${p.vrf}'. Configure 'vrf definition ${p.vrf}' first.`);
+      updateNve(s, (current) => {
+        const base = nveBase(current);
+        const others = (base.vrfMembers ?? []).filter((member) => member.vni !== vni);
+        return { ...base, vrfMembers: [...others, { vni, vrfId: target.id }].sort((a, b) => a.vni - b.vni) };
+      });
+    },
+  },
+  {
+    pattern: "no member vni {vni} associate-vrf", modes: ["config-nve"], device: "l3-switch",
+    run: (s, p) => {
+      const vni = parseVni(p.vni!);
+      updateNve(s, (current) => {
+        const base = nveBase(current);
+        const rest = (base.vrfMembers ?? []).filter((member) => member.vni !== vni);
+        return { ...base, vrfMembers: rest.length > 0 ? rest : undefined };
       });
     },
   },
@@ -456,12 +700,36 @@ export const vxlanCommands: CommandSpec[] = [
     run: (s) => showEvpnTable(s),
   },
   {
-    pattern: "show bgp l2vpn evpn route-type {type}", usage: "show bgp l2vpn evpn route-type 2|3",
+    pattern: "show bgp l2vpn evpn route-type {type}", usage: "show bgp l2vpn evpn route-type 2|3|5",
     modes: ["exec", "privileged"], device: "ospf",
     run: (s, p) => {
-      if (p.type !== "2" && p.type !== "3") throw new ValidationError("Only EVPN route types 2 and 3 are supported.");
-      return showEvpnTable(s, { routeType: p.type === "2" ? 2 : 3 });
+      if (p.type !== "2" && p.type !== "3" && p.type !== "5") {
+        throw new ValidationError("Only EVPN route types 2, 3 and 5 are supported.");
+      }
+      return showEvpnTable(s, { routeType: Number(p.type) as 2 | 3 | 5 });
     },
+  },
+  {
+    pattern: "show bgp l2vpn evpn route-type {type} vrf {vrf}",
+    usage: "show bgp l2vpn evpn route-type 5 vrf <vrf-name>",
+    modes: ["exec", "privileged"], device: "l3-switch",
+    run: (s, p) => {
+      if (p.type !== "5") throw new ValidationError("Only route type 5 is scoped to a VRF.");
+      const device = vtepOf(s);
+      const vrf = device.vrfConfigurations().find((entry) => entry.id === p.vrf || entry.name === p.vrf);
+      if (!vrf) throw new ValidationError(`Unknown VRF '${p.vrf}'.`);
+      // A VRF sees exactly the Type 5 prefixes its own route targets import.
+      return showEvpnTable(s, { routeType: 5, routeTargets: vrf.importRouteTargets });
+    },
+  },
+  {
+    pattern: "show forwarding distribution evpn", modes: ["exec", "privileged"], device: "l3-switch",
+    run: showAnycastGateway,
+  },
+  {
+    pattern: "show ip route vrf {name}", usage: "show ip route vrf <vrf-name>",
+    modes: ["exec", "privileged"], device: "l3-switch",
+    run: (s, p) => showVrfRoutes(s, p.name!),
   },
   {
     pattern: "show bgp l2vpn evpn vni {vni}", modes: ["exec", "privileged"], device: "ospf",

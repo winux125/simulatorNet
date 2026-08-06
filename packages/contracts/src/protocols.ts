@@ -334,6 +334,14 @@ export const VrfConfigSchema = z.object({
    */
   addressFamilyIpv6: z.boolean().optional(),
   ipv6StaticRoutes: z.array(VrfIpv6StaticRouteConfigSchema).max(4_096).optional(),
+  /**
+   * `address-family ipv4 vrf <name>` → `advertise l2vpn evpn` (M10.15).
+   *
+   * Origination into EVPN Type 5 is always explicit: without this flag the
+   * tenant's connected and static routes stay local, so no redistribution is
+   * ever hidden. Absent means off, so a pre-M10.15 document is unchanged.
+   */
+  advertiseEvpn: z.boolean().optional(),
 }).strict();
 export type VrfConfig = z.infer<typeof VrfConfigSchema>;
 
@@ -366,6 +374,19 @@ export const NveMemberConfigSchema = z.object({
 export type NveMemberConfig = z.infer<typeof NveMemberConfigSchema>;
 
 /**
+ * `member vni <vni> associate-vrf`: an **L3VNI**.
+ *
+ * It has no VLAN and no broadcast domain. It is the transit segment symmetric
+ * IRB routes a tenant's packets through, and the VNI is what names the VRF on
+ * the receiving VTEP.
+ */
+export const NveVrfMemberConfigSchema = z.object({
+  vni: VniSchema,
+  vrfId: z.string().min(1).max(64),
+}).strict();
+export type NveVrfMemberConfig = z.infer<typeof NveVrfMemberConfigSchema>;
+
+/**
  * `interface nve1`: the one logical overlay interface a VTEP owns.
  *
  * It has an administrative state, an IPv4 source loopback and a set of VNI
@@ -378,6 +399,11 @@ export const NveInterfaceConfigSchema = z.object({
   sourceInterfaceId: z.string().min(1).max(64),
   shutdown: z.boolean().default(false),
   members: z.array(NveMemberConfigSchema).max(64).default([]),
+  /**
+   * M10.15 L3VNIs. Optional, so a pre-M10.15 lab opens unchanged and without a
+   * migration; absent means the VTEP bridges only.
+   */
+  vrfMembers: z.array(NveVrfMemberConfigSchema).max(64).optional(),
 }).strict();
 export type NveInterfaceConfig = z.infer<typeof NveInterfaceConfigSchema>;
 
@@ -390,8 +416,24 @@ export const EvpnVniConfigSchema = z.object({
 }).strict();
 export type EvpnVniConfig = z.infer<typeof EvpnVniConfigSchema>;
 
+/**
+ * A MAC in the `0200.0000.0001` shape the fabric CLI uses for the one gateway
+ * address every leaf answers with. It must be unicast: a host sends real
+ * traffic to it, so a group bit could never be a usable next hop.
+ */
+export const AnycastGatewayMacSchema = z.string()
+  .regex(/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/iu, "Expected a MAC address")
+  .refine((value) => (Number.parseInt(value.slice(0, 2), 16) & 0x01) === 0, "Anycast gateway MAC must be unicast")
+  .refine((value) => !/^0{2}(:0{2}){5}$/u.test(value), "Anycast gateway MAC must not be all zeroes");
+
 export const EvpnConfigSchema = z.object({
   vnis: z.array(EvpnVniConfigSchema).max(64).default([]),
+  /**
+   * `fabric forwarding anycast-gateway-mac`. Fabric-wide rather than per-SVI:
+   * that is precisely what makes the gateway distributed, so a host keeps one
+   * gateway MAC in its ARP cache no matter which leaf it is attached to.
+   */
+  anycastGatewayMac: AnycastGatewayMacSchema.optional(),
 }).strict();
 export type EvpnConfig = z.infer<typeof EvpnConfigSchema>;
 

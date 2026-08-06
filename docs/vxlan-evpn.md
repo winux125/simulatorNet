@@ -233,11 +233,94 @@ VNIs per VTEP, remote VTEPs per VNI, remote MAC entries, BUM replicas per
 operation, VXLAN events per operation, EVPN routes per device, MAC and IMET
 routes per VNI, and EVPN updates per operation.
 
+## Routed EVPN (M10.15)
+
+### Distributed anycast gateway
+
+`fabric forwarding anycast-gateway-mac 0200.0000.0001` declares one MAC for the
+whole fabric; `fabric forwarding mode anycast-gateway` on an SVI adopts it. Both
+leaves in a stretched tenant VLAN then present the *same* gateway IP and the
+same MAC, so a host always talks to its own local leaf and its ARP cache stays
+valid if the host moves. That shared address is a distributed gateway, not a
+duplicate: an ordinary duplicate host address is still detected as before.
+
+An ARP request whose target is a local gateway address is answered locally and
+never head-end replicated — the remote leaf would answer identically, so the
+overlay copy would be pure noise. This is gateway-only; ARP suppression for
+ordinary tenant hosts is deliberately not modelled. The gateway MAC is never
+advertised as a Type 2 route, because every leaf owns it.
+
+### L3VNI
+
+`interface nve1` → `member vni 50001 associate-vrf TENANT-A` declares an
+**L3VNI**: a routed transit segment with no VLAN and no broadcast domain, so it
+never gets a `vlan configuration` block. One L3VNI belongs to at most one VRF
+per VTEP, a VRF carries at most one, and a VNI is either bridged or routed —
+never both. It is up only while the NVE is up and the VRF still exists.
+
+Tenant VRFs now exist on the L3 Switch. MPLS, LDP and VPN labels stay
+Router-only: the switch gains the routing context, not L3VPN.
+
+### The routed data plane
+
+One VXLAN engine carries two payloads. An L2VNI transports an Ethernet frame; an
+L3VNI transports a routed `Ipv4Packet`. `estimateVxlanOuterSizeBytes` sizes
+both, so an oversized routed packet is dropped and reported, never fragmented.
+
+**Symmetric IRB** — both ends route:
+
+```text
+Host A, VLAN 10 → local anycast gateway on Leaf1
+  → TENANT-A VRF lookup → Type 5 prefix via Leaf2
+  → encapsulate into L3VNI 50001 → IPv4 underlay
+  → Leaf2 maps VNI 50001 → TENANT-A → VRF lookup
+  → VLAN 20 → local ARP → Host B
+```
+
+The destination's L2VNI is never the transit VNI, and return traffic takes the
+same routed overlay independently. A local destination is routed locally and
+never encapsulated. Underlay routers see only outer IPv4/UDP 4789.
+
+### EVPN Route Type 5
+
+Type 5 is IPv4-only and rides the existing `l2vpn-evpn` family — one FSM, one
+TCP session, one comparator. Origination requires *all* of: an RD, an export
+route target, an operational L3VNI, an eligible connected or static VRF route,
+an active EVPN address family, and an explicit
+
+```text
+router bgp 65000
+ address-family ipv4 vrf TENANT-A
+  advertise l2vpn evpn
+```
+
+There is no hidden redistribution, and a prefix this VTEP imported from EVPN is
+never re-originated. Uniqueness is **RD and prefix**, so two tenants may
+advertise the same network and remain two routes.
+
+Import is decided by the VRF's route targets alone, never by VNI number. Without
+a match the route stays in the EVPN RIB and installs nothing — which is exactly
+what keeps overlapping tenants isolated. The global table is never a fallback.
+The existing route reflector reflects Type 5 unchanged and needs no overlay.
+
+An imported prefix is withdrawn when the originator's route disappears, its
+L3VNI or NVE goes down, the EVPN family is deactivated, the session drops, the
+route target is removed, or the underlay route to the VTEP is lost. BGP keeps no
+periodic timer, so a Hold timer fires when something looks; the VTEP's VRF
+inspections call `refreshSessionState()` for exactly that reason.
+
+Trace events: `evpn-type5-originated`, `evpn-type5-imported`,
+`evpn-type5-withdrawn`, `evpn-type5-rt-rejected`, `evpn-irb-routed`,
+`evpn-l3vni-encapsulated`, `evpn-l3vni-decapsulated`,
+`evpn-anycast-gateway-replied` and `evpn-tenant-isolation-drop`.
+
 ## Deliberately not modelled
 
-L3VNI, symmetric and asymmetric IRB, Anycast Gateway, EVPN Route Types 1, 4 and
-5, ESI and multihoming, VXLAN multicast underlay replication, ARP/ND
-suppression, EVPN over MPLS, EVPN-VPWS, MPLS-TE and Segment Routing.
+Asymmetric IRB, IPv6 L3VNI and Type 5, EVPN Route Types 1 and 4, ESI and
+multihoming, MLAG/vPC, VXLAN multicast underlay replication, ARP/ND
+suppression, EVPN host-mobility sequence numbers, inter-VRF route leaking,
+firewall service insertion, EVPN over MPLS, EVPN-VPWS, MPLS-TE and Segment
+Routing.
 
 An importer recognises the safe subset above and reports every one of these as
 unsupported rather than inventing an approximation.
