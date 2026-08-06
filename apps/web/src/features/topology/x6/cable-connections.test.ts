@@ -1,9 +1,16 @@
+// @vitest-environment jsdom
+
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LabDocument, NodeSpec } from "@sim/contracts";
 import { canonicalizeLabDocument, parseLabDocument, stringifyLabDocument } from "@sim/lab-format";
-import { describe, expect, it } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { createElement } from "react";
+import { afterEach, describe, expect, it } from "vitest";
+import { Toolbar } from "../../../components/Toolbar";
+import type { WorkspaceMode, WorkspaceTool } from "../../../state/workspace-store";
 import {
   createLink,
   toGraphLinks,
@@ -13,6 +20,8 @@ import {
 } from "./lab-document-adapter";
 import { buildPorts, portsMatch } from "./port-registry";
 import { PORT_ANCHOR_RADIUS, portBodyAttrs } from "./styles";
+
+afterEach(cleanup);
 
 // M10.3.3c — devices show one cable handle and no port dots. Domain interfaces
 // and X6 ports still exist internally so links keep exact endpoints.
@@ -61,6 +70,41 @@ function doc(links: LabDocument["topology"]["links"] = []): LabDocument {
     topology: { schemaVersion: 1, nodes: NODES, links },
     configurations: {},
   };
+}
+
+/** The toolbar owns the primary cable action, so the guard drives the real one. */
+function toolbar(overrides: { mode: WorkspaceMode; onTool?: (tool: WorkspaceTool) => void }) {
+  return createElement(Toolbar, {
+    menus: [],
+    sessionScope: "Local",
+    workerStatus: "ready" as const,
+    ready: true,
+    unsaved: false,
+    powerState: overrides.mode === "edit" ? ("stopped" as const) : ("running" as const),
+    executionMode: "auto" as const,
+    activeTool: "select" as const,
+    canUndo: false,
+    canRedo: false,
+    canDelete: false,
+    zoomScale: 1,
+    sessionPending: false,
+    ...overrides,
+    onTool: overrides.onTool ?? (() => undefined),
+    onModeChange: () => undefined,
+    onNew: () => undefined,
+    onOpen: () => undefined,
+    onSave: () => undefined,
+    onUndo: () => undefined,
+    onRedo: () => undefined,
+    onDelete: () => undefined,
+    onZoomIn: () => undefined,
+    onZoomOut: () => undefined,
+    onFit: () => undefined,
+    onOpenPacketTrace: () => undefined,
+    onStartLab: () => undefined,
+    onStopLab: () => undefined,
+    onLogout: () => undefined,
+  });
 }
 
 describe("M10.3.3c invisible interface ports", () => {
@@ -144,12 +188,30 @@ describe("M10.3.3c cable-only connection workflow", () => {
     expect(canvas).toContain('template.media !== "wireless"');
   });
 
-  it("10. still exposes Connect through the context menu and the toolbar", () => {
-    const canvas = read("TopologyCanvas.tsx");
-    expect(canvas).toContain('contextAction("connect")');
-    expect(canvas).toContain('onClick={() => props.onActiveTool("add-link")}');
-    const toolbar = readFileSync(join(webSrc, "components/Toolbar.tsx"), "utf8");
-    expect(toolbar).toContain('label="Add link"');
+  it("10. keeps exactly one primary cable action, owned by the toolbar", async () => {
+    // M10.14.1 — the workspace toolbar owns the cable action; the canvas only
+    // consumes the selected tool. Drive the real control instead of asserting
+    // where its JSX happens to live.
+    const tools: WorkspaceTool[] = [];
+    const view = render(toolbar({ mode: "edit", onTool: (tool) => tools.push(tool) }));
+    const actions = screen.getAllByRole("button", { name: "Add link" });
+    expect(actions).toHaveLength(1);
+    await userEvent.click(actions[0]!);
+    expect(tools).toEqual(["add-link"]);
+
+    // A running lab leaves edit mode, so the cable action goes with it.
+    view.rerender(toolbar({ mode: "simulate" }));
+    expect(screen.getByRole("button", { name: "Add link" })).toHaveProperty("disabled", true);
+  });
+
+  it("10b. grows no second cable action beside the toolbar's", () => {
+    const duplicates = walk(webSrc)
+      .filter((file) => /\.tsx$/.test(file) && !/\.test\.tsx?$/.test(file))
+      .filter((file) => file !== join(webSrc, "components", "Toolbar.tsx"))
+      .filter((file) => /label="Add link"/.test(readFileSync(file, "utf8")));
+    expect(duplicates).toEqual([]);
+    // Connect… stays a secondary entry point on the canvas context menu.
+    expect(code("TopologyCanvas.tsx")).toContain('contextAction("connect")');
   });
 
   it("11. has no Show connection points or advanced port-drag preference", () => {
