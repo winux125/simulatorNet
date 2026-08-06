@@ -785,8 +785,9 @@ export interface VxlanEvpnView {
     lastSeenNs: number;
   }>;
   evpnRoutes: Array<{
-    type: 2 | 3;
+    type: 2 | 3 | 5;
     routeDistinguisher: string;
+    /** The L2VNI of a Type 2/3; the transit L3VNI of a Type 5. */
     vni: number;
     best: boolean;
     nextHop: string;
@@ -796,6 +797,10 @@ export interface VxlanEvpnView {
     ipAddress?: string;
     /** Type 3 only. */
     originatingVtep?: string;
+    /** Type 5 only: the advertised tenant prefix and the VTEP that owns it. */
+    network?: string;
+    prefixLength?: number;
+    nextHopVtep?: string;
     originatorId?: string;
     clusterList: string[];
     source: string;

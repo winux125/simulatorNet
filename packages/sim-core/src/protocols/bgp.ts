@@ -10,6 +10,8 @@ import {
   type BgpPathAttributes,
   type BgpUnicastAddressFamily,
   evpnRouteKey,
+  evpnRouteVni,
+  evpnWithdrawnNlriOf,
   type EvpnNlri,
   type EvpnWithdrawnNlri,
   type Vpnv4Nlri,
@@ -339,13 +341,37 @@ export function compareEvpnPaths(left: EvpnRoute, right: EvpnRoute): number {
   return ipToInt(evpnOriginatingVtep(left)) - ipToInt(evpnOriginatingVtep(right));
 }
 
+/** One trace name per EVPN route type, so a filter can name what it wants. */
+const EVPN_IMPORT_TRACE: Readonly<Record<2 | 3 | 5, string>> = Object.freeze({
+  2: "evpn-mac-route-imported",
+  3: "evpn-imet-imported",
+  5: "evpn-type5-imported",
+});
+
 /** Which VTEP an EVPN route points at: the IMET originator or the next hop. */
 export function evpnOriginatingVtep(route: EvpnNlri): Ipv4 {
-  return route.type === 3 ? route.originatingVtep : route.nextHop;
+  if (route.type === 3) return route.originatingVtep;
+  if (route.type === 5) return route.nextHopVtep;
+  return route.nextHop;
 }
 
 /** Exactly the fields that cross the wire; runtime path state stays local. */
 function evpnNlriOf(route: EvpnRoute): EvpnNlri {
+  if (route.type === 5) {
+    return {
+      type: 5,
+      routeDistinguisher: route.routeDistinguisher,
+      ethernetTag: route.ethernetTag,
+      network: route.network,
+      prefixLength: route.prefixLength,
+      routeTargets: [...route.routeTargets],
+      l3Vni: route.l3Vni,
+      nextHopVtep: route.nextHopVtep,
+      nextHop: route.nextHop,
+      pathAttributes: route.pathAttributes,
+      routeId: route.routeId,
+    };
+  }
   if (route.type === 3) {
     return {
       type: 3,
@@ -680,6 +706,18 @@ export class BgpProcess {
     }
   }
 
+  /**
+   * Bring lazily evaluated session state up to date.
+   *
+   * BGP keeps no periodic timer, so a Hold timer only fires when something
+   * looks. Every inspection here does that for itself; this is the same door
+   * for a caller that reads BGP-derived state — a VRF table holding imported
+   * EVPN prefixes, say — through some other API.
+   */
+  refreshSessionState(): void {
+    this.expireHoldTimers();
+  }
+
   summaries(): BgpNeighborSummary[] {
     this.expireHoldTimers();
     return [...this.neighbors.values()]
@@ -805,7 +843,7 @@ export class BgpProcess {
     return [...all.values()]
       .map((route) => ({ ...route, best: this.evpnLocRib.get(evpnRouteKey(route))?.routeId === route.routeId }))
       .sort((a, b) => a.type - b.type
-        || a.vni - b.vni
+        || evpnRouteVni(a) - evpnRouteVni(b)
         || a.routeDistinguisher.localeCompare(b.routeDistinguisher)
         || evpnRouteKey(a).localeCompare(evpnRouteKey(b))
         || compareEvpnPaths(a, b));
@@ -814,7 +852,9 @@ export class BgpProcess {
   selectedEvpnRoutes(): EvpnRoute[] {
     this.expireHoldTimers();
     return [...this.evpnLocRib.values()]
-      .sort((a, b) => a.type - b.type || a.vni - b.vni || evpnRouteKey(a).localeCompare(evpnRouteKey(b)));
+      .sort((a, b) => a.type - b.type
+        || evpnRouteVni(a) - evpnRouteVni(b)
+        || evpnRouteKey(a).localeCompare(evpnRouteKey(b)));
   }
 
   adjRibInEntries(address?: IpAddress, family: BgpUnicastAddressFamily = "ipv4-unicast"): BgpRoute[] {
@@ -1239,12 +1279,13 @@ export class BgpProcess {
     const rib = this.evpnAdjRibIn.get(runtime.configuration.address) ?? new Map<string, EvpnRoute>();
     for (const entry of withdrawn) {
       if (rib.delete(evpnRouteKey(entry))) {
-        this.trace("evpn-mac-route-withdrawn", {
+        this.trace(entry.type === 5 ? "evpn-type5-withdrawn" : "evpn-mac-route-withdrawn", {
           neighbor: runtime.configuration.address,
           addressFamily: "l2vpn-evpn",
           routeType: entry.type,
           vni: entry.vni,
           mac: entry.macAddress,
+          prefix: entry.type === 5 ? `${entry.network}/${entry.prefixLength}` : undefined,
           rd: entry.routeDistinguisher,
         });
       }
@@ -1280,13 +1321,14 @@ export class BgpProcess {
       };
       rib.set(evpnRouteKey(route), route);
       this.host.engine.controlProtocolBudget.consume("evpnUpdates", this.host.id);
-      this.trace(route.type === 2 ? "evpn-mac-route-imported" : "evpn-imet-imported", {
+      this.trace(EVPN_IMPORT_TRACE[route.type], {
         neighbor: runtime.configuration.address,
         addressFamily: "l2vpn-evpn",
         routeType: route.type,
         rd: route.routeDistinguisher,
-        vni: route.vni,
+        vni: evpnRouteVni(route),
         mac: route.type === 2 ? route.macAddress : undefined,
+        prefix: route.type === 5 ? `${route.network}/${route.prefixLength}` : undefined,
         vtep: evpnOriginatingVtep(route),
         routeTargets: route.routeTargets,
       });
@@ -1367,7 +1409,7 @@ export class BgpProcess {
             addressFamily: "l2vpn-evpn",
             routeType: route.type,
             rd: route.routeDistinguisher,
-            vni: route.vni,
+            vni: evpnRouteVni(route),
             originatorId: advertised.originatorId,
             clusterList: advertised.clusterList,
           });
@@ -1380,14 +1422,7 @@ export class BgpProcess {
     }
     const withdrawn = [...previous.entries()]
       .filter(([key]) => !desired.has(key))
-      .map(([, route]): EvpnWithdrawnNlri => ({
-        type: route.type,
-        routeDistinguisher: route.routeDistinguisher,
-        ethernetTag: route.ethernetTag,
-        vni: route.vni,
-        macAddress: route.type === 2 ? route.macAddress : undefined,
-        originatingVtep: route.type === 3 ? route.originatingVtep : undefined,
-      }));
+      .map(([, route]): EvpnWithdrawnNlri => evpnWithdrawnNlriOf(evpnNlriOf(route)));
     this.evpnAdjRibOut.set(runtime.configuration.address, desired);
     return { announcements, withdrawn };
   }

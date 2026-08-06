@@ -1,8 +1,10 @@
 import {
+  type EvpnRoute,
   type EvpnVniConfiguration,
   type Layer3Switch,
   type NveInterfaceConfiguration,
   type NveMemberConfiguration,
+  evpnRouteVni,
   MAXIMUM_VNI,
   MINIMUM_VNI,
   NVE_INTERFACE_ID,
@@ -237,23 +239,32 @@ function showVxlan(session: SessionApi): string {
  * ordinary Router that carries these routes on its BGP process without ever
  * being a VTEP, so the routes come from BGP rather than from an overlay.
  */
-function showEvpnTable(session: SessionApi, filter: { routeType?: 2 | 3; vni?: number } = {}): string {
+function showEvpnTable(session: SessionApi, filter: { routeType?: 2 | 3 | 5; vni?: number } = {}): string {
   const device = session.device as { bgp?: Layer3Switch["bgp"] };
   if (!device.bgp) throw new InvalidModeError("BGP requires a Router or an L3 Switch");
   const routes = (isLayer3Switch(session.device) ? session.device.evpnRoutes() : device.bgp.evpnRoutes())
     .filter((route) => filter.routeType === undefined || route.type === filter.routeType)
-    .filter((route) => filter.vni === undefined || route.vni === filter.vni);
+    .filter((route) => filter.vni === undefined || evpnRouteVni(route) === filter.vni);
   if (!routes.length) return "% EVPN table is empty.";
-  return table(["Status", "Type", "RD", "VNI", "MAC / VTEP", "Next Hop", "Route Targets", "Originator"], routes.map((route) => [
+  // One table for every route type: a Type 5 names a prefix where a Type 2
+  // names a MAC and a Type 3 its originating VTEP.
+  return table(["Status", "Type", "RD", "VNI", "MAC / Prefix / VTEP", "Next Hop", "Route Targets", "Originator"], routes.map((route) => [
     route.best ? "*>" : "*",
     `[${route.type}]`,
     route.routeDistinguisher,
-    String(route.vni),
-    route.type === 2 ? route.macAddress : route.originatingVtep,
+    String(evpnRouteVni(route)),
+    evpnRouteSubject(route),
     route.nextHop,
     route.routeTargets.join(",") || "—",
     route.originatorId ?? "—",
   ]));
+}
+
+/** What one EVPN route is *about*, in the single column the table gives it. */
+function evpnRouteSubject(route: EvpnRoute): string {
+  if (route.type === 2) return route.macAddress;
+  if (route.type === 5) return `${route.network}/${route.prefixLength}`;
+  return route.originatingVtep;
 }
 
 export const vxlanCommands: CommandSpec[] = [

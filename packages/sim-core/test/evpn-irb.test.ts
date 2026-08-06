@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 // traffic between two VTEPs. The BGP control plane arrives in M10.15b; here the
 // Type 5 prefixes are installed directly so the data plane can be tested alone.
 
-const ANYCAST_MAC = "02:00:00:00:00:01";
+const ANYCAST_MAC = "02:00:00:ff:00:01";
 const TENANT = "TENANT-A";
 const L3VNI = 50_001;
 const L2VNI_A = 10_010;
@@ -184,8 +184,8 @@ describe("M10.15a distributed anycast gateway", () => {
     expect(() => leaf1.setFabricAnycastGatewayMac("01:00:5e:00:00:01")).toThrow(/unicast/);
     expect(() => leaf1.setFabricAnycastGatewayMac("00:00:00:00:00:00")).toThrow(/zero/);
     // A valid MAC replaces the previous one on every anycast SVI at once.
-    leaf1.setFabricAnycastGatewayMac("02:00:00:00:00:99");
-    expect(leaf1.fabricConfiguration().anycastGatewayMac).toBe("02:00:00:00:00:99");
+    leaf1.setFabricAnycastGatewayMac("02:00:00:ff:00:99");
+    expect(leaf1.fabricConfiguration().anycastGatewayMac).toBe("02:00:00:ff:00:99");
   });
 
   it("never advertises the shared gateway MAC as a Type 2 route", () => {

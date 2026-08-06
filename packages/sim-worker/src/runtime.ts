@@ -54,6 +54,7 @@ import {
   Firewall,
   IspCloud,
   deviceMibSource,
+  evpnRouteVni,
   mibVarBinds,
   normalizeLinkPerformance,
   NS_PER_S,
@@ -1349,8 +1350,8 @@ export class SimulationWorkerRuntime {
       for (const peer of local.vxlanPeerSummaries()) {
         const remote = owners.get(peer.address);
         if (!remote || remote.id === local.id) continue;
-        const key = [local.id, remote.id].sort().join(" ");
-        const id = `vxlan:${peer.vni}:${key.replace(" ", ":")}`;
+        const key = [local.id, remote.id].sort().join("\u0000");
+        const id = `vxlan:${peer.vni}:${key.replace("\u0000", ":")}`;
         if (seen.has(id)) continue;
         seen.add(id);
         const up = local.vniSummaries().find((row) => row.vni === peer.vni)?.up === true && peer.reachable;
@@ -1371,14 +1372,14 @@ export class SimulationWorkerRuntime {
       if (!local.evpnAddressFamilyActive()) continue;
       for (const remote of vteps) {
         if (remote.id === local.id || !remote.evpnAddressFamilyActive()) continue;
-        const key = [local.id, remote.id].sort().join(" ");
+        const key = [local.id, remote.id].sort().join("\u0000");
         const shared = local.evpnVniConfigurations().some((entry) =>
           remote.evpnVniConfigurations().some((candidate) =>
             candidate.exportRouteTargets.some((target) => entry.importRouteTargets.includes(target))));
         if (shared) continue;
         const vni = local.vxlan.members()[0]?.vni;
         if (vni === undefined) continue;
-        const id = `vxlan:rt-mismatch:${key.replace(" ", ":")}`;
+        const id = `vxlan:rt-mismatch:${key.replace("\u0000", ":")}`;
         if (seen.has(id) || result.some((entry) => entry.localDeviceId === local.id && entry.remoteDeviceId === remote.id)) continue;
         seen.add(id);
         result.push({
@@ -2789,13 +2790,16 @@ export class SimulationWorkerRuntime {
       evpnRoutes: device.evpnRoutes().map((route) => ({
         type: route.type,
         routeDistinguisher: route.routeDistinguisher,
-        vni: route.vni,
+        vni: evpnRouteVni(route),
         best: route.best,
         nextHop: route.nextHop,
         routeTargets: [...route.routeTargets],
         macAddress: route.type === 2 ? route.macAddress : undefined,
         ipAddress: route.type === 2 ? route.ipAddress : undefined,
         originatingVtep: route.type === 3 ? route.originatingVtep : undefined,
+        network: route.type === 5 ? route.network : undefined,
+        prefixLength: route.type === 5 ? route.prefixLength : undefined,
+        nextHopVtep: route.type === 5 ? route.nextHopVtep : undefined,
         originatorId: route.originatorId,
         clusterList: [...route.clusterList],
         source: route.source,

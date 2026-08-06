@@ -137,17 +137,44 @@ export interface EvpnImetRoute {
   readonly routeId: string;
 }
 
-export type EvpnNlri = EvpnMacIpRoute | EvpnImetRoute;
+/**
+ * EVPN Route Type 5 — IP Prefix.
+ *
+ * This is what makes routing between two tenant subnets possible without
+ * stretching either of them: the prefix travels on its own, and `l3Vni` names
+ * the transit segment symmetric IRB forwards it through. Scope is IPv4 only —
+ * an IPv6 tenant prefix is deliberately not modelled.
+ */
+export interface EvpnIpPrefixRoute {
+  readonly type: 5;
+  readonly routeDistinguisher: string;
+  readonly ethernetTag: number;
+  readonly network: Ipv4;
+  readonly prefixLength: number;
+  readonly routeTargets: readonly string[];
+  /** The VRF's transit VNI on the advertising VTEP. */
+  readonly l3Vni: number;
+  /** The VTEP a receiver must encapsulate towards; also the BGP next hop. */
+  readonly nextHopVtep: Ipv4;
+  readonly nextHop: Ipv4;
+  readonly pathAttributes: BgpPathAttributes;
+  readonly routeId: string;
+}
+
+export type EvpnNlri = EvpnMacIpRoute | EvpnImetRoute | EvpnIpPrefixRoute;
 
 /** The identity an EVPN withdrawal names; never the whole advertised route. */
 export interface EvpnWithdrawnNlri {
-  readonly type: 2 | 3;
+  readonly type: 2 | 3 | 5;
   readonly routeDistinguisher: string;
   readonly ethernetTag: number;
   readonly vni: number;
   readonly macAddress?: string;
   /** Type 3 only: the originating router address is part of the NLRI. */
   readonly originatingVtep?: Ipv4;
+  /** Type 5 only: the advertised prefix is what identifies the route. */
+  readonly network?: Ipv4;
+  readonly prefixLength?: number;
 }
 
 /**
@@ -156,17 +183,63 @@ export interface EvpnWithdrawnNlri {
  * A Type 3 is keyed by its originating router as well as its RD, exactly as the
  * NLRI carries it — two VTEPs that share one route distinguisher still each
  * announce their own membership. A Type 2 is keyed by RD and MAC, so the same
- * MAC advertised twice under one RD collapses into a single best path.
+ * MAC advertised twice under one RD collapses into a single best path. A Type 5
+ * is keyed by RD and prefix, so two VTEPs advertising the same tenant network
+ * are two paths to compare rather than two unrelated routes.
  */
-export function evpnRouteKey(route: EvpnWithdrawnNlri): string {
+export function evpnRouteKey(route: EvpnWithdrawnNlri | EvpnNlri): string {
   return [
     route.type,
     route.routeDistinguisher,
     route.ethernetTag,
-    route.vni,
-    route.macAddress ?? "",
+    evpnKeyVni(route),
+    route.type === 2 ? route.macAddress ?? "" : "",
     route.type === 3 ? route.originatingVtep ?? "" : "",
+    route.type === 5 ? `${route.network ?? ""}/${route.prefixLength ?? ""}` : "",
   ].join("|");
+}
+
+/**
+ * The VNI a route is filed under. A Type 5 names its transit **L3VNI**, so the
+ * one field is enough for every RIB key, ordering and `show` row — there is no
+ * second VNI on the route to disagree with it.
+ */
+export function evpnRouteVni(route: EvpnWithdrawnNlri | EvpnNlri): number {
+  return evpnKeyVni(route);
+}
+
+function evpnKeyVni(route: EvpnWithdrawnNlri | EvpnNlri): number {
+  return "l3Vni" in route ? route.l3Vni : route.vni;
+}
+
+/** The withdrawal identity of one advertised EVPN route. */
+export function evpnWithdrawnNlriOf(route: EvpnNlri): EvpnWithdrawnNlri {
+  if (route.type === 3) {
+    return {
+      type: 3,
+      routeDistinguisher: route.routeDistinguisher,
+      ethernetTag: route.ethernetTag,
+      vni: route.vni,
+      originatingVtep: route.originatingVtep,
+    };
+  }
+  if (route.type === 5) {
+    return {
+      type: 5,
+      routeDistinguisher: route.routeDistinguisher,
+      ethernetTag: route.ethernetTag,
+      vni: route.l3Vni,
+      network: route.network,
+      prefixLength: route.prefixLength,
+    };
+  }
+  return {
+    type: 2,
+    routeDistinguisher: route.routeDistinguisher,
+    ethernetTag: route.ethernetTag,
+    vni: route.vni,
+    macAddress: route.macAddress,
+  };
 }
 
 export interface BgpUpdateMessage {

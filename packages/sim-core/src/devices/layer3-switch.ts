@@ -51,6 +51,8 @@ import {
   evpnOriginatingVtep,
   type EvpnRoute,
 } from "../protocols/bgp";
+import { evpnRouteVni } from "../packets/bgp";
+import { enforceStructuralLimit } from "../protocols/limits";
 import {
   Router,
   type Ipv6RouteRow,
@@ -472,6 +474,7 @@ export class Layer3Switch extends L2Switch {
   /** `show ip route vrf <name>`: connected, static and imported Type 5 prefixes. */
   vrfRoutingTable(vrfId: string): readonly VrfRoute[] {
     this.syncRoutingPlane();
+    this.routingPlane.bgp.refreshSessionState();
     return this.routingPlane.vrfRoutingTable(vrfId);
   }
 
@@ -486,6 +489,8 @@ export class Layer3Switch extends L2Switch {
 
   /** The Type 5 prefixes one VRF installed, for `show` and grading. */
   importedEvpnRoutes(vrfId: string): readonly VrfRoute[] {
+    this.syncRoutingPlane();
+    this.routingPlane.bgp.refreshSessionState();
     return this.routingPlane.vrfs.importedEvpnRouteConfigurations(vrfId);
   }
 
@@ -1104,8 +1109,56 @@ export class Layer3Switch extends L2Switch {
         });
       }
     }
+    routes.push(...this.evpnPrefixExports(state.sourceAddress, routerId));
     void localAs;
-    return routes.sort((a, b) => a.type - b.type || a.vni - b.vni || a.routeId.localeCompare(b.routeId));
+    return routes.sort((a, b) => a.type - b.type
+      || evpnRouteVni(a) - evpnRouteVni(b)
+      || a.routeId.localeCompare(b.routeId));
+  }
+
+  /**
+   * The Type 5 prefixes this VTEP originates.
+   *
+   * Origination is never implicit: a VRF must have a route distinguisher, an
+   * export route target, an operational L3VNI *and* `advertise l2vpn evpn`
+   * before any of its prefixes leave. Only connected and static IPv4 routes are
+   * eligible — a prefix this VTEP itself imported from EVPN is never re-
+   * originated, which is what stops two leaves advertising each other's
+   * networks back and forth.
+   */
+  private evpnPrefixExports(sourceAddress: Ipv4, routerId: Ipv4): EvpnRoute[] {
+    const routes: EvpnRoute[] = [];
+    for (const vrf of this.routingPlane.vrfConfigurations()) {
+      if (vrf.advertiseEvpn !== true) continue;
+      if (vrf.exportRouteTargets.length === 0) continue;
+      const l3Vni = this.vxlan.l3VniForVrf(vrf.id);
+      if (l3Vni === undefined || this.vxlan.l3VniState(l3Vni)?.up !== true) continue;
+      const eligible = this.routingPlane.vrfRoutingTable(vrf.id)
+        .filter((route) => route.source === "connected" || route.source === "static");
+      for (const route of eligible.slice(0, DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumEvpnIpPrefixRoutesPerVrf)) {
+        routes.push({
+          type: 5,
+          routeDistinguisher: vrf.routeDistinguisher,
+          ethernetTag: 0,
+          network: route.network,
+          prefixLength: route.prefixLength,
+          routeTargets: [...vrf.exportRouteTargets],
+          l3Vni,
+          nextHopVtep: sourceAddress,
+          nextHop: sourceAddress,
+          pathAttributes: {
+            origin: "igp" as const,
+            asPath: [] as readonly number[],
+            nextHop: sourceAddress,
+            localPreference: 100,
+            med: 0,
+          },
+          ...this.localEvpnPathState(routerId),
+          routeId: `local:evpn:5:${vrf.routeDistinguisher}:${route.network}/${route.prefixLength}`,
+        });
+      }
+    }
+    return routes;
   }
 
   /** The path state a locally originated EVPN route carries. */
@@ -1135,19 +1188,44 @@ export class Layer3Switch extends L2Switch {
     this.evpnFaults.clear();
     const membership = new Map<number, Ipv4[]>();
     const macCandidates = new Map<string, EvpnRoute[]>();
+    const prefixCandidates = new Map<string, Array<EvpnRoute & { type: 5 }>>();
     for (const route of routes) {
+      if (route.type === 5) {
+        // A Type 5 is imported by the *VRF's* route targets, not a VNI's: the
+        // prefix belongs to a routing context, never to a broadcast domain.
+        if (!this.importVrfFor(route.routeTargets)) {
+          this.traceVxlan("evpn-type5-rt-rejected", {
+            addressFamily: "l2vpn-evpn",
+            routeType: 5,
+            rd: route.routeDistinguisher,
+            prefix: `${route.network}/${route.prefixLength}`,
+            l3Vni: route.l3Vni,
+            routeTargets: route.routeTargets,
+          });
+          this.recordEvpnFault(
+            `rt5-${route.routeDistinguisher}-${route.network}`,
+            `${this.name} did not import EVPN Type 5 prefix ${route.network}/${route.prefixLength}: no VRF import route target matches.`,
+          );
+          continue;
+        }
+        // Type 5 uniqueness is RD *and* prefix: two tenants may legitimately
+        // advertise the very same network, and they must stay two routes.
+        const key = `${route.routeDistinguisher}|${route.network}/${route.prefixLength}`;
+        prefixCandidates.set(key, [...(prefixCandidates.get(key) ?? []), route]);
+        continue;
+      }
       const vni = this.importVniFor(route.routeTargets);
       if (vni === undefined) {
         this.traceVxlan("evpn-rt-rejected", {
           addressFamily: "l2vpn-evpn",
           routeType: route.type,
           rd: route.routeDistinguisher,
-          vni: route.vni,
+          vni: evpnRouteVni(route),
           routeTargets: route.routeTargets,
         });
         this.recordEvpnFault(
-          `rt-${route.routeDistinguisher}-${route.vni}`,
-          `${this.name} did not import EVPN route ${route.routeDistinguisher} (VNI ${route.vni}): no local import route target matches.`,
+          `rt-${route.routeDistinguisher}-${evpnRouteVni(route)}`,
+          `${this.name} did not import EVPN route ${route.routeDistinguisher} (VNI ${evpnRouteVni(route)}): no local import route target matches.`,
         );
         continue;
       }
@@ -1199,6 +1277,55 @@ export class Layer3Switch extends L2Switch {
         });
       }
     }
+    this.installEvpnPrefixRoutes(prefixCandidates);
+  }
+
+  /**
+   * Install the selected Type 5 prefixes into the tenant VRFs.
+   *
+   * One best path per prefix is chosen with the same deterministic comparator
+   * the rest of BGP uses, then the VRF table decides — by route target alone —
+   * which tenant may see it. A remote VTEP that lost its underlay route keeps
+   * the route in the EVPN RIB but stops forwarding, which is what makes the
+   * failure show up as `remote VTEP unreachable` rather than silence.
+   */
+  private installEvpnPrefixRoutes(candidates: ReadonlyMap<string, Array<EvpnRoute & { type: 5 }>>): void {
+    const imported: ImportedEvpnPrefixRoute[] = [];
+    for (const [, paths] of [...candidates].sort(([a], [b]) => a.localeCompare(b))) {
+      const best = [...paths].sort(compareEvpnPaths)[0]!;
+      imported.push({
+        routeDistinguisher: best.routeDistinguisher,
+        network: best.network,
+        prefixLength: best.prefixLength,
+        routeTargets: [...best.routeTargets],
+        l3Vni: best.l3Vni,
+        nextHopVtep: evpnOriginatingVtep(best),
+        metric: best.med,
+      });
+      this.traceVxlan("evpn-type5-imported", {
+        addressFamily: "l2vpn-evpn",
+        routeType: 5,
+        rd: best.routeDistinguisher,
+        prefix: `${best.network}/${best.prefixLength}`,
+        l3Vni: best.l3Vni,
+        nextHopVtep: evpnOriginatingVtep(best),
+      });
+      if (!this.routingPlane.overlayUnderlayReachable(evpnOriginatingVtep(best))) {
+        this.recordEvpnFault(
+          `vtep-${evpnOriginatingVtep(best)}-unreachable`,
+          `${this.name} imported ${best.network}/${best.prefixLength} but has no underlay route to VTEP ${evpnOriginatingVtep(best)}.`,
+        );
+      }
+    }
+    enforceStructuralLimit("maximumEvpnIpPrefixRoutesPerDevice", imported.length);
+    this.routingPlane.vrfs.replaceImportedEvpn(imported);
+  }
+
+  /** Whether any local VRF imports at least one of an advertised route's targets. */
+  private importVrfFor(routeTargets: readonly string[]): boolean {
+    const targets = new Set(routeTargets);
+    return this.routingPlane.vrfConfigurations()
+      .some((vrf) => vrf.importRouteTargets.some((target) => targets.has(target)));
   }
 
   /** The local VNI whose import route targets intersect an advertised set. */
