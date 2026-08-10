@@ -18,6 +18,7 @@ import type {
   BgpProcessConfig,
   QosConfiguration,
   SpanningTreeConfig,
+  SviConfig,
   VpnConfiguration,
 } from "@sim/contracts";
 import {
@@ -107,6 +108,31 @@ function etherChannelsFrom(applied: ImportedDeviceConfiguration): EtherChannelCo
     groups.set(group.id, { channelId: group.id, mode: group.mode, members: [iface.id] });
   }
   return [...groups.values()].sort((a, b) => a.channelId - b.channelId);
+}
+
+/**
+ * Map every recognised `interface Vlan<n>` onto the one SVI model.
+ *
+ * The same mapping serves plain inter-VLAN routing and a routed EVPN tenant
+ * gateway: `vrf forwarding` and `fabric forwarding mode anycast-gateway` are
+ * ordinary SVI settings, not a second EVPN-specific shape. A VRF the file never
+ * defined loses the binding rather than inventing a routing context, and an
+ * address without a mask is dropped because the two are configured together.
+ */
+function svisFrom(
+  applied: ImportedDeviceConfiguration,
+  knownVrfIds: ReadonlySet<string>,
+): SviConfig[] {
+  return applied.svis.map((svi): SviConfig => ({
+    vlanId: svi.vlanId,
+    ipAddress: svi.ipv4?.address,
+    prefixLength: svi.ipv4?.prefixLength,
+    adminUp: !svi.shutdown,
+    description: svi.description,
+    ipv6: svi.ipv6 !== undefined && svi.ipv6.length > 0 ? svi.ipv6 : undefined,
+    vrfId: svi.vrfId !== undefined && knownVrfIds.has(svi.vrfId) ? svi.vrfId : undefined,
+    anycastGateway: svi.anycastGateway === true ? true : undefined,
+  }));
 }
 
 function loopbacksFrom(applied: ImportedDeviceConfiguration): LoopbackInterfaceConfig[] {
@@ -460,8 +486,25 @@ export function buildDeviceConfigFromIos(
     for (const iface of applied.interfaces) {
       if (iface.accessVlan !== undefined) knownVlans.add(iface.accessVlan);
     }
+    // An SVI is a VLAN interface, so declaring one declares the VLAN it routes
+    // for; without this the rebuilt configuration would reference a VLAN that
+    // the VLAN database never contained.
+    for (const svi of applied.svis) knownVlans.add(svi.vlanId);
+    const knownVrfIds = new Set(applied.vrfs.map((vrf) => vrf.id));
+    const svis = svisFrom(applied, knownVrfIds);
+    // An SVI subnet is directly connected, so a static route through it is
+    // reachable — the same rule semantic validation applies.
+    const l3Connected = [
+      ...connected,
+      ...svis.flatMap((svi) => (svi.ipAddress !== undefined && svi.prefixLength !== undefined
+        ? [{ address: svi.ipAddress, prefixLength: svi.prefixLength }]
+        : [])),
+    ];
+    const l3Routes = applied.staticRoutes.filter((route) =>
+      isNetworkAddress(route.network, route.prefixLength)
+      && l3Connected.some((iface) => inSubnet(route.nextHop, iface.address, iface.prefixLength)));
     return {
-      droppedRoutes,
+      droppedRoutes: applied.staticRoutes.length - l3Routes.length,
       config: {
         kind: "l3-switch",
         hostname,
@@ -490,9 +533,11 @@ export function buildDeviceConfigFromIos(
             nativeVlan: 1,
           };
         }),
-        svis: [],
-        staticRoutes: safeRoutes,
-        ipRoutingEnabled: safeRoutes.length > 0 || connected.length > 0,
+        svis,
+        staticRoutes: l3Routes,
+        // A configured SVI is inter-VLAN routing, so it enables `ip routing`
+        // exactly as a routed port or a static route does.
+        ipRoutingEnabled: l3Routes.length > 0 || connected.length > 0 || svis.length > 0,
         ipv6UnicastRoutingEnabled: applied.ipv6UnicastRoutingEnabled,
         ipv6StaticRoutes: applied.ipv6StaticRoutes,
         ipv6Acls: applied.ipv6Acls,

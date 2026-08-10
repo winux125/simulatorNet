@@ -73,6 +73,28 @@ export interface ImportedInterfaceConfig {
   ipv6TrafficFilters?: Array<{ aclId: string; direction: "in" | "out" }>;
   /** `service-policy input|output <policy-map>`. */
   servicePolicies?: Array<{ direction: "input" | "output"; policyMapId: string }>;
+  /**
+   * `fabric forwarding mode anycast-gateway`. Only ever set on an SVI: a
+   * distributed gateway is a VLAN interface, never a routed port or a Loopback.
+   */
+  anycastGateway?: boolean;
+}
+
+/**
+ * `interface Vlan<n>` recognised from an imported startup-config.
+ *
+ * There is exactly one SVI model: it serves ordinary inter-VLAN routing and a
+ * routed EVPN tenant gateway alike, so `vrf forwarding` and
+ * `fabric forwarding mode anycast-gateway` are read here and nowhere else.
+ */
+export interface ImportedSviConfig {
+  vlanId: number;
+  description?: string;
+  shutdown: boolean;
+  ipv4?: { address: string; prefixLength: number };
+  ipv6?: Array<{ address: string; prefixLength: number }>;
+  /** `vrf forwarding <name>`: the tenant routing context this SVI belongs to. */
+  vrfId?: string;
   /** `fabric forwarding mode anycast-gateway`, valid only on an SVI. */
   anycastGateway?: boolean;
 }
@@ -164,6 +186,12 @@ export interface ConfigLineOutcome {
 export interface ImportedDeviceConfiguration {
   hostname?: string;
   interfaces: ImportedInterfaceConfig[];
+  /**
+   * `interface Vlan<n>` blocks. An SVI is a logical interface, so it is never
+   * matched against the device's physical port list; only a device kind that
+   * actually routes between VLANs maps them.
+   */
+  svis: ImportedSviConfig[];
   loopbacks: ImportedLoopbackConfig[];
   staticRoutes: Array<{ network: string; prefixLength: number; nextHop: string }>;
   ipv6UnicastRoutingEnabled?: boolean;
@@ -594,6 +622,16 @@ function isPercent(token: string | undefined): boolean {
   return /^\d{1,3}$/u.test(token ?? "") && Number(token) >= 1 && Number(token) <= 100;
 }
 
+/** The canonical interface name of an SVI, exactly as the renderer writes it. */
+function sviInterfaceId(vlanId: number): string {
+  return `Vlan${vlanId}`;
+}
+
+/** True for a parsed interface that is an SVI rather than a physical port. */
+function isSviInterfaceId(id: string): boolean {
+  return /^Vlan\d+$/u.test(id);
+}
+
 export function parseIosConfig(text: string, interfaceNames: readonly string[]): ImportedDeviceConfiguration {
   const resolve = new Map<string, string>();
   for (const name of interfaceNames) resolve.set(normalizeInterfaceName(name), name);
@@ -608,6 +646,7 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
 
   const result: ImportedDeviceConfiguration = {
     interfaces: [],
+    svis: [],
     loopbacks: [],
     staticRoutes: [],
     ipv6StaticRoutes: [],
@@ -938,6 +977,20 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
         currentLoopback = loopbacks.get(id) ?? { id, shutdown: false };
         loopbacks.set(id, currentLoopback);
         current = undefined;
+        currentTunnel = undefined;
+        applied(line);
+        continue;
+      }
+      // `interface Vlan<n>`: an SVI. It is a logical interface, so it is never
+      // matched against the device's physical port list — but its body is the
+      // ordinary interface body, which is what keeps one SVI model serving
+      // plain inter-VLAN routing and a routed EVPN tenant gateway alike.
+      const sviMatch = /^vl(?:an)?(\d+)$/u.exec(normalizeInterfaceName(spec));
+      if (sviMatch) {
+        const vlanId = Number(sviMatch[1]);
+        if (vlanId < 1 || vlanId > 4_094) { current = undefined; unparsed(line); continue; }
+        current = ensureInterface(sviInterfaceId(vlanId));
+        currentLoopback = undefined;
         currentTunnel = undefined;
         applied(line);
         continue;
@@ -1681,11 +1734,13 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
         if (vrf) { current.vrfId = vrf.id; applied(line); } else unparsed(line);
         continue;
       }
+      // A distributed anycast gateway is an SVI property: a routed port has no
+      // stretched tenant VLAN to present one gateway for, so the line is
+      // reported rather than silently accepted anywhere else.
       if (head === "fabric" && tokens[1]?.toLowerCase() === "forwarding"
         && tokens[2]?.toLowerCase() === "mode" && tokens[3]?.toLowerCase() === "anycast-gateway"
         && tokens.length === 4) {
-        current.anycastGateway = true;
-        applied(line);
+        if (isSviInterfaceId(current.id)) { current.anycastGateway = true; applied(line); } else unparsed(line);
         continue;
       }
       if (head === "ipv6" && tokens[1]?.toLowerCase() === "address") {
@@ -1825,7 +1880,21 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     unparsed(line);
   }
 
-  result.interfaces = [...interfaces.values()];
+  // An SVI shares the physical interface body but is not a port: it never
+  // reaches spanning tree, EtherChannel, discovery or a service policy.
+  result.interfaces = [...interfaces.values()].filter((iface) => !isSviInterfaceId(iface.id));
+  result.svis = [...interfaces.values()]
+    .filter((iface) => isSviInterfaceId(iface.id))
+    .map((iface): ImportedSviConfig => ({
+      vlanId: Number(iface.id.slice("Vlan".length)),
+      description: iface.description,
+      shutdown: iface.shutdown,
+      ipv4: iface.ipv4,
+      ipv6: iface.ipv6,
+      vrfId: iface.vrfId,
+      anycastGateway: iface.anycastGateway,
+    }))
+    .sort((a, b) => a.vlanId - b.vlanId);
   result.loopbacks = [...loopbacks.values()].sort((a, b) => a.id - b.id);
   // A VNI declared on nve1 needs a VLAN before it means anything, and the VLAN
   // arrives from a separate `vlan configuration` block. A VNI that never got

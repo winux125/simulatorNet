@@ -66,6 +66,7 @@ export {
   type ImportedIpsecProfileConfig,
   type ImportedLoopbackConfig,
   type ImportedOspfConfig,
+  type ImportedSviConfig,
   type ImportedTunnelConfig,
   type ImportedVpnConfiguration,
 } from "./ios-parser";
