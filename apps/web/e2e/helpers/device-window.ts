@@ -51,7 +51,15 @@ export async function openDeviceSection(
   if (workspace) {
     const compact = dialog.getByRole("combobox", { name: `${workspace} section`, exact: true });
     if (await compact.isVisible().catch(() => false)) {
-      await compact.selectOption({ label: section });
+      // A grouped section renders as "<group> · <label>" in the compact select
+      // but as a bare label on the rail, so callers always name the bare label.
+      const value = await compact.evaluate((element, wanted) => {
+        const options = [...(element as HTMLSelectElement).options];
+        const match = options.find((option) => option.textContent?.trim() === wanted)
+          ?? options.find((option) => option.textContent?.trim().endsWith(`· ${wanted}`));
+        return match?.value;
+      }, section);
+      await compact.selectOption(value ?? { label: section });
       return dialog;
     }
     const navigation = dialog.getByRole("navigation", { name: `${workspace} sections` });
