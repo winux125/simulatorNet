@@ -158,8 +158,17 @@ export interface LabUiVxlanTunnel {
   remoteDeviceId: string;
   label: string;
   source: "static" | "bgp-evpn";
-  /** `rt-mismatch` means both sides run EVPN but import no shared route target. */
-  state: "operational" | "down" | "rt-mismatch";
+  /**
+   * `l2vni` bridges a stretched VLAN; `l3vni` is the routed transit segment
+   * symmetric IRB uses. Both are logical relations, never a cable.
+   */
+  kind: "l2vni" | "l3vni";
+  /**
+   * `rt-mismatch` means both sides run EVPN but import no shared route target;
+   * `unavailable` means the segment exists on both leaves but is not
+   * operational — its VRF is gone, or its NVE is down.
+   */
+  state: "operational" | "down" | "unavailable" | "rt-mismatch";
 }
 
 export interface LabUiSnapshot {
@@ -808,6 +817,64 @@ export interface VxlanEvpnView {
   }>;
   evpnAddressFamilyActive: boolean;
   problems: string[];
+  /**
+   * `fabric forwarding anycast-gateway-mac`. Fabric-wide rather than per-SVI:
+   * every leaf presenting the same gateway is the point of a distributed
+   * gateway, never a duplicate-address conflict.
+   */
+  fabricAnycastGatewayMac?: string;
+  /** Every SVI that adopts the fabric gateway, with the address it answers for. */
+  anycastGateways: Array<{
+    vlanId: number;
+    interfaceId: string;
+    macAddress?: string;
+    ipAddress?: string;
+    prefixLength?: number;
+    vrfId?: string;
+    adminUp: boolean;
+    up: boolean;
+  }>;
+  /**
+   * `member vni <n> associate-vrf <name>`: routed transit segments. An L3VNI has
+   * no VLAN and no broadcast domain, so it never appears in `vnis`.
+   */
+  l3Vnis: Array<{
+    vni: number;
+    vrfId: string;
+    up: boolean;
+    reason?: string;
+    sourceAddress?: string;
+    /** The tenant's RD, route targets and `advertise l2vpn evpn` flag. */
+    routeDistinguisher?: string;
+    importRouteTargets: string[];
+    exportRouteTargets: string[];
+    advertiseEvpn: boolean;
+    originatedPrefixCount: number;
+    importedPrefixCount: number;
+  }>;
+  /** Every tenant VRF route, so an imported Type 5 prefix is visible as such. */
+  vrfRoutes: Array<{
+    vrfId: string;
+    network: string;
+    prefixLength: number;
+    source: string;
+    nextHop?: string;
+    outgoingInterfaceId?: string;
+    remoteVtep?: string;
+    l3Vni?: number;
+    administrativeDistance: number;
+    metric: number;
+  }>;
+  /** A single derived answer to "is symmetric IRB actually working here?". */
+  routedOverlay: {
+    operational: boolean;
+    l3VniCount: number;
+    operationalL3VniCount: number;
+    originatedPrefixCount: number;
+    importedPrefixCount: number;
+    anycastGatewayCount: number;
+    reasons: string[];
+  };
 }
 
 /**
@@ -1029,6 +1096,14 @@ export type SimWorkerRequest =
   | { type: "GET_EVPN_VNI_MEMBERS"; requestId: string; deviceId: string }
   | { type: "CLEAR_VXLAN_RUNTIME"; requestId: string; deviceId: string }
   | { type: "RESTART_NVE"; requestId: string; deviceId: string }
+  // --- M10.15 routed EVPN inspection (runtime, never persisted) ---
+  | { type: "GET_EVPN_ANYCAST_GATEWAYS"; requestId: string; deviceId: string }
+  | { type: "GET_EVPN_L3VNIS"; requestId: string; deviceId: string }
+  | { type: "GET_EVPN_TYPE5_ROUTES"; requestId: string; deviceId: string }
+  | { type: "GET_EVPN_VRF_ROUTES"; requestId: string; deviceId: string }
+  | { type: "GET_EVPN_ROUTED_OVERLAY_STATUS"; requestId: string; deviceId: string }
+  | { type: "CLEAR_EVPN_ROUTED_RUNTIME"; requestId: string; deviceId: string }
+  | { type: "RESTART_EVPN_L3VNI"; requestId: string; deviceId: string; vni: number }
   // --- M10.7 management plane (inspection + bounded runtime actions) ---
   | { type: "GET_REMOTE_SESSIONS"; requestId: string; deviceId: string }
   | { type: "CLEAR_REMOTE_LINE"; requestId: string; deviceId: string; line: number }
@@ -1224,6 +1299,13 @@ export interface SimWorkerPayloadByType {
   GET_EVPN_VNI_MEMBERS: VxlanEvpnView;
   CLEAR_VXLAN_RUNTIME: VxlanEvpnView;
   RESTART_NVE: VxlanEvpnView;
+  GET_EVPN_ANYCAST_GATEWAYS: VxlanEvpnView;
+  GET_EVPN_L3VNIS: VxlanEvpnView;
+  GET_EVPN_TYPE5_ROUTES: VxlanEvpnView;
+  GET_EVPN_VRF_ROUTES: VxlanEvpnView;
+  GET_EVPN_ROUTED_OVERLAY_STATUS: VxlanEvpnView;
+  CLEAR_EVPN_ROUTED_RUNTIME: VxlanEvpnView;
+  RESTART_EVPN_L3VNI: VxlanEvpnView;
   GET_REMOTE_SESSIONS: RemoteSessionsView;
   CLEAR_REMOTE_LINE: RemoteSessionsView;
   GET_AAA_STATUS: AaaStatusResponse;

@@ -101,7 +101,9 @@ export interface TopologyView {
     remoteDeviceId: string;
     label: string;
     source: "static" | "bgp-evpn";
-    state: "operational" | "down" | "rt-mismatch";
+    /** A bridged L2VNI or the routed L3VNI symmetric IRB transits. */
+    kind: "l2vni" | "l3vni";
+    state: "operational" | "down" | "unavailable" | "rt-mismatch";
   }>;
   /** `editing` blanks the rendered text while the inline editor draws it live. */
   annotations?: Record<string, { selected: boolean; editing?: boolean }>;

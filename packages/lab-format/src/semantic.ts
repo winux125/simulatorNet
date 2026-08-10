@@ -25,6 +25,7 @@ import {
   resolveDeviceInterfaceTemplates,
 } from "@sim/contracts";
 import {
+  DEFAULT_CONTROL_PROTOCOL_LIMITS,
   ipToInt,
   ipv6InPrefix,
   ipv6Network,
@@ -381,7 +382,64 @@ function validateLayer3Switch(config: Layer3SwitchDeviceConfig, node: NodeSpec, 
     fail("bgp-requires-ip-routing", `${path}.bgp`, "BGP on an L3 Switch requires 'ip routing'");
   }
   validateRoutedProtocols(config, node, path, l3Interfaces, true);
+  const vrfIds = validateVtepVrfs(config, path);
+  validateAnycastGateway(config, path);
   validateVxlan(config, path, vlans, connected);
+  validateL3Vnis(config, path, vrfIds);
+}
+
+/**
+ * Tenant VRFs on a VTEP.
+ *
+ * Since M10.15 an L3 Switch carries plain tenant VRFs, because an EVPN tenant
+ * is the isolation boundary an L3VNI transports. MPLS, LDP and VPN labels stay
+ * Router-only: what the switch gains is the routing context, not L3VPN — so a
+ * VRF here is validated for identity, route targets and its own static routes
+ * and nothing else.
+ */
+function validateVtepVrfs(config: Layer3SwitchDeviceConfig, path: string): ReadonlySet<string> {
+  const vrfs = config.vrfs ?? [];
+  requireUnique(vrfs.map((vrf) => vrf.id), `${path}.vrfs`, "VRF id");
+  requireUnique(vrfs.map((vrf) => vrf.name.toLowerCase()), `${path}.vrfs`, "VRF name");
+  requireUnique(vrfs.map((vrf) => vrf.routeDistinguisher), `${path}.vrfs`, "route distinguisher");
+  const vrfIds = new Set(vrfs.map((vrf) => vrf.id));
+  config.svis.forEach((svi, index) => {
+    if (svi.vrfId !== undefined && !vrfIds.has(svi.vrfId)) {
+      fail("unknown-vrf", `${path}.svis[${index}].vrfId`, `Unknown VRF '${svi.vrfId}'`);
+    }
+  });
+  for (const [vrfIndex, vrf] of vrfs.entries()) {
+    const vrfPath = `${path}.vrfs[${vrfIndex}]`;
+    requireUnique(vrf.importRouteTargets, `${vrfPath}.importRouteTargets`, "import route target");
+    requireUnique(vrf.exportRouteTargets, `${vrfPath}.exportRouteTargets`, "export route target");
+    // An L3 Switch VRF is reached through its SVIs, so a VRF static route's next
+    // hop has to sit in a prefix that same VRF actually carries.
+    const vrfConnected = config.svis.flatMap((svi) => (svi.vrfId === vrf.id
+      && svi.ipAddress !== undefined && svi.prefixLength !== undefined
+      ? [{ address: svi.ipAddress, prefixLength: svi.prefixLength }]
+      : []));
+    requireUnique(
+      vrf.staticRoutes.map((route) => `${route.network}/${route.prefixLength}`),
+      `${vrfPath}.staticRoutes`,
+      "VRF static route",
+    );
+    vrf.staticRoutes.forEach((route, routeIndex) => {
+      if (((ipToInt(route.network) & maskToInt(route.prefixLength)) >>> 0) !== ipToInt(route.network)) {
+        fail("invalid-vrf-route-network", `${vrfPath}.staticRoutes[${routeIndex}].network`,
+          "VRF static route must use a canonical network address");
+      }
+      if (!vrfConnected.some((iface) => inSubnet(route.nextHop, iface.address, iface.prefixLength))) {
+        fail("unreachable-vrf-next-hop", `${vrfPath}.staticRoutes[${routeIndex}].nextHop`,
+          `VRF next hop '${route.nextHop}' is not reachable in VRF '${vrf.id}'`);
+      }
+    });
+    // MPLS L3VPN stays Router-only, so an L3 Switch tenant is IPv4 only.
+    if (vrf.addressFamilyIpv6 === true || (vrf.ipv6StaticRoutes?.length ?? 0) > 0) {
+      fail("vrf-ipv6-unsupported", `${vrfPath}.addressFamilyIpv6`,
+        `VRF '${vrf.id}' on an L3 Switch is IPv4 only: EVPN Type 5 and the L3VNI are IPv4 in this release`);
+    }
+  }
+  return vrfIds;
 }
 
 /**
@@ -463,6 +521,92 @@ function validateVxlan(
       // every EVPN route would be advertised and then silently rejected.
       fail("evpn-extended-community-required", `${path}.bgp.neighbors`,
         `EVPN neighbor ${withoutExtended.address} needs 'send-community extended' to carry route targets`);
+    }
+  });
+}
+
+/**
+ * The distributed anycast gateway.
+ *
+ * Two leaves presenting the same gateway IP and the same MAC is the *point* of
+ * a distributed gateway, so it is deliberately never reported as a duplicate:
+ * the only errors here are an SVI that adopts a fabric MAC nobody declared, and
+ * a gateway with no address to answer for.
+ */
+function validateAnycastGateway(config: Layer3SwitchDeviceConfig, path: string): void {
+  const fabricMac = config.evpn?.anycastGatewayMac;
+  config.svis.forEach((svi, index) => {
+    if (svi.anycastGateway !== true) return;
+    if (fabricMac === undefined) {
+      fail("anycast-gateway-mac-missing", `${path}.svis[${index}].anycastGateway`,
+        `SVI Vlan${svi.vlanId} runs in anycast-gateway mode but no 'fabric forwarding anycast-gateway-mac' is configured`);
+    }
+    if (svi.ipAddress === undefined) {
+      fail("anycast-gateway-without-address", `${path}.svis[${index}]`,
+        `SVI Vlan${svi.vlanId} is an anycast gateway but has no IPv4 address to answer for`);
+    }
+  });
+}
+
+/**
+ * L3VNIs: `member vni <n> associate-vrf <name>`.
+ *
+ * A VNI is either bridged or routed, never both; one L3VNI belongs to at most
+ * one VRF per VTEP and a VRF carries at most one. An L3VNI has no VLAN and no
+ * broadcast domain, so it never gets a `vlan configuration` block either.
+ */
+function validateL3Vnis(
+  config: Layer3SwitchDeviceConfig,
+  path: string,
+  vrfIds: ReadonlySet<string>,
+): void {
+  const nve = config.nve;
+  const vrfMembers = nve?.vrfMembers ?? [];
+  const nvePath = `${path}.nve`;
+  if (vrfMembers.length > DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumL3VnisPerVtep) {
+    fail("too-many-l3vnis", `${nvePath}.vrfMembers`,
+      `A VTEP carries at most ${DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumL3VnisPerVtep} L3VNIs`);
+  }
+  const bridgedVnis = new Set((nve?.members ?? []).map((member) => member.vni));
+  const seenVnis = new Set<number>();
+  const seenVrfs = new Set<string>();
+  vrfMembers.forEach((member, index) => {
+    const memberPath = `${nvePath}.vrfMembers[${index}]`;
+    // A routed transit segment has no VLAN and no broadcast domain, so a VNI is
+    // either bridged or routed — never both.
+    if (bridgedVnis.has(member.vni)) {
+      fail("vni-bridged-and-routed", `${memberPath}.vni`,
+        `VNI ${member.vni} already maps a VLAN and cannot also be an L3VNI`);
+    }
+    if (seenVnis.has(member.vni)) {
+      fail("duplicate-l3vni", `${memberPath}.vni`, `L3VNI ${member.vni} is already mapped`);
+    }
+    if (seenVrfs.has(member.vrfId)) {
+      fail("duplicate-vrf-l3vni", `${memberPath}.vrfId`, `VRF '${member.vrfId}' already has an L3VNI`);
+    }
+    seenVnis.add(member.vni);
+    seenVrfs.add(member.vrfId);
+    if (!vrfIds.has(member.vrfId)) {
+      fail("unknown-vrf", `${memberPath}.vrfId`, `L3VNI ${member.vni} names undefined VRF '${member.vrfId}'`);
+    }
+  });
+
+  // Origination into EVPN is never implicit: `advertise l2vpn evpn` needs the
+  // tenant, the transit segment and the export policy that carry it.
+  (config.vrfs ?? []).forEach((vrf, index) => {
+    if (vrf.advertiseEvpn !== true) return;
+    const vrfPath = `${path}.vrfs[${index}]`;
+    if (!seenVrfs.has(vrf.id)) {
+      fail("advertise-evpn-without-l3vni", `${vrfPath}.advertiseEvpn`,
+        `VRF '${vrf.id}' advertises into EVPN but has no 'member vni <n> associate-vrf ${vrf.id}' L3VNI`);
+    }
+    if (vrf.exportRouteTargets.length === 0) {
+      fail("advertise-evpn-without-route-target", `${vrfPath}.exportRouteTargets`,
+        `VRF '${vrf.id}' advertises into EVPN but exports no route target`);
+    }
+    if (!(config.bgp?.neighbors ?? []).some((neighbor) => neighbor.evpnActivated)) {
+      fail("evpn-address-family-inactive", `${vrfPath}.advertiseEvpn`,
+        `VRF '${vrf.id}' advertises into EVPN but no neighbor activates 'address-family l2vpn evpn'`);
     }
   });
 }

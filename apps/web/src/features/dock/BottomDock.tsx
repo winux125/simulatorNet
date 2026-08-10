@@ -129,7 +129,7 @@ export const TRACE_PROTOCOL_FILTERS = [
   "BGP", "BGP Session", "BGP Updates", "Route Policy",
   "Route Reflection", "Community", "Aggregation",
   "MPLS", "LDP", "VPNv4", "VPNv6", "L3VPN",
-  "VXLAN", "EVPN", "BUM", "VTEP",
+  "VXLAN", "EVPN", "BUM", "VTEP", "L3VNI", "IRB", "Type 5",
   "IPv6", "ICMPv6", "NDP", "SLAAC", "DHCPv6", "OSPFv3", "IPv6 ACL",
   "Wireless", "Beacon", "Probe", "Authentication", "Association", "Roaming",
   "Telnet", "SSH", "AAA", "RADIUS", "TACACS+", "SNMP",
@@ -367,7 +367,8 @@ function evpnFamily(event: SimulationTraceEvent): boolean {
   return (event.detail as { addressFamily?: unknown } | undefined)?.addressFamily === "l2vpn-evpn";
 }
 
-function traceProtocol(event: SimulationTraceEvent): string {
+/** The one protocol-filter classifier the Packet Trace dropdown selects on. */
+export function traceProtocol(event: SimulationTraceEvent): string {
   const type = event.type.toLowerCase();
   // Site-to-site VPN first: GRE encapsulation, IKEv2 negotiation and simulated
   // ESP each get their own filter, and "VPN" selects the whole family.
@@ -391,7 +392,11 @@ function traceProtocol(event: SimulationTraceEvent): string {
   if (type.startsWith("bgp-vpnv6-")) return "VPNv6";
   // M10.14 EVPN rides the ordinary BGP events, so the family is carried in the
   // detail rather than in a distinct event name; the filter follows it there.
-  if (type.startsWith("bgp-") && evpnFamily(event)) return "EVPN";
+  // A Type 5 UPDATE carries its route type the same way, so the routed tenant
+  // prefix keeps its own filter without a second event name.
+  if (type.startsWith("bgp-") && evpnFamily(event)) {
+    return (event.detail as { routeType?: unknown } | undefined)?.routeType === 5 ? "Type 5" : "EVPN";
+  }
   // M10.12 families come before the generic BGP prefixes so each one keeps its
   // own filter while "BGP" still selects the whole family.
   if (type === "bgp-route-reflected" || type === "bgp-route-reflection-rejected"
@@ -413,6 +418,13 @@ function traceProtocol(event: SimulationTraceEvent): string {
   if (type === "vxlan-bum-replicated" || type === "vxlan-split-horizon-dropped") return "BUM";
   if (type === "vxlan-underlay-unreachable" || type === "vxlan-mac-learned-remote"
     || type === "vxlan-mac-moved-local" || type === "vxlan-vni-not-found") return "VTEP";
+  // M10.15 routed EVPN: the transit segment, the routing decision at each end
+  // and the tenant prefix each get a filter, so a learner can follow the flow
+  // ARP gateway → VRF lookup → Type 5 → L3VNI → underlay → egress lookup.
+  if (type === "evpn-l3vni-encapsulated" || type === "evpn-l3vni-decapsulated") return "L3VNI";
+  if (type === "evpn-irb-routed" || type === "evpn-anycast-gateway-replied"
+    || type === "evpn-tenant-isolation-drop") return "IRB";
+  if (type.startsWith("evpn-type5-")) return "Type 5";
   if (type.startsWith("evpn-")) return "EVPN";
   if (type.startsWith("vxlan-")) return "VXLAN";
   if (type.startsWith("ldp-")) return "LDP";

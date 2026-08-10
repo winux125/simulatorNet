@@ -314,6 +314,63 @@ Trace events: `evpn-type5-originated`, `evpn-type5-imported`,
 `evpn-l3vni-encapsulated`, `evpn-l3vni-decapsulated`,
 `evpn-anycast-gateway-replied` and `evpn-tenant-isolation-drop`.
 
+Packet Trace adds **L3VNI**, **IRB** and **Type 5** to the existing VXLAN, EVPN,
+BUM and VTEP filters, so the whole flow is walkable: ARP for the gateway → the
+local anycast reply → the tenant VRF lookup → Type 5 selection → L3VNI
+encapsulation → the underlay hop → decapsulation → the egress VRF lookup →
+delivery. A Type 5 UPDATE carries its route type in the ordinary `bgp-*` event
+detail, so the family reuses the existing BGP trace rather than forking it.
+
+### Inspecting the routed overlay
+
+```text
+show nve vni
+show fabric forwarding
+show ip route vrf <name>
+show bgp l2vpn evpn route-type 5
+show bgp l2vpn evpn route-type 5 vrf <name>
+```
+
+The managed L3 Switch window carries the routed halves inside the same reusable
+`VXLAN & EVPN` panel: **L3VNI**, **Anycast Gateway**, **EVPN Type 5**, **VRF
+Routes** and **Routed Overlay** sit beside NVE, L2VNI, Peers, RD/RT, BGP EVPN,
+Remote MACs and Types 2/3. Selecting an L3VNI row opens its tenant RD, route
+targets and `advertise l2vpn evpn` state in place — no nested modal window, and
+the selected section never reaches `LabDocument`, a submission, grading or the
+database.
+
+The worker answers `GET_EVPN_ANYCAST_GATEWAYS`, `GET_EVPN_L3VNIS`,
+`GET_EVPN_TYPE5_ROUTES`, `GET_EVPN_VRF_ROUTES` and
+`GET_EVPN_ROUTED_OVERLAY_STATUS` with one plain-JSON view, and offers two
+bounded runtime actions — `CLEAR_EVPN_ROUTED_RUNTIME` and `RESTART_EVPN_L3VNI`.
+Both drop learned state only; the configuration is untouched and the verifier
+rebuilds the same tables from it.
+
+The canvas overlay gains a routed relation beside the bridged one. It is derived
+presentation exactly like a wireless association: dashed, never a cable, never a
+`topology.links` entry. `unavailable` marks an L3VNI that exists on both leaves
+but transports nothing — its VRF is gone or its NVE is down — which is a
+different failure from an unreachable peer.
+
+### Problems
+
+Problems explains an *incomplete* routed configuration and nothing else: a
+missing fabric MAC under an anycast SVI, an anycast SVI with no address, an
+L3VNI whose VRF was removed, an L3VNI that is not operational, a VRF that
+advertises into EVPN without an L3VNI, an export route target or an active EVPN
+family, a VRF that has everything except `advertise l2vpn evpn`, and a Type 5
+prefix whose route targets match no local VRF. Two leaves sharing one gateway IP
+and one gateway MAC is never reported — that is the feature working.
+
+### Grading
+
+`evpn-anycast-gateway`, `evpn-l3vni`, `evpn-type5-route`,
+`evpn-type5-imported`, `evpn-irb-connectivity`, `evpn-vrf-isolation`,
+`evpn-remote-prefix` and `evpn-routed-overlay-operational` join the existing
+`evpn-route-reflected`, which now accepts route type 5. Every expected gateway
+MAC, RD, route target and VNI stays in the hidden spec: a student result reports
+only whether the check passed.
+
 ## Deliberately not modelled
 
 Asymmetric IRB, IPv6 L3VNI and Type 5, EVPN Route Types 1 and 4, ESI and

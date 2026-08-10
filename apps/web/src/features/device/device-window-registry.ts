@@ -71,7 +71,11 @@ export type DeviceWindowSectionId =
   | "vxlan-macs-runtime"
   | "evpn-type2-runtime"
   | "evpn-type3-runtime"
+  | "evpn-type5-runtime"
   | "evpn-vni-runtime"
+  | "evpn-l3vni-runtime"
+  | "evpn-vrf-routes-runtime"
+  | "evpn-routed-overlay-runtime"
   | "aaa-runtime"
   | "snmp-runtime";
 
@@ -224,11 +228,15 @@ function monitorSections(type: DeviceType): DeviceWindowSectionDefinition[] {
     if (type === "router" || type === "l3-switch") sections.push({ id: "bgp-runtime", label: "BGP" });
     if (type === "l3-switch") {
       sections.push({ id: "nve-runtime", label: "NVE Status", group: "VXLAN & EVPN" });
+      sections.push({ id: "evpn-vni-runtime", label: "L2VNI", group: "VXLAN & EVPN" });
+      sections.push({ id: "evpn-l3vni-runtime", label: "L3VNI", group: "VXLAN & EVPN" });
       sections.push({ id: "vxlan-peers-runtime", label: "VXLAN Peers", group: "VXLAN & EVPN" });
       sections.push({ id: "vxlan-macs-runtime", label: "Remote MACs", group: "VXLAN & EVPN" });
       sections.push({ id: "evpn-type2-runtime", label: "EVPN Type 2", group: "VXLAN & EVPN" });
       sections.push({ id: "evpn-type3-runtime", label: "EVPN Type 3", group: "VXLAN & EVPN" });
-      sections.push({ id: "evpn-vni-runtime", label: "VNI Membership", group: "VXLAN & EVPN" });
+      sections.push({ id: "evpn-type5-runtime", label: "EVPN Type 5", group: "VXLAN & EVPN" });
+      sections.push({ id: "evpn-vrf-routes-runtime", label: "VRF Routes", group: "VXLAN & EVPN" });
+      sections.push({ id: "evpn-routed-overlay-runtime", label: "Routed Overlay", group: "VXLAN & EVPN" });
     }
     if (type === "router") {
       sections.push({ id: "mpls-runtime", label: "MPLS Forwarding", group: "MPLS & L3VPN" });

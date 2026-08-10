@@ -529,6 +529,33 @@ export class SimulationWorkerRuntime {
         this.runProtocolConvergence();
         return this.vxlanEvpnState(deviceId);
       }
+      // --- M10.15 routed EVPN: one view, several entry points ---------------
+      case "GET_EVPN_ANYCAST_GATEWAYS":
+      case "GET_EVPN_L3VNIS":
+      case "GET_EVPN_TYPE5_ROUTES":
+      case "GET_EVPN_VRF_ROUTES":
+      case "GET_EVPN_ROUTED_OVERLAY_STATUS":
+        return this.vxlanEvpnState(requireString(request, "deviceId"));
+      case "CLEAR_EVPN_ROUTED_RUNTIME": {
+        const deviceId = requireString(request, "deviceId");
+        // Configuration is untouched: only the imported Type 5 prefixes go, and
+        // convergence rebuilds them exactly as the verifier does.
+        this.requireVtep(deviceId).resetRoutedEvpnRuntime();
+        this.runProtocolConvergence();
+        return this.vxlanEvpnState(deviceId);
+      }
+      case "RESTART_EVPN_L3VNI": {
+        const deviceId = requireString(request, "deviceId");
+        const vni = request.vni;
+        if (typeof vni !== "number" || !Number.isInteger(vni)) {
+          throw new SimulationWorkerError("invalid-request", "vni must be an integer");
+        }
+        if (!this.requireVtep(deviceId).restartL3Vni(vni)) {
+          throw new SimulationWorkerError("vxlan-not-supported", `VNI ${vni} is not an L3VNI on '${deviceId}'`);
+        }
+        this.runProtocolConvergence();
+        return this.vxlanEvpnState(deviceId);
+      }
       case "GET_REMOTE_SESSIONS":
         return this.remoteSessions(requireString(request, "deviceId"));
       case "CLEAR_REMOTE_LINE": {
@@ -1359,10 +1386,43 @@ export class SimulationWorkerRuntime {
           id,
           localDeviceId: local.id,
           remoteDeviceId: remote.id,
-          label: `VNI ${peer.vni}`,
+          label: `L2VNI ${peer.vni}`,
           source: peer.source,
+          kind: "l2vni",
           state: up ? "operational" : "down",
         });
+      }
+    }
+    // The routed overlay is a relation between two VTEPs that share an L3VNI,
+    // derived exactly like the bridged one: symmetric IRB needs both ends to
+    // map the same transit VNI to a tenant VRF. It is still never a cable.
+    for (const local of vteps) {
+      for (const localL3 of local.l3VniSummaries()) {
+        for (const remote of vteps) {
+          if (remote.id === local.id) continue;
+          const remoteL3 = remote.l3VniSummaries().find((entry) => entry.vni === localL3.vni);
+          if (!remoteL3) continue;
+          const pair = [local.id, remote.id].sort();
+          const id = `vxlan:l3vni:${localL3.vni}:${pair[0]}:${pair[1]}`;
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const remoteAddress = remoteL3.sourceAddress;
+          const reachable = remoteAddress !== undefined
+            && local.importedEvpnRoutes(localL3.vrfId).some((route) => route.remoteVtep === remoteAddress);
+          result.push({
+            id,
+            localDeviceId: local.id,
+            remoteDeviceId: remote.id,
+            label: `L3VNI ${localL3.vni} · ${localL3.vrfId}`,
+            source: "bgp-evpn",
+            kind: "l3vni",
+            // An L3VNI that is down on either end exists but transports nothing,
+            // which is a different failure from having no tenant prefix at all.
+            state: !localL3.up || !remoteL3.up
+              ? "unavailable"
+              : reachable ? "operational" : "down",
+          });
+        }
       }
     }
     // Two VTEPs that both run BGP EVPN but import no shared route target never
@@ -1388,6 +1448,7 @@ export class SimulationWorkerRuntime {
           remoteDeviceId: remote.id,
           label: `VNI ${vni} route-target mismatch`,
           source: "bgp-evpn",
+          kind: "l2vni",
           state: "rt-mismatch",
         });
       }
@@ -2807,6 +2868,92 @@ export class SimulationWorkerRuntime {
       })),
       evpnAddressFamilyActive: device.evpnAddressFamilyActive(),
       problems: device.vxlanProblems(),
+      ...this.routedEvpnState(device),
+    };
+  }
+
+  /**
+   * The routed half of the overlay, as plain JSON.
+   *
+   * Every table here is runtime: the anycast gateway state, the L3VNI state,
+   * imported Type 5 prefixes and the tenant VRF tables are all rebuilt from
+   * structured configuration by the browser worker and the verifier alike.
+   */
+  private routedEvpnState(device: Layer3Switch) {
+    const fabricAnycastGatewayMac = device.fabricConfiguration().anycastGatewayMac;
+    const svis = new Map(device.sviSummaries().map((row) => [row.vlanId, row]));
+    const anycastGateways = device.anycastGatewayVlanIds().map((vlanId) => {
+      const svi = svis.get(vlanId);
+      return {
+        vlanId,
+        interfaceId: `Vlan${vlanId}`,
+        macAddress: fabricAnycastGatewayMac,
+        ipAddress: svi?.ip,
+        prefixLength: svi?.ip === undefined ? undefined : prefixLength(svi.maskInt),
+        vrfId: device.interfaceVrf(`Vlan${vlanId}`),
+        adminUp: svi?.adminUp ?? false,
+        up: (svi?.operUp ?? false) && fabricAnycastGatewayMac !== undefined,
+      };
+    });
+    const vrfs = new Map(device.vrfConfigurations().map((vrf) => [vrf.id, vrf]));
+    const evpnRoutes = device.evpnRoutes();
+    const l3Vnis = device.l3VniSummaries().map((state) => {
+      const vrf = vrfs.get(state.vrfId);
+      const originated = evpnRoutes.filter((route) =>
+        route.type === 5 && route.source === "local" && route.l3Vni === state.vni).length;
+      const imported = device.importedEvpnRoutes(state.vrfId).length;
+      return {
+        vni: state.vni,
+        vrfId: state.vrfId,
+        up: state.up,
+        reason: state.reason,
+        sourceAddress: state.sourceAddress,
+        routeDistinguisher: vrf?.routeDistinguisher,
+        importRouteTargets: [...(vrf?.importRouteTargets ?? [])],
+        exportRouteTargets: [...(vrf?.exportRouteTargets ?? [])],
+        advertiseEvpn: vrf?.advertiseEvpn === true,
+        originatedPrefixCount: originated,
+        importedPrefixCount: imported,
+      };
+    });
+    const vrfRoutes = [...vrfs.values()].flatMap((vrf) =>
+      device.vrfRoutingTable(vrf.id).map((route) => ({
+        vrfId: vrf.id,
+        network: route.network,
+        prefixLength: route.prefixLength,
+        source: route.source,
+        nextHop: route.nextHop,
+        outgoingInterfaceId: route.outgoingInterfaceId,
+        remoteVtep: route.remoteVtep,
+        l3Vni: route.l3Vni,
+        administrativeDistance: route.administrativeDistance,
+        metric: route.metric,
+      })));
+    const operationalL3Vnis = l3Vnis.filter((entry) => entry.up);
+    const reasons: string[] = [];
+    if (l3Vnis.length === 0) reasons.push("No L3VNI is associated with a VRF on this VTEP.");
+    for (const entry of l3Vnis) {
+      if (!entry.up) reasons.push(`L3VNI ${entry.vni} for VRF ${entry.vrfId} is down (${entry.reason ?? "unknown"}).`);
+      else if (!entry.advertiseEvpn) reasons.push(`VRF ${entry.vrfId} does not run 'advertise l2vpn evpn'.`);
+    }
+    if (anycastGateways.length > 0 && fabricAnycastGatewayMac === undefined) {
+      reasons.push("SVIs are in anycast-gateway mode but no fabric anycast gateway MAC is configured.");
+    }
+    return {
+      fabricAnycastGatewayMac,
+      anycastGateways,
+      l3Vnis,
+      vrfRoutes,
+      routedOverlay: {
+        operational: operationalL3Vnis.length > 0
+          && operationalL3Vnis.some((entry) => entry.importedPrefixCount > 0 || entry.originatedPrefixCount > 0),
+        l3VniCount: l3Vnis.length,
+        operationalL3VniCount: operationalL3Vnis.length,
+        originatedPrefixCount: l3Vnis.reduce((total, entry) => total + entry.originatedPrefixCount, 0),
+        importedPrefixCount: l3Vnis.reduce((total, entry) => total + entry.importedPrefixCount, 0),
+        anycastGatewayCount: anycastGateways.length,
+        reasons,
+      },
     };
   }
 

@@ -161,7 +161,7 @@ function compareAddresses(left: Ipv4, right: Ipv4): number {
 export class VxlanEngine {
   private nve: NveInterfaceConfiguration | undefined;
   private readonly evpnVnis = new Map<number, EvpnVniConfiguration>();
-  /** `${vni}\0${mac}` → entry. Runtime only. */
+  /** `<vni>|<mac>` -> entry. Runtime only. */
   private readonly remoteMacs = new Map<string, RemoteMacEntry>();
   /** VNI → remote VTEPs learned from EVPN Type 3 routes. Runtime only. */
   private readonly evpnPeers = new Map<number, Set<Ipv4>>();
@@ -548,7 +548,10 @@ export class VxlanEngine {
   }
 
   private macKey(vni: number, mac: Mac): string {
-    return `${vni} ${normalizeMac(mac)}`;
+    // A pipe separates a numeric VNI from a normalized MAC unambiguously and
+    // keeps this source file plain text: a raw control character here made
+    // every tool that reads the repository treat the file as binary.
+    return [vni, normalizeMac(mac)].join("|");
   }
 }
 

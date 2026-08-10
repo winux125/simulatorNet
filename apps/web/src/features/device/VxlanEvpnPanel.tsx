@@ -13,22 +13,32 @@ import { Button } from "../../ui";
 export type VxlanSection =
   | "nve"
   | "mappings"
+  | "l3vni"
+  | "anycast"
   | "peers"
   | "route-targets"
   | "bgp-evpn"
   | "remote-macs"
   | "type2"
-  | "type3";
+  | "type3"
+  | "type5"
+  | "vrf-routes"
+  | "routed-overlay";
 
 export const VXLAN_SECTIONS: ReadonlyArray<{ id: VxlanSection; label: string }> = [
   { id: "nve", label: "NVE" },
-  { id: "mappings", label: "VNI Mappings" },
+  { id: "mappings", label: "L2VNI" },
+  { id: "l3vni", label: "L3VNI" },
+  { id: "anycast", label: "Anycast Gateway" },
   { id: "peers", label: "Peers" },
   { id: "route-targets", label: "EVPN RD/RT" },
   { id: "bgp-evpn", label: "BGP EVPN" },
   { id: "remote-macs", label: "Remote MACs" },
   { id: "type2", label: "EVPN Type 2" },
   { id: "type3", label: "EVPN Type 3" },
+  { id: "type5", label: "EVPN Type 5" },
+  { id: "vrf-routes", label: "VRF Routes" },
+  { id: "routed-overlay", label: "Routed Overlay" },
 ];
 
 /**
@@ -65,6 +75,9 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
   const [section, setSection] = useState<VxlanSection>(props.initialSection ?? "nve");
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState<string>();
+  // Which L3VNI row is expanded in place. Pure UI state, exactly like the
+  // selected section: it never reaches LabDocument, a submission or grading.
+  const [l3VniDetail, setL3VniDetail] = useState<number>();
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -79,15 +92,30 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
 
   useEffect(() => { void load(); }, [load]);
 
-  const act = async (type: "CLEAR_VXLAN_RUNTIME" | "RESTART_NVE") => {
+  const act = async (type: "CLEAR_VXLAN_RUNTIME" | "RESTART_NVE" | "CLEAR_EVPN_ROUTED_RUNTIME") => {
     setBusy(true);
     try {
       setView(await props.client.request({ type, deviceId: props.deviceId }));
       setNotice(type === "CLEAR_VXLAN_RUNTIME"
         ? "Overlay runtime cleared; the configuration is unchanged."
-        : "nve1 restarted; membership and remote MACs are relearned.");
+        : type === "CLEAR_EVPN_ROUTED_RUNTIME"
+          ? "Routed overlay runtime cleared; imported Type 5 prefixes are relearned."
+          : "nve1 restarted; membership and remote MACs are relearned.");
     } catch (error) {
       props.onError(error instanceof Error ? error.message : "Unable to run the overlay action");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** `shutdown`/`no shutdown` on one L3VNI, as a bounded runtime action. */
+  const restartL3Vni = async (vni: number) => {
+    setBusy(true);
+    try {
+      setView(await props.client.request({ type: "RESTART_EVPN_L3VNI", deviceId: props.deviceId, vni }));
+      setNotice(`L3VNI ${vni} restarted; the tenant's imported prefixes are re-derived.`);
+    } catch (error) {
+      props.onError(error instanceof Error ? error.message : "Unable to restart the L3VNI");
     } finally {
       setBusy(false);
     }
@@ -104,6 +132,8 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
 
   const type2 = view.evpnRoutes.filter((route) => route.type === 2);
   const type3 = view.evpnRoutes.filter((route) => route.type === 3);
+  const type5 = view.evpnRoutes.filter((route) => route.type === 5);
+  const selectedL3Vni = view.l3Vnis.find((entry) => entry.vni === l3VniDetail);
 
   return (
     <div className="qos-panel vxlan-panel">
@@ -179,6 +209,118 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
                 {view.vnis.length === 0 && <tr><td colSpan={4}>No VNI is mapped.</td></tr>}
               </tbody>
             </table>
+          </>
+        )}
+
+        {section === "l3vni" && (
+          <>
+            <h2>L3VNI — Routed Transit Segments</h2>
+            <p className="section-note">
+              <code>member vni &lt;n&gt; associate-vrf &lt;name&gt;</code> declares an L3VNI: a routed
+              segment with no VLAN and no broadcast domain. One L3VNI belongs to at most one VRF per
+              VTEP, a VRF carries at most one, and a VNI is either bridged or routed — never both.
+              Select a row to see the tenant's RD, route targets and origination policy.
+            </p>
+            <table className="data-table qos-interface-table">
+              <thead><tr>
+                <th>L3VNI</th><th>VRF</th><th>Status</th><th>advertise l2vpn evpn</th>
+                <th>Originated</th><th>Imported</th>
+              </tr></thead>
+              <tbody>
+                {view.l3Vnis.map((row) => (
+                  <tr key={row.vni} className={l3VniDetail === row.vni ? "is-selected" : ""}>
+                    <td>
+                      <button
+                        type="button"
+                        className="qos-interface-table__pick"
+                        aria-expanded={l3VniDetail === row.vni}
+                        onClick={() => setL3VniDetail(l3VniDetail === row.vni ? undefined : row.vni)}
+                      >
+                        <code>{row.vni}</code>
+                      </button>
+                    </td>
+                    <td><code>{row.vrfId}</code></td>
+                    <td>{row.up ? "up" : `down${row.reason ? ` (${row.reason})` : ""}`}</td>
+                    <td>{row.advertiseEvpn ? "yes" : "no"}</td>
+                    <td>{row.originatedPrefixCount}</td>
+                    <td>{row.importedPrefixCount}</td>
+                  </tr>
+                ))}
+                {view.l3Vnis.length === 0 && <tr><td colSpan={6}>No L3VNI is associated with a VRF.</td></tr>}
+              </tbody>
+            </table>
+            {selectedL3Vni && (
+              <div className="qos-interface-detail" aria-label={`L3VNI ${selectedL3Vni.vni} detail`}>
+                <h3>VRF {selectedL3Vni.vrfId}</h3>
+                <table className="data-table">
+                  <tbody>
+                    <tr><th scope="row">L3VNI</th><td><code>{selectedL3Vni.vni}</code></td></tr>
+                    <tr><th scope="row">Route distinguisher</th><td><code>{selectedL3Vni.routeDistinguisher ?? "—"}</code></td></tr>
+                    <tr><th scope="row">Import route targets</th><td><code>{selectedL3Vni.importRouteTargets.join(", ") || "—"}</code></td></tr>
+                    <tr><th scope="row">Export route targets</th><td><code>{selectedL3Vni.exportRouteTargets.join(", ") || "—"}</code></td></tr>
+                    <tr><th scope="row">advertise l2vpn evpn</th><td>{selectedL3Vni.advertiseEvpn ? "enabled" : "not configured"}</td></tr>
+                    <tr><th scope="row">VTEP source address</th><td><code>{selectedL3Vni.sourceAddress ?? "unassigned"}</code></td></tr>
+                  </tbody>
+                </table>
+                <Button variant="ghost" disabled={busy} onClick={() => void restartL3Vni(selectedL3Vni.vni)}>
+                  <RefreshCw size={13} /> Restart L3VNI {selectedL3Vni.vni}
+                </Button>
+              </div>
+            )}
+            <p className="section-note">
+              Configure the tenant from the CLI: <code>vrf definition &lt;name&gt;</code> with
+              {" "}<code>rd</code> and <code>route-target</code>, <code>interface nve1</code> →
+              {" "}<code>member vni &lt;n&gt; associate-vrf &lt;name&gt;</code>, then
+              {" "}<code>router bgp &lt;asn&gt;</code> → <code>address-family ipv4 vrf &lt;name&gt;</code> →
+              {" "}<code>advertise l2vpn evpn</code>.
+            </p>
+          </>
+        )}
+
+        {section === "anycast" && (
+          <>
+            <h2>Distributed Anycast Gateway</h2>
+            <p className="section-note">
+              One MAC for the whole fabric: every leaf carrying a tenant VLAN presents the
+              <em> same </em> gateway IP and MAC, so a host always talks to its own local leaf and its
+              ARP cache stays valid if it moves. That shared address is a distributed gateway, not a
+              duplicate. The gateway MAC is never advertised as a Type 2 route, because every leaf
+              owns it.
+            </p>
+            <p>
+              Fabric anycast gateway MAC:{" "}
+              <strong><code>{view.fabricAnycastGatewayMac ?? "not configured"}</code></strong>
+            </p>
+            <table className="data-table">
+              <thead><tr>
+                <th>Interface</th><th>VLAN</th><th>Gateway address</th><th>MAC</th><th>VRF</th><th>Status</th>
+              </tr></thead>
+              <tbody>
+                {view.anycastGateways.map((row) => (
+                  <tr key={row.vlanId}>
+                    <td><code>{row.interfaceId}</code></td>
+                    <td><code>{row.vlanId}</code></td>
+                    <td>
+                      <code>
+                        {row.ipAddress === undefined
+                          ? "unassigned"
+                          : `${row.ipAddress}/${row.prefixLength ?? ""}`}
+                      </code>
+                    </td>
+                    <td><code>{row.macAddress ?? "—"}</code></td>
+                    <td><code>{row.vrfId ?? "global"}</code></td>
+                    <td>{row.up ? "up" : row.adminUp ? "down" : "administratively down"}</td>
+                  </tr>
+                ))}
+                {view.anycastGateways.length === 0 && (
+                  <tr><td colSpan={6}>No SVI runs in anycast-gateway mode.</td></tr>
+                )}
+              </tbody>
+            </table>
+            <p className="section-note">
+              Configure it from the CLI: <code>fabric forwarding anycast-gateway-mac &lt;mac&gt;</code>
+              {" "}then <code>interface Vlan&lt;id&gt;</code> → <code>fabric forwarding mode anycast-gateway</code>.
+            </p>
           </>
         )}
 
@@ -312,6 +454,107 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
           </>
         )}
 
+        {section === "type5" && (
+          <>
+            <h2>EVPN Type 5 — IP Prefix Route</h2>
+            <p className="section-note">
+              A Type 5 route advertises one tenant IPv4 prefix and names the L3VNI symmetric IRB
+              transits it through. Origination needs an RD, an export route target, an operational
+              L3VNI and an explicit <code>advertise l2vpn evpn</code> — there is no hidden
+              redistribution. Uniqueness is RD <em>and</em> prefix, so two tenants may advertise the
+              same network and remain two routes.
+            </p>
+            <table className="data-table">
+              <thead><tr>
+                <th>Best</th><th>RD</th><th>Prefix</th><th>L3VNI</th><th>Next-hop VTEP</th>
+                <th>Route targets</th><th>Originator</th><th>Cluster list</th>
+              </tr></thead>
+              <tbody>
+                {type5.map((route, index) => (
+                  <tr key={`${route.routeDistinguisher}-${route.network}-${route.prefixLength}-${index}`}>
+                    <td>{route.best ? "*>" : "*"}</td>
+                    <td><code>{route.routeDistinguisher}</code></td>
+                    <td><code>{route.network}/{route.prefixLength}</code></td>
+                    <td><code>{route.vni}</code></td>
+                    <td><code>{route.nextHopVtep ?? route.nextHop}</code></td>
+                    <td><code>{route.routeTargets.join(", ") || "—"}</code></td>
+                    <td><code>{route.originatorId ?? "—"}</code></td>
+                    <td><code>{route.clusterList.join(" ") || "—"}</code></td>
+                  </tr>
+                ))}
+                {type5.length === 0 && <tr><td colSpan={8}>No Type 5 prefix is present.</td></tr>}
+              </tbody>
+            </table>
+          </>
+        )}
+
+        {section === "vrf-routes" && (
+          <>
+            <h2>Tenant VRF Routes</h2>
+            <p className="section-note">
+              Each VRF is an explicit routing context. A prefix is installed only when its route
+              targets intersect that VRF's import list — never by VNI number — which is exactly what
+              keeps two tenants with overlapping addresses isolated. The global table is never a
+              fallback. This table is runtime and is never saved with the lab.
+            </p>
+            <table className="data-table">
+              <thead><tr>
+                <th>VRF</th><th>Prefix</th><th>Source</th><th>Next hop</th>
+                <th>Remote VTEP</th><th>L3VNI</th><th>AD/Metric</th>
+              </tr></thead>
+              <tbody>
+                {view.vrfRoutes.map((row, index) => (
+                  <tr key={`${row.vrfId}-${row.network}-${row.prefixLength}-${index}`}>
+                    <td><code>{row.vrfId}</code></td>
+                    <td><code>{row.network}/{row.prefixLength}</code></td>
+                    <td>{row.source === "evpn-type5" ? "EVPN Type 5" : row.source}</td>
+                    <td><code>{row.nextHop ?? row.outgoingInterfaceId ?? "—"}</code></td>
+                    <td><code>{row.remoteVtep ?? "—"}</code></td>
+                    <td><code>{row.l3Vni ?? "—"}</code></td>
+                    <td>{row.administrativeDistance}/{row.metric}</td>
+                  </tr>
+                ))}
+                {view.vrfRoutes.length === 0 && <tr><td colSpan={7}>No tenant VRF carries a route.</td></tr>}
+              </tbody>
+            </table>
+          </>
+        )}
+
+        {section === "routed-overlay" && (
+          <>
+            <h2>Routed Overlay Status</h2>
+            <p className="section-note">
+              Symmetric IRB means both ends route: the ingress VTEP looks up the tenant VRF and
+              encapsulates into the L3VNI, and the egress VTEP maps that VNI back to its VRF and
+              repeats the lookup. Underlay routers see only outer IPv4/UDP 4789 and hold no tenant
+              route or MAC.
+            </p>
+            <table className="data-table">
+              <tbody>
+                <tr>
+                  <th scope="row">Routed overlay</th>
+                  <td>{view.routedOverlay.operational ? "operational" : "not carrying tenant prefixes"}</td>
+                </tr>
+                <tr>
+                  <th scope="row">L3VNIs</th>
+                  <td>{view.routedOverlay.operationalL3VniCount} up of {view.routedOverlay.l3VniCount}</td>
+                </tr>
+                <tr><th scope="row">Prefixes originated</th><td>{view.routedOverlay.originatedPrefixCount}</td></tr>
+                <tr><th scope="row">Prefixes imported</th><td>{view.routedOverlay.importedPrefixCount}</td></tr>
+                <tr><th scope="row">Anycast gateways</th><td>{view.routedOverlay.anycastGatewayCount}</td></tr>
+              </tbody>
+            </table>
+            {view.routedOverlay.reasons.length > 0 && (
+              <ul className="qos-problems">
+                {view.routedOverlay.reasons.map((reason) => (
+                  <li key={reason}><AlertTriangle size={13} /> {reason}</li>
+                ))}
+              </ul>
+            )}
+            <VxlanProblems problems={view.problems} />
+          </>
+        )}
+
         <div className="qos-panel__actions">
           <Button variant="ghost" disabled={busy} onClick={() => void load()}>
             <RefreshCw size={13} /> Refresh
@@ -321,6 +564,9 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
           </Button>
           <Button variant="ghost" disabled={busy} onClick={() => void act("CLEAR_VXLAN_RUNTIME")}>
             <Trash2 size={13} /> Clear overlay runtime
+          </Button>
+          <Button variant="ghost" disabled={busy} onClick={() => void act("CLEAR_EVPN_ROUTED_RUNTIME")}>
+            <Trash2 size={13} /> Clear routed runtime
           </Button>
         </div>
         {notice && <p className="section-note">{notice}</p>}

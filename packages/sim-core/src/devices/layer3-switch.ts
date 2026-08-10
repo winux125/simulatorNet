@@ -682,7 +682,100 @@ export class Layer3Switch extends L2Switch {
         }
       }
     }
+    problems.push(...this.routedEvpnProblems());
     return [...new Set(problems)].sort();
+  }
+
+  /**
+   * Routed-EVPN diagnostics: the distributed gateway, the L3VNI and the tenant
+   * VRF that carries it.
+   *
+   * Only an *incomplete* configuration is reported. A leaf sharing one gateway
+   * IP and MAC with every other leaf is the whole point of a distributed
+   * gateway, so it is never a conflict, and a VRF that deliberately keeps its
+   * prefixes local is never a warning either.
+   */
+  private routedEvpnProblems(): string[] {
+    const problems: string[] = [];
+    const anycastVlans = this.anycastGatewayVlanIds();
+    const fabricMac = this.vxlan.anycastGatewayMac;
+    if (anycastVlans.length > 0 && fabricMac === undefined) {
+      problems.push(`${this.name} has SVIs in anycast-gateway mode but no 'fabric forwarding anycast-gateway-mac' is configured.`);
+    }
+    const svis = new Map(this.sviSummaries().map((row) => [row.vlanId, row]));
+    for (const vlanId of anycastVlans) {
+      const svi = svis.get(vlanId);
+      if (svi === undefined) continue;
+      if (svi.ip === undefined) {
+        problems.push(`${this.name} Vlan${vlanId} is an anycast gateway but has no IPv4 address, so it can answer no host.`);
+      }
+    }
+    const configuration = this.vxlan.configurationSnapshot();
+    const vrfs = this.routingPlane.vrfConfigurations();
+    const evpnActive = this.evpnAddressFamilyActive();
+    for (const state of this.vxlan.l3VniStates()) {
+      if (state.reason === "vrf-missing") {
+        problems.push(`${this.name} L3VNI ${state.vni} names VRF ${state.vrfId}, which is not defined.`);
+        continue;
+      }
+      if (!state.up && configuration !== undefined) {
+        problems.push(`${this.name} L3VNI ${state.vni} for VRF ${state.vrfId} is not operational (${state.reason}).`);
+      }
+    }
+    for (const vrf of vrfs) {
+      const l3Vni = this.vxlan.l3VniForVrf(vrf.id);
+      if (vrf.advertiseEvpn === true) {
+        if (l3Vni === undefined) {
+          problems.push(`${this.name} VRF ${vrf.id} advertises into EVPN but has no 'member vni <n> associate-vrf ${vrf.id}' L3VNI.`);
+        }
+        if (vrf.exportRouteTargets.length === 0) {
+          problems.push(`${this.name} VRF ${vrf.id} advertises into EVPN but exports no route target, so no remote VTEP can import it.`);
+        }
+        if (!evpnActive) {
+          problems.push(`${this.name} VRF ${vrf.id} advertises into EVPN but no neighbor activates 'address-family l2vpn evpn'.`);
+        }
+        continue;
+      }
+      // Everything is in place for a tenant to be advertised except the one
+      // explicit statement that starts it — that is an unfinished tenant, not a
+      // deliberate choice, so it is worth explaining.
+      if (l3Vni !== undefined && evpnActive && vrf.exportRouteTargets.length > 0) {
+        problems.push(`${this.name} VRF ${vrf.id} has L3VNI ${l3Vni} and an export route target but no 'advertise l2vpn evpn', so it originates no Type 5 prefix.`);
+      }
+    }
+    // A Type 5 route whose targets match no local VRF stays in the EVPN RIB and
+    // installs nothing; that rejection is what keeps two tenants isolated, so it
+    // is reported as an explanation rather than left as silence.
+    for (const route of this.routingPlane.bgp.evpnRoutes()) {
+      if (route.type !== 5 || route.source === "local") continue;
+      if (this.importVrfFor(route.routeTargets)) continue;
+      problems.push(`${this.name} did not import EVPN Type 5 prefix ${route.network}/${route.prefixLength}: no VRF import route target matches.`);
+    }
+    return problems;
+  }
+
+  /**
+   * Drop every routed-overlay table this VTEP learned; configuration is
+   * untouched. The imported Type 5 prefixes are relearned from the EVPN RIB on
+   * the next convergence, exactly as the verifier rebuilds them.
+   */
+  resetRoutedEvpnRuntime(): void {
+    this.routingPlane.vrfs.replaceImportedEvpn([]);
+    this.evpnFaults.clear();
+    this.evpnExportSignature = "";
+  }
+
+  /**
+   * `shutdown`/`no shutdown` on one L3VNI, as a bounded restart: the tenant's
+   * imported prefixes are dropped and re-derived, and nothing else on the NVE
+   * is disturbed.
+   */
+  restartL3Vni(vni: number): boolean {
+    const vrfId = this.vxlan.vrfForL3Vni(vni);
+    if (vrfId === undefined) return false;
+    this.resetRoutedEvpnRuntime();
+    this.routingPlane.bgp.refreshRoutes();
+    return true;
   }
 
   /** Drop every learned overlay table; configuration is untouched. */

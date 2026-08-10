@@ -382,7 +382,11 @@ function MonitorSection(props: DeviceWindowProps & { section: DeviceWindowSectio
     "vxlan-macs-runtime": "remote-macs",
     "evpn-type2-runtime": "type2",
     "evpn-type3-runtime": "type3",
+    "evpn-type5-runtime": "type5",
     "evpn-vni-runtime": "mappings",
+    "evpn-l3vni-runtime": "l3vni",
+    "evpn-vrf-routes-runtime": "vrf-routes",
+    "evpn-routed-overlay-runtime": "routed-overlay",
   };
   const vxlanSection = vxlanRuntimeSection[section];
   if (vxlanSection) return props.runtimeAvailable

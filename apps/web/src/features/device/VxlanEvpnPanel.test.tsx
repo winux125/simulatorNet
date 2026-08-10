@@ -77,6 +77,29 @@ describe("VxlanEvpnPanel", () => {
     }
   });
 
+  it("shows the routed sections as structured tables, with honest empty states", async () => {
+    // This demo bridges only, so the routed halves must say so rather than
+    // rendering an empty table with no explanation.
+    await openPanel();
+    await userEvent.click(screen.getByRole("tab", { name: "L3VNI" }));
+    expect(screen.getByRole("heading", { name: /Routed Transit Segments/ })).toBeTruthy();
+    expect(screen.getByText("No L3VNI is associated with a VRF.")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("tab", { name: "Anycast Gateway" }));
+    expect(screen.getByText("No SVI runs in anycast-gateway mode.")).toBeTruthy();
+    expect(screen.getByText("not configured")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("tab", { name: "EVPN Type 5" }));
+    expect(screen.getByText("No Type 5 prefix is present.")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("tab", { name: "VRF Routes" }));
+    expect(screen.getByText("No tenant VRF carries a route.")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("tab", { name: "Routed Overlay" }));
+    expect(screen.getByRole("heading", { name: "Routed Overlay Status" })).toBeTruthy();
+    expect(screen.getByText("No L3VNI is associated with a VRF on this VTEP.")).toBeTruthy();
+  });
+
   it("offers the VTEP surface only where the capability exists", () => {
     expect(vxlanSupportedFor("l3-switch")).toBe(true);
     for (const type of ["router", "l2-switch", "firewall", "pc"] as const) {
@@ -89,7 +112,7 @@ describe("VxlanEvpnPanel", () => {
     expect(ids).toContain("vxlan-evpn-config");
     expect(ids.indexOf("vxlan-evpn-config")).toBeGreaterThan(ids.indexOf("vlans-config"));
     expect(ids.indexOf("vxlan-evpn-config")).toBeLessThan(ids.indexOf("bgp-config"));
-    expect(leaf.monitorSections.filter((section) => section.group === "VXLAN & EVPN")).toHaveLength(6);
+    expect(leaf.monitorSections.filter((section) => section.group === "VXLAN & EVPN")).toHaveLength(10);
     expect(leaf.mainTabs.map((tab) => tab.id)).toEqual(["physical", "config", "cli", "monitor", "attributes"]);
     expect(getDeviceWindowDefinition("router").configSections.map((section) => section.id))
       .not.toContain("vxlan-evpn-config");

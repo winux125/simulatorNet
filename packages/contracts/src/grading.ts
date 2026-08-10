@@ -1403,9 +1403,140 @@ export const EvpnRouteReflectedGradingCheckSchema = CheckIdentitySchema.extend({
   type: z.literal("evpn-route-reflected"),
   configuration: z.object({
     deviceId: z.string().min(1),
-    routeType: z.union([z.literal(2), z.literal(3)]).optional(),
+    /** Type 5 rides the same family and the same reflector, so it is included. */
+    routeType: z.union([z.literal(2), z.literal(3), z.literal(5)]).optional(),
     expectedOriginatorId: Ipv4Schema.optional(),
     expectedClusterId: Ipv4Schema.optional(),
+  }).strict(),
+}).strict();
+
+// --- M10.15 routed EVPN: anycast gateway, L3VNI and symmetric IRB ---------
+// Every expectation below stays in the hidden spec: a student result reports
+// only whether the check passed, never the expected MAC, RD, route target or
+// VNI that would name the answer.
+
+/**
+ * A distributed anycast gateway on one leaf.
+ *
+ * Two leaves presenting the same gateway IP and MAC is the point of the
+ * feature, so this check never treats that as a conflict; it verifies that the
+ * SVI adopted the fabric MAC and answers for the tenant's gateway address.
+ */
+export const EvpnAnycastGatewayGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-anycast-gateway"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    vlanId: VlanIdSchema,
+    expectedGatewayAddress: Ipv4Schema.optional(),
+    expectedGatewayMac: MacAddressSchema.optional(),
+    expectedVrfId: z.string().min(1).max(64).optional(),
+    expected: z.enum(["operational", "configured", "absent"]).default("operational"),
+  }).strict(),
+}).strict();
+
+/** `member vni <n> associate-vrf <name>`: the routed transit segment. */
+export const EvpnL3VniGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-l3vni"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    expectedVrfId: z.string().min(1).max(64).optional(),
+    expectedRouteDistinguisher: RouteDistinguisherSchema.optional(),
+    /** `advertise l2vpn evpn` on the tenant's IPv4 address family. */
+    expectedAdvertiseEvpn: z.boolean().optional(),
+    expected: z.enum(["operational", "configured", "down", "absent"]).default("operational"),
+  }).merge(VniExpectationSchema).strict(),
+}).strict();
+
+/** A Type 5 prefix this device originated or holds in its EVPN RIB. */
+export const EvpnType5RouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-type5-route"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    network: Ipv4Schema,
+    prefixLength: z.number().int().min(0).max(32),
+    routeDistinguisher: RouteDistinguisherSchema.optional(),
+    expectedL3Vni: VniSchema.optional(),
+    expectedNextHopVtep: Ipv4Schema.optional(),
+    /** `local` requires this VTEP to be the originator rather than a receiver. */
+    expectedOrigin: z.enum(["local", "remote"]).optional(),
+    expected: z.enum(["present", "absent"]).default("present"),
+  }).strict(),
+}).strict();
+
+/**
+ * A Type 5 prefix that actually became tenant forwarding state.
+ *
+ * Import is decided by the VRF's route targets alone, so `absent` is exactly
+ * how tenant isolation is graded: the route may sit in the EVPN RIB while
+ * installing nothing.
+ */
+export const EvpnType5ImportedGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-type5-imported"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    vrfId: z.string().min(1).max(64),
+    network: Ipv4Schema,
+    prefixLength: z.number().int().min(0).max(32),
+    expectedRemoteVtep: Ipv4Schema.optional(),
+    expectedL3Vni: VniSchema.optional(),
+    expected: z.enum(["present", "absent"]).default("present"),
+  }).strict(),
+}).strict();
+
+/** End-to-end symmetric IRB: routed at both ends, over the L3VNI. */
+export const EvpnIrbConnectivityGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-irb-connectivity"),
+  configuration: z.object({
+    sourceDeviceId: z.string().min(1),
+    destinationIp: Ipv4Schema,
+    expected: z.enum(["success", "failure"]).default("success"),
+    /** Require the delivery to have crossed the routed overlay, not a bridge. */
+    requireL3VniTransit: z.boolean().default(true),
+  }).strict(),
+}).strict();
+
+/**
+ * Two tenants stay two tenants.
+ *
+ * A VRF must not hold a prefix that belongs to another tenant, and the underlay
+ * device named here must hold no tenant route at all — it sees only the outer
+ * IPv4/UDP 4789 datagram.
+ */
+export const EvpnVrfIsolationGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-vrf-isolation"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    vrfId: z.string().min(1).max(64),
+    /** A prefix belonging to another tenant that must not be installed here. */
+    foreignNetwork: Ipv4Schema,
+    foreignPrefixLength: z.number().int().min(0).max(32),
+    /** Optional underlay device that must carry no tenant route at all. */
+    underlayDeviceId: z.string().min(1).optional(),
+  }).strict(),
+}).strict();
+
+/** A tenant prefix learned from a remote VTEP and usable for forwarding. */
+export const EvpnRemotePrefixGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-remote-prefix"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    vrfId: z.string().min(1).max(64),
+    network: Ipv4Schema,
+    prefixLength: z.number().int().min(0).max(32),
+    expectedRemoteVtep: Ipv4Schema.optional(),
+    /** Require the underlay to actually reach the advertising VTEP. */
+    requireUnderlayReachable: z.boolean().default(true),
+  }).strict(),
+}).strict();
+
+/** The routed overlay as a whole: L3VNI up and carrying tenant prefixes. */
+export const EvpnRoutedOverlayOperationalGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-routed-overlay-operational"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    minimumImportedPrefixes: z.number().int().min(0).max(4_096).default(1),
+    minimumOriginatedPrefixes: z.number().int().min(0).max(4_096).default(1),
+    expected: z.enum(["operational", "down"]).default("operational"),
   }).strict(),
 }).strict();
 
@@ -1493,6 +1624,14 @@ export const GradingCheckSchema = z.discriminatedUnion("type", [
   VxlanL2ConnectivityGradingCheckSchema,
   EvpnRouteReflectedGradingCheckSchema,
   EvpnCustomerIsolationGradingCheckSchema,
+  EvpnAnycastGatewayGradingCheckSchema,
+  EvpnL3VniGradingCheckSchema,
+  EvpnType5RouteGradingCheckSchema,
+  EvpnType5ImportedGradingCheckSchema,
+  EvpnIrbConnectivityGradingCheckSchema,
+  EvpnVrfIsolationGradingCheckSchema,
+  EvpnRemotePrefixGradingCheckSchema,
+  EvpnRoutedOverlayOperationalGradingCheckSchema,
   ConfigurationSavedGradingCheckSchema,
   GreTunnelConfiguredGradingCheckSchema,
   GreTunnelOperationalGradingCheckSchema,
