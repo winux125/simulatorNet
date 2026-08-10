@@ -147,11 +147,11 @@ label.ui-icon-button { display: inline-grid; }
 .device-picker__trigger:hover, .device-picker__trigger.is-open { border-color: var(--color-border-strong); background: var(--color-panel-hover); color: var(--color-text); }
 .device-picker__trigger.is-active { border-color: var(--color-accent-strong); background: var(--color-accent-muted); color: var(--color-accent); }
 .device-picker__menu { position: absolute; z-index: var(--z-menu); top: calc(100% + 7px); left: 0; display: grid; width: min(580px, calc(100vw - 24px)); grid-template-rows: 34px auto auto; overflow: hidden; border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); background: var(--color-menu); box-shadow: var(--elevation-menu); }
-.device-picker__categories { display: flex; min-width: 0; align-items: stretch; gap: 1px; padding: 0 6px; border-bottom: var(--border); background: var(--color-toolbar); }
+.device-picker__categories { display: flex; min-width: 0; align-items: stretch; gap: 1px; border-bottom: var(--border); background: var(--color-toolbar); }
 .device-picker__categories button { position: relative; display: inline-flex; min-width: 0; align-items: center; gap: 6px; padding: 0 10px; border-bottom: 2px solid transparent; background: transparent; color: var(--color-text-muted); cursor: pointer; font-size: var(--font-size-10); font-weight: 650; white-space: nowrap; }
 .device-picker__categories button:hover { background: var(--color-panel-hover); color: var(--color-text-soft); }
 .device-picker__categories button.is-active { border-bottom-color: var(--color-accent); color: var(--color-accent); }
-.device-picker__models { display: grid; min-width: 0; grid-template-columns: repeat(5, minmax(92px, 1fr)); gap: 6px; padding: 9px; }
+.device-picker__models { display: grid; min-width: 0; grid-template-columns: repeat(5, minmax(92px, 1fr)); padding: 9px; }
 .device-picker-model { display: grid; height: 68px; min-width: 0; place-items: center; grid-template-rows: 40px 1fr; padding: 4px 5px 6px; border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; color: var(--color-text-muted); cursor: grab; font-size: 9px; line-height: 1.15; text-align: center; }
 .device-picker-model:hover:not(:disabled) { border-color: var(--color-border-strong); background: var(--color-panel-hover); color: var(--color-text); }
 .device-picker-model.is-active { border-color: var(--color-accent-strong); background: var(--color-accent-muted); color: var(--color-accent); }
