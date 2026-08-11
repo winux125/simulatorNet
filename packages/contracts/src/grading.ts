@@ -5,6 +5,7 @@ import { IpAddressSchema, MacAddressSchema } from "./primitives";
 import { CosValueSchema, DscpValueSchema } from "./qos";
 import {
   BgpCommunitySchema,
+  EsiSchema,
   RouteDistinguisherSchema,
   RouteTargetSchema,
   VniSchema,
@@ -1403,8 +1404,8 @@ export const EvpnRouteReflectedGradingCheckSchema = CheckIdentitySchema.extend({
   type: z.literal("evpn-route-reflected"),
   configuration: z.object({
     deviceId: z.string().min(1),
-    /** Type 5 rides the same family and the same reflector, so it is included. */
-    routeType: z.union([z.literal(2), z.literal(3), z.literal(5)]).optional(),
+    /** Every type rides the same family and the same reflector. */
+    routeType: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).optional(),
     expectedOriginatorId: Ipv4Schema.optional(),
     expectedClusterId: Ipv4Schema.optional(),
   }).strict(),
@@ -1556,6 +1557,143 @@ export const EvpnCustomerIsolationGradingCheckSchema = CheckIdentitySchema.exten
   }).strict(),
 }).strict();
 
+// --- M10.16 EVPN Single-Active multihoming --------------------------------
+// Every expectation below stays in the hidden spec: a student result reports
+// only whether the check passed, never the expected ESI, the DF candidate list
+// or which leaf was supposed to win.
+
+/** One Ethernet Segment's configuration and operational state on one leaf. */
+export const EvpnEthernetSegmentGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-ethernet-segment"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    segmentId: z.string().min(1).max(64),
+    /** The access switchports the segment must attach. */
+    expectedInterfaces: z.array(z.string().min(1).max(64)).max(8).optional(),
+    expected: z.enum(["operational", "configured", "down", "absent"]).default("operational"),
+  }).strict(),
+}).strict();
+
+/** The ESI itself: a hidden expected value, never echoed back to a student. */
+export const EvpnEsiGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-esi"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    segmentId: z.string().min(1).max(64),
+    esi: EsiSchema,
+  }).strict(),
+}).strict();
+
+/**
+ * Who forwards toward the CE for one `<ESI, VLAN>`.
+ *
+ * `non-df` is as meaningful as `df`: in Single-Active exactly one leaf forwards,
+ * so grading the standby side is how a lab proves there is no second one.
+ */
+export const EvpnDfRoleGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-df-role"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    esi: EsiSchema,
+    vlanId: VlanIdSchema,
+    expectedRole: z.enum(["df", "non-df"]),
+    /** The VTEP address that must have won, when the lab pins it. */
+    expectedDesignatedForwarder: Ipv4Schema.optional(),
+  }).strict(),
+}).strict();
+
+/** An Ethernet A-D route, in one of its two scopes. */
+export const EvpnType1RouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-type1-route"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    esi: EsiSchema,
+    scope: z.enum(["per-es", "per-evi"]),
+    /** Required for a per-EVI route; ignored for a per-ES one. */
+    vni: VniSchema.optional(),
+    originatingVtep: Ipv4Schema.optional(),
+    expected: z.enum(["present", "absent"]).default("present"),
+  }).strict(),
+}).strict();
+
+/** An Ethernet Segment route: how two leaves discover they share a CE. */
+export const EvpnType4RouteGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-type4-route"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    esi: EsiSchema,
+    originatingVtep: Ipv4Schema.optional(),
+    expected: z.enum(["present", "absent"]).default("present"),
+  }).strict(),
+}).strict();
+
+/** Which VTEP a multihomed MAC is actually forwarded to. */
+export const EvpnMultihomingPrimaryGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-multihoming-primary"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    vni: VniSchema,
+    macAddress: MacAddressSchema,
+    expectedPrimary: Ipv4Schema.optional(),
+    expectedEsi: EsiSchema.optional(),
+    expected: z.enum(["present", "absent"]).default("present"),
+  }).strict(),
+}).strict();
+
+/**
+ * The deterministic backup a multihomed MAC keeps.
+ *
+ * Single-Active never forwards over it — that would be aliasing, which M10.16
+ * deliberately does not model — so this grades the *state* that makes a
+ * failover a selection rather than a relearn.
+ */
+export const EvpnMultihomingBackupGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-multihoming-backup"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    vni: VniSchema,
+    macAddress: MacAddressSchema,
+    expectedBackup: Ipv4Schema.optional(),
+    minimumBackups: z.number().int().min(0).max(8).default(1),
+  }).strict(),
+}).strict();
+
+/**
+ * End-to-end Single-Active failover as a bounded deterministic action.
+ *
+ * The check pings, shuts the named attachment, lets the fabric reconverge in
+ * virtual time and pings again. Everything it does is bounded and reproducible,
+ * so the browser and the verifier reach the same verdict.
+ */
+export const EvpnSingleActiveFailoverGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-single-active-failover"),
+  configuration: z.object({
+    sourceDeviceId: z.string().min(1),
+    destinationIp: Ipv4Schema,
+    /** The leaf whose CE-facing attachment is taken down. */
+    failDeviceId: z.string().min(1),
+    failInterfaceId: z.string().min(1).max(64),
+    /** The leaf that must take the Designated Forwarder role over. */
+    expectedNewDesignatedForwarderDeviceId: z.string().min(1).optional(),
+    /** Require the mass withdrawal to be observable in the trace. */
+    requireMassWithdraw: z.boolean().default(true),
+  }).strict(),
+}).strict();
+
+/**
+ * A frame that entered the fabric on one Ethernet Segment never comes back to
+ * it, so a dual-attached CE never sees its own frame return.
+ */
+export const EvpnSplitHorizonGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-split-horizon"),
+  configuration: z.object({
+    sourceDeviceId: z.string().min(1),
+    destinationIp: Ipv4Schema,
+    /** The leaf that must refuse to hand the frame back to the segment. */
+    nonDesignatedDeviceId: z.string().min(1),
+  }).strict(),
+}).strict();
+
 /**
  * `copy running-config startup-config` was actually run on this device.
  *
@@ -1624,6 +1762,15 @@ export const GradingCheckSchema = z.discriminatedUnion("type", [
   VxlanL2ConnectivityGradingCheckSchema,
   EvpnRouteReflectedGradingCheckSchema,
   EvpnCustomerIsolationGradingCheckSchema,
+  EvpnEthernetSegmentGradingCheckSchema,
+  EvpnEsiGradingCheckSchema,
+  EvpnDfRoleGradingCheckSchema,
+  EvpnType1RouteGradingCheckSchema,
+  EvpnType4RouteGradingCheckSchema,
+  EvpnMultihomingPrimaryGradingCheckSchema,
+  EvpnMultihomingBackupGradingCheckSchema,
+  EvpnSingleActiveFailoverGradingCheckSchema,
+  EvpnSplitHorizonGradingCheckSchema,
   EvpnAnycastGatewayGradingCheckSchema,
   EvpnL3VniGradingCheckSchema,
   EvpnType5RouteGradingCheckSchema,

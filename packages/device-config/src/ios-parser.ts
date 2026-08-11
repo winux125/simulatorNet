@@ -357,6 +357,22 @@ function normalizeFabricMac(value: string): string | undefined {
   return normalized;
 }
 
+/**
+ * Canonicalize an Ethernet Segment Identifier, or `undefined` when it is not
+ * one this simulator can use.
+ *
+ * The colon, dot and bare-hex spellings all normalize to the canonical
+ * five-group form. ESI 0 means "single-homed" and MAX-ESI is reserved, so
+ * neither can name a segment and both are refused here rather than stored.
+ */
+function normalizeEsiText(value: string): string | undefined {
+  const compact = value.trim().toLowerCase().replace(/[.:-]/gu, "");
+  if (!/^[0-9a-f]{20}$/u.test(compact)) return undefined;
+  const normalized = (compact.match(/.{4}/gu) ?? []).join(":");
+  if (normalized === "0000:0000:0000:0000:0000" || normalized === "ffff:ffff:ffff:ffff:ffff") return undefined;
+  return normalized;
+}
+
 /** Convert a dotted subnet mask to a prefix length, or undefined if not a mask. */
 export function maskToPrefix(mask: string | undefined): number | undefined {
   if (!mask) return undefined;
@@ -709,12 +725,19 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
   let currentVlanConfiguration: number | undefined;
   let inEvpn = false;
   let currentEvpnVni: EvpnVniConfig | undefined;
+  // `evpn ethernet-segment <name>` blocks and the `ethernet-segment <name>` line
+  // that binds one to an interface are read apart and reconciled at the end, so
+  // a segment defined after its attachment still finds it.
+  const ethernetSegments = new Map<string, { esi?: string; redundancyMode?: "single-active" }>();
+  const segmentAttachments = new Map<string, string>();
+  let currentEthernetSegment: string | undefined;
   const clearVxlanContext = (): void => {
     inNve = false;
     currentNveVni = undefined;
     currentVlanConfiguration = undefined;
     inEvpn = false;
     currentEvpnVni = undefined;
+    currentEthernetSegment = undefined;
   };
   // The source line currently being read, so every outcome can be reported with
   // an exact 1-based line number without threading it through every branch.
@@ -928,6 +951,43 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       if (mac === undefined) { unparsed(line); continue; }
       result.evpn ??= { vnis: [] };
       result.evpn.anycastGatewayMac = mac;
+      applied(line);
+      continue;
+    }
+    // --- EVPN multihoming: `evpn ethernet-segment <name>` -------------------
+    // Read before the plain `evpn` block below: this is a top-level block of its
+    // own, not a line inside that one.
+    if (currentEthernetSegment !== undefined && isIndented) {
+      const segment = ethernetSegments.get(currentEthernetSegment)!;
+      if (head === "identifier" && tokens.length === 2) {
+        const esi = normalizeEsiText(tokens[1]!);
+        // ESI 0 means single-homed and MAX-ESI is reserved, so neither can name
+        // a segment: they are reported rather than stored.
+        if (esi === undefined) { unparsed(line); continue; }
+        segment.esi = esi;
+        applied(line);
+        continue;
+      }
+      if (head === "redundancy-mode" && tokens.length === 2) {
+        // All-Active — and with it aliasing and MAC mobility — is not modelled,
+        // so it is reported honestly instead of being downgraded in silence.
+        if (tokens[1]?.toLowerCase() !== "single-active") { unparsed(line); continue; }
+        segment.redundancyMode = "single-active";
+        applied(line);
+        continue;
+      }
+      unparsed(line);
+      continue;
+    }
+    if (head === "evpn" && tokens[1]?.toLowerCase() === "ethernet-segment" && tokens.length === 3) {
+      clearVxlanContext();
+      current = undefined;
+      currentLoopback = undefined;
+      inBgp = false;
+      inOspf = false;
+      inOspfv3 = false;
+      currentEthernetSegment = tokens[2]!;
+      if (!ethernetSegments.has(currentEthernetSegment)) ethernetSegments.set(currentEthernetSegment, {});
       applied(line);
       continue;
     }
@@ -1743,6 +1803,15 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
         if (isSviInterfaceId(current.id)) { current.anycastGateway = true; applied(line); } else unparsed(line);
         continue;
       }
+      // `ethernet-segment <name>` binds this attachment to a segment. A CE hangs
+      // off an access switchport, so an SVI or a routed port is reported rather
+      // than quietly joined to a segment it could never serve.
+      if (head === "ethernet-segment" && tokens.length === 2 && tokens[1]) {
+        if (isSviInterfaceId(current.id)) { unparsed(line); continue; }
+        segmentAttachments.set(current.id, tokens[1]);
+        applied(line);
+        continue;
+      }
       if (head === "ipv6" && tokens[1]?.toLowerCase() === "address") {
         const address = ipv6Cidr(tokens[2]);
         if (address) {
@@ -1930,7 +1999,30 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       vrfMembers: vrfMembers.length > 0 ? vrfMembers : undefined,
     };
   }
-  if (result.evpn && result.evpn.vnis.length === 0 && result.evpn.anycastGatewayMac === undefined) {
+  // A segment needs a usable ESI and a supported redundancy mode before it can
+  // exist; one that has neither an identifier nor an attachment is dropped
+  // rather than invented into something the engine would refuse anyway.
+  const segments = [...ethernetSegments.entries()]
+    .flatMap(([id, segment]) => {
+      if (segment.esi === undefined || segment.redundancyMode !== "single-active") return [];
+      const attachments = [...segmentAttachments.entries()]
+        .filter(([, segmentId]) => segmentId === id)
+        .map(([interfaceId]) => interfaceId)
+        .sort((a, b) => a.localeCompare(b));
+      return [{
+        id,
+        esi: segment.esi,
+        redundancyMode: "single-active" as const,
+        interfaces: attachments,
+      }];
+    })
+    .sort((a, b) => a.esi.localeCompare(b.esi) || a.id.localeCompare(b.id));
+  if (segments.length > 0) {
+    result.evpn ??= { vnis: [] };
+    result.evpn.ethernetSegments = segments;
+  }
+  if (result.evpn && result.evpn.vnis.length === 0 && result.evpn.anycastGatewayMac === undefined
+    && (result.evpn.ethernetSegments ?? []).length === 0) {
     result.evpn = undefined;
   } else if (result.evpn) result.evpn.vnis.sort((a, b) => a.vni - b.vni);
   result.vpn.tunnels = [...tunnels.values()].sort((a, b) => a.id - b.id);

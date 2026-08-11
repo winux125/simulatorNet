@@ -130,6 +130,7 @@ export const TRACE_PROTOCOL_FILTERS = [
   "Route Reflection", "Community", "Aggregation",
   "MPLS", "LDP", "VPNv4", "VPNv6", "L3VPN",
   "VXLAN", "EVPN", "BUM", "VTEP", "L3VNI", "IRB", "Type 5",
+  "EVPN Multihoming", "Ethernet Segment", "DF Election", "Fast Failover",
   "IPv6", "ICMPv6", "NDP", "SLAAC", "DHCPv6", "OSPFv3", "IPv6 ACL",
   "Wireless", "Beacon", "Probe", "Authentication", "Association", "Roaming",
   "Telnet", "SSH", "AAA", "RADIUS", "TACACS+", "SNMP",
@@ -421,6 +422,18 @@ export function traceProtocol(event: SimulationTraceEvent): string {
   // M10.15 routed EVPN: the transit segment, the routing decision at each end
   // and the tenant prefix each get a filter, so a learner can follow the flow
   // ARP gateway → VRF lookup → Type 5 → L3VNI → underlay → egress lookup.
+  // M10.16 multihoming: discovery, the election and the failover each get their
+  // own filter, so a learner can walk Type 4 → Type 1 → DF → Type 2 → failover
+  // without reading every other overlay event in between.
+  if (type === "evpn-es-route-originated" || type === "evpn-es-route-imported"
+    || type === "evpn-es-route-withdrawn" || type === "evpn-es-peer-discovered"
+    || type === "evpn-es-state-changed") return "Ethernet Segment";
+  if (type.startsWith("evpn-df-")) return "DF Election";
+  if (type === "evpn-es-mass-withdraw" || type === "evpn-multihoming-failover"
+    || type === "evpn-es-unreachable" || type === "evpn-ad-route-withdrawn") return "Fast Failover";
+  if (type.startsWith("evpn-ad-route-") || type.startsWith("evpn-multihoming-")
+    || type === "evpn-es-split-horizon-drop" || type === "evpn-non-df-egress-drop"
+    || type === "evpn-non-df-ingress-drop") return "EVPN Multihoming";
   if (type === "evpn-l3vni-encapsulated" || type === "evpn-l3vni-decapsulated") return "L3VNI";
   if (type === "evpn-irb-routed" || type === "evpn-anycast-gateway-replied"
     || type === "evpn-tenant-isolation-drop") return "IRB";

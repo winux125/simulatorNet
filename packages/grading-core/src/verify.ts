@@ -1346,6 +1346,181 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
         clusterList: route?.clusterList,
       });
     }
+    // --- M10.16 EVPN Single-Active multihoming ---------------------------
+    case "evpn-ethernet-segment": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const segment = device.ethernetSegmentStates()
+        .find((entry) => entry.id === check.configuration.segmentId);
+      const attachmentsMatch = check.configuration.expectedInterfaces === undefined
+        || (segment !== undefined
+          && [...check.configuration.expectedInterfaces].sort().join(",") === [...segment.interfaces].sort().join(","));
+      const passed = check.configuration.expected === "absent"
+        ? segment === undefined
+        : segment !== undefined && attachmentsMatch
+          && (check.configuration.expected === "configured"
+            || (check.configuration.expected === "operational" ? segment.up : !segment.up));
+      return result(check, passed, `Ethernet Segment '${check.configuration.segmentId}' ${segment ? (segment.up ? "is operational" : `is down (${segment.reason ?? "unknown"})`) : "is not configured"}`, {
+        found: segment !== undefined,
+        up: segment?.up,
+        reason: segment?.reason,
+        attachmentCount: segment?.interfaces.length ?? 0,
+        operationalAttachmentCount: segment?.operationalInterfaces.length ?? 0,
+        expected: check.configuration.expected,
+      });
+    }
+    case "evpn-esi": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const segment = device.ethernetSegmentConfigurations()
+        .find((entry) => entry.id === check.configuration.segmentId);
+      const matches = segment?.esi === check.configuration.esi;
+      // The expected ESI stays in the hidden spec; only the verdict travels.
+      return result(check, matches, `Ethernet Segment '${check.configuration.segmentId}' ${matches ? "carries the expected ESI" : "does not carry the expected ESI"}`, {
+        found: segment !== undefined,
+        matches,
+      });
+    }
+    case "evpn-df-role": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const state = device.designatedForwarderStates()
+        .find((entry) => entry.esi === check.configuration.esi && entry.vlanId === check.configuration.vlanId);
+      const winnerMatches = check.configuration.expectedDesignatedForwarder === undefined
+        || state?.designatedForwarder === check.configuration.expectedDesignatedForwarder;
+      const passed = state !== undefined && state.localRole === check.configuration.expectedRole && winnerMatches;
+      return result(check, passed, `${device.name} is ${state ? state.localRole.toUpperCase() : "not a participant"} for VLAN ${check.configuration.vlanId}`, {
+        found: state !== undefined,
+        actualRole: state?.localRole,
+        expectedRole: check.configuration.expectedRole,
+        candidateCount: state?.candidates.length ?? 0,
+      });
+    }
+    case "evpn-type1-route":
+    case "evpn-type4-route": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const wantType = check.type === "evpn-type1-route" ? 1 : 4;
+      const route = device.evpnRoutes().find((entry) => {
+        if (entry.type !== wantType) return false;
+        if (entry.esi !== check.configuration.esi) return false;
+        if (check.configuration.originatingVtep !== undefined
+          && entry.originatingVtep !== check.configuration.originatingVtep) return false;
+        if (entry.type !== 1) return true;
+        if (check.type !== "evpn-type1-route" || entry.scope !== check.configuration.scope) return false;
+        return check.configuration.vni === undefined
+          || (entry.scope === "per-evi" && entry.vni === check.configuration.vni);
+      });
+      const passed = check.configuration.expected === "present" ? route !== undefined : route === undefined;
+      return result(check, passed, `EVPN Type ${wantType} route ${route ? "is present" : "is missing"}`, {
+        found: route !== undefined,
+        best: route?.best,
+        source: route?.source,
+        expected: check.configuration.expected,
+      });
+    }
+    case "evpn-multihoming-primary": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const mac = normalizeMac(check.configuration.macAddress);
+      const entry = device.remoteMacEntries()
+        .find((row) => row.vni === check.configuration.vni && row.mac === mac);
+      const matches = entry !== undefined
+        && entry.ethernetSegmentId !== undefined
+        && (check.configuration.expectedPrimary === undefined || entry.remoteVtep === check.configuration.expectedPrimary)
+        && (check.configuration.expectedEsi === undefined || entry.ethernetSegmentId === check.configuration.expectedEsi);
+      const passed = check.configuration.expected === "present" ? matches : !matches;
+      return result(check, passed, `Multihomed MAC ${mac} ${entry ? "is programmed" : "is not programmed"} in VNI ${check.configuration.vni}`, {
+        found: entry !== undefined,
+        multihomed: entry?.ethernetSegmentId !== undefined,
+        backupCount: entry?.backupVteps.length ?? 0,
+        expected: check.configuration.expected,
+      });
+    }
+    case "evpn-multihoming-backup": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const mac = normalizeMac(check.configuration.macAddress);
+      const entry = device.remoteMacEntries()
+        .find((row) => row.vni === check.configuration.vni && row.mac === mac);
+      const backups = entry?.backupVteps ?? [];
+      const passed = backups.length >= check.configuration.minimumBackups
+        && (check.configuration.expectedBackup === undefined || backups.includes(check.configuration.expectedBackup));
+      return result(check, passed, `Multihomed MAC ${mac} keeps ${backups.length} deterministic backup path(s)`, {
+        found: entry !== undefined,
+        backupCount: backups.length,
+        minimumBackups: check.configuration.minimumBackups,
+      });
+    }
+    case "evpn-single-active-failover": {
+      const before = executePing(runtime, check.configuration.sourceDeviceId, check.configuration.destinationIp);
+      if (!before) return errorResult(check, `Ping-capable device '${check.configuration.sourceDeviceId}' was not found`);
+      const failing = vtepOf(built, check.configuration.failDeviceId);
+      const attachment = failing?.interfaces.get(check.configuration.failInterfaceId);
+      if (!failing || !attachment) {
+        return errorResult(check, `Attachment '${check.configuration.failInterfaceId}' was not found`);
+      }
+      const survivor = check.configuration.expectedNewDesignatedForwarderDeviceId === undefined
+        ? undefined
+        : vtepOf(built, check.configuration.expectedNewDesignatedForwarderDeviceId);
+      // One bounded deterministic action: take the attachment down and let the
+      // fabric reconverge. The engine never becomes idle — BGP keeps its
+      // session alive — so convergence is what is waited for, not silence.
+      const convergenceStart = built.engine.traceLog.length;
+      attachment.shutdown();
+      runtime.runUntil(() => survivor !== undefined
+        ? survivor.designatedForwarderStates().some((entry) => entry.localRole === "df")
+        : failing.ethernetSegmentStates().every((entry) => !entry.up));
+      const converged = built.engine.traceLog.slice(convergenceStart);
+      // The withdrawal is graded on state, not on an event: a trace is optional
+      // and the verifier does not keep one, but a leaf that withdrew its
+      // Ethernet A-D route is no longer a reachable peer on that segment —
+      // which is exactly what a mass withdrawal means.
+      const failedEsis = new Set((survivor ?? failing).ethernetSegmentStates().map((entry) => entry.esi));
+      const massWithdrawn = converged.some((entry) => entry.type === "evpn-es-mass-withdraw"
+        || entry.type === "evpn-ad-route-withdrawn")
+        || (survivor ?? failing).ethernetSegmentPeers()
+          .every((peer) => peer.local || !failedEsis.has(peer.esi) || !peer.reachable);
+      const after = executePing(runtime, check.configuration.sourceDeviceId, check.configuration.destinationIp);
+      const tookOver = survivor === undefined
+        || survivor.designatedForwarderStates().some((entry) => entry.localRole === "df");
+      const passed = before.success
+        && after?.success === true
+        && tookOver
+        && (!check.configuration.requireMassWithdraw || massWithdrawn);
+      return result(check, passed, `Traffic ${after?.success ? "recovered" : "did not recover"} after the Designated Forwarder attachment failed`, {
+        beforeFailure: before.success,
+        afterFailure: after?.success ?? false,
+        massWithdrawn,
+        newDesignatedForwarderTookOver: tookOver,
+      });
+    }
+    case "evpn-split-horizon": {
+      const outcome = executePing(runtime, check.configuration.sourceDeviceId, check.configuration.destinationIp);
+      if (!outcome) return errorResult(check, `Ping-capable device '${check.configuration.sourceDeviceId}' was not found`);
+      const guard = built.getDevice(check.configuration.nonDesignatedDeviceId);
+      if (!guard) return errorResult(check, "Ethernet Segment peer device was not found");
+      // The leaf attached to the same segment refused to hand the frame back,
+      // and the conversation still completed — which is what "no loop" means.
+      //
+      // A refusal is only observable while there is still something to flood,
+      // so a lab that pings first would see none. Standing by is the same fact
+      // in a form that survives: a non-DF that learned nothing on its segment
+      // attachment never returned anything to the CE either.
+      const refused = outcome.trace.filter((entry) => entry.device === guard.id
+        && (entry.type === "evpn-es-split-horizon-drop" || entry.type === "evpn-non-df-egress-drop"
+          || entry.type === "evpn-non-df-ingress-drop"));
+      const standby = guard instanceof Layer3Switch
+        && guard.designatedForwarderStates().some((entry) => entry.localRole === "non-df")
+        && guard.macAddressTable().every((row) => guard.ethernetSegmentIdOf(row.port) === undefined);
+      const passed = outcome.success && (refused.length > 0 || standby);
+      return result(check, passed, `${guard.name} ${refused.length > 0 || standby ? "did not" : "did"} return the frame to its own Ethernet Segment`, {
+        reachable: outcome.success,
+        refusedCount: refused.length,
+        standby,
+        reasons: [...new Set(refused.map((entry) => entry.type))],
+      });
+    }
     case "evpn-customer-isolation": {
       // The underlay carries the outer IPv4/UDP only: a Spine or P device must
       // never learn a tenant MAC, and a VTEP must never import a VNI whose

@@ -70,7 +70,46 @@ router bgp 65000
  exit-address-family
 `;
 
-/** Everything M10.15 deliberately does not model. */
+/**
+ * The M10.16 multihoming subset: one Ethernet Segment with a Single-Active
+ * redundancy mode, bound to an access switchport.
+ */
+const MULTIHOMING = `
+hostname LEAF1
+ip routing
+!
+vlan 10
+ name TENANT-A
+!
+evpn ethernet-segment ES-CE1
+ identifier 0000:0000:0000:0000:0001
+ redundancy-mode single-active
+!
+interface Gi0/1
+ switchport mode access
+ switchport access vlan 10
+ ethernet-segment ES-CE1
+!
+interface Loopback0
+ ip address 10.255.0.1 255.255.255.255
+!
+interface nve1
+ no shutdown
+ source-interface Loopback0
+ member vni 10010
+  ingress-replication protocol bgp
+!
+vlan configuration 10
+ member vni 10010
+!
+evpn
+ vni 10010 l2
+  rd 65000:10010
+  route-target import 65000:10010
+  route-target export 65000:10010
+`;
+
+/** Everything M10.15 and M10.16 deliberately do not model. */
 const UNSUPPORTED = `
 interface nve1
  source-interface Loopback0
@@ -99,6 +138,16 @@ interface Vlan10
  ip arp suppression
 !
 nve anycast-vtep 10.255.0.99
+!
+evpn ethernet-segment ES-ALL-ACTIVE
+ identifier 0000:0000:0000:0000:0002
+ redundancy-mode all-active
+ df-election type highest-random-weight
+ df-preference 200
+ ac-df disable
+!
+evpn ethernet-segment ES-RESERVED
+ identifier 0000:0000:0000:0000:0000
 `;
 
 function map(text: string): Layer3SwitchDeviceConfig {
@@ -151,6 +200,20 @@ describe("routed EVPN import subset", () => {
     }));
   });
 
+  it("maps the M10.16 Ethernet Segment and its attachment", () => {
+    const config = map(MULTIHOMING);
+    expect(config.evpn?.ethernetSegments).toEqual([{
+      id: "ES-CE1",
+      esi: "0000:0000:0000:0000:0001",
+      redundancyMode: "single-active",
+      interfaces: ["Gi0/1"],
+    }]);
+    const unparsed = parseIosConfig(MULTIHOMING, INTERFACES).unparsedLines.join("\n");
+    for (const line of ["evpn ethernet-segment", "identifier", "redundancy-mode", "ethernet-segment ES-CE1"]) {
+      expect(unparsed, `expected '${line}' to be understood`).not.toContain(line);
+    }
+  });
+
   it("reports every routed-EVPN construct SimulatorNet does not model", () => {
     const parsed = parseIosConfig(UNSUPPORTED, INTERFACES);
     const unparsed = parsed.unparsedLines.join("\n");
@@ -165,9 +228,18 @@ describe("routed EVPN import subset", () => {
       "route-type 4",
       "ip arp suppression",
       "nve anycast-vtep 10.255.0.99",
+      // M10.16 is Single-Active only: all-active, HRW, an ESI preference and
+      // AC-DF are reported rather than accepted as something they are not.
+      "redundancy-mode all-active",
+      "df-election type highest-random-weight",
+      "df-preference 200",
+      "ac-df disable",
+      "identifier 0000:0000:0000:0000:0000",
     ]) {
       expect(unparsed, `expected '${line}' to be reported as unsupported`).toContain(line);
     }
+    // A segment whose redundancy mode is not modelled never becomes one.
+    expect(parsed.evpn?.ethernetSegments).toBeUndefined();
     // An IPv6 tenant advertisement is not invented into an IPv4-only Type 5.
     expect(parsed.vrfs.some((vrf) => vrf.advertiseEvpn === true)).toBe(false);
     // Nothing unsupported leaked into the mapped configuration.

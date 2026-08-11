@@ -23,19 +23,31 @@ export type VxlanSection =
   | "type3"
   | "type5"
   | "vrf-routes"
-  | "routed-overlay";
+  | "routed-overlay"
+  | "ethernet-segments"
+  | "es-peers"
+  | "df-election"
+  | "type1"
+  | "type4"
+  | "multihoming";
 
 export const VXLAN_SECTIONS: ReadonlyArray<{ id: VxlanSection; label: string }> = [
   { id: "nve", label: "NVE" },
   { id: "mappings", label: "L2VNI" },
   { id: "l3vni", label: "L3VNI" },
   { id: "anycast", label: "Anycast Gateway" },
+  { id: "ethernet-segments", label: "Ethernet Segments" },
   { id: "peers", label: "Peers" },
+  { id: "es-peers", label: "ES Peers" },
+  { id: "df-election", label: "DF Election" },
   { id: "route-targets", label: "EVPN RD/RT" },
   { id: "bgp-evpn", label: "BGP EVPN" },
   { id: "remote-macs", label: "Remote MACs" },
+  { id: "multihoming", label: "Multihoming Paths" },
+  { id: "type1", label: "EVPN Type 1" },
   { id: "type2", label: "EVPN Type 2" },
   { id: "type3", label: "EVPN Type 3" },
+  { id: "type4", label: "EVPN Type 4" },
   { id: "type5", label: "EVPN Type 5" },
   { id: "vrf-routes", label: "VRF Routes" },
   { id: "routed-overlay", label: "Routed Overlay" },
@@ -130,8 +142,10 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
     </div></div>;
   }
 
+  const type1 = view.evpnRoutes.filter((route) => route.type === 1);
   const type2 = view.evpnRoutes.filter((route) => route.type === 2);
   const type3 = view.evpnRoutes.filter((route) => route.type === 3);
+  const type4 = view.evpnRoutes.filter((route) => route.type === 4);
   const type5 = view.evpnRoutes.filter((route) => route.type === 5);
   const selectedL3Vni = view.l3Vnis.find((entry) => entry.vni === l3VniDetail);
 
@@ -324,6 +338,174 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
           </>
         )}
 
+        {section === "ethernet-segments" && (
+          <>
+            <p className="section-eyebrow">EVPN Multihoming</p>
+            <h2>Ethernet Segments</h2>
+            <p className="section-note">
+              An Ethernet Segment is one CE attached to two leaves, named by a shared ESI. M10.16
+              models <strong>Single Active</strong> redundancy only: exactly one leaf forwards toward
+              the CE for each VLAN, and the other keeps a deterministic backup. All-active,
+              aliasing and MAC mobility are deliberately not modelled.
+            </p>
+            <table className="data-table">
+              <thead><tr>
+                <th>Segment</th><th>ESI</th><th>Redundancy</th><th>Attachments</th>
+                <th>VLANs</th><th>Status</th>
+              </tr></thead>
+              <tbody>
+                {view.ethernetSegments.map((row) => (
+                  <tr key={row.id}>
+                    <td><code>{row.id}</code></td>
+                    <td><code>{row.esi}</code></td>
+                    <td>Single Active</td>
+                    <td><code>{row.interfaces.join(", ") || "—"}</code></td>
+                    <td><code>{row.vlanIds.join(", ") || "—"}</code></td>
+                    <td>{row.up ? "up" : `down${row.reason ? ` (${row.reason})` : ""}`}</td>
+                  </tr>
+                ))}
+                {view.ethernetSegments.length === 0 && (
+                  <tr><td colSpan={6}>No Ethernet Segment is configured.</td></tr>
+                )}
+              </tbody>
+            </table>
+            <p className="section-note">
+              Configure it from the CLI: <code>evpn ethernet-segment &lt;name&gt;</code> →
+              {" "}<code>identifier &lt;esi&gt;</code> and <code>redundancy-mode single-active</code>,
+              then <code>interface &lt;access port&gt;</code> → <code>ethernet-segment &lt;name&gt;</code>.
+              The VLAN and VNI come from the existing VLAN-to-VNI mapping.
+            </p>
+            <VxlanProblems problems={view.problems} />
+          </>
+        )}
+
+        {section === "es-peers" && (
+          <>
+            <h2>Ethernet Segment Peers</h2>
+            <p className="section-note">
+              A leaf discovers who else attaches the same CE from EVPN Type 4 routes. Reachability
+              comes from the Ethernet A-D per-ES route: when it is withdrawn, everything behind that
+              leaf's attachment is invalidated in one message.
+            </p>
+            <table className="data-table">
+              <thead><tr><th>ESI</th><th>VTEP</th><th>Router ID</th><th>Origin</th><th>Reachability</th></tr></thead>
+              <tbody>
+                {view.ethernetSegmentPeers.map((row) => (
+                  <tr key={`${row.esi}-${row.vtep}`}>
+                    <td><code>{row.esi}</code></td>
+                    <td><code>{row.vtep}</code></td>
+                    <td><code>{row.routerId ?? "—"}</code></td>
+                    <td>{row.local ? "local" : "remote"}</td>
+                    <td>{row.reachable ? "Ethernet A-D" : "no Ethernet A-D"}</td>
+                  </tr>
+                ))}
+                {view.ethernetSegmentPeers.length === 0 && (
+                  <tr><td colSpan={5}>No Ethernet Segment peer is known.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </>
+        )}
+
+        {section === "df-election" && (
+          <>
+            <h2>Designated Forwarder Election</h2>
+            <p className="section-note">
+              Every participating leaf runs the same deterministic election over the same canonically
+              ordered candidate list, so all of them reach an identical answer without one telling
+              another what it decided. Exactly one leaf is DF per <code>&lt;ESI, VLAN&gt;</code>; the
+              non-DF keeps its attachment as a backup and does not forward toward the CE.
+            </p>
+            <table className="data-table">
+              <thead><tr>
+                <th>ESI</th><th>VLAN</th><th>Candidates</th><th>Designated Forwarder</th><th>Local role</th>
+              </tr></thead>
+              <tbody>
+                {view.designatedForwarders.map((row) => (
+                  <tr key={`${row.esi}-${row.vlanId}`}>
+                    <td><code>{row.esi}</code></td>
+                    <td><code>{row.vlanId}</code></td>
+                    <td><code>{row.candidates.join(", ") || "—"}</code></td>
+                    <td><code>{row.designatedForwarder ?? "none"}</code></td>
+                    <td><strong>{row.localRole === "df" ? "DF" : "non-DF"}</strong></td>
+                  </tr>
+                ))}
+                {view.designatedForwarders.length === 0 && (
+                  <tr><td colSpan={5}>No Designated Forwarder has been elected.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </>
+        )}
+
+        {section === "multihoming" && (
+          <>
+            <h2>Multihoming Paths</h2>
+            <p className="section-note">
+              A MAC behind a multihomed segment is forwarded to the segment's <em>current</em>
+              {" "}Designated Forwarder rather than simply to whichever leaf advertised it. That is
+              why a mass withdrawal moves traffic without a single address being relearned. Single
+              Active never forwards over a backup — there is no aliasing here.
+            </p>
+            <table className="data-table">
+              <thead><tr><th>VNI</th><th>MAC</th><th>ESI</th><th>Primary</th><th>Backup</th></tr></thead>
+              <tbody>
+                {view.multihomingPaths.map((row) => (
+                  <tr key={`${row.vni}-${row.mac}`}>
+                    <td><code>{row.vni}</code></td>
+                    <td><code>{row.mac}</code></td>
+                    <td><code>{row.esi}</code></td>
+                    <td><code>{row.primary}</code></td>
+                    <td><code>{row.backups.join(", ") || "—"}</code></td>
+                  </tr>
+                ))}
+                {view.multihomingPaths.length === 0 && (
+                  <tr><td colSpan={5}>No remote MAC sits behind an Ethernet Segment.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </>
+        )}
+
+        {(section === "type1" || section === "type4") && (
+          <>
+            <h2>
+              {section === "type1"
+                ? "EVPN Type 1 — Ethernet Auto-Discovery"
+                : "EVPN Type 4 — Ethernet Segment"}
+            </h2>
+            <p className="section-note">
+              {section === "type1"
+                ? "A per-ES route says this VTEP still has a working attachment, so withdrawing one invalidates every MAC behind it at once. A per-EVI route says it can serve the segment in this EVI, which is what makes a deterministic backup selectable before anything fails."
+                : "A Type 4 route is how two leaves discover that they attach the same CE. The resulting candidate list is exactly what the Designated Forwarder election runs over."}
+            </p>
+            <table className="data-table">
+              <thead><tr>
+                <th>Best</th><th>RD</th><th>ESI</th>
+                <th>{section === "type1" ? "Scope" : "Originating VTEP"}</th>
+                <th>VNI</th><th>Next hop</th><th>Route targets</th><th>Originator</th>
+              </tr></thead>
+              <tbody>
+                {(section === "type1" ? type1 : type4).map((route, index) => (
+                  <tr key={`${route.routeDistinguisher}-${route.esi}-${route.scope ?? ""}-${index}`}>
+                    <td>{route.best ? "*>" : "*"}</td>
+                    <td><code>{route.routeDistinguisher}</code></td>
+                    <td><code>{route.esi ?? "—"}</code></td>
+                    <td><code>{section === "type1" ? route.scope ?? "—" : route.originatingVtep ?? "—"}</code></td>
+                    <td><code>{route.vni === 0 ? "—" : route.vni}</code></td>
+                    <td><code>{route.nextHop}</code></td>
+                    <td><code>{route.routeTargets.join(", ") || "—"}</code></td>
+                    <td><code>{route.originatorId ?? "—"}</code></td>
+                  </tr>
+                ))}
+                {(section === "type1" ? type1 : type4).length === 0 && (
+                  <tr><td colSpan={8}>No route of this type is present.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </>
+        )}
+
         {section === "peers" && (
           <>
             <h2>Remote VTEP Peers</h2>
@@ -403,17 +585,21 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
               runtime and is never saved with the lab.
             </p>
             <table className="data-table">
-              <thead><tr><th>VNI</th><th>MAC</th><th>Remote VTEP</th><th>Learned from</th></tr></thead>
+              <thead><tr>
+                <th>VNI</th><th>MAC</th><th>Remote VTEP</th><th>ESI</th><th>Backup</th><th>Learned from</th>
+              </tr></thead>
               <tbody>
                 {view.remoteMacs.map((row) => (
                   <tr key={`${row.vni}-${row.mac}`}>
                     <td><code>{row.vni}</code></td>
                     <td><code>{row.mac}</code></td>
                     <td><code>{row.remoteVtep}</code></td>
+                    <td><code>{row.ethernetSegmentId ?? "—"}</code></td>
+                    <td><code>{row.backupVteps.join(", ") || "—"}</code></td>
                     <td>{row.source === "bgp-evpn" ? "EVPN Type 2" : "data plane"}</td>
                   </tr>
                 ))}
-                {view.remoteMacs.length === 0 && <tr><td colSpan={4}>No remote MAC has been learned.</td></tr>}
+                {view.remoteMacs.length === 0 && <tr><td colSpan={6}>No remote MAC has been learned.</td></tr>}
               </tbody>
             </table>
           </>

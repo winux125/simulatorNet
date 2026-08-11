@@ -112,7 +112,14 @@ describe("VxlanEvpnPanel", () => {
     expect(ids).toContain("vxlan-evpn-config");
     expect(ids.indexOf("vxlan-evpn-config")).toBeGreaterThan(ids.indexOf("vlans-config"));
     expect(ids.indexOf("vxlan-evpn-config")).toBeLessThan(ids.indexOf("bgp-config"));
-    expect(leaf.monitorSections.filter((section) => section.group === "VXLAN & EVPN")).toHaveLength(10);
+    // Ten overlay sections plus the six M10.16 multihoming ones, all inside the
+    // one reusable panel rather than a second top-level tab.
+    const overlaySections = leaf.monitorSections.filter((section) => section.group === "VXLAN & EVPN");
+    expect(overlaySections).toHaveLength(16);
+    expect(overlaySections.map((section) => section.id)).toEqual(expect.arrayContaining([
+      "evpn-es-runtime", "evpn-es-peers-runtime", "evpn-df-runtime",
+      "evpn-type1-runtime", "evpn-type4-runtime", "evpn-multihoming-runtime",
+    ]));
     expect(leaf.mainTabs.map((tab) => tab.id)).toEqual(["physical", "config", "cli", "monitor", "attributes"]);
     expect(getDeviceWindowDefinition("router").configSections.map((section) => section.id))
       .not.toContain("vxlan-evpn-config");

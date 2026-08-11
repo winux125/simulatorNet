@@ -1,9 +1,11 @@
 import {
+  type EvpnEthernetSegmentConfiguration,
   type EvpnRoute,
   type EvpnVniConfiguration,
   type Layer3Switch,
   type NveInterfaceConfiguration,
   type NveMemberConfiguration,
+  ESI_ZERO,
   evpnRouteVni,
   maskToInt,
   MAXIMUM_VNI,
@@ -242,7 +244,7 @@ function showVxlan(session: SessionApi): string {
  */
 function showEvpnTable(
   session: SessionApi,
-  filter: { routeType?: 2 | 3 | 5; vni?: number; routeTargets?: readonly string[] } = {},
+  filter: { routeType?: 1 | 2 | 3 | 4 | 5; vni?: number; routeTargets?: readonly string[] } = {},
 ): string {
   const device = session.device as { bgp?: Layer3Switch["bgp"] };
   if (!device.bgp) throw new InvalidModeError("BGP requires a Router or an L3 Switch");
@@ -270,7 +272,112 @@ function showEvpnTable(
 function evpnRouteSubject(route: EvpnRoute): string {
   if (route.type === 2) return route.macAddress;
   if (route.type === 5) return `${route.network}/${route.prefixLength}`;
+  if (route.type === 4) return route.esi;
+  if (route.type === 1) return `${route.esi} (${route.scope})`;
   return route.originatingVtep;
+}
+
+// --- EVPN multihoming ------------------------------------------------------
+
+/**
+ * The `config-if` context as an attachment name.
+ *
+ * An Ethernet Segment attaches a CE, so it lives on an access switchport: an
+ * SVI or a subinterface is refused here rather than reaching the engine.
+ */
+function accessPortName(session: SessionApi): string {
+  const context = session.ifaceCtx;
+  if (!context) throw new InvalidModeError("Enter 'interface <name>' first");
+  if (context.sviVlan !== undefined || context.isSubinterface) {
+    throw new InvalidModeError("An Ethernet Segment is configured on an access switchport");
+  }
+  return context.physical;
+}
+
+/**
+ * Every segment edit goes through one atomic reconfigure, as the NVE does.
+ *
+ * A segment only exists once it has a usable ESI, so an edit made before
+ * `identifier` is accepted and simply has nothing to apply yet — `single-active`
+ * is both the default and the only mode M10.16 models.
+ */
+function updateEthernetSegment(
+  session: SessionApi,
+  mutate: (current: EvpnEthernetSegmentConfiguration) => EvpnEthernetSegmentConfiguration,
+  options: { requireIdentifier?: boolean } = {},
+): void {
+  const device = vtepOf(session);
+  const context = session.ethernetSegmentCtx;
+  if (!context) throw new InvalidModeError("Enter 'evpn ethernet-segment <name>' first");
+  const current = device.ethernetSegmentConfigurations().find((entry) => entry.id === context.id)
+    ?? { id: context.id, esi: ESI_ZERO, redundancyMode: "single-active" as const, interfaces: [] };
+  const next = mutate(current);
+  // A setting typed before `identifier` has nothing to apply yet. That is only
+  // true for the placeholder, never for an ESI the author actually typed: a
+  // reserved value must still be reported rather than quietly dropped.
+  if (options.requireIdentifier !== true && next.esi === ESI_ZERO) return;
+  try {
+    device.configureEthernetSegment(next);
+  } catch (error) {
+    throw new ValidationError(error instanceof Error ? error.message : "Invalid Ethernet Segment configuration.");
+  }
+}
+
+/** `show evpn ethernet-segment [detail] [esi <esi>]`. */
+function showEthernetSegments(session: SessionApi, detail: boolean, esi?: string): string {
+  const device = vtepOf(session);
+  const wanted = esi === undefined ? undefined : esi.trim().toLowerCase();
+  const states = device.ethernetSegmentStates().filter((state) => wanted === undefined || state.esi === wanted);
+  if (!states.length) return "% No Ethernet Segment is configured.";
+  const summary = table(
+    ["Segment", "ESI", "Redundancy", "Interfaces", "State", "Reason"],
+    states.map((state) => [
+      state.id,
+      state.esi,
+      state.redundancyMode,
+      state.interfaces.join(",") || "—",
+      state.up ? "up" : "down",
+      state.reason ?? "—",
+    ]),
+  );
+  if (!detail) return summary;
+  const peers = device.ethernetSegmentPeers().filter((peer) => wanted === undefined || peer.esi === wanted);
+  const df = device.designatedForwarderStates().filter((entry) => wanted === undefined || entry.esi === wanted);
+  return [
+    summary,
+    "",
+    peers.length
+      ? table(["ESI", "VTEP", "Origin", "Reachability"], peers.map((peer) => [
+        peer.esi,
+        peer.vtep,
+        peer.local ? "local" : "remote",
+        peer.reachable ? "ethernet-ad" : "no ethernet-ad",
+      ]))
+      : "% No Ethernet Segment peer is known.",
+    "",
+    df.length
+      ? table(["ESI", "VLAN", "Designated Forwarder", "Local role"], df.map((entry) => [
+        entry.esi,
+        String(entry.vlanId),
+        entry.designatedForwarder ?? "none",
+        entry.localRole.toUpperCase(),
+      ]))
+      : "% No Designated Forwarder has been elected.",
+  ].join("\n");
+}
+
+/** `show evpn df [vlan <id>]`: who forwards toward the CE, and who stands by. */
+function showDfTable(session: SessionApi, vlanId?: number): string {
+  const rows = vtepOf(session).designatedForwarderStates()
+    .filter((entry) => vlanId === undefined || entry.vlanId === vlanId);
+  if (!rows.length) return "% No Designated Forwarder has been elected.";
+  return table(["ESI", "VLAN", "Candidates", "Designated Forwarder", "Local role"], rows.map((row) => [
+    row.esi,
+    String(row.vlanId),
+    row.candidates.join(",") || "—",
+    row.designatedForwarder ?? "none",
+    row.localRole.toUpperCase(),
+  ]));
 }
 
 /** A dotted subnet mask as a prefix length, rejecting a non-contiguous mask. */
@@ -684,8 +791,83 @@ export const vxlanCommands: CommandSpec[] = [
     run: () => undefined,
   },
 
+  // --- evpn ethernet-segment (Single-Active multihoming) ------------------
+  {
+    /**
+     * `evpn ethernet-segment <name>` is its own top-level block, not a line
+     * inside `evpn`: the segment exists before any interface joins it, exactly
+     * as it is entered.
+     */
+    pattern: "evpn ethernet-segment {name}", usage: "evpn ethernet-segment <name>",
+    modes: ["config"], device: "l3-switch",
+    run: (s, p) => {
+      vtepOf(s);
+      s.ethernetSegmentCtx = { id: p.name! };
+      s.enter("config-evpn-es");
+    },
+  },
+  {
+    pattern: "no evpn ethernet-segment {name}", modes: ["config"], device: "l3-switch",
+    run: (s, p) => vtepOf(s).removeEthernetSegment(p.name!),
+  },
+  {
+    pattern: "identifier {esi}", usage: "identifier <hhhh:hhhh:hhhh:hhhh:hhhh>",
+    modes: ["config-evpn-es"], device: "l3-switch",
+    run: (s, p) => updateEthernetSegment(s, (current) => ({ ...current, esi: p.esi! }), { requireIdentifier: true }),
+  },
+  {
+    /**
+     * M10.16 models Single-Active redundancy only. All-active — and with it
+     * aliasing and MAC mobility — is refused here rather than accepted and
+     * quietly treated as something else.
+     */
+    pattern: "redundancy-mode {mode}", usage: "redundancy-mode single-active",
+    modes: ["config-evpn-es"], device: "l3-switch",
+    run: (s, p) => {
+      if (p.mode !== "single-active") {
+        throw new ValidationError("Only 'single-active' redundancy is supported; all-active is not modelled.");
+      }
+      updateEthernetSegment(s, (current) => ({ ...current, redundancyMode: "single-active" }));
+    },
+  },
+  {
+    pattern: "ethernet-segment {name}", usage: "ethernet-segment <name>",
+    modes: ["config-if"], device: "l3-switch",
+    run: (s, p) => {
+      const device = vtepOf(s);
+      try {
+        device.attachEthernetSegment(accessPortName(s), p.name!);
+      } catch (error) {
+        throw new ValidationError(error instanceof Error ? error.message : "Invalid Ethernet Segment attachment.");
+      }
+    },
+  },
+  {
+    pattern: "no ethernet-segment", modes: ["config-if"], device: "l3-switch",
+    run: (s) => vtepOf(s).detachEthernetSegment(accessPortName(s)),
+  },
+
   // --- inspection ---------------------------------------------------------
   { pattern: "show nve interfaces", modes: ["exec", "privileged"], device: "l3-switch", run: showNveInterfaces },
+  {
+    pattern: "show evpn ethernet-segment", modes: ["exec", "privileged"], device: "l3-switch",
+    run: (s) => showEthernetSegments(s, false),
+  },
+  {
+    pattern: "show evpn ethernet-segment detail", modes: ["exec", "privileged"], device: "l3-switch",
+    run: (s) => showEthernetSegments(s, true),
+  },
+  {
+    pattern: "show evpn ethernet-segment esi {esi}", usage: "show evpn ethernet-segment esi <esi>",
+    modes: ["exec", "privileged"], device: "l3-switch",
+    run: (s, p) => showEthernetSegments(s, true, p.esi!),
+  },
+  { pattern: "show evpn df", modes: ["exec", "privileged"], device: "l3-switch", run: (s) => showDfTable(s) },
+  {
+    pattern: "show evpn df vlan {vlan}", usage: "show evpn df vlan <1-4094>",
+    modes: ["exec", "privileged"], device: "l3-switch",
+    run: (s, p) => showDfTable(s, parseVlanId(p.vlan!)),
+  },
   { pattern: "show nve vni", modes: ["exec", "privileged"], device: "l3-switch", run: showNveVni },
   { pattern: "show nve peers", modes: ["exec", "privileged"], device: "l3-switch", run: showNvePeers },
   { pattern: "show vxlan", modes: ["exec", "privileged"], device: "l3-switch", run: showVxlan },
@@ -700,13 +882,13 @@ export const vxlanCommands: CommandSpec[] = [
     run: (s) => showEvpnTable(s),
   },
   {
-    pattern: "show bgp l2vpn evpn route-type {type}", usage: "show bgp l2vpn evpn route-type 2|3|5",
+    pattern: "show bgp l2vpn evpn route-type {type}", usage: "show bgp l2vpn evpn route-type 1|2|3|4|5",
     modes: ["exec", "privileged"], device: "ospf",
     run: (s, p) => {
-      if (p.type !== "2" && p.type !== "3" && p.type !== "5") {
-        throw new ValidationError("Only EVPN route types 2, 3 and 5 are supported.");
+      if (!["1", "2", "3", "4", "5"].includes(p.type ?? "")) {
+        throw new ValidationError("Only EVPN route types 1, 2, 3, 4 and 5 are supported.");
       }
-      return showEvpnTable(s, { routeType: Number(p.type) as 2 | 3 | 5 });
+      return showEvpnTable(s, { routeType: Number(p.type) as 1 | 2 | 3 | 4 | 5 });
     },
   },
   {

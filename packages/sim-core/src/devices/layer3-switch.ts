@@ -1202,12 +1202,14 @@ export class Layer3Switch extends L2Switch {
   /**
    * Whether an attachment may carry an Ethernet Segment.
    *
-   * A segment names the port a CE hangs off, so it is an access switchport or a
-   * Port-channel — never a Loopback, an SVI, `nve1` or a routed core port, and
-   * never one physical member of a bundle, because the bundle is the attachment.
+   * A segment names the port a CE hangs off, so it is an access switchport —
+   * never a Loopback, an SVI, `nve1` or a routed core port. A Port-channel is
+   * deliberately refused: an L3 Switch has no Port-channel configuration block
+   * to record the binding in, so accepting one would silently lose it on save.
+   * Nor is a bundled member accepted, because the bundle is the attachment.
    */
   private attachmentEligible(name: string): boolean {
-    if (name === NVE_INTERFACE_ID || /^(Loopback|Vlan)/iu.test(name)) return false;
+    if (name === NVE_INTERFACE_ID || /^(Loopback|Vlan|Port-channel)/iu.test(name)) return false;
     if (!this.attachmentExists(name)) return false;
     if (this.routedPorts.has(name)) return false;
     if (this.etherChannel.channelOf(name) !== undefined) return false;

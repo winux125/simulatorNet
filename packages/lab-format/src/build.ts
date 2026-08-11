@@ -66,6 +66,7 @@ import {
   applyVpnConfiguration,
   applyVxlanConfiguration,
   serializeDiscoveryConfiguration,
+  applyEthernetSegmentConfiguration,
   serializeEvpnConfiguration,
   serializeNveConfiguration,
   serializeVtepVrfConfiguration,
@@ -780,6 +781,9 @@ function applyLayer3SwitchConfiguration(device: Layer3Switch, config: Layer3Swit
   // the overlay is configured after both — and before BGP, which may activate
   // the EVPN address family that advertises it.
   applyVxlanConfiguration(device, config.nve, config.evpn);
+  // An Ethernet Segment names an attachment and takes its VLANs from the
+  // VLAN-to-VNI map, so both have to exist before it is defined.
+  applyEthernetSegmentConfiguration(device, config.evpn);
   if (config.ospf) applyOspfConfiguration(device, config.ospf);
   if (config.ospfv3) applyOspfv3Configuration(device, config.ospfv3);
   if (!deferBgp) applyBgpConfiguration(device, config.bgp, config.prefixLists, config.routeMaps, config.communityLists, config.asPathLists, config.ipv6PrefixLists);

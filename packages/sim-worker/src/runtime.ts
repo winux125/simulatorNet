@@ -535,6 +535,13 @@ export class SimulationWorkerRuntime {
       case "GET_EVPN_TYPE5_ROUTES":
       case "GET_EVPN_VRF_ROUTES":
       case "GET_EVPN_ROUTED_OVERLAY_STATUS":
+      // --- M10.16 EVPN multihoming: the same one view, more entry points ---
+      case "GET_EVPN_ETHERNET_SEGMENTS":
+      case "GET_EVPN_ES_PEERS":
+      case "GET_EVPN_DF_STATE":
+      case "GET_EVPN_AD_ROUTES":
+      case "GET_EVPN_ES_ROUTES":
+      case "GET_EVPN_MULTIHOMING_PATHS":
         return this.vxlanEvpnState(requireString(request, "deviceId"));
       case "CLEAR_EVPN_ROUTED_RUNTIME": {
         const deviceId = requireString(request, "deviceId");
@@ -2847,7 +2854,8 @@ export class SimulationWorkerRuntime {
         };
       }),
       peers: device.vxlanPeerSummaries().map((row) => ({ ...row })),
-      remoteMacs: device.remoteMacEntries().map((row) => ({ ...row })),
+      remoteMacs: device.remoteMacEntries().map((row) => ({ ...row, backupVteps: [...row.backupVteps] })),
+      ...this.evpnMultihomingState(device),
       evpnRoutes: device.evpnRoutes().map((route) => ({
         type: route.type,
         routeDistinguisher: route.routeDistinguisher,
@@ -2873,6 +2881,51 @@ export class SimulationWorkerRuntime {
       evpnAddressFamilyActive: device.evpnAddressFamilyActive(),
       problems: device.vxlanProblems(),
       ...this.routedEvpnState(device),
+    };
+  }
+
+  /**
+   * The multihoming half of the overlay, as plain JSON.
+   *
+   * Every table here is runtime: the discovered peers, the elected Designated
+   * Forwarder and each primary/backup path are rebuilt from the Ethernet Segment
+   * configuration and the imported routes, identically in the browser worker and
+   * in the verifier. Nothing here reaches a `LabDocument` or a submission.
+   */
+  private evpnMultihomingState(device: Layer3Switch) {
+    return {
+      ethernetSegments: device.ethernetSegmentStates().map((state) => ({
+        id: state.id,
+        esi: state.esi,
+        redundancyMode: state.redundancyMode,
+        interfaces: [...state.interfaces],
+        operationalInterfaces: [...state.operationalInterfaces],
+        up: state.up,
+        reason: state.reason,
+        vlanIds: [...state.vlanIds],
+      })),
+      ethernetSegmentPeers: device.ethernetSegmentPeers().map((peer) => ({
+        esi: peer.esi,
+        vtep: peer.vtep,
+        routerId: peer.routerId,
+        local: peer.local,
+        reachable: peer.reachable,
+      })),
+      designatedForwarders: device.designatedForwarderStates().map((entry) => ({
+        esi: entry.esi,
+        vlanId: entry.vlanId,
+        candidates: [...entry.candidates],
+        designatedForwarder: entry.designatedForwarder,
+        localRole: entry.localRole,
+      })),
+      multihomingPaths: device.remoteMacEntries()
+        .flatMap((row) => row.ethernetSegmentId === undefined ? [] : [{
+          vni: row.vni,
+          mac: row.mac,
+          esi: row.ethernetSegmentId,
+          primary: row.remoteVtep,
+          backups: [...row.backupVteps],
+        }]),
     };
   }
 

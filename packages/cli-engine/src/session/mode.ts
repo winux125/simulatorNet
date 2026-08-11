@@ -21,6 +21,7 @@ export type CliMode =
   | "config-vlan-config" // vlan configuration <id>: Switch(config-vlan-config)#
   | "config-evpn" // evpn: Switch(config-evpn)#
   | "config-evpn-vni" // vni <n> l2: Switch(config-evpn-vni)#
+  | "config-evpn-es" // evpn ethernet-segment <name>: Switch(config-evpn-es)#
   | "config-router"; // routing process config: Router(config-router)#
 
 /** The prompt suffix for a mode, appended after the device hostname. */
@@ -68,6 +69,8 @@ export function promptSuffix(mode: CliMode): string {
       return "(config-evpn)#";
     case "config-evpn-vni":
       return "(config-evpn-vni)#";
+    case "config-evpn-es":
+      return "(config-evpn-es)#";
     case "config-router":
       return "(config-router)#";
   }

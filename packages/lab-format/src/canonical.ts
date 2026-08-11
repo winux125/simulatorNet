@@ -841,6 +841,17 @@ function canonicalVxlan(config: Layer3SwitchDeviceConfig | undefined) {
           exportRouteTargets: [...new Set(vni.exportRouteTargets)].sort(),
         })),
       anycastGatewayMac: config.evpn.anycastGatewayMac?.toLowerCase(),
+      // An absent segment list stays absent, so a pre-M10.16 lab is byte-identical.
+      ethernetSegments: config.evpn.ethernetSegments === undefined
+        ? undefined
+        : [...config.evpn.ethernetSegments]
+          .sort((a, b) => a.esi.localeCompare(b.esi) || a.id.localeCompare(b.id))
+          .map((segment) => ({
+            id: segment.id,
+            esi: segment.esi.toLowerCase(),
+            redundancyMode: segment.redundancyMode,
+            interfaces: [...new Set(segment.interfaces)].sort((a, b) => a.localeCompare(b)),
+          })),
     },
     vrfs: config?.vrfs === undefined ? undefined : [...config.vrfs]
       .sort((a, b) => a.id.localeCompare(b.id))

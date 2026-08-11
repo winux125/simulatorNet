@@ -12,6 +12,7 @@ import { MPLS_DEMO_LABS } from "./mpls-demo-labs";
 import { MBGP_IPV6_DEMO_LABS } from "./mbgp-ipv6-demo-labs";
 import { VXLAN_EVPN_DEMO_LABS } from "./vxlan-evpn-demo-labs";
 import { ROUTED_EVPN_DEMO_LABS } from "./routed-evpn-demo-labs";
+import { EVPN_MULTIHOMING_DEMO_LABS } from "./evpn-multihoming-demo-labs";
 import { ALL_DEVICES_ICON_DEMO } from "./icon-profile-demo";
 
 function ports(prefix: string, count: number): Array<{ id: string }> {
@@ -340,6 +341,8 @@ export const DEMO_LABS = [
   ...VXLAN_EVPN_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
   // M10.15 routed EVPN: distributed anycast gateway, L3VNI and symmetric IRB.
   ...ROUTED_EVPN_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
+  // M10.16 EVPN Single-Active multihoming: Ethernet Segments, DF and failover.
+  ...EVPN_MULTIHOMING_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
 ] as const;
 
 export type DemoLabId = (typeof DEMO_LABS)[number]["id"];

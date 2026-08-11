@@ -466,6 +466,8 @@ function validateVxlan(
     }
   });
 
+  validateEthernetSegments(config, path, evpnVnis);
+
   const nve = config.nve;
   if (!nve) return;
   const nvePath = `${path}.nve`;
@@ -522,6 +524,77 @@ function validateVxlan(
       fail("evpn-extended-community-required", `${path}.bgp.neighbors`,
         `EVPN neighbor ${withoutExtended.address} needs 'send-community extended' to carry route targets`);
     }
+  });
+}
+
+/**
+ * EVPN Ethernet Segments.
+ *
+ * What is checked here is what makes a document *loadable*: a well-formed ESI,
+ * a supported redundancy mode, an attachment that exists and belongs to only one
+ * segment. Whether the other leaf actually shares the ESI, whether its route
+ * targets match and who wins the Designated Forwarder election are runtime
+ * questions — a document that gets those wrong still opens, and says so in
+ * Problems rather than refusing to load at all.
+ */
+function validateEthernetSegments(
+  config: Layer3SwitchDeviceConfig,
+  path: string,
+  evpnVnis: ReadonlyMap<number, unknown>,
+): void {
+  const segments = config.evpn?.ethernetSegments ?? [];
+  if (segments.length === 0) return;
+  const mappedVlans = new Map((config.nve?.members ?? []).map((member) => [member.vlanId, member.vni]));
+  const attachments = new Map<string, string>();
+  const seenIds = new Set<string>();
+  const seenEsis = new Set<string>();
+  segments.forEach((segment, index) => {
+    const segmentPath = `${path}.evpn.ethernetSegments[${index}]`;
+    if (seenIds.has(segment.id)) {
+      fail("duplicate-ethernet-segment", `${segmentPath}.id`, `Duplicate Ethernet Segment '${segment.id}'`);
+    }
+    if (seenEsis.has(segment.esi)) {
+      fail("duplicate-esi", `${segmentPath}.esi`, `ESI ${segment.esi} is already used on this device`);
+    }
+    seenIds.add(segment.id);
+    seenEsis.add(segment.esi);
+    if (segment.interfaces.length === 0) {
+      fail("ethernet-segment-without-attachment", `${segmentPath}.interfaces`,
+        `Ethernet Segment '${segment.id}' has no attachment`);
+    }
+    segment.interfaces.forEach((name, attachmentIndex) => {
+      const attachmentPath = `${segmentPath}.interfaces[${attachmentIndex}]`;
+      const owner = attachments.get(name);
+      if (owner !== undefined) {
+        fail("ethernet-segment-attachment-reused", attachmentPath,
+          `Interface '${name}' already belongs to Ethernet Segment '${owner}'`);
+      }
+      attachments.set(name, segment.id);
+      const iface = config.interfaces.find((entry) => entry.id === name);
+      if (!iface) {
+        // A Port-channel lands here too: an L3 Switch has no Port-channel
+        // configuration block, so a binding on one could never be saved.
+        fail("unknown-ethernet-segment-attachment", attachmentPath,
+          `Ethernet Segment '${segment.id}' names interface '${name}', which is not an access switchport on this device`);
+      }
+      // A segment attaches a CE, so it lives on an access switchport or a
+      // Port-channel — never a routed core port, a Loopback, an SVI or nve1.
+      if (iface && iface.mode !== "access") {
+        fail("invalid-ethernet-segment-attachment", attachmentPath,
+          `Interface '${name}' must be an access switchport to carry an Ethernet Segment`);
+      }
+      if (iface && iface.mode === "access" && !mappedVlans.has(iface.accessVlan)) {
+        fail("ethernet-segment-vlan-not-mapped", attachmentPath,
+          `Ethernet Segment '${segment.id}' attaches VLAN ${iface.accessVlan}, which maps to no VNI`);
+      }
+      if (iface && iface.mode === "access") {
+        const vni = mappedVlans.get(iface.accessVlan);
+        if (vni !== undefined && !evpnVnis.has(vni)) {
+          fail("ethernet-segment-vni-not-defined", attachmentPath,
+            `Ethernet Segment '${segment.id}' serves VNI ${vni}, which has no 'evpn vni ${vni} l2' block`);
+        }
+      }
+    });
   });
 }
 

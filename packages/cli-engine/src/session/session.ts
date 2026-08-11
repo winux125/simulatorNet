@@ -27,6 +27,7 @@ import type {
   RouterProcessContext,
   RouteMapContext,
   SessionApi,
+  EthernetSegmentContext,
   EvpnContext,
   NveContext,
   VlanConfigurationContext,
@@ -65,6 +66,7 @@ export class CliSession implements SessionApi {
   nveCtx: NveContext | undefined;
   vlanConfigCtx: VlanConfigurationContext | undefined;
   evpnCtx: EvpnContext | undefined;
+  ethernetSegmentCtx: EthernetSegmentContext | undefined;
   private pendingInput: "ping-target" | undefined;
   private executionMode: NetworkExecutionMode = "auto";
   private pendingOperation: (() => string | undefined) | undefined;
@@ -197,6 +199,7 @@ export class CliSession implements SessionApi {
     if (mode !== "config-evpn" && mode !== "config-evpn-vni") this.evpnCtx = undefined;
     if (mode === "config-evpn" && this.evpnCtx) this.evpnCtx.vni = undefined;
     if (mode !== "config-vlan-config") this.vlanConfigCtx = undefined;
+    if (mode !== "config-evpn-es") this.ethernetSegmentCtx = undefined;
     this.mode = mode;
   }
 

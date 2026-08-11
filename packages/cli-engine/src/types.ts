@@ -91,6 +91,11 @@ export interface EvpnContext {
   vni: number | undefined;
 }
 
+/** The `evpn ethernet-segment <name>` block being edited. */
+export interface EthernetSegmentContext {
+  id: string;
+}
+
 export interface VrfContext {
   id: string;
   name: string;
@@ -157,6 +162,7 @@ export interface SessionApi {
   nveCtx: NveContext | undefined;
   vlanConfigCtx: VlanConfigurationContext | undefined;
   evpnCtx: EvpnContext | undefined;
+  ethernetSegmentCtx: EthernetSegmentContext | undefined;
   /** Transition to another mode (clears context as appropriate). */
   enter(mode: CliMode): void;
   /**

@@ -118,7 +118,7 @@ export const navigationCommands: CommandSpec[] = [
     modes: [
       "config-if", "config-vlan", "config-acl", "config-line", "config-aaa-server",
       "config-cmap", "config-pmap", "config-router", "config-route-map",
-      "config-vrf", "config-nve", "config-vlan-config", "config-evpn",
+      "config-vrf", "config-nve", "config-vlan-config", "config-evpn", "config-evpn-es",
       "config-ikev2-proposal", "config-ikev2-peer", "config-ipsec-profile",
     ],
     device: "network",
@@ -162,7 +162,7 @@ export const navigationCommands: CommandSpec[] = [
       "config", "config-if", "config-vlan", "config-acl", "config-line", "config-aaa-server",
       "config-cmap", "config-pmap", "config-pmap-c", "config-router", "config-route-map",
       "config-vrf", "config-nve", "config-nve-vni", "config-vlan-config",
-      "config-evpn", "config-evpn-vni",
+      "config-evpn", "config-evpn-vni", "config-evpn-es",
       "config-ikev2-proposal", "config-ikev2-peer", "config-ipsec-profile",
     ],
     device: "network",

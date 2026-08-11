@@ -740,6 +740,67 @@ optional, so a pre-M10.15 lab opens unchanged. It must never store learned Type
 5 routes, imported VRF routes, routed-overlay runtime, ARP caches, counters or
 a remote-VTEP cache.
 
+### EVPN Single-Active multihoming
+
+An **Ethernet Segment** is one CE attached to two leaves, named by a shared
+**ESI**. The ESI is a canonical five-group lowercase string
+(`0000:0000:0000:0000:0001`), not a byte array: it is only ever compared, sorted
+and displayed, so one canonical spelling is both the storage form and the
+comparison key. ESI 0 means single-homed and MAX-ESI is reserved; both are
+refused by the CLI, the parser, the schema and the engine alike. One ESI exists
+on several VTEPs — that is the point — but on one VTEP it names one segment, and
+an attachment belongs to at most one. A segment attaches to an **access
+switchport** only: a Loopback, SVI, `nve1`, routed port, Port-channel or bundled
+member is refused, and no cross-device LACP is invented.
+
+M10.16 models **Single-Active** redundancy alone. All-Active, aliasing, MAC
+mobility, HRW and preference-based DF election, AC-DF, duplicate-MAC dampening,
+MLAG/vPC, multihoming for an L3VNI or IPv6, and EVPN over MPLS are not modelled;
+an unsupported value is reported at every parser boundary, never downgraded.
+There is deliberately no `df-preference` field: a persisted preference nothing
+reads would be a lie.
+
+**Type 4** advertises the segment and builds the DF candidate list. **Type 1**
+has two scopes: *per-ES* says this VTEP still has a working attachment, so one
+withdrawal invalidates every MAC behind it at once — the fast mass withdrawal;
+*per-EVI* says it can serve the segment in this EVI, which is what makes a
+deterministic backup selectable before anything fails. Both ride the existing
+`l2vpn-evpn` family — one FSM, one TCP session, one comparator, one policy
+engine — and the route reflector reflects them unchanged. A segment has no route
+target of its own: it borrows the export targets of the VNIs its attachment
+serves, so an RT mismatch isolates it exactly as it isolates a MAC. There is no
+MPLS ESI label.
+
+The **DF election** is the documented modulus one: order the candidate VTEP
+addresses numerically, pick `vlan mod N`. Every participant runs it over the same
+canonically ordered list and reaches an identical answer without telling anyone.
+Exactly one leaf is DF per `<ESI, VLAN>`. The non-DF keeps its attachment as a
+backup and carries no tenant data on it in either direction — a frame arriving
+there is refused *before* it is learned, so it never advertises a MAC it may not
+forward to. It is never administratively shut for losing the election.
+
+A **Type 2** learned behind a multihomed attachment carries a non-zero ESI, and
+the receiving leaf resolves it through the *segment* rather than the route's next
+hop: primary is the current DF with usable per-ES reachability, backups are the
+other VTEPs with per-EVI reachability, in stable address order. Single-Active
+never forwards over a backup. That dependency lives in one function, never as an
+`if (esi)` scattered through the forwarding paths — which is what lets a mass
+withdrawal move traffic with no address relearned and no topology rebuild.
+
+**Split horizon** stamps the ingress segment onto the VXLAN packet as simulator
+metadata, never an Ethernet or VXLAN header field, and is checked before the DF
+role: a frame that entered on one segment never goes back to it.
+
+Convergence keeps **no periodic timer** — a repeating event would leave the
+deterministic queue permanently non-empty and `runUntilIdle()` would never
+return.
+
+`LabDocument` stores `evpn.ethernetSegments` — name, ESI, redundancy mode and
+attachment list — and nothing else; the key is optional, so a pre-M10.16 lab
+opens unchanged. It must never store the discovered peer table, the elected
+Designated Forwarder, a Type 1 or Type 4 route, a primary/backup path, counters
+or failover state. See `docs/evpn-multihoming.md`.
+
 ## TypeScript and code conventions
 
 - ESM packages use explicit, acyclic boundaries.

@@ -268,6 +268,25 @@ export function applyVxlanConfiguration(
   });
 }
 
+/**
+ * Ethernet Segments are applied *after* the NVE and the switchports exist: a
+ * segment names an attachment and derives its VLANs from the VLAN-to-VNI map,
+ * so neither can be missing when it is configured.
+ */
+export function applyEthernetSegmentConfiguration(
+  device: Layer3Switch,
+  evpn: EvpnConfig | undefined,
+): void {
+  for (const segment of evpn?.ethernetSegments ?? []) {
+    device.configureEthernetSegment({
+      id: segment.id,
+      esi: segment.esi,
+      redundancyMode: segment.redundancyMode,
+      interfaces: [...segment.interfaces],
+    });
+  }
+}
+
 export function serializeNveConfiguration(device: Layer3Switch): NveInterfaceConfig | undefined {
   const nve = device.nveConfiguration();
   if (!nve) return undefined;
@@ -320,8 +339,20 @@ export function serializeEvpnConfiguration(device: Layer3Switch): EvpnConfig | u
     exportRouteTargets: [...entry.exportRouteTargets],
   }));
   const anycastGatewayMac = device.fabricConfiguration().anycastGatewayMac;
-  if (vnis.length === 0 && anycastGatewayMac === undefined) return undefined;
-  return { vnis, anycastGatewayMac };
+  const segments = device.ethernetSegmentConfigurations().map((segment) => ({
+    id: segment.id,
+    esi: segment.esi,
+    redundancyMode: segment.redundancyMode,
+    interfaces: [...segment.interfaces],
+  }));
+  if (vnis.length === 0 && anycastGatewayMac === undefined && segments.length === 0) return undefined;
+  return {
+    vnis,
+    anycastGatewayMac,
+    // A fabric with no multihoming keeps exactly its pre-M10.16 shape, so an
+    // older lab round-trips without gaining an empty key.
+    ...(segments.length === 0 ? {} : { ethernetSegments: segments }),
+  };
 }
 
 export function applyOspfConfiguration(device: Router | Layer3Switch, config: OspfProcessConfig): void {

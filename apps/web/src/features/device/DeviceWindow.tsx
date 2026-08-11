@@ -387,6 +387,12 @@ function MonitorSection(props: DeviceWindowProps & { section: DeviceWindowSectio
     "evpn-l3vni-runtime": "l3vni",
     "evpn-vrf-routes-runtime": "vrf-routes",
     "evpn-routed-overlay-runtime": "routed-overlay",
+    "evpn-es-runtime": "ethernet-segments",
+    "evpn-es-peers-runtime": "es-peers",
+    "evpn-df-runtime": "df-election",
+    "evpn-type1-runtime": "type1",
+    "evpn-type4-runtime": "type4",
+    "evpn-multihoming-runtime": "multihoming",
   };
   const vxlanSection = vxlanRuntimeSection[section];
   if (vxlanSection) return props.runtimeAvailable

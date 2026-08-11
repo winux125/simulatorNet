@@ -659,6 +659,34 @@ function evpnLines(evpn: EvpnConfig | undefined): string[] {
   return out;
 }
 
+/**
+ * `evpn ethernet-segment <name>`: the segment definitions.
+ *
+ * They render as their own top-level blocks rather than inside `evpn`, because
+ * that is where they are entered — and the interface's `ethernet-segment <name>`
+ * line, which renders with the interface, is what binds them to an attachment.
+ */
+function ethernetSegmentLines(evpn: EvpnConfig | undefined): string[] {
+  const segments = sorted(evpn?.ethernetSegments, (a, b) => byString(a.esi, b.esi) || byString(a.id, b.id));
+  if (segments.length === 0) return [];
+  const out: string[] = [];
+  for (const segment of segments) {
+    out.push(
+      `evpn ethernet-segment ${segment.id}`,
+      ` identifier ${segment.esi}`,
+      ` redundancy-mode ${segment.redundancyMode}`,
+      "!",
+    );
+  }
+  return out;
+}
+
+/** The Ethernet Segment one attachment belongs to, for its interface block. */
+function ethernetSegmentOf(evpn: EvpnConfig | undefined, interfaceId: string): string | undefined {
+  return sorted(evpn?.ethernetSegments, (a, b) => byString(a.id, b.id))
+    .find((segment) => segment.interfaces.includes(interfaceId))?.id;
+}
+
 function aclLines(acls: readonly Ipv4AclConfig[] | undefined): string[] {
   const out: string[] = [];
   for (const acl of sorted(acls, byId)) {
@@ -1067,6 +1095,8 @@ function renderLayer3Switch(config: Layer3SwitchDeviceConfig): string[] {
   }
   out.push(...spanningTreeLines(config.spanningTree));
   out.push(...qosLines(config.qos));
+  // A segment has to be defined before an interface can join it.
+  out.push(...ethernetSegmentLines(config.evpn));
   const channelOf = new Map<string, { channelId: number; mode: string }>();
   for (const channel of config.etherChannels ?? []) {
     for (const member of channel.members) channelOf.set(member, { channelId: channel.channelId, mode: channel.mode });
@@ -1085,6 +1115,8 @@ function renderLayer3Switch(config: Layer3SwitchDeviceConfig): string[] {
       out.push(...ospfv3InterfaceLines(config.ospfv3, iface.id));
     } else {
       out.push(...switchportLines(iface));
+      const segment = ethernetSegmentOf(config.evpn, iface.id);
+      if (segment !== undefined) out.push(` ethernet-segment ${segment}`);
     }
     const channel = channelOf.get(iface.id);
     if (channel) out.push(` channel-group ${channel.channelId} mode ${channel.mode}`);

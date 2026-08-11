@@ -426,8 +426,45 @@ export const AnycastGatewayMacSchema = z.string()
   .refine((value) => (Number.parseInt(value.slice(0, 2), 16) & 0x01) === 0, "Anycast gateway MAC must be unicast")
   .refine((value) => !/^0{2}(:0{2}){5}$/u.test(value), "Anycast gateway MAC must not be all zeroes");
 
+/**
+ * A 10-byte Ethernet Segment Identifier in the canonical five-group form:
+ * `0000:0000:0000:0000:0001`.
+ *
+ * ESI 0 means "single-homed" and MAX-ESI is reserved, so neither can name a
+ * segment two VTEPs are supposed to discover each other through.
+ */
+export const EsiSchema = z.string()
+  .regex(/^[0-9a-f]{4}(:[0-9a-f]{4}){4}$/u, "Expected an Ethernet Segment Identifier")
+  .refine((value) => value !== "0000:0000:0000:0000:0000", "ESI 0 is reserved for single-homed attachments")
+  .refine((value) => value !== "ffff:ffff:ffff:ffff:ffff", "MAX-ESI is reserved");
+
+/**
+ * `evpn ethernet-segment <name>`: one CE attached to two leaves.
+ *
+ * M10.16 models **Single-Active** redundancy only, so the mode is a literal
+ * rather than an enum: an all-active configuration is reported at the parser
+ * boundary instead of being stored as something the engine cannot honour.
+ * There is deliberately no DF preference field — the election is the documented
+ * modulus one, and a persisted preference nothing reads would be a lie.
+ */
+export const EvpnEthernetSegmentConfigSchema = z.object({
+  id: z.string().min(1).max(64),
+  esi: EsiSchema,
+  redundancyMode: z.literal("single-active"),
+  /** Access switchports or Port-channels; never a Loopback, SVI or routed port. */
+  interfaces: z.array(z.string().min(1).max(64)).max(8).default([]),
+}).strict();
+export type EvpnEthernetSegmentConfig = z.infer<typeof EvpnEthernetSegmentConfigSchema>;
+
 export const EvpnConfigSchema = z.object({
   vnis: z.array(EvpnVniConfigSchema).max(64).default([]),
+  /**
+   * M10.16 Ethernet Segments. Optional, so every lab written before this
+   * milestone opens unchanged: only configuration lives here, never the
+   * discovered peers, the elected Designated Forwarder, a Type 1/4 route or a
+   * primary/backup path.
+   */
+  ethernetSegments: z.array(EvpnEthernetSegmentConfigSchema).max(64).optional(),
   /**
    * `fabric forwarding anycast-gateway-mac`. Fabric-wide rather than per-SVI:
    * that is precisely what makes the gateway distributed, so a host keeps one

@@ -789,9 +789,52 @@ export interface VxlanEvpnView {
   remoteMacs: Array<{
     vni: number;
     mac: string;
+    /** The VTEP forwarded to now — for a multihomed MAC, the current DF. */
     remoteVtep: string;
     source: "data-plane" | "bgp-evpn";
     lastSeenNs: number;
+    /** The Ethernet Segment the MAC sits behind, when it is multihomed. */
+    ethernetSegmentId?: string;
+    /** Deterministic backups. Single-Active never forwards over them. */
+    backupVteps: string[];
+  }>;
+  /**
+   * M10.16 EVPN Single-Active multihoming. Every table here is runtime: the
+   * discovered peers, the elected Designated Forwarder and each primary/backup
+   * path are rebuilt from structured configuration by the browser worker and the
+   * verifier alike, and none of them reaches a `LabDocument`.
+   */
+  ethernetSegments: Array<{
+    id: string;
+    esi: string;
+    redundancyMode: "single-active";
+    interfaces: string[];
+    operationalInterfaces: string[];
+    up: boolean;
+    reason?: string;
+    vlanIds: number[];
+  }>;
+  ethernetSegmentPeers: Array<{
+    esi: string;
+    vtep: string;
+    routerId?: string;
+    local: boolean;
+    reachable: boolean;
+  }>;
+  designatedForwarders: Array<{
+    esi: string;
+    vlanId: number;
+    candidates: string[];
+    designatedForwarder?: string;
+    localRole: "df" | "non-df";
+  }>;
+  /** One row per remote MAC that sits behind an Ethernet Segment. */
+  multihomingPaths: Array<{
+    vni: number;
+    mac: string;
+    esi: string;
+    primary: string;
+    backups: string[];
   }>;
   evpnRoutes: Array<{
     type: 1 | 2 | 3 | 4 | 5;
@@ -1112,6 +1155,13 @@ export type SimWorkerRequest =
   | { type: "GET_EVPN_ROUTED_OVERLAY_STATUS"; requestId: string; deviceId: string }
   | { type: "CLEAR_EVPN_ROUTED_RUNTIME"; requestId: string; deviceId: string }
   | { type: "RESTART_EVPN_L3VNI"; requestId: string; deviceId: string; vni: number }
+  // --- M10.16 EVPN multihoming inspection (runtime, never persisted) ---
+  | { type: "GET_EVPN_ETHERNET_SEGMENTS"; requestId: string; deviceId: string }
+  | { type: "GET_EVPN_ES_PEERS"; requestId: string; deviceId: string }
+  | { type: "GET_EVPN_DF_STATE"; requestId: string; deviceId: string }
+  | { type: "GET_EVPN_AD_ROUTES"; requestId: string; deviceId: string }
+  | { type: "GET_EVPN_ES_ROUTES"; requestId: string; deviceId: string }
+  | { type: "GET_EVPN_MULTIHOMING_PATHS"; requestId: string; deviceId: string }
   // --- M10.7 management plane (inspection + bounded runtime actions) ---
   | { type: "GET_REMOTE_SESSIONS"; requestId: string; deviceId: string }
   | { type: "CLEAR_REMOTE_LINE"; requestId: string; deviceId: string; line: number }
@@ -1314,6 +1364,12 @@ export interface SimWorkerPayloadByType {
   GET_EVPN_ROUTED_OVERLAY_STATUS: VxlanEvpnView;
   CLEAR_EVPN_ROUTED_RUNTIME: VxlanEvpnView;
   RESTART_EVPN_L3VNI: VxlanEvpnView;
+  GET_EVPN_ETHERNET_SEGMENTS: VxlanEvpnView;
+  GET_EVPN_ES_PEERS: VxlanEvpnView;
+  GET_EVPN_DF_STATE: VxlanEvpnView;
+  GET_EVPN_AD_ROUTES: VxlanEvpnView;
+  GET_EVPN_ES_ROUTES: VxlanEvpnView;
+  GET_EVPN_MULTIHOMING_PATHS: VxlanEvpnView;
   GET_REMOTE_SESSIONS: RemoteSessionsView;
   CLEAR_REMOTE_LINE: RemoteSessionsView;
   GET_AAA_STATUS: AaaStatusResponse;
