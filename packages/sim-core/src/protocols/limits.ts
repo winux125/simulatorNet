@@ -96,6 +96,16 @@ export const DEFAULT_CONTROL_PROTOCOL_LIMITS = Object.freeze({
   maximumEvpnIpPrefixRoutesPerVrf: 1_024,
   maximumEvpnIpPrefixRoutesPerDevice: 4_096,
   maximumImportedEvpnRoutesPerVrf: 1_024,
+
+  // --- EVPN multihoming (Single-Active) --------------------------------
+  maximumEthernetSegmentsPerDevice: 64,
+  maximumInterfacesPerEthernetSegment: 8,
+  /** VTEPs that may share one Ethernet Segment, this device included. */
+  maximumEsPeersPerSegment: 8,
+  maximumEvpnEsRoutesPerDevice: 1_024,
+  maximumEvpnAdRoutesPerDevice: 4_096,
+  /** DF elections one Auto run or graded action may perform. */
+  maximumDfElectionsPerOperation: 4_096,
 });
 
 export type ControlProtocolLimits = typeof DEFAULT_CONTROL_PROTOCOL_LIMITS;
@@ -122,7 +132,8 @@ export type ControlProtocolBudgetKey =
   | "vxlanEvents"
   | "bumReplicas"
   | "routedVxlanPackets"
-  | "evpnUpdates";
+  | "evpnUpdates"
+  | "dfElections";
 
 const BUDGET_LIMIT_KEYS: Readonly<Record<ControlProtocolBudgetKey, keyof ControlProtocolLimits>> = Object.freeze({
   bpduEvents: "maximumBpduEventsPerOperation",
@@ -147,6 +158,7 @@ const BUDGET_LIMIT_KEYS: Readonly<Record<ControlProtocolBudgetKey, keyof Control
   bumReplicas: "maximumBumReplicasPerOperation",
   routedVxlanPackets: "maximumRoutedVxlanPacketsPerOperation",
   evpnUpdates: "maximumEvpnUpdatesPerOperation",
+  dfElections: "maximumDfElectionsPerOperation",
 });
 
 /** Raised when a lab exceeds a structural or per-operation protocol bound. */

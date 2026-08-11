@@ -161,17 +161,38 @@ export interface EvpnIpPrefixRoute {
   readonly routeId: string;
 }
 
-export type EvpnNlri = EvpnMacIpRoute | EvpnImetRoute | EvpnIpPrefixRoute;
+/**
+ * EVPN Route Type 4 — Ethernet Segment.
+ *
+ * This is how two leaves discover that they attach the *same* CE: each one
+ * advertises the shared ESI, and the resulting candidate list is what the
+ * Designated Forwarder election runs over. It carries no MAC and no prefix —
+ * only the segment identity and the VTEP that owns an attachment to it.
+ */
+export interface EvpnEthernetSegmentRoute {
+  readonly type: 4;
+  readonly routeDistinguisher: string;
+  readonly esi: string;
+  readonly originatingVtep: Ipv4;
+  readonly routeTargets: readonly string[];
+  readonly nextHop: Ipv4;
+  readonly pathAttributes: BgpPathAttributes;
+  readonly routeId: string;
+}
+
+export type EvpnNlri = EvpnMacIpRoute | EvpnImetRoute | EvpnIpPrefixRoute | EvpnEthernetSegmentRoute;
 
 /** The identity an EVPN withdrawal names; never the whole advertised route. */
 export interface EvpnWithdrawnNlri {
-  readonly type: 2 | 3 | 5;
+  readonly type: 2 | 3 | 4 | 5;
   readonly routeDistinguisher: string;
   readonly ethernetTag: number;
   readonly vni: number;
   readonly macAddress?: string;
-  /** Type 3 only: the originating router address is part of the NLRI. */
+  /** Type 3 and Type 4: the originating router address is part of the NLRI. */
   readonly originatingVtep?: Ipv4;
+  /** Type 4: the Ethernet Segment the route is about. */
+  readonly esi?: string;
   /** Type 5 only: the advertised prefix is what identifies the route. */
   readonly network?: Ipv4;
   readonly prefixLength?: number;
@@ -185,16 +206,19 @@ export interface EvpnWithdrawnNlri {
  * announce their own membership. A Type 2 is keyed by RD and MAC, so the same
  * MAC advertised twice under one RD collapses into a single best path. A Type 5
  * is keyed by RD and prefix, so two VTEPs advertising the same tenant network
- * are two paths to compare rather than two unrelated routes.
+ * are two paths to compare rather than two unrelated routes. A Type 4 is keyed
+ * by its ESI *and* its originating VTEP, because two leaves announcing one
+ * shared segment are precisely what the DF election needs to see as two routes.
  */
 export function evpnRouteKey(route: EvpnWithdrawnNlri | EvpnNlri): string {
   return [
     route.type,
     route.routeDistinguisher,
-    route.ethernetTag,
+    "ethernetTag" in route ? route.ethernetTag : 0,
     evpnKeyVni(route),
     route.type === 2 ? route.macAddress ?? "" : "",
-    route.type === 3 ? route.originatingVtep ?? "" : "",
+    route.type === 3 || route.type === 4 ? route.originatingVtep ?? "" : "",
+    route.type === 4 ? route.esi ?? "" : "",
     route.type === 5 ? `${route.network ?? ""}/${route.prefixLength ?? ""}` : "",
   ].join("|");
 }
@@ -202,18 +226,30 @@ export function evpnRouteKey(route: EvpnWithdrawnNlri | EvpnNlri): string {
 /**
  * The VNI a route is filed under. A Type 5 names its transit **L3VNI**, so the
  * one field is enough for every RIB key, ordering and `show` row — there is no
- * second VNI on the route to disagree with it.
+ * second VNI on the route to disagree with it. A Type 4 is about a whole
+ * Ethernet Segment rather than one segment of the overlay, so it has none.
  */
 export function evpnRouteVni(route: EvpnWithdrawnNlri | EvpnNlri): number {
   return evpnKeyVni(route);
 }
 
 function evpnKeyVni(route: EvpnWithdrawnNlri | EvpnNlri): number {
-  return "l3Vni" in route ? route.l3Vni : route.vni;
+  if ("l3Vni" in route) return route.l3Vni;
+  return "vni" in route && route.vni !== undefined ? route.vni : 0;
 }
 
 /** The withdrawal identity of one advertised EVPN route. */
 export function evpnWithdrawnNlriOf(route: EvpnNlri): EvpnWithdrawnNlri {
+  if (route.type === 4) {
+    return {
+      type: 4,
+      routeDistinguisher: route.routeDistinguisher,
+      ethernetTag: 0,
+      vni: 0,
+      esi: route.esi,
+      originatingVtep: route.originatingVtep,
+    };
+  }
   if (route.type === 3) {
     return {
       type: 3,

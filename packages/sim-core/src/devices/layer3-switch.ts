@@ -11,8 +11,10 @@ import {
 import { ArpOp } from "@sim/contracts";
 import type { ArpPacket } from "../packets/arp";
 import type { Ipv4Packet } from "../packets/ipv4";
-import { DEFAULT_CONTROL_PROTOCOL_LIMITS } from "../protocols/limits";
+import { ControlProtocolConfigurationError, DEFAULT_CONTROL_PROTOCOL_LIMITS } from "../protocols/limits";
+import { parsePortChannelName } from "../protocols/etherchannel";
 import {
+  NVE_INTERFACE_ID,
   VxlanEngine,
   type EvpnFabricConfiguration,
   type EvpnVniConfiguration,
@@ -23,6 +25,14 @@ import {
   type VniOperationalState,
   type VxlanPeerSummary,
 } from "../overlay/vxlan";
+import {
+  EthernetSegmentEngine,
+  type Esi,
+  type EvpnDfState,
+  type EvpnEsPeer,
+  type EvpnEthernetSegmentConfiguration,
+  type EvpnEthernetSegmentState,
+} from "../overlay/ethernet-segment";
 import type { ImportedEvpnPrefixRoute, VrfConfiguration, VrfRoute } from "../routing/vrf";
 import { ipToInt, type Ipv4 } from "../util/ipv4";
 import type { Ipv6 } from "../util/ipv6";
@@ -120,6 +130,11 @@ export class Layer3Switch extends L2Switch {
    * plain L2 Switch stays an access/aggregation switch.
    */
   readonly vxlan = new VxlanEngine();
+  /**
+   * EVPN Single-Active multihoming. The segments are configuration; the peers,
+   * the elected Designated Forwarder and every A-D route are runtime.
+   */
+  readonly ethernetSegments = new EthernetSegmentEngine();
   private readonly routingPlane: Router;
   private readonly routedPorts = new Set<string>();
   private readonly svis = new Map<number, SviInterface>();
@@ -129,6 +144,10 @@ export class Layer3Switch extends L2Switch {
   private readonly evpnFaults = new Map<string, string>();
   /** Last originated EVPN route set, so a MAC learn only re-advertises once. */
   private evpnExportSignature = "";
+  /** Last DF election result, so an unchanged election emits no trace at all. */
+  private dfSignature = "";
+  /** Last originated Ethernet Segment set, so origination is traced once. */
+  private esExportSignature = "";
   /** SVIs configured with `fabric forwarding mode anycast-gateway`. */
   private readonly anycastGatewayVlans = new Set<number>();
 
@@ -163,6 +182,16 @@ export class Layer3Switch extends L2Switch {
     // learns how to route.
     this.routingPlane.useEvpnRoutedOverlay({
       encapsulate: (input) => this.sendRoutedVxlan(input),
+    });
+    // An Ethernet Segment is an attachment property. The segment engine asks
+    // these five questions and never reaches into the switch, exactly as the
+    // overlay engine does.
+    this.ethernetSegments.useHooks({
+      interfaceExists: (name) => this.attachmentExists(name),
+      interfaceEligible: (name) => this.attachmentEligible(name),
+      interfaceOperationalUp: (name) => this.logicalPortOperationalUp(name),
+      overlayVlansOf: (name) => this.overlayVlansOf(name),
+      localVtep: () => this.vxlan.state().sourceAddress,
     });
   }
 
@@ -683,6 +712,7 @@ export class Layer3Switch extends L2Switch {
       }
     }
     problems.push(...this.routedEvpnProblems());
+    problems.push(...this.ethernetSegmentProblems());
     return [...new Set(problems)].sort();
   }
 
@@ -781,9 +811,11 @@ export class Layer3Switch extends L2Switch {
   /** Drop every learned overlay table; configuration is untouched. */
   resetVxlanRuntime(): void {
     this.vxlan.resetRuntime();
+    this.ethernetSegments.resetRuntime();
     this.vxlanFaults.clear();
     this.evpnFaults.clear();
     this.evpnExportSignature = "";
+    this.dfSignature = "";
   }
 
   /** `shutdown`/`no shutdown` on nve1, as one bounded restart. */
@@ -1121,6 +1153,278 @@ export class Layer3Switch extends L2Switch {
     this.onOverlayMacTableChanged();
   }
 
+  // --- EVPN Ethernet Segments (Single-Active multihoming) -------------------
+
+  /** Whether a name is a switchport or a Port-channel that exists here. */
+  private attachmentExists(name: string): boolean {
+    if (this.interfaces.has(name)) return true;
+    const channelId = parsePortChannelName(name);
+    return channelId !== undefined && this.etherChannel.hasChannel(channelId);
+  }
+
+  /**
+   * Whether an attachment may carry an Ethernet Segment.
+   *
+   * A segment names the port a CE hangs off, so it is an access switchport or a
+   * Port-channel — never a Loopback, an SVI, `nve1` or a routed core port, and
+   * never one physical member of a bundle, because the bundle is the attachment.
+   */
+  private attachmentEligible(name: string): boolean {
+    if (name === NVE_INTERFACE_ID || /^(Loopback|Vlan)/iu.test(name)) return false;
+    if (!this.attachmentExists(name)) return false;
+    if (this.routedPorts.has(name)) return false;
+    if (this.etherChannel.channelOf(name) !== undefined) return false;
+    return this.portConfigOf(name).mode === "access";
+  }
+
+  /** The VLANs one attachment carries that are actually mapped to an L2VNI. */
+  private overlayVlansOf(name: string): number[] {
+    if (!this.attachmentExists(name)) return [];
+    return this.vlansCarriedBy(this.logicalPortOf(name))
+      .filter((vlanId) => this.vxlan.memberForVlan(vlanId) !== undefined);
+  }
+
+  /** `evpn ethernet-segment <name>`: define or replace one segment atomically. */
+  configureEthernetSegment(configuration: EvpnEthernetSegmentConfiguration): void {
+    this.ethernetSegments.configure(configuration);
+    this.onEthernetSegmentChanged("configured");
+  }
+
+  removeEthernetSegment(id: string): void {
+    if (this.ethernetSegments.remove(id)) this.onEthernetSegmentChanged("removed");
+  }
+
+  /** `interface <port>` → `ethernet-segment <name>`: attach one interface. */
+  attachEthernetSegment(port: string, id: string): void {
+    const current = this.ethernetSegments.configuration(id);
+    if (!current) {
+      throw new ControlProtocolConfigurationError(`Ethernet Segment '${id}' is not defined`, "id");
+    }
+    this.ethernetSegments.configure({ ...current, interfaces: [...current.interfaces, port] });
+    this.onEthernetSegmentChanged("attached");
+  }
+
+  detachEthernetSegment(port: string): void {
+    if (this.ethernetSegments.detachInterface(port)) this.onEthernetSegmentChanged("detached");
+  }
+
+  ethernetSegmentConfigurations(): EvpnEthernetSegmentConfiguration[] {
+    return this.ethernetSegments.configurations();
+  }
+
+  ethernetSegmentStates(): EvpnEthernetSegmentState[] {
+    this.syncRoutingPlane();
+    return this.ethernetSegments.states();
+  }
+
+  ethernetSegmentPeers(): EvpnEsPeer[] {
+    this.syncRoutingPlane();
+    return this.ethernetSegments.peers();
+  }
+
+  /** Every `<ESI, VLAN>` Designated Forwarder result this leaf computed. */
+  designatedForwarderStates(): EvpnDfState[] {
+    this.syncRoutingPlane();
+    return this.ethernetSegments.dfStates();
+  }
+
+  /** The ESI an attachment belongs to, or `undefined` when it is single-homed. */
+  ethernetSegmentIdOf(port: string): Esi | undefined {
+    return this.ethernetSegments.esiForInterface(this.logicalPortOf(port));
+  }
+
+  /**
+   * A segment's operational state changed: re-run the election and let BGP
+   * re-advertise. A segment that just went down withdraws its Type 4 in the same
+   * pass, which is what a remote leaf sees as the segment disappearing.
+   */
+  private onEthernetSegmentChanged(cause: string): void {
+    this.traceVxlan("evpn-es-state-changed", {
+      cause,
+      segments: this.ethernetSegments.states().map((state) => ({
+        esi: state.esi,
+        up: state.up,
+        reason: state.reason,
+      })),
+    });
+    this.runDesignatedForwarderElection(cause);
+    this.traceEthernetSegmentOrigination();
+    if (this.evpnAddressFamilyActive()) {
+      this.evpnExportSignature = "";
+      this.routingPlane.bgp.refreshRoutes();
+    }
+  }
+
+  /**
+   * Report the Type 4 routes that started or stopped existing.
+   *
+   * A segment losing its last attachment is exactly a withdrawal, so the two
+   * events are derived from one signature rather than reported by two separate
+   * code paths that could disagree.
+   */
+  private traceEthernetSegmentOrigination(): void {
+    const sourceAddress = this.vxlan.state().sourceAddress;
+    const active = this.evpnAddressFamilyActive() && sourceAddress !== undefined
+      ? this.ethernetSegments.states()
+        .filter((state) => state.up && this.esRouteTargetsFor(state.vlanIds).length > 0)
+        .map((state) => state.esi)
+      : [];
+    const signature = [...active].sort().join(",");
+    if (signature === this.esExportSignature) return;
+    const before = new Set(this.esExportSignature.split(",").filter(Boolean));
+    const after = new Set(active);
+    this.esExportSignature = signature;
+    for (const esi of [...after].filter((entry) => !before.has(entry)).sort()) {
+      this.traceVxlan("evpn-es-route-originated", {
+        addressFamily: "l2vpn-evpn",
+        routeType: 4,
+        esi,
+        vtep: sourceAddress,
+      });
+    }
+    for (const esi of [...before].filter((entry) => !after.has(entry)).sort()) {
+      this.traceVxlan("evpn-es-route-withdrawn", {
+        addressFamily: "l2vpn-evpn",
+        routeType: 4,
+        esi,
+        vtep: sourceAddress,
+      });
+    }
+  }
+
+  /**
+   * Re-run every `<ESI, VLAN>` election and report only what actually moved.
+   *
+   * Each participating leaf runs this independently over the same canonically
+   * ordered candidate list, so they all reach the same answer without one of
+   * them ever telling another what it decided.
+   */
+  private runDesignatedForwarderElection(cause: string): void {
+    const states = this.ethernetSegments.dfStates();
+    const signature = states
+      .map((state) => `${state.esi}|${state.vlanId}|${state.designatedForwarder ?? ""}|${state.localRole}`)
+      .join("\n");
+    if (signature === this.dfSignature) return;
+    const previous = new Map(this.dfSignature.split("\n").filter(Boolean).map((line) => {
+      const [esi, vlanId, df, role] = line.split("|");
+      return [`${esi}|${vlanId}`, { df, role }] as const;
+    }));
+    this.dfSignature = signature;
+    if (states.length > 0) {
+      this.engine.controlProtocolBudget.consume("dfElections", this.id);
+      this.traceVxlan("evpn-df-election-started", {
+        cause,
+        segments: [...new Set(states.map((state) => state.esi))],
+      });
+    }
+    for (const state of states) {
+      const before = previous.get(`${state.esi}|${state.vlanId}`);
+      this.traceVxlan("evpn-df-elected", {
+        esi: state.esi,
+        vlan: state.vlanId,
+        candidates: state.candidates,
+        designatedForwarder: state.designatedForwarder,
+        localRole: state.localRole,
+      });
+      if (before && before.role !== state.localRole) {
+        this.traceVxlan("evpn-df-role-changed", {
+          esi: state.esi,
+          vlan: state.vlanId,
+          from: before.role,
+          to: state.localRole,
+          designatedForwarder: state.designatedForwarder,
+        });
+      }
+    }
+  }
+
+  /** Diagnostics for the multihoming half of the overlay. */
+  private ethernetSegmentProblems(): string[] {
+    const problems: string[] = [];
+    const evpnActive = this.evpnAddressFamilyActive();
+    for (const state of this.ethernetSegmentStates()) {
+      if (!state.up) {
+        problems.push(`${this.name} Ethernet Segment ${state.id} (${state.esi}) is down: ${state.reason ?? "unknown"}.`);
+        continue;
+      }
+      if (!evpnActive) {
+        problems.push(`${this.name} Ethernet Segment ${state.id} needs 'address-family l2vpn evpn' before it can be discovered.`);
+        continue;
+      }
+      if (this.esRouteTargetsFor(state.vlanIds).length === 0) {
+        problems.push(`${this.name} Ethernet Segment ${state.id} exports no route target: add an 'evpn vni <n> l2' block for its VLAN.`);
+      }
+      if (state.vlanIds.length === 0) {
+        problems.push(`${this.name} Ethernet Segment ${state.id} carries no VLAN that maps to a VNI.`);
+      }
+      const peers = this.ethernetSegments.peersForEsi(state.esi).filter((peer) => !peer.local);
+      if (peers.length === 0) {
+        problems.push(`${this.name} Ethernet Segment ${state.id} has no remote peer: no other VTEP advertises ESI ${state.esi}.`);
+      }
+      for (const df of this.ethernetSegments.dfStates().filter((entry) => entry.esi === state.esi)) {
+        if (df.designatedForwarder === undefined) {
+          problems.push(`${this.name} has no eligible Designated Forwarder for ESI ${state.esi} VLAN ${df.vlanId}.`);
+        } else if (df.localRole === "non-df") {
+          problems.push(`${this.name} is non-DF for ESI ${state.esi} VLAN ${df.vlanId}: ${df.designatedForwarder} forwards toward the CE.`);
+        }
+      }
+    }
+    return problems;
+  }
+
+  /**
+   * The route targets an Ethernet Segment route carries.
+   *
+   * A segment has no route target of its own: it borrows the export targets of
+   * the VNIs its attachment actually serves, so an RT mismatch isolates the
+   * segment exactly as it isolates every other EVPN route, without a second
+   * import rule to keep in step.
+   */
+  private esRouteTargetsFor(vlanIds: readonly number[]): string[] {
+    const targets = new Set<string>();
+    for (const vlanId of vlanIds) {
+      const member = this.vxlan.memberForVlan(vlanId);
+      if (!member) continue;
+      for (const target of this.vxlan.evpnVni(member.vni)?.exportRouteTargets ?? []) targets.add(target);
+    }
+    return [...targets].sort();
+  }
+
+  /**
+   * The Type 4 routes this VTEP originates: one per operational local segment.
+   *
+   * Origination needs the segment up, the NVE operational, the EVPN family
+   * active and at least one route target — the same four conditions its
+   * withdrawal reverses.
+   */
+  private evpnEthernetSegmentExports(sourceAddress: Ipv4, routerId: Ipv4): EvpnRoute[] {
+    const routes: EvpnRoute[] = [];
+    for (const state of this.ethernetSegments.states()) {
+      if (!state.up) continue;
+      const routeTargets = this.esRouteTargetsFor(state.vlanIds);
+      if (routeTargets.length === 0) continue;
+      routes.push({
+        type: 4,
+        routeDistinguisher: `${routerId}:0`,
+        esi: state.esi,
+        originatingVtep: sourceAddress,
+        routeTargets,
+        nextHop: sourceAddress,
+        pathAttributes: {
+          origin: "igp" as const,
+          asPath: [] as readonly number[],
+          nextHop: sourceAddress,
+          localPreference: 100,
+          med: 0,
+        },
+        ...this.localEvpnPathState(routerId),
+        routeId: `local:evpn:4:${state.esi}:${sourceAddress}`,
+      });
+    }
+    enforceStructuralLimit("maximumEvpnEsRoutesPerDevice", routes.length);
+    return routes;
+  }
+
   // --- BGP EVPN control plane ----------------------------------------------
 
   /** `true` once at least one neighbor has `l2vpn evpn` activated. */
@@ -1202,6 +1506,7 @@ export class Layer3Switch extends L2Switch {
         });
       }
     }
+    routes.push(...this.evpnEthernetSegmentExports(state.sourceAddress, routerId));
     routes.push(...this.evpnPrefixExports(state.sourceAddress, routerId));
     void localAs;
     return routes.sort((a, b) => a.type - b.type
@@ -1279,10 +1584,35 @@ export class Layer3Switch extends L2Switch {
   private programEvpnRoutes(routes: readonly EvpnRoute[]): void {
     this.vxlan.forgetRemoteMacsFrom("bgp-evpn");
     this.evpnFaults.clear();
+    // The EVPN family may have come up after the segments were configured, so
+    // origination is reported here too rather than only at configuration time.
+    this.traceEthernetSegmentOrigination();
     const membership = new Map<number, Ipv4[]>();
     const macCandidates = new Map<string, EvpnRoute[]>();
     const prefixCandidates = new Map<string, Array<EvpnRoute & { type: 5 }>>();
+    const esRoutes: Array<{ esi: Esi; vtep: Ipv4; routerId?: Ipv4 }> = [];
     for (const route of routes) {
+      if (route.type === 4) {
+        // A Type 4 is imported by the same route-target intersection as every
+        // other EVPN route, so an RT mismatch isolates a segment exactly as it
+        // isolates a MAC — there is no second import rule to keep in step.
+        if (this.importVniFor(route.routeTargets) === undefined) {
+          this.traceVxlan("evpn-rt-rejected", {
+            addressFamily: "l2vpn-evpn",
+            routeType: 4,
+            rd: route.routeDistinguisher,
+            esi: route.esi,
+            routeTargets: route.routeTargets,
+          });
+          this.recordEvpnFault(
+            `rt4-${route.esi}-${route.originatingVtep}`,
+            `${this.name} did not import Ethernet Segment ${route.esi} from ${route.originatingVtep}: no local import route target matches.`,
+          );
+          continue;
+        }
+        esRoutes.push({ esi: route.esi, vtep: route.originatingVtep, routerId: route.neighborRouterId });
+        continue;
+      }
       if (route.type === 5) {
         // A Type 5 is imported by the *VRF's* route targets, not a VNI's: the
         // prefix belongs to a routing context, never to a broadcast domain.
@@ -1331,6 +1661,23 @@ export class Layer3Switch extends L2Switch {
       }
       const key = `${vni} ${normalizeMac(route.macAddress)}`;
       macCandidates.set(key, [...(macCandidates.get(key) ?? []), route]);
+    }
+    // Ethernet Segment discovery runs before any MAC is programmed: a remote MAC
+    // that sits behind a segment is only usable once that segment's reachability
+    // is known, so the peer table has to exist first.
+    if (this.ethernetSegments.replaceEsRoutes(esRoutes)) {
+      for (const peer of this.ethernetSegments.peers().filter((entry) => !entry.local)) {
+        this.traceVxlan("evpn-es-peer-discovered", {
+          addressFamily: "l2vpn-evpn",
+          routeType: 4,
+          esi: peer.esi,
+          vtep: peer.vtep,
+          routerId: peer.routerId,
+        });
+      }
+      // The election is re-run here rather than through the configuration path:
+      // this is an imported-route change, so it must never re-enter BGP.
+      this.runDesignatedForwarderElection("es-peer-changed");
     }
     for (const [key, candidates] of macCandidates) {
       const [vniText, mac] = key.split(" ") as [string, Mac];
@@ -1433,6 +1780,7 @@ export class Layer3Switch extends L2Switch {
   /** The EVPN control plane reacts to a local MAC change. */
   private onOverlayMacTableChanged(): void {
     if (!this.evpnAddressFamilyActive()) return;
+    this.traceEthernetSegmentOrigination();
     const signature = this.evpnExports().map((route) => route.routeId).join("\n");
     if (signature === this.evpnExportSignature) return;
     this.evpnExportSignature = signature;
@@ -1615,6 +1963,12 @@ export class Layer3Switch extends L2Switch {
     this.syncRoutingPlane();
     this.routingPlane.onInterfaceStateChanged(iface);
     for (const svi of this.svis.values()) this.routingPlane.onInterfaceStateChanged(svi);
+    // Losing the last attachment of an Ethernet Segment is what triggers the
+    // mass withdrawal a remote leaf converges on, so the segment engine has to
+    // hear about a port before anything else reads its state.
+    if (this.ethernetSegments.esiForInterface(this.logicalPortOf(iface.name)) !== undefined) {
+      this.onEthernetSegmentChanged("attachment-state-changed");
+    }
   }
 
   /** Management address for discovery: the lowest SVI or routed-port address. */

@@ -342,21 +342,42 @@ export function compareEvpnPaths(left: EvpnRoute, right: EvpnRoute): number {
 }
 
 /** One trace name per EVPN route type, so a filter can name what it wants. */
-const EVPN_IMPORT_TRACE: Readonly<Record<2 | 3 | 5, string>> = Object.freeze({
+const EVPN_IMPORT_TRACE: Readonly<Record<2 | 3 | 4 | 5, string>> = Object.freeze({
   2: "evpn-mac-route-imported",
   3: "evpn-imet-imported",
+  4: "evpn-es-route-imported",
   5: "evpn-type5-imported",
+});
+
+/** The matching withdrawal name, so a filter can follow one route type out. */
+const EVPN_WITHDRAW_TRACE: Readonly<Record<2 | 3 | 4 | 5, string>> = Object.freeze({
+  2: "evpn-mac-route-withdrawn",
+  3: "evpn-mac-route-withdrawn",
+  4: "evpn-es-route-withdrawn",
+  5: "evpn-type5-withdrawn",
 });
 
 /** Which VTEP an EVPN route points at: the IMET originator or the next hop. */
 export function evpnOriginatingVtep(route: EvpnNlri): Ipv4 {
-  if (route.type === 3) return route.originatingVtep;
+  if (route.type === 3 || route.type === 4) return route.originatingVtep;
   if (route.type === 5) return route.nextHopVtep;
   return route.nextHop;
 }
 
 /** Exactly the fields that cross the wire; runtime path state stays local. */
 function evpnNlriOf(route: EvpnRoute): EvpnNlri {
+  if (route.type === 4) {
+    return {
+      type: 4,
+      routeDistinguisher: route.routeDistinguisher,
+      esi: route.esi,
+      originatingVtep: route.originatingVtep,
+      routeTargets: [...route.routeTargets],
+      nextHop: route.nextHop,
+      pathAttributes: route.pathAttributes,
+      routeId: route.routeId,
+    };
+  }
   if (route.type === 5) {
     return {
       type: 5,
@@ -1279,12 +1300,13 @@ export class BgpProcess {
     const rib = this.evpnAdjRibIn.get(runtime.configuration.address) ?? new Map<string, EvpnRoute>();
     for (const entry of withdrawn) {
       if (rib.delete(evpnRouteKey(entry))) {
-        this.trace(entry.type === 5 ? "evpn-type5-withdrawn" : "evpn-mac-route-withdrawn", {
+        this.trace(EVPN_WITHDRAW_TRACE[entry.type], {
           neighbor: runtime.configuration.address,
           addressFamily: "l2vpn-evpn",
           routeType: entry.type,
           vni: entry.vni,
           mac: entry.macAddress,
+          esi: entry.esi,
           prefix: entry.type === 5 ? `${entry.network}/${entry.prefixLength}` : undefined,
           rd: entry.routeDistinguisher,
         });
@@ -1328,6 +1350,7 @@ export class BgpProcess {
         rd: route.routeDistinguisher,
         vni: evpnRouteVni(route),
         mac: route.type === 2 ? route.macAddress : undefined,
+        esi: "esi" in route ? route.esi : undefined,
         prefix: route.type === 5 ? `${route.network}/${route.prefixLength}` : undefined,
         vtep: evpnOriginatingVtep(route),
         routeTargets: route.routeTargets,
