@@ -124,9 +124,27 @@ export type RemoteMacSource = "data-plane" | "bgp-evpn";
 export interface RemoteMacEntry {
   readonly vni: number;
   readonly mac: Mac;
+  /**
+   * The VTEP this MAC is forwarded to right now.
+   *
+   * For a MAC behind a multihomed Ethernet Segment this is the *current DF*,
+   * which is not necessarily the VTEP whose Type 2 route announced it: the
+   * segment's reachability decides, so a failover moves the entry without a
+   * single MAC having to be relearned.
+   */
   readonly remoteVtep: Ipv4;
   readonly source: RemoteMacSource;
   readonly lastSeenNs: number;
+  /** The Ethernet Segment the MAC sits behind, when it is multihomed. */
+  readonly ethernetSegmentId?: string;
+  /**
+   * The other VTEPs that could carry this MAC, in deterministic order.
+   *
+   * Single-Active never installs these for forwarding — there is no aliasing
+   * and no ECMP in M10.16. They exist so a failover is a selection rather than
+   * a relearn, and so the state is visible before anything fails.
+   */
+  readonly backupVteps: readonly Ipv4[];
 }
 
 /**
@@ -512,13 +530,37 @@ export class VxlanEngine {
 
   // --- remote MAC table ----------------------------------------------------
 
-  /** Learn or refresh a remote MAC. Returns `true` when something changed. */
-  learnRemoteMac(vni: number, mac: Mac, remoteVtep: Ipv4, nowNs: number, source: RemoteMacSource): boolean {
+  /**
+   * Learn or refresh a remote MAC. Returns `true` when something changed.
+   *
+   * `multihoming` is only ever set by the EVPN control plane: a data-plane
+   * learn has no segment to attribute the address to.
+   */
+  learnRemoteMac(
+    vni: number,
+    mac: Mac,
+    remoteVtep: Ipv4,
+    nowNs: number,
+    source: RemoteMacSource,
+    multihoming?: { ethernetSegmentId?: string; backupVteps?: readonly Ipv4[] },
+  ): boolean {
     const key = this.macKey(vni, mac);
     const existing = this.remoteMacs.get(key);
     if (!existing && this.remoteMacs.size >= DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumRemoteMacsPerVtep) return false;
-    const changed = existing?.remoteVtep !== remoteVtep || existing?.source !== source;
-    this.remoteMacs.set(key, { vni, mac: normalizeMac(mac), remoteVtep, source, lastSeenNs: nowNs });
+    const backupVteps = [...(multihoming?.backupVteps ?? [])].sort(compareAddresses);
+    const changed = existing?.remoteVtep !== remoteVtep
+      || existing?.source !== source
+      || existing?.ethernetSegmentId !== multihoming?.ethernetSegmentId
+      || (existing?.backupVteps ?? []).join(",") !== backupVteps.join(",");
+    this.remoteMacs.set(key, {
+      vni,
+      mac: normalizeMac(mac),
+      remoteVtep,
+      source,
+      lastSeenNs: nowNs,
+      ethernetSegmentId: multihoming?.ethernetSegmentId,
+      backupVteps,
+    });
     return changed;
   }
 

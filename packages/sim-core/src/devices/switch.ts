@@ -98,7 +98,16 @@ export type FrameOrigin =
   | { readonly kind: "local-port"; readonly port: string }
   /** The device's own control/L3 plane (an SVI, the management plane). */
   | { readonly kind: "local-device" }
-  | { readonly kind: "remote-vtep"; readonly peer: string; readonly vni: number };
+  | {
+    readonly kind: "remote-vtep";
+    readonly peer: string;
+    readonly vni: number;
+    /**
+     * The Ethernet Segment the frame entered the fabric on, when the ingress
+     * VTEP had one. A leaf attached to the same segment must not send it back.
+     */
+    readonly esi?: string;
+  };
 
 /** A row of `show interfaces` / port config, used by the CLI formatters. */
 export interface SwitchPortRow {
@@ -336,6 +345,12 @@ export class L2Switch extends Device {
     this.etherChannel.onPortStateChanged(iface.name);
     this.spanningTree.onPortStateChanged(this.logicalPortOf(iface.name));
     this.discovery.onPortStateChanged(iface.name);
+    // An address is only reachable through the port it was learned on, so a
+    // port that went down takes its entries with it. Keeping them would send
+    // frames at a dead interface until they aged out — and with a redundant
+    // attachment that is exactly the traffic a failover has to recover.
+    const logical = this.logicalPortOf(iface.name);
+    if (!this.logicalPortOperationalUp(logical)) this.flushForwardingPort(logical);
     // A management SVI follows its VLAN: losing the last active member port
     // takes it operationally down and closes whatever it was terminating.
     if (this.managementPlane) this.management().onInterfaceStateChanged();
@@ -576,6 +591,24 @@ export class L2Switch extends Device {
     for (const [mac, entry] of [...this.macTable]) {
       if (entry.vlan === vlanId) this.macTable.delete(mac);
     }
+  }
+
+  /** Forget everything one logical port learned, in every VLAN. */
+  protected flushForwardingPort(logicalPort: string): number {
+    const removed = this.fdb.clearPort(logicalPort);
+    for (const [mac, entry] of [...this.macTable]) {
+      if (entry.port === logicalPort) this.macTable.delete(mac);
+    }
+    return removed;
+  }
+
+  /** Forget what one logical port learned in one VLAN, leaving the rest intact. */
+  protected flushForwardingOnPort(logicalPort: string, vlanId: number): number {
+    const removed = this.fdb.clearPortInScope(vlanId, logicalPort);
+    for (const [mac, entry] of [...this.macTable]) {
+      if (entry.vlan === vlanId && entry.port === logicalPort) this.macTable.delete(mac);
+    }
+    return removed;
   }
 
   /** Which physical interface actually carries a logical port's BPDUs. */
@@ -824,6 +857,11 @@ export class L2Switch extends Device {
       return;
     }
 
+    // A standby attachment of a Single-Active Ethernet Segment carries no tenant
+    // data at all, so the frame is refused *before* it is learned: otherwise the
+    // non-DF would advertise a MAC it is not allowed to forward to.
+    if (!this.ingressAllowedByOverlay(logical, vlan)) return;
+
     const src = normalizeMac(frame.src);
     // Addresses are learned against the logical port, so an EtherChannel shows
     // up once in the forwarding database instead of once per member.
@@ -868,6 +906,7 @@ export class L2Switch extends Device {
     if (egressLogical === logical) return; // same-port destination: drop
     if (!this.portCarriesVlan(egressLogical, vlan)) return;
     if (!this.egressAllowedBySpanningTree(egressLogical, vlan)) return;
+    if (!this.egressAllowedByOverlay(egressLogical, vlan, origin)) return;
     const egress = this.egressInterfaceFor(egressLogical, frame);
     if (!egress?.operationalUp) return;
     this.engine.trace({
@@ -929,6 +968,7 @@ export class L2Switch extends Device {
       if (logical === ingressLogical) continue;
       if (!this.portCarriesVlan(logical, vlan)) continue;
       if (!this.egressAllowedBySpanningTree(logical, vlan)) continue;
+      if (!this.egressAllowedByOverlay(logical, vlan, origin)) continue;
       // One copy per bundle, never one per member.
       const iface = this.egressInterfaceFor(logical, frame);
       if (!iface?.operationalUp) continue;
@@ -955,6 +995,22 @@ export class L2Switch extends Device {
 
   /** Overlay hook: head-end replication of BUM traffic beside the local flood. */
   protected replicateToOverlay(_frame: EthernetFrame, _vlan: number, _origin: FrameOrigin): void {}
+
+  /**
+   * Overlay hook: whether a frame may leave through one logical port.
+   *
+   * This is the single seam EVPN multihoming uses to keep a non-DF attachment
+   * quiet and to stop a frame bouncing back to the Ethernet Segment it came
+   * from. A plain L2 switch has neither, so it always says yes.
+   */
+  protected egressAllowedByOverlay(_port: string, _vlan: number, _origin: FrameOrigin): boolean {
+    return true;
+  }
+
+  /** Overlay hook: whether a frame arriving on one logical port may be relayed. */
+  protected ingressAllowedByOverlay(_port: string, _vlan: number): boolean {
+    return true;
+  }
 
   /** Overlay hook: a MAC was learned locally on a switchport in this VLAN. */
   protected onLocalMacLearned(_vlan: number, _mac: Mac, _port: string): void {}
@@ -1028,7 +1084,8 @@ export class L2Switch extends Device {
     const learned = isBroadcastMac(destination) ? undefined : this.fdb.lookup(vlan, destination, this.engine.now());
     if (learned
       && this.portCarriesVlan(learned.port, vlan)
-      && this.egressAllowedBySpanningTree(learned.port, vlan)) {
+      && this.egressAllowedBySpanningTree(learned.port, vlan)
+      && this.egressAllowedByOverlay(learned.port, vlan, origin)) {
       const egress = this.egressInterfaceFor(learned.port, frame);
       if (egress?.operationalUp) {
         egress.transmit(this.egressFrame(learned.port, vlan, frame));

@@ -43,6 +43,15 @@ interface VxlanPacketBase {
 export interface VxlanL2Packet extends VxlanPacketBase {
   readonly payloadKind: "l2";
   readonly innerFrame: EthernetFrame;
+  /**
+   * The Ethernet Segment the frame entered the fabric on, when it entered on a
+   * multihomed attachment.
+   *
+   * This is simulator metadata carried beside the packet, never an Ethernet or
+   * VXLAN header field: it is what lets another VTEP attached to the *same*
+   * segment refuse to send the frame straight back to the CE it came from.
+   */
+  readonly sourceEsi?: string;
 }
 
 /**

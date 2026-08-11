@@ -26,7 +26,9 @@ import {
   type VxlanPeerSummary,
 } from "../overlay/vxlan";
 import {
+  ESI_ZERO,
   EthernetSegmentEngine,
+  electDesignatedForwarder,
   type Esi,
   type EvpnDfState,
   type EvpnEsPeer,
@@ -148,6 +150,12 @@ export class Layer3Switch extends L2Switch {
   private dfSignature = "";
   /** Last originated Ethernet Segment set, so origination is traced once. */
   private esExportSignature = "";
+  /** `<vni>|<mac>` → the VTEP last selected, so a failover is reported once. */
+  private readonly multihomingPrimaries = new Map<string, Ipv4>();
+  /** `<vni>|<mac>` → the Ethernet Segment a remote MAC is bound to. Runtime. */
+  private readonly segmentMacs = new Map<string, Esi>();
+  /** `<esi>|<vtep>` pairs backed by a per-ES A-D route, to spot a withdrawal. */
+  private readonly lastEsReachability = new Set<string>();
   /** SVIs configured with `fabric forwarding mode anycast-gateway`. */
   private readonly anycastGatewayVlans = new Set<number>();
 
@@ -816,6 +824,10 @@ export class Layer3Switch extends L2Switch {
     this.evpnFaults.clear();
     this.evpnExportSignature = "";
     this.dfSignature = "";
+    this.esExportSignature = "";
+    this.multihomingPrimaries.clear();
+    this.segmentMacs.clear();
+    this.lastEsReachability.clear();
   }
 
   /** `shutdown`/`no shutdown` on nve1, as one bounded restart. */
@@ -878,7 +890,12 @@ export class Layer3Switch extends L2Switch {
         source: "data-plane",
       });
     }
-    const origin: FrameOrigin = { kind: "remote-vtep", peer: source, vni: packet.vni };
+    const origin: FrameOrigin = {
+      kind: "remote-vtep",
+      peer: source,
+      vni: packet.vni,
+      esi: packet.sourceEsi,
+    };
     this.switchIntoVlan(packet.innerFrame, member.vlanId, origin);
   }
 
@@ -949,7 +966,19 @@ export class Layer3Switch extends L2Switch {
       });
       return true;
     }
-    return this.sendVxlan(member.vni, entry.remoteVtep, frame, "unicast");
+    return this.sendVxlan(member.vni, entry.remoteVtep, frame, "unicast", this.frameSourceEsi(origin));
+  }
+
+  /**
+   * The Ethernet Segment a frame entered the fabric on, if any.
+   *
+   * It travels beside the packet as simulator metadata, never inside an
+   * Ethernet or VXLAN header: it exists so another leaf attached to the same
+   * segment can refuse to hand the frame back to the CE it came from.
+   */
+  private frameSourceEsi(origin: FrameOrigin): Esi | undefined {
+    if (origin.kind !== "local-port") return undefined;
+    return this.ethernetSegments.esiForInterface(this.logicalPortOf(origin.port));
   }
 
   protected override replicateToOverlay(frame: EthernetFrame, vlan: number, origin: FrameOrigin): void {
@@ -985,7 +1014,7 @@ export class Layer3Switch extends L2Switch {
       // Head-end replication is bounded per operation, so a broadcast storm can
       // never make Auto execution unbounded.
       if (!this.engine.controlProtocolBudget.tryConsume("bumReplicas", this.id)) break;
-      if (this.sendVxlan(member.vni, peer, frame, "bum")) replicas++;
+      if (this.sendVxlan(member.vni, peer, frame, "bum", this.frameSourceEsi(origin))) replicas++;
     }
     this.traceVxlan("vxlan-bum-replicated", {
       vni: member.vni,
@@ -1007,7 +1036,13 @@ export class Layer3Switch extends L2Switch {
    * path, so interface state, ACLs, the firewall, QoS and packet loss all apply
    * to it exactly as they do to any other IPv4/UDP traffic.
    */
-  private sendVxlan(vni: number, destination: Ipv4, frame: EthernetFrame, kind: "unicast" | "bum"): boolean {
+  private sendVxlan(
+    vni: number,
+    destination: Ipv4,
+    frame: EthernetFrame,
+    kind: "unicast" | "bum",
+    sourceEsi?: Esi,
+  ): boolean {
     this.syncRoutingPlane();
     const state = this.vxlan.vniState(vni);
     if (!state?.up || state.sourceAddress === undefined) return false;
@@ -1024,6 +1059,7 @@ export class Layer3Switch extends L2Switch {
       destinationVtep: destination,
       innerSource: normalizeMac(innerFrame.src),
       innerDestination: normalizeMac(innerFrame.dst),
+      sourceEsi,
     });
     return this.transmitVxlan(
       {
@@ -1033,6 +1069,7 @@ export class Layer3Switch extends L2Switch {
         innerFrame,
         sourceVtep: state.sourceAddress,
         destinationVtep: destination,
+        sourceEsi,
       },
       kind,
     );
@@ -1281,11 +1318,25 @@ export class Layer3Switch extends L2Switch {
         esi,
         vtep: sourceAddress,
       });
+      // The segment route and its Ethernet A-D routes appear together: one says
+      // the segment exists, the other that this VTEP can still serve it.
+      this.traceVxlan("evpn-ad-route-originated", {
+        addressFamily: "l2vpn-evpn",
+        routeType: 1,
+        esi,
+        vtep: sourceAddress,
+      });
     }
     for (const esi of [...before].filter((entry) => !after.has(entry)).sort()) {
       this.traceVxlan("evpn-es-route-withdrawn", {
         addressFamily: "l2vpn-evpn",
         routeType: 4,
+        esi,
+        vtep: sourceAddress,
+      });
+      this.traceVxlan("evpn-ad-route-withdrawn", {
+        addressFamily: "l2vpn-evpn",
+        routeType: 1,
         esi,
         vtep: sourceAddress,
       });
@@ -1334,8 +1385,220 @@ export class Layer3Switch extends L2Switch {
           to: state.localRole,
           designatedForwarder: state.designatedForwarder,
         });
+        // Losing the role means this attachment no longer reaches those hosts,
+        // so what it learned there has to go — and only that. Every other port's
+        // entries in the same VLAN stay exactly where they were.
+        if (state.localRole === "non-df") {
+          for (const port of this.ethernetSegments.segmentForEsi(state.esi)?.interfaces ?? []) {
+            this.flushForwardingOnPort(this.logicalPortOf(port), state.vlanId);
+          }
+        }
       }
     }
+  }
+
+  /**
+   * The one place a remote MAC's forwarding VTEP is decided.
+   *
+   * A single-homed MAC is forwarded to the VTEP that advertised it, exactly as
+   * before M10.16. A MAC behind a multihomed segment is forwarded to the
+   * segment's *current Designated Forwarder* instead — which is why a mass
+   * withdrawal moves traffic without any MAC being relearned, and why this
+   * dependency lives in one function rather than as an `if (esi)` scattered
+   * through the forwarding paths.
+   */
+  private resolveMultihomingPath(
+    vni: number,
+    mac: Mac,
+    esi: Esi | undefined,
+    advertised: Ipv4,
+  ): { primary: Ipv4; backups: Ipv4[]; ethernetSegmentId?: Esi } | undefined {
+    if (esi === undefined || esi === ESI_ZERO) return { primary: advertised, backups: [] };
+    const vlanId = this.vxlan.memberForVni(vni)?.vlanId;
+    const eligible = this.ethernetSegments.dfCandidates(esi)
+      .filter((vtep) => this.ethernetSegments.hasEsReachability(esi, vtep));
+    if (eligible.length === 0) {
+      // Every Type 1 per-ES route for this segment is gone, so nothing behind it
+      // is reachable — the MAC is deliberately not installed rather than being
+      // pointed at a VTEP that has already told us it cannot deliver.
+      this.traceVxlan("evpn-es-unreachable", { vni, mac, esi, advertisedBy: advertised });
+      this.recordEvpnFault(
+        `es-${esi}-unreachable`,
+        `${this.name} holds MAC ${mac} behind Ethernet Segment ${esi} but no VTEP advertises Ethernet A-D reachability for it.`,
+      );
+      return undefined;
+    }
+    const primary = (vlanId === undefined ? undefined : electDesignatedForwarder(eligible, vlanId)) ?? eligible[0]!;
+    // This device is now the segment's own forwarder, so the address is behind
+    // a local attachment rather than the overlay: it must not become a remote
+    // MAC pointing at ourselves. Ordinary flooding and learning find it.
+    if (primary === this.vxlan.state().sourceAddress) return undefined;
+    const backups = eligible
+      .filter((vtep) => vtep !== primary && this.ethernetSegments.hasEviReachability(esi, vni, vtep));
+    if (backups.length === 0 && eligible.length > 1) {
+      this.recordEvpnFault(
+        `es-${esi}-no-backup`,
+        `${this.name} has no Ethernet A-D per-EVI backup for Ethernet Segment ${esi} in VNI ${vni}.`,
+      );
+    }
+    return { primary, backups, ethernetSegmentId: esi };
+  }
+
+  /** Program one resolved remote MAC and report what moved, once. */
+  private installMultihomedRemoteMac(
+    vni: number,
+    mac: Mac,
+    path: { primary: Ipv4; backups: Ipv4[]; ethernetSegmentId?: Esi },
+    advertisedBy: Ipv4,
+  ): void {
+    const key = `${vni}|${mac}`;
+    if (path.ethernetSegmentId === undefined) this.segmentMacs.delete(key);
+    else if (this.segmentMacs.size < DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumRemoteMacsPerVtep) {
+      this.segmentMacs.set(key, path.ethernetSegmentId);
+    }
+    if (!this.vxlan.learnRemoteMac(vni, mac, path.primary, this.engine.now(), "bgp-evpn", {
+      ethernetSegmentId: path.ethernetSegmentId,
+      backupVteps: path.backups,
+    })) return;
+    this.traceVxlan("vxlan-mac-learned-remote", {
+      vni,
+      mac,
+      remoteVtep: path.primary,
+      esi: path.ethernetSegmentId,
+      backups: path.backups,
+      source: "bgp-evpn",
+    });
+    if (path.ethernetSegmentId === undefined) return;
+    this.traceVxlan("evpn-multihoming-primary-selected", {
+      vni,
+      mac,
+      esi: path.ethernetSegmentId,
+      primary: path.primary,
+      advertisedBy,
+    });
+    for (const backup of path.backups) {
+      this.traceVxlan("evpn-multihoming-backup-selected", {
+        vni, mac, esi: path.ethernetSegmentId, backup,
+      });
+    }
+    const previous = this.multihomingPrimaries.get(key);
+    if (previous !== undefined && previous !== path.primary) {
+      this.traceVxlan("evpn-multihoming-failover", {
+        vni, mac, esi: path.ethernetSegmentId, from: previous, to: path.primary,
+      });
+    }
+    this.multihomingPrimaries.set(key, path.primary);
+  }
+
+  /**
+   * Keep a MAC reachable through its Ethernet Segment after its MAC route is
+   * gone.
+   *
+   * This is what makes a mass withdrawal *fast*: the failed leaf's Type 2
+   * routes disappear with its attachment, but the segment is still reachable
+   * through another leaf's Ethernet A-D per-EVI route, so the address is
+   * redirected to that leaf instead of having to be learned all over again. The
+   * association is dropped the moment no VTEP advertises the segment for this
+   * EVI any more, so nothing is kept alive that cannot actually deliver.
+   */
+  private retainSegmentBoundMacs(advertised: ReadonlyMap<string, EvpnRoute[]>): void {
+    const stillAdvertised = new Set([...advertised.keys()].map((key) => key.replace(" ", "|")));
+    for (const [key, esi] of [...this.segmentMacs].sort(([a], [b]) => a.localeCompare(b))) {
+      if (stillAdvertised.has(key)) continue;
+      const [vniText, mac] = key.split("|") as [string, Mac];
+      const vni = Number(vniText);
+      const path = this.resolveSegmentBackupPath(vni, esi);
+      if (!path) {
+        this.segmentMacs.delete(key);
+        this.multihomingPrimaries.delete(key);
+        this.vxlan.forgetRemoteMac(vni, mac);
+        continue;
+      }
+      this.installMultihomedRemoteMac(vni, mac, { ...path, ethernetSegmentId: esi }, path.primary);
+    }
+  }
+
+  /** The VTEP that now serves one segment in one EVI, and its backups. */
+  private resolveSegmentBackupPath(vni: number, esi: Esi): { primary: Ipv4; backups: Ipv4[] } | undefined {
+    const vlanId = this.vxlan.memberForVni(vni)?.vlanId;
+    const eligible = this.ethernetSegments.dfCandidates(esi)
+      .filter((vtep) => this.ethernetSegments.hasEsReachability(esi, vtep)
+        && this.ethernetSegments.hasEviReachability(esi, vni, vtep));
+    if (eligible.length === 0) return undefined;
+    const primary = (vlanId === undefined ? undefined : electDesignatedForwarder(eligible, vlanId)) ?? eligible[0]!;
+    if (primary === this.vxlan.state().sourceAddress) return undefined;
+    return { primary, backups: eligible.filter((vtep) => vtep !== primary) };
+  }
+
+  /** Report every per-ES Ethernet A-D route that stopped existing. */
+  private traceMassWithdrawal(current: readonly { esi: Esi; vtep: Ipv4 }[]): void {
+    const next = new Set(current.map((entry) => `${entry.esi}|${entry.vtep}`));
+    for (const key of [...this.lastEsReachability].sort()) {
+      if (next.has(key)) continue;
+      const [esi, vtep] = key.split("|") as [Esi, Ipv4];
+      this.traceVxlan("evpn-es-mass-withdraw", {
+        addressFamily: "l2vpn-evpn",
+        routeType: 1,
+        scope: "per-es",
+        esi,
+        vtep,
+      });
+    }
+    this.lastEsReachability.clear();
+    for (const key of next) this.lastEsReachability.add(key);
+  }
+
+  // --- Single-Active forwarding -------------------------------------------
+
+  /**
+   * Whether a frame may leave through one logical port.
+   *
+   * Split horizon is checked first and independently of the DF role: a frame
+   * that entered the fabric on this very Ethernet Segment must never be handed
+   * back to it, or a CE dual-attached to two leaves would see its own frame
+   * return. Only then does the Single-Active rule apply.
+   */
+  protected override egressAllowedByOverlay(port: string, vlan: number, origin: FrameOrigin): boolean {
+    const esi = this.ethernetSegments.esiForInterface(port);
+    if (esi === undefined) return true;
+    if (origin.kind === "remote-vtep" && origin.esi === esi) {
+      this.traceVxlan("evpn-es-split-horizon-drop", {
+        esi,
+        vni: origin.vni,
+        peer: origin.peer,
+        port,
+        vlan,
+      });
+      return false;
+    }
+    if (this.ethernetSegments.attachmentForwards(port, vlan)) return true;
+    this.traceVxlan("evpn-non-df-egress-drop", {
+      esi,
+      vlan,
+      port,
+      designatedForwarder: this.ethernetSegments.dfState(esi, vlan)?.designatedForwarder,
+    });
+    return false;
+  }
+
+  /**
+   * Whether a frame arriving on one logical port may be relayed.
+   *
+   * In Single-Active the standby attachment carries no tenant data in either
+   * direction, so a non-DF refuses the frame before it is learned. That is what
+   * keeps a dual-attached CE from making both leaves advertise the same MAC.
+   */
+  protected override ingressAllowedByOverlay(port: string, vlan: number): boolean {
+    const esi = this.ethernetSegments.esiForInterface(port);
+    if (esi === undefined) return true;
+    if (this.ethernetSegments.attachmentForwards(port, vlan)) return true;
+    this.traceVxlan("evpn-non-df-ingress-drop", {
+      esi,
+      vlan,
+      port,
+      designatedForwarder: this.ethernetSegments.dfState(esi, vlan)?.designatedForwarder,
+    });
+    return false;
   }
 
   /** Diagnostics for the multihoming half of the overlay. */
@@ -1391,21 +1654,21 @@ export class Layer3Switch extends L2Switch {
   }
 
   /**
-   * The Type 4 routes this VTEP originates: one per operational local segment.
+   * The Type 4 and Type 1 routes this VTEP originates for its local segments.
    *
    * Origination needs the segment up, the NVE operational, the EVPN family
    * active and at least one route target — the same four conditions its
-   * withdrawal reverses.
+   * withdrawal reverses, which is exactly what makes an attachment failure a
+   * mass withdrawal rather than a slow trickle of per-MAC withdrawals.
    */
-  private evpnEthernetSegmentExports(sourceAddress: Ipv4, routerId: Ipv4): EvpnRoute[] {
-    const routes: EvpnRoute[] = [];
+  private evpnMultihomingExports(sourceAddress: Ipv4, routerId: Ipv4): EvpnRoute[] {
+    const segmentRoutes: EvpnRoute[] = [];
+    const adRoutes: EvpnRoute[] = [];
     for (const state of this.ethernetSegments.states()) {
       if (!state.up) continue;
       const routeTargets = this.esRouteTargetsFor(state.vlanIds);
       if (routeTargets.length === 0) continue;
-      routes.push({
-        type: 4,
-        routeDistinguisher: `${routerId}:0`,
+      const shared = {
         esi: state.esi,
         originatingVtep: sourceAddress,
         routeTargets,
@@ -1418,11 +1681,43 @@ export class Layer3Switch extends L2Switch {
           med: 0,
         },
         ...this.localEvpnPathState(routerId),
+      };
+      segmentRoutes.push({
+        ...shared,
+        type: 4,
+        routeDistinguisher: `${routerId}:0`,
         routeId: `local:evpn:4:${state.esi}:${sourceAddress}`,
       });
+      // Per-ES: "this VTEP still has a working attachment". One withdrawal
+      // invalidates every MAC behind the segment at once.
+      adRoutes.push({
+        ...shared,
+        type: 1,
+        scope: "per-es",
+        routeDistinguisher: `${routerId}:0`,
+        routeId: `local:evpn:1:es:${state.esi}:${sourceAddress}`,
+      });
+      // Per-EVI: "this VTEP can serve the segment in this EVI", which is what
+      // makes a deterministic backup selectable before anything has failed.
+      for (const vlanId of state.vlanIds) {
+        const member = this.vxlan.memberForVlan(vlanId);
+        const evpn = member ? this.vxlan.evpnVni(member.vni) : undefined;
+        if (!member || !evpn) continue;
+        adRoutes.push({
+          ...shared,
+          type: 1,
+          scope: "per-evi",
+          routeDistinguisher: evpn.routeDistinguisher,
+          ethernetTag: 0,
+          vni: member.vni,
+          routeTargets: [...evpn.exportRouteTargets],
+          routeId: `local:evpn:1:evi:${state.esi}:${member.vni}:${sourceAddress}`,
+        });
+      }
     }
-    enforceStructuralLimit("maximumEvpnEsRoutesPerDevice", routes.length);
-    return routes;
+    enforceStructuralLimit("maximumEvpnEsRoutesPerDevice", segmentRoutes.length);
+    enforceStructuralLimit("maximumEvpnAdRoutesPerDevice", adRoutes.length);
+    return [...segmentRoutes, ...adRoutes];
   }
 
   // --- BGP EVPN control plane ----------------------------------------------
@@ -1453,7 +1748,7 @@ export class Layer3Switch extends L2Switch {
     if (!state.up || state.sourceAddress === undefined) return [];
     const localAs = this.routingPlane.bgp.localAs ?? 0;
     const routerId = this.routingPlane.bgp.configurationSnapshot()?.routerId ?? state.sourceAddress;
-    const localMacs = new Map<number, Array<{ mac: Mac; vlan: number }>>();
+    const localMacs = new Map<number, Array<{ mac: Mac; vlan: number; esi: Esi | undefined }>>();
     const anycastMac = this.vxlan.anycastGatewayMac;
     for (const row of this.macAddressTable()) {
       const member = this.vxlan.memberForVlan(row.vlan);
@@ -1464,7 +1759,14 @@ export class Layer3Switch extends L2Switch {
       if (anycastMac !== undefined && normalizeMac(row.mac) === anycastMac) continue;
       const list = localMacs.get(member.vni) ?? [];
       if (list.length < DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumEvpnMacRoutesPerVni) {
-        list.push({ mac: normalizeMac(row.mac), vlan: row.vlan });
+        // A MAC learned behind a multihomed attachment carries its segment, so
+        // the receiving leaf resolves it through the segment rather than
+        // through this route's next hop.
+        list.push({
+          mac: normalizeMac(row.mac),
+          vlan: row.vlan,
+          esi: this.ethernetSegments.esiForInterface(row.port),
+        });
       }
       localMacs.set(member.vni, list);
     }
@@ -1500,13 +1802,14 @@ export class Layer3Switch extends L2Switch {
           ...shared,
           type: 2,
           macAddress: entry.mac,
+          ethernetSegmentId: entry.esi,
           // The VNI is the delivery label in a VXLAN fabric.
           label: vni.vni,
           routeId: `local:evpn:2:${evpn.routeDistinguisher}:${vni.vni}:${entry.mac}`,
         });
       }
     }
-    routes.push(...this.evpnEthernetSegmentExports(state.sourceAddress, routerId));
+    routes.push(...this.evpnMultihomingExports(state.sourceAddress, routerId));
     routes.push(...this.evpnPrefixExports(state.sourceAddress, routerId));
     void localAs;
     return routes.sort((a, b) => a.type - b.type
@@ -1591,7 +1894,25 @@ export class Layer3Switch extends L2Switch {
     const macCandidates = new Map<string, EvpnRoute[]>();
     const prefixCandidates = new Map<string, Array<EvpnRoute & { type: 5 }>>();
     const esRoutes: Array<{ esi: Esi; vtep: Ipv4; routerId?: Ipv4 }> = [];
+    const adPerEs: Array<{ esi: Esi; vtep: Ipv4 }> = [];
+    const adPerEvi: Array<{ esi: Esi; vni: number; vtep: Ipv4 }> = [];
     for (const route of routes) {
+      if (route.type === 1) {
+        if (this.importVniFor(route.routeTargets) === undefined) {
+          this.traceVxlan("evpn-rt-rejected", {
+            addressFamily: "l2vpn-evpn",
+            routeType: 1,
+            rd: route.routeDistinguisher,
+            esi: route.esi,
+            scope: route.scope,
+            routeTargets: route.routeTargets,
+          });
+          continue;
+        }
+        if (route.scope === "per-es") adPerEs.push({ esi: route.esi, vtep: route.originatingVtep });
+        else adPerEvi.push({ esi: route.esi, vni: route.vni, vtep: route.originatingVtep });
+        continue;
+      }
       if (route.type === 4) {
         // A Type 4 is imported by the same route-target intersection as every
         // other EVPN route, so an RT mismatch isolates a segment exactly as it
@@ -1665,7 +1986,9 @@ export class Layer3Switch extends L2Switch {
     // Ethernet Segment discovery runs before any MAC is programmed: a remote MAC
     // that sits behind a segment is only usable once that segment's reachability
     // is known, so the peer table has to exist first.
-    if (this.ethernetSegments.replaceEsRoutes(esRoutes)) {
+    const peersChanged = this.ethernetSegments.replaceEsRoutes(esRoutes);
+    const reachabilityChanged = this.ethernetSegments.replaceAdRoutes(adPerEs, adPerEvi);
+    if (peersChanged) {
       for (const peer of this.ethernetSegments.peers().filter((entry) => !entry.local)) {
         this.traceVxlan("evpn-es-peer-discovered", {
           addressFamily: "l2vpn-evpn",
@@ -1675,6 +1998,9 @@ export class Layer3Switch extends L2Switch {
           routerId: peer.routerId,
         });
       }
+    }
+    if (reachabilityChanged) this.traceMassWithdrawal(adPerEs);
+    if (peersChanged || reachabilityChanged) {
       // The election is re-run here rather than through the configuration path:
       // this is an imported-route change, so it must never re-enter BGP.
       this.runDesignatedForwarderElection("es-peer-changed");
@@ -1698,15 +2024,12 @@ export class Layer3Switch extends L2Switch {
           `${this.name} received MAC ${mac} in VNI ${vni} from ${ordered.length} VTEPs; ${evpnOriginatingVtep(winner)} was selected.`,
         );
       }
-      if (this.vxlan.learnRemoteMac(vni, mac, evpnOriginatingVtep(winner), this.engine.now(), "bgp-evpn")) {
-        this.traceVxlan("vxlan-mac-learned-remote", {
-          vni,
-          mac,
-          remoteVtep: evpnOriginatingVtep(winner),
-          source: "bgp-evpn",
-        });
-      }
+      const path = this.resolveMultihomingPath(vni, mac, winner.type === 2 ? winner.ethernetSegmentId : undefined,
+        evpnOriginatingVtep(winner));
+      if (path === undefined) continue;
+      this.installMultihomedRemoteMac(vni, mac, path, evpnOriginatingVtep(winner));
     }
+    this.retainSegmentBoundMacs(macCandidates);
     for (const member of this.vxlan.members()) {
       if (member.replication.type !== "bgp-evpn") continue;
       const peers = membership.get(member.vni) ?? [];
@@ -1966,7 +2289,14 @@ export class Layer3Switch extends L2Switch {
     // Losing the last attachment of an Ethernet Segment is what triggers the
     // mass withdrawal a remote leaf converges on, so the segment engine has to
     // hear about a port before anything else reads its state.
-    if (this.ethernetSegments.esiForInterface(this.logicalPortOf(iface.name)) !== undefined) {
+    const logical = this.logicalPortOf(iface.name);
+    if (this.ethernetSegments.esiForInterface(logical) !== undefined) {
+      // A failed attachment no longer reaches the hosts behind it, so what it
+      // learned is forgotten *before* the re-advertisement runs — otherwise the
+      // withdrawal would race a Type 2 route for a MAC we can no longer deliver.
+      if (!this.logicalPortOperationalUp(logical)) {
+        for (const vlanId of this.overlayVlansOf(logical)) this.flushForwardingOnPort(logical, vlanId);
+      }
       this.onEthernetSegmentChanged("attachment-state-changed");
     }
   }

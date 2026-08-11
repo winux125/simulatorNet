@@ -54,6 +54,34 @@ export class ForwardingDatabase<Scope extends string | number> {
     }
   }
 
+  /**
+   * Discard the entries one port learned inside one scope.
+   *
+   * A Single-Active attachment that just lost the Designated Forwarder role is
+   * exactly this case: its addresses are no longer reachable through it, but
+   * every other port's entries in the same VLAN are still perfectly valid.
+   */
+  /** Discard everything one port learned, in every scope. */
+  clearPort(port: string): number {
+    let removed = 0;
+    for (const entry of [...this.table.values()]) {
+      if (entry.port !== port) continue;
+      this.table.delete(this.key(entry.scope, entry.mac));
+      removed++;
+    }
+    return removed;
+  }
+
+  clearPortInScope(scope: Scope, port: string): number {
+    let removed = 0;
+    for (const entry of [...this.table.values()]) {
+      if (entry.scope !== scope || entry.port !== port) continue;
+      this.table.delete(this.key(entry.scope, entry.mac));
+      removed++;
+    }
+    return removed;
+  }
+
   private key(scope: Scope, mac: Mac): string {
     return `${String(scope)}\u0000${mac}`;
   }

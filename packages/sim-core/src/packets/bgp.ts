@@ -112,6 +112,15 @@ export interface EvpnMacIpRoute {
   readonly macAddress: string;
   /** Optional IPv4 binding. IPv6 bindings and ARP suppression are not modelled. */
   readonly ipAddress?: Ipv4;
+  /**
+   * The Ethernet Segment this MAC was learned behind, when it is multihomed.
+   *
+   * Absent — and ESI 0 — mean an ordinary single-homed port, which is why every
+   * route written before M10.16 stays exactly what it was. A non-zero value is
+   * what makes the receiving leaf resolve the MAC through the segment's
+   * reachability rather than through this route's own next hop.
+   */
+  readonly ethernetSegmentId?: string;
   readonly vni: number;
   readonly routeTargets: readonly string[];
   readonly nextHop: Ipv4;
@@ -180,19 +189,65 @@ export interface EvpnEthernetSegmentRoute {
   readonly routeId: string;
 }
 
-export type EvpnNlri = EvpnMacIpRoute | EvpnImetRoute | EvpnIpPrefixRoute | EvpnEthernetSegmentRoute;
+/**
+ * EVPN Route Type 1 — Ethernet Auto-Discovery.
+ *
+ * It exists in two scopes and they answer two different questions. The **per-ES**
+ * route says "this VTEP still has a working attachment to this segment", so
+ * withdrawing one invalidates every MAC behind it in a single message rather
+ * than waiting for one Type 2 withdrawal per address — that is the fast mass
+ * withdrawal. The **per-EVI** route says "this VTEP can serve this segment in
+ * this EVI", which is what makes deterministic backup selection possible.
+ *
+ * There is no MPLS ESI label here: the VXLAN data plane's split horizon is built
+ * from the simulator's own origin metadata, not from a label.
+ */
+export type EvpnEthernetAdRoute =
+  | {
+    readonly type: 1;
+    readonly scope: "per-es";
+    readonly routeDistinguisher: string;
+    readonly esi: string;
+    readonly originatingVtep: Ipv4;
+    readonly routeTargets: readonly string[];
+    readonly nextHop: Ipv4;
+    readonly pathAttributes: BgpPathAttributes;
+    readonly routeId: string;
+  }
+  | {
+    readonly type: 1;
+    readonly scope: "per-evi";
+    readonly routeDistinguisher: string;
+    readonly esi: string;
+    readonly ethernetTag: number;
+    readonly vni: number;
+    readonly originatingVtep: Ipv4;
+    readonly routeTargets: readonly string[];
+    readonly nextHop: Ipv4;
+    readonly pathAttributes: BgpPathAttributes;
+    readonly routeId: string;
+  };
+
+export type EvpnNlri =
+  | EvpnMacIpRoute
+  | EvpnImetRoute
+  | EvpnIpPrefixRoute
+  | EvpnEthernetSegmentRoute
+  | EvpnEthernetAdRoute;
 
 /** The identity an EVPN withdrawal names; never the whole advertised route. */
 export interface EvpnWithdrawnNlri {
-  readonly type: 2 | 3 | 4 | 5;
+  readonly type: 1 | 2 | 3 | 4 | 5;
   readonly routeDistinguisher: string;
   readonly ethernetTag: number;
   readonly vni: number;
   readonly macAddress?: string;
-  /** Type 3 and Type 4: the originating router address is part of the NLRI. */
+  /** Types 1, 3 and 4: the originating router address is part of the NLRI. */
   readonly originatingVtep?: Ipv4;
-  /** Type 4: the Ethernet Segment the route is about. */
+  /** Types 1 and 4: the Ethernet Segment the route is about. */
   readonly esi?: string;
+  /** Type 1: which of the two Ethernet A-D scopes is being withdrawn. */
+  readonly scope?: "per-es" | "per-evi";
   /** Type 5 only: the advertised prefix is what identifies the route. */
   readonly network?: Ipv4;
   readonly prefixLength?: number;
@@ -217,8 +272,9 @@ export function evpnRouteKey(route: EvpnWithdrawnNlri | EvpnNlri): string {
     "ethernetTag" in route ? route.ethernetTag : 0,
     evpnKeyVni(route),
     route.type === 2 ? route.macAddress ?? "" : "",
-    route.type === 3 || route.type === 4 ? route.originatingVtep ?? "" : "",
-    route.type === 4 ? route.esi ?? "" : "",
+    route.type === 1 || route.type === 3 || route.type === 4 ? route.originatingVtep ?? "" : "",
+    route.type === 1 || route.type === 4 ? route.esi ?? "" : "",
+    route.type === 1 ? route.scope ?? "" : "",
     route.type === 5 ? `${route.network ?? ""}/${route.prefixLength ?? ""}` : "",
   ].join("|");
 }
@@ -240,6 +296,17 @@ function evpnKeyVni(route: EvpnWithdrawnNlri | EvpnNlri): number {
 
 /** The withdrawal identity of one advertised EVPN route. */
 export function evpnWithdrawnNlriOf(route: EvpnNlri): EvpnWithdrawnNlri {
+  if (route.type === 1) {
+    return {
+      type: 1,
+      routeDistinguisher: route.routeDistinguisher,
+      ethernetTag: route.scope === "per-evi" ? route.ethernetTag : 0,
+      vni: route.scope === "per-evi" ? route.vni : 0,
+      esi: route.esi,
+      scope: route.scope,
+      originatingVtep: route.originatingVtep,
+    };
+  }
   if (route.type === 4) {
     return {
       type: 4,

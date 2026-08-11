@@ -342,7 +342,8 @@ export function compareEvpnPaths(left: EvpnRoute, right: EvpnRoute): number {
 }
 
 /** One trace name per EVPN route type, so a filter can name what it wants. */
-const EVPN_IMPORT_TRACE: Readonly<Record<2 | 3 | 4 | 5, string>> = Object.freeze({
+const EVPN_IMPORT_TRACE: Readonly<Record<1 | 2 | 3 | 4 | 5, string>> = Object.freeze({
+  1: "evpn-ad-route-imported",
   2: "evpn-mac-route-imported",
   3: "evpn-imet-imported",
   4: "evpn-es-route-imported",
@@ -350,7 +351,8 @@ const EVPN_IMPORT_TRACE: Readonly<Record<2 | 3 | 4 | 5, string>> = Object.freeze
 });
 
 /** The matching withdrawal name, so a filter can follow one route type out. */
-const EVPN_WITHDRAW_TRACE: Readonly<Record<2 | 3 | 4 | 5, string>> = Object.freeze({
+const EVPN_WITHDRAW_TRACE: Readonly<Record<1 | 2 | 3 | 4 | 5, string>> = Object.freeze({
+  1: "evpn-ad-route-withdrawn",
   2: "evpn-mac-route-withdrawn",
   3: "evpn-mac-route-withdrawn",
   4: "evpn-es-route-withdrawn",
@@ -359,13 +361,28 @@ const EVPN_WITHDRAW_TRACE: Readonly<Record<2 | 3 | 4 | 5, string>> = Object.free
 
 /** Which VTEP an EVPN route points at: the IMET originator or the next hop. */
 export function evpnOriginatingVtep(route: EvpnNlri): Ipv4 {
-  if (route.type === 3 || route.type === 4) return route.originatingVtep;
+  if (route.type === 1 || route.type === 3 || route.type === 4) return route.originatingVtep;
   if (route.type === 5) return route.nextHopVtep;
   return route.nextHop;
 }
 
 /** Exactly the fields that cross the wire; runtime path state stays local. */
 function evpnNlriOf(route: EvpnRoute): EvpnNlri {
+  if (route.type === 1) {
+    const shared = {
+      type: 1 as const,
+      routeDistinguisher: route.routeDistinguisher,
+      esi: route.esi,
+      originatingVtep: route.originatingVtep,
+      routeTargets: [...route.routeTargets],
+      nextHop: route.nextHop,
+      pathAttributes: route.pathAttributes,
+      routeId: route.routeId,
+    };
+    return route.scope === "per-evi"
+      ? { ...shared, scope: "per-evi", ethernetTag: route.ethernetTag, vni: route.vni }
+      : { ...shared, scope: "per-es" };
+  }
   if (route.type === 4) {
     return {
       type: 4,
@@ -412,6 +429,7 @@ function evpnNlriOf(route: EvpnRoute): EvpnNlri {
     ethernetTag: route.ethernetTag,
     macAddress: route.macAddress,
     ipAddress: route.ipAddress,
+    ethernetSegmentId: route.ethernetSegmentId,
     vni: route.vni,
     routeTargets: [...route.routeTargets],
     nextHop: route.nextHop,
@@ -1307,6 +1325,7 @@ export class BgpProcess {
           vni: entry.vni,
           mac: entry.macAddress,
           esi: entry.esi,
+          scope: entry.scope,
           prefix: entry.type === 5 ? `${entry.network}/${entry.prefixLength}` : undefined,
           rd: entry.routeDistinguisher,
         });
@@ -1351,6 +1370,7 @@ export class BgpProcess {
         vni: evpnRouteVni(route),
         mac: route.type === 2 ? route.macAddress : undefined,
         esi: "esi" in route ? route.esi : undefined,
+        scope: route.type === 1 ? route.scope : undefined,
         prefix: route.type === 5 ? `${route.network}/${route.prefixLength}` : undefined,
         vtep: evpnOriginatingVtep(route),
         routeTargets: route.routeTargets,

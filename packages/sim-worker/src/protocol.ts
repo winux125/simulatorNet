@@ -794,9 +794,13 @@ export interface VxlanEvpnView {
     lastSeenNs: number;
   }>;
   evpnRoutes: Array<{
-    type: 2 | 3 | 4 | 5;
+    type: 1 | 2 | 3 | 4 | 5;
     routeDistinguisher: string;
-    /** The L2VNI of a Type 2/3; the transit L3VNI of a Type 5; 0 for a Type 4. */
+    /**
+     * The L2VNI of a Type 2/3 and of a per-EVI Type 1; the transit L3VNI of a
+     * Type 5; 0 for a Type 4 and for a per-ES Type 1, which are about a whole
+     * Ethernet Segment rather than one segment of the overlay.
+     */
     vni: number;
     best: boolean;
     nextHop: string;
@@ -804,9 +808,11 @@ export interface VxlanEvpnView {
     /** Type 2 only. */
     macAddress?: string;
     ipAddress?: string;
-    /** Type 4: the Ethernet Segment this route discovers. */
+    /** Types 1, 2 and 4: the Ethernet Segment the route is about. */
     esi?: string;
-    /** Type 3 and Type 4: the VTEP that originated the route. */
+    /** Type 1 only: which of the two Ethernet A-D scopes this route is. */
+    scope?: "per-es" | "per-evi";
+    /** Types 1, 3 and 4: the VTEP that originated the route. */
     originatingVtep?: string;
     /** Type 5 only: the advertised tenant prefix and the VTEP that owns it. */
     network?: string;

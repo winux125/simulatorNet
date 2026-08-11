@@ -2857,8 +2857,11 @@ export class SimulationWorkerRuntime {
         routeTargets: [...route.routeTargets],
         macAddress: route.type === 2 ? route.macAddress : undefined,
         ipAddress: route.type === 2 ? route.ipAddress : undefined,
-        esi: route.type === 4 ? route.esi : undefined,
-        originatingVtep: route.type === 3 || route.type === 4 ? route.originatingVtep : undefined,
+        esi: route.type === 1 || route.type === 4 ? route.esi : undefined,
+        scope: route.type === 1 ? route.scope : undefined,
+        originatingVtep: route.type === 1 || route.type === 3 || route.type === 4
+          ? route.originatingVtep
+          : undefined,
         network: route.type === 5 ? route.network : undefined,
         prefixLength: route.type === 5 ? route.prefixLength : undefined,
         nextHopVtep: route.type === 5 ? route.nextHopVtep : undefined,

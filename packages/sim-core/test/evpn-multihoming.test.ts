@@ -350,3 +350,130 @@ describe("EVPN Route Type 4 and Designated Forwarder election", () => {
     expect(leaf1.vxlanProblems().join("\n")).toMatch(/no remote peer/);
   });
 });
+
+describe("EVPN Ethernet A-D routes and Single-Active forwarding", () => {
+  it("originates a per-ES and a per-EVI Ethernet A-D route for the segment", () => {
+    const { leaf1 } = multihomedFabric();
+    const ad = leaf1.evpnRoutes().filter((route) => route.type === 1 && route.source === "local");
+    expect(ad).toEqual([
+      expect.objectContaining({ type: 1, scope: "per-es", esi: ESI, originatingVtep: LEAF1_VTEP }),
+      expect.objectContaining({ type: 1, scope: "per-evi", esi: ESI, vni: VNI, originatingVtep: LEAF1_VTEP }),
+    ]);
+    // A per-EVI route rides the VNI's own RD and route targets, so it is
+    // imported by exactly the leaves that already share the EVI.
+    expect(ad[1]).toMatchObject({ routeDistinguisher: `${AS}:${VNI}`, routeTargets: [`${AS}:${VNI}`] });
+  });
+
+  it("keeps only the Designated Forwarder forwarding toward the CE", () => {
+    const { engine, leaf1, leaf2, hostA, hostB } = multihomedFabric();
+    hostA.ping("10.10.10.20", 1);
+    engine.runUntilIdle();
+    expect(hostA.pingResults[0]?.success).toBe(true);
+    void hostB;
+
+    // The DF learned the host; the standby attachment refused the frame before
+    // learning it, so it never advertises a MAC it may not forward to.
+    expect(leaf1.macAddressTable().some((row) => row.mac === macFromIndex(1))).toBe(true);
+    expect(leaf2.macAddressTable().some((row) => row.mac === macFromIndex(1))).toBe(false);
+    expect(leaf2.evpnRoutes().filter((route) => route.type === 2 && route.source === "local")).toEqual([]);
+    const drops = engine.traceLog.filter((entry) => entry.device === "leaf2");
+    expect(drops.some((entry) => entry.type === "evpn-non-df-ingress-drop")).toBe(true);
+  });
+
+  it("carries the Ethernet Segment on the MAC route and programs a primary and a backup", () => {
+    const { engine, leaf1, leaf3, hostA } = multihomedFabric();
+    hostA.ping("10.10.10.20", 1);
+    engine.runUntilIdle();
+
+    const originated = leaf1.evpnRoutes()
+      .filter((route) => route.type === 2 && route.source === "local" && route.macAddress === macFromIndex(1));
+    expect(originated[0]).toMatchObject({ ethernetSegmentId: ESI });
+
+    // The remote leaf forwards to the current DF, not simply to whoever
+    // advertised the route, and keeps the other leaf as a deterministic backup.
+    expect(leaf3.remoteMacEntries()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        vni: VNI,
+        mac: macFromIndex(1),
+        remoteVtep: LEAF1_VTEP,
+        ethernetSegmentId: ESI,
+        backupVteps: [LEAF2_VTEP],
+      }),
+    ]));
+    expect(engine.traceLog.some((entry) => entry.type === "evpn-multihoming-primary-selected")).toBe(true);
+    expect(engine.traceLog.some((entry) => entry.type === "evpn-multihoming-backup-selected")).toBe(true);
+  });
+
+  it("leaves a single-homed MAC with no Ethernet Segment and no backup", () => {
+    const { engine, leaf1, hostA } = multihomedFabric();
+    hostA.ping("10.10.10.20", 1);
+    engine.runUntilIdle();
+    // HostB hangs off an ordinary access port on Leaf3.
+    expect(leaf1.remoteMacEntries()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        mac: macFromIndex(2),
+        remoteVtep: LEAF3_VTEP,
+        ethernetSegmentId: undefined,
+        backupVteps: [],
+      }),
+    ]));
+  });
+
+  it("never returns an overlay frame to the Ethernet Segment it came from", () => {
+    const { engine, leaf1, leaf2, hostA } = multihomedFabric();
+    hostA.ping("10.10.10.20", 1);
+    engine.runUntilIdle();
+    // Leaf1 replicated the ARP request into the overlay stamped with its ESI;
+    // Leaf2 attaches the same segment and must not hand it back to the CE.
+    const bounced = engine.traceLog.filter((entry) =>
+      entry.device === "leaf2" && entry.type === "evpn-es-split-horizon-drop");
+    expect(bounced.length).toBeGreaterThan(0);
+    expect(bounced[0]!.detail).toMatchObject({ esi: ESI, peer: LEAF1_VTEP });
+    // No loop: the CE never sees the frame twice, so the ping still succeeds.
+    expect(hostA.pingResults[0]?.success).toBe(true);
+    void leaf1;
+    void leaf2;
+  });
+
+  it("fails over to the backup leaf through mass withdrawal and recovers traffic", () => {
+    const { engine, leaf1, leaf2, leaf3, hostA } = multihomedFabric();
+    hostA.ping("10.10.10.20", 1);
+    engine.runUntilIdle();
+    expect(hostA.pingResults[0]?.success).toBe(true);
+    const hostAEntry = () => leaf3.remoteMacEntries().find((row) => row.mac === macFromIndex(1));
+    expect(hostAEntry()?.remoteVtep).toBe(LEAF1_VTEP);
+
+    const before = engine.traceLog.length;
+    leaf1.interfaces.get("Gi0/1")!.shutdown();
+    engine.runUntilIdle();
+    const converged = engine.traceLog.slice(before);
+
+    // One per-ES withdrawal invalidates everything behind the segment at once.
+    expect(converged.some((entry) => entry.type === "evpn-ad-route-withdrawn")).toBe(true);
+    expect(converged.some((entry) => entry.device === "leaf3" && entry.type === "evpn-es-mass-withdraw")).toBe(true);
+    // The surviving leaf becomes the DF and the remote leaf follows it without
+    // any MAC having to be relearned first.
+    expect(leaf2.designatedForwarderStates()[0]).toMatchObject({
+      designatedForwarder: LEAF2_VTEP,
+      localRole: "df",
+    });
+    expect(hostAEntry()?.remoteVtep).toBe(LEAF2_VTEP);
+    expect(converged.some((entry) => entry.type === "evpn-multihoming-failover")).toBe(true);
+
+    // Traffic recovers with no topology rebuild and no manual intervention.
+    hostA.ping("10.10.10.20", 2);
+    engine.runUntilIdle();
+    expect(hostA.pingResults.at(-1)?.success).toBe(true);
+  });
+
+  it("converges within the bounded deterministic event budget", () => {
+    const { engine, leaf1 } = multihomedFabric();
+    engine.controlProtocolBudget.reset();
+    leaf1.interfaces.get("Gi0/1")!.shutdown();
+    // A repeating timer would leave the queue permanently non-empty; this
+    // returning at all is the assertion that multihoming adds no such timer.
+    engine.runUntilIdle();
+    expect(engine.controlProtocolBudget.consumed("dfElections", "leaf1"))
+      .toBeLessThan(engine.controlProtocolBudget.maximumOf("dfElections"));
+  });
+});
