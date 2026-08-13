@@ -30,10 +30,12 @@ import {
   EthernetSegmentEngine,
   electDesignatedForwarder,
   type Esi,
+  type EvpnAliasingPathSet,
   type EvpnDfState,
   type EvpnEsPeer,
   type EvpnEthernetSegmentConfiguration,
   type EvpnEthernetSegmentState,
+  type EvpnRedundancyMode,
 } from "../overlay/ethernet-segment";
 import type { ImportedEvpnPrefixRoute, VrfConfiguration, VrfRoute } from "../routing/vrf";
 import { ipToInt, type Ipv4 } from "../util/ipv4";
@@ -123,6 +125,27 @@ class SviInterface extends EthernetInterface {
   }
 }
 
+/**
+ * Where a remote MAC behind an Ethernet Segment is reachable.
+ *
+ * The two redundancy modes answer genuinely different questions, so both shapes
+ * live in one structure rather than All-Active borrowing Single-Active's words:
+ *
+ * - **Single-Active** fills `primary` (the segment's Designated Forwarder) and
+ *   `backups`, which are never forwarded over — they exist so a failover is a
+ *   selection rather than a relearn.
+ * - **All-Active** fills `aliases` with every live path and sets `primary` to
+ *   the flow-independent default the tables display; a real flow picks its own
+ *   member of `aliases`.
+ */
+interface MultihomingPath {
+  readonly primary: Ipv4;
+  readonly backups: readonly Ipv4[];
+  readonly aliases: readonly Ipv4[];
+  readonly ethernetSegmentId?: Esi;
+  readonly redundancyMode?: EvpnRedundancyMode;
+}
+
 /** VLAN switching plus a composed Router control/data plane for SVIs and routed ports. */
 export class Layer3Switch extends L2Switch {
   override readonly deviceType = "l3-switch" as const;
@@ -133,8 +156,9 @@ export class Layer3Switch extends L2Switch {
    */
   readonly vxlan = new VxlanEngine();
   /**
-   * EVPN Single-Active multihoming. The segments are configuration; the peers,
-   * the elected Designated Forwarder and every A-D route are runtime.
+   * EVPN multihoming, Single-Active and All-Active. The segments are
+   * configuration; the peers, the elected Designated Forwarder, every A-D route
+   * and each aliasing set are runtime.
    */
   readonly ethernetSegments = new EthernetSegmentEngine();
   private readonly routingPlane: Router;
@@ -154,6 +178,14 @@ export class Layer3Switch extends L2Switch {
   private readonly multihomingPrimaries = new Map<string, Ipv4>();
   /** `<vni>|<mac>` → the Ethernet Segment a remote MAC is bound to. Runtime. */
   private readonly segmentMacs = new Map<string, Esi>();
+  /**
+   * `<vni>|<mac>` → the VTEP whose Type 2 route announced the address.
+   *
+   * With aliasing the advertiser and the forwarder are genuinely different
+   * questions, so the answer to the first is kept rather than inferred from the
+   * second. Runtime only.
+   */
+  private readonly multihomingAdvertisers = new Map<string, Ipv4>();
   /** `<esi>|<vtep>` pairs backed by a per-ES A-D route, to spot a withdrawal. */
   private readonly lastEsReachability = new Set<string>();
   /** SVIs configured with `fabric forwarding mode anycast-gateway`. */
@@ -200,6 +232,10 @@ export class Layer3Switch extends L2Switch {
       interfaceOperationalUp: (name) => this.logicalPortOperationalUp(name),
       overlayVlansOf: (name) => this.overlayVlansOf(name),
       localVtep: () => this.vxlan.state().sourceAddress,
+      // An alias is only usable if the packet can actually get there, so
+      // underlay reachability is part of eligibility rather than something the
+      // forwarding path discovers by failing.
+      underlayReachable: (vtep) => this.routingPlane.overlayUnderlayReachable(vtep),
     });
   }
 
@@ -826,6 +862,7 @@ export class Layer3Switch extends L2Switch {
     this.dfSignature = "";
     this.esExportSignature = "";
     this.multihomingPrimaries.clear();
+    this.multihomingAdvertisers.clear();
     this.segmentMacs.clear();
     this.lastEsReachability.clear();
   }
@@ -966,7 +1003,61 @@ export class Layer3Switch extends L2Switch {
       });
       return true;
     }
-    return this.sendVxlan(member.vni, entry.remoteVtep, frame, "unicast", this.frameSourceEsi(origin));
+    const target = this.selectRemoteMacPath(entry, frame);
+    return this.sendVxlan(member.vni, target, frame, "unicast", this.frameSourceEsi(origin));
+  }
+
+  /**
+   * Which VTEP one known-unicast frame is actually sent to.
+   *
+   * A single-homed or Single-Active address has exactly one answer, so this is
+   * the entry's own VTEP. An **All-Active** address has several equally usable
+   * ones, and the choice is made per *flow* rather than per address: every frame
+   * of one conversation takes the same leaf, so nothing is ever reordered, and
+   * one frame is never duplicated to every alias.
+   */
+  private selectRemoteMacPath(entry: RemoteMacEntry, frame: EthernetFrame): Ipv4 {
+    if (entry.redundancyMode !== "all-active" || entry.aliasVteps.length < 2) return entry.remoteVtep;
+    const esi = entry.ethernetSegmentId ?? "";
+    const selected = this.ethernetSegments.selectAliasingVtep(
+      entry.aliasVteps,
+      this.aliasingFlowKey(esi, entry.vni, frame),
+    ) ?? entry.remoteVtep;
+    this.traceVxlan("evpn-aliasing-path-selected", {
+      vni: entry.vni,
+      mac: entry.mac,
+      esi,
+      eligible: [...entry.aliasVteps],
+      selected,
+    });
+    return selected;
+  }
+
+  /**
+   * The stable flow key an All-Active selection is made from.
+   *
+   * Only fields the engine actually models take part, and they are read in one
+   * fixed order, so the same conversation always reaches the same leaf in the
+   * browser worker and in the verifier. The segment and the VNI are part of the
+   * key so two EVIs of one segment spread independently.
+   */
+  private aliasingFlowKey(esi: Esi, vni: number, frame: EthernetFrame): string {
+    const parts: string[] = [esi, String(vni), normalizeMac(frame.src), normalizeMac(frame.dst)];
+    const payload = frame.payload;
+    if (payload.kind === "ipv4") {
+      parts.push(payload.src, payload.dst, String(payload.protocol));
+      const inner = payload.payload;
+      if (inner.kind === "udp" || inner.kind === "tcp") {
+        parts.push(String(inner.srcPort), String(inner.dstPort));
+      }
+    } else if (payload.kind === "ipv6") {
+      parts.push(payload.src, payload.dst, String(payload.nextHeader));
+      const inner = payload.payload;
+      if (inner.kind === "udp" || inner.kind === "tcp") {
+        parts.push(String(inner.srcPort), String(inner.dstPort));
+      }
+    }
+    return parts.join("|");
   }
 
   /**
@@ -1419,8 +1510,12 @@ export class Layer3Switch extends L2Switch {
     mac: Mac,
     esi: Esi | undefined,
     advertised: Ipv4,
-  ): { primary: Ipv4; backups: Ipv4[]; ethernetSegmentId?: Esi } | undefined {
-    if (esi === undefined || esi === ESI_ZERO) return { primary: advertised, backups: [] };
+  ): MultihomingPath | undefined {
+    if (esi === undefined || esi === ESI_ZERO) return { primary: advertised, backups: [], aliases: [] };
+    const mode = this.ethernetSegments.segmentForEsi(esi)?.redundancyMode
+      ?? this.ethernetSegments.redundancyModeOf(esi, advertised)
+      ?? "single-active";
+    if (mode === "all-active") return this.resolveAliasingPath(vni, mac, esi, advertised);
     const vlanId = this.vxlan.memberForVni(vni)?.vlanId;
     const eligible = this.ethernetSegments.dfCandidates(esi)
       .filter((vtep) => this.ethernetSegments.hasEsReachability(esi, vtep));
@@ -1448,24 +1543,105 @@ export class Layer3Switch extends L2Switch {
         `${this.name} has no Ethernet A-D per-EVI backup for Ethernet Segment ${esi} in VNI ${vni}.`,
       );
     }
-    return { primary, backups, ethernetSegmentId: esi };
+    return { primary, backups, aliases: [], ethernetSegmentId: esi, redundancyMode: "single-active" };
+  }
+
+  /**
+   * All-Active: every eligible VTEP is a live path, not a standby.
+   *
+   * The Designated Forwarder does **not** own known-unicast forwarding here, so
+   * the address resolves to the whole eligible set and one member of it is
+   * chosen per flow at forwarding time. Eligibility itself is decided in one
+   * place — `EthernetSegmentEngine.aliasingCandidates` — so no forwarding branch
+   * has to repeat the Type 1/Type 4/underlay/mode tests for itself.
+   *
+   * The address does *not* have to be advertised by every leaf. A Type 2 route
+   * from one leaf plus a per-EVI Type 1 from another is exactly what makes the
+   * second leaf usable, which is the whole point of aliasing.
+   */
+  private resolveAliasingPath(
+    vni: number,
+    mac: Mac,
+    esi: Esi,
+    /** Only reported: an alias set outlives the route that first announced it. */
+    advertised: Ipv4 | undefined,
+  ): MultihomingPath | undefined {
+    const eligible = this.ethernetSegments.aliasingCandidates(esi, vni);
+    if (eligible.length === 0) {
+      this.traceVxlan("evpn-aliasing-no-path", { vni, mac, esi, advertisedBy: advertised });
+      this.recordEvpnFault(
+        `es-${esi}-no-alias`,
+        `${this.name} holds MAC ${mac} behind All-Active Ethernet Segment ${esi} but no VTEP offers a usable aliasing path in VNI ${vni}.`,
+      );
+      return undefined;
+    }
+    // The default programmed path is the flow-independent one, so a table row, a
+    // `show` line and a grading check all agree before any packet is sent.
+    const selected = this.ethernetSegments.selectAliasingVtep(eligible, `${esi}|${vni}|${mac}`) ?? eligible[0]!;
+    this.traceVxlan("evpn-aliasing-path-resolved", {
+      vni,
+      mac,
+      esi,
+      advertisedBy: advertised,
+      eligible,
+      selected,
+      redundancyMode: "all-active",
+    });
+    return {
+      primary: selected,
+      backups: [],
+      aliases: eligible,
+      ethernetSegmentId: esi,
+      redundancyMode: "all-active",
+    };
+  }
+
+  /**
+   * Every All-Active alias set this leaf currently holds, for inspection.
+   *
+   * Runtime only: the eligible set and the selection are rebuilt from the
+   * Ethernet Segment configuration and the imported routes, identically in the
+   * browser worker and in the verifier.
+   */
+  aliasingPathSets(): EvpnAliasingPathSet[] {
+    this.syncRoutingPlane();
+    return this.vxlan.remoteMacEntries()
+      .flatMap((row): EvpnAliasingPathSet[] => {
+        const esi = row.ethernetSegmentId;
+        if (esi === undefined || row.redundancyMode !== "all-active") return [];
+        return [{
+          esi,
+          vni: row.vni,
+          macAddress: row.mac,
+          advertisingVtep: this.multihomingAdvertisers.get(`${row.vni}|${row.mac}`) ?? row.remoteVtep,
+          eligibleVteps: [...row.aliasVteps],
+          selectedVtep: row.remoteVtep,
+          redundancyMode: "all-active",
+          reason: row.aliasVteps.length === 0 ? "no-usable-path" : "all-active-aliasing",
+        }];
+      });
   }
 
   /** Program one resolved remote MAC and report what moved, once. */
   private installMultihomedRemoteMac(
     vni: number,
     mac: Mac,
-    path: { primary: Ipv4; backups: Ipv4[]; ethernetSegmentId?: Esi },
+    path: MultihomingPath,
     advertisedBy: Ipv4,
   ): void {
     const key = `${vni}|${mac}`;
-    if (path.ethernetSegmentId === undefined) this.segmentMacs.delete(key);
-    else if (this.segmentMacs.size < DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumRemoteMacsPerVtep) {
+    if (path.ethernetSegmentId === undefined) {
+      this.segmentMacs.delete(key);
+      this.multihomingAdvertisers.delete(key);
+    } else if (this.segmentMacs.size < DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumRemoteMacsPerVtep) {
       this.segmentMacs.set(key, path.ethernetSegmentId);
+      this.multihomingAdvertisers.set(key, advertisedBy);
     }
     if (!this.vxlan.learnRemoteMac(vni, mac, path.primary, this.engine.now(), "bgp-evpn", {
       ethernetSegmentId: path.ethernetSegmentId,
       backupVteps: path.backups,
+      aliasVteps: path.aliases,
+      redundancyMode: path.redundancyMode,
     })) return;
     this.traceVxlan("vxlan-mac-learned-remote", {
       vni,
@@ -1473,20 +1649,34 @@ export class Layer3Switch extends L2Switch {
       remoteVtep: path.primary,
       esi: path.ethernetSegmentId,
       backups: path.backups,
+      aliases: path.aliases,
       source: "bgp-evpn",
     });
     if (path.ethernetSegmentId === undefined) return;
-    this.traceVxlan("evpn-multihoming-primary-selected", {
-      vni,
-      mac,
-      esi: path.ethernetSegmentId,
-      primary: path.primary,
-      advertisedBy,
-    });
-    for (const backup of path.backups) {
-      this.traceVxlan("evpn-multihoming-backup-selected", {
-        vni, mac, esi: path.ethernetSegmentId, backup,
+    if (path.redundancyMode === "all-active") {
+      // All-Active has no primary in the Single-Active sense: every eligible
+      // VTEP is live, and which one a flow takes is decided per flow.
+      this.traceVxlan("evpn-aliasing-path-installed", {
+        vni,
+        mac,
+        esi: path.ethernetSegmentId,
+        eligible: path.aliases,
+        selected: path.primary,
+        advertisedBy,
       });
+    } else {
+      this.traceVxlan("evpn-multihoming-primary-selected", {
+        vni,
+        mac,
+        esi: path.ethernetSegmentId,
+        primary: path.primary,
+        advertisedBy,
+      });
+      for (const backup of path.backups) {
+        this.traceVxlan("evpn-multihoming-backup-selected", {
+          vni, mac, esi: path.ethernetSegmentId, backup,
+        });
+      }
     }
     const previous = this.multihomingPrimaries.get(key);
     if (previous !== undefined && previous !== path.primary) {
@@ -1514,19 +1704,30 @@ export class Layer3Switch extends L2Switch {
       if (stillAdvertised.has(key)) continue;
       const [vniText, mac] = key.split("|") as [string, Mac];
       const vni = Number(vniText);
-      const path = this.resolveSegmentBackupPath(vni, esi);
+      const path = this.resolveSegmentBackupPath(vni, mac, esi);
       if (!path) {
         this.segmentMacs.delete(key);
         this.multihomingPrimaries.delete(key);
+        this.multihomingAdvertisers.delete(key);
         this.vxlan.forgetRemoteMac(vni, mac);
         continue;
       }
-      this.installMultihomedRemoteMac(vni, mac, { ...path, ethernetSegmentId: esi }, path.primary);
+        this.installMultihomedRemoteMac(vni, mac, path, this.multihomingAdvertisers.get(key) ?? path.primary);
     }
   }
 
-  /** The VTEP that now serves one segment in one EVI, and its backups. */
-  private resolveSegmentBackupPath(vni: number, esi: Esi): { primary: Ipv4; backups: Ipv4[] } | undefined {
+  /**
+   * The VTEP that now serves one segment in one EVI after its MAC route is gone.
+   *
+   * Single-Active resolves to the Designated Forwarder with the remaining VTEPs
+   * as backups; All-Active resolves to the whole eligible alias set, so losing
+   * one path is a narrowing of that set rather than a relearn.
+   */
+  private resolveSegmentBackupPath(vni: number, mac: Mac, esi: Esi): MultihomingPath | undefined {
+    if (this.ethernetSegments.segmentForEsi(esi)?.redundancyMode === "all-active"
+      || this.ethernetSegments.peersForEsi(esi).some((peer) => peer.redundancyMode === "all-active")) {
+      return this.resolveAliasingPath(vni, mac, esi, this.multihomingAdvertisers.get(`${vni}|${mac}`));
+    }
     const vlanId = this.vxlan.memberForVni(vni)?.vlanId;
     const eligible = this.ethernetSegments.dfCandidates(esi)
       .filter((vtep) => this.ethernetSegments.hasEsReachability(esi, vtep)
@@ -1534,7 +1735,13 @@ export class Layer3Switch extends L2Switch {
     if (eligible.length === 0) return undefined;
     const primary = (vlanId === undefined ? undefined : electDesignatedForwarder(eligible, vlanId)) ?? eligible[0]!;
     if (primary === this.vxlan.state().sourceAddress) return undefined;
-    return { primary, backups: eligible.filter((vtep) => vtep !== primary) };
+    return {
+      primary,
+      backups: eligible.filter((vtep) => vtep !== primary),
+      aliases: [],
+      ethernetSegmentId: esi,
+      redundancyMode: "single-active",
+    };
   }
 
   /** Report every per-ES Ethernet A-D route that stopped existing. */
@@ -1560,12 +1767,22 @@ export class Layer3Switch extends L2Switch {
   /**
    * Whether a frame may leave through one logical port.
    *
-   * Split horizon is checked first and independently of the DF role: a frame
+   * Split horizon is checked **first and independently of the DF role**: a frame
    * that entered the fabric on this very Ethernet Segment must never be handed
-   * back to it, or a CE dual-attached to two leaves would see its own frame
-   * return. Only then does the Single-Active rule apply.
+   * back to it, or a CE attached to two leaves would see its own frame return.
+   * That is a property of where the frame came from, not of who is forwarding,
+   * so it holds in All-Active exactly as it does in Single-Active.
+   *
+   * Only then does the redundancy rule apply. Single-Active keeps the standby
+   * attachment silent; All-Active lets every operational attachment carry known
+   * unicast and narrows the DF role to overlay BUM delivery alone.
    */
-  protected override egressAllowedByOverlay(port: string, vlan: number, origin: FrameOrigin): boolean {
+  protected override egressAllowedByOverlay(
+    port: string,
+    vlan: number,
+    origin: FrameOrigin,
+    delivery: "unicast" | "bum",
+  ): boolean {
     const esi = this.ethernetSegments.esiForInterface(port);
     if (esi === undefined) return true;
     if (origin.kind === "remote-vtep" && origin.esi === esi) {
@@ -1575,14 +1792,17 @@ export class Layer3Switch extends L2Switch {
         peer: origin.peer,
         port,
         vlan,
+        delivery,
       });
       return false;
     }
-    if (this.ethernetSegments.attachmentForwards(port, vlan)) return true;
+    if (this.ethernetSegments.attachmentForwards(port, vlan, delivery)) return true;
     this.traceVxlan("evpn-non-df-egress-drop", {
       esi,
       vlan,
       port,
+      delivery,
+      redundancyMode: this.ethernetSegments.segmentForEsi(esi)?.redundancyMode,
       designatedForwarder: this.ethernetSegments.dfState(esi, vlan)?.designatedForwarder,
     });
     return false;
@@ -1593,12 +1813,14 @@ export class Layer3Switch extends L2Switch {
    *
    * In Single-Active the standby attachment carries no tenant data in either
    * direction, so a non-DF refuses the frame before it is learned. That is what
-   * keeps a dual-attached CE from making both leaves advertise the same MAC.
+   * keeps a dual-attached CE from making both leaves advertise the same MAC. An
+   * All-Active attachment is always live, so CE-originated traffic — including
+   * BUM — may enter through any of them.
    */
   protected override ingressAllowedByOverlay(port: string, vlan: number): boolean {
     const esi = this.ethernetSegments.esiForInterface(port);
     if (esi === undefined) return true;
-    if (this.ethernetSegments.attachmentForwards(port, vlan)) return true;
+    if (this.ethernetSegments.attachmentAcceptsIngress(port, vlan)) return true;
     this.traceVxlan("evpn-non-df-ingress-drop", {
       esi,
       vlan,
@@ -1631,13 +1853,25 @@ export class Layer3Switch extends L2Switch {
       if (peers.length === 0) {
         problems.push(`${this.name} Ethernet Segment ${state.id} has no remote peer: no other VTEP advertises ESI ${state.esi}.`);
       }
+      // Two leaves that disagree about who may forward would duplicate or
+      // black-hole traffic, so a mode mismatch is named rather than left to
+      // show up as intermittent loss.
+      for (const peer of this.ethernetSegments.disagreeingPeers(state.esi)) {
+        problems.push(`${this.name} Ethernet Segment ${state.id} is ${state.redundancyMode} but ${peer.vtep} advertises ${peer.redundancyMode}; the segment is not aliased to it.`);
+      }
       for (const df of this.ethernetSegments.dfStates().filter((entry) => entry.esi === state.esi)) {
         if (df.designatedForwarder === undefined) {
           problems.push(`${this.name} has no eligible Designated Forwarder for ESI ${state.esi} VLAN ${df.vlanId}.`);
-        } else if (df.localRole === "non-df") {
+        } else if (df.localRole === "non-df" && state.redundancyMode === "single-active") {
           problems.push(`${this.name} is non-DF for ESI ${state.esi} VLAN ${df.vlanId}: ${df.designatedForwarder} forwards toward the CE.`);
         }
       }
+    }
+    // An All-Active address with no usable alias is unreachable, and saying so
+    // is more useful than a silent drop at forwarding time.
+    for (const row of this.aliasingPathSets()) {
+      if (row.eligibleVteps.length > 0) continue;
+      problems.push(`${this.name} has no usable aliasing path for MAC ${row.macAddress} behind Ethernet Segment ${row.esi} in VNI ${row.vni}.`);
     }
     return problems;
   }
@@ -1693,6 +1927,9 @@ export class Layer3Switch extends L2Switch {
         ...shared,
         type: 4,
         routeDistinguisher: `${routerId}:0`,
+        // The mode travels with the segment route so a peer that disagrees is
+        // reported rather than left to duplicate or black-hole traffic.
+        redundancyMode: state.redundancyMode,
         routeId: `local:evpn:4:${state.esi}:${sourceAddress}`,
       });
       // Per-ES: "this VTEP still has a working attachment". One withdrawal
@@ -1900,7 +2137,12 @@ export class Layer3Switch extends L2Switch {
     const membership = new Map<number, Ipv4[]>();
     const macCandidates = new Map<string, EvpnRoute[]>();
     const prefixCandidates = new Map<string, Array<EvpnRoute & { type: 5 }>>();
-    const esRoutes: Array<{ esi: Esi; vtep: Ipv4; routerId?: Ipv4 }> = [];
+    const esRoutes: Array<{
+      esi: Esi;
+      vtep: Ipv4;
+      routerId?: Ipv4;
+      redundancyMode?: EvpnRedundancyMode;
+    }> = [];
     const adPerEs: Array<{ esi: Esi; vtep: Ipv4 }> = [];
     const adPerEvi: Array<{ esi: Esi; vni: number; vtep: Ipv4 }> = [];
     for (const route of routes) {
@@ -1938,7 +2180,12 @@ export class Layer3Switch extends L2Switch {
           );
           continue;
         }
-        esRoutes.push({ esi: route.esi, vtep: route.originatingVtep, routerId: route.neighborRouterId });
+        esRoutes.push({
+          esi: route.esi,
+          vtep: route.originatingVtep,
+          routerId: route.neighborRouterId,
+          redundancyMode: route.redundancyMode,
+        });
         continue;
       }
       if (route.type === 5) {

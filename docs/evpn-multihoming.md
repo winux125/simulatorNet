@@ -1,15 +1,19 @@
-# Deterministic EVPN Multihoming (M10.16)
+# Deterministic EVPN Multihoming (M10.16, M10.17)
 
-SimulatorNet models **Single-Active** EVPN multihoming: one CE attached to two
-leaves, discovered through a shared Ethernet Segment Identifier, with exactly one
-leaf forwarding toward that CE per VLAN and the other standing by.
+SimulatorNet models two redundancy modes for one CE attached to two leaves,
+discovered through a shared Ethernet Segment Identifier:
 
-All-Active multihoming — and with it aliasing, per-flow load balancing across
-several active PEs and MAC mobility — is deliberately **not** modelled here. So
-are highest-random-weight and preference-based DF election, AC-DF, duplicate-MAC
-dampening, MLAG/vPC, multihoming for an L3VNI or for IPv6, EVPN over MPLS and
-Segment Routing. Everything this document describes is what the engine actually
-does; nothing below is aspirational.
+- **Single-Active** (M10.16) — exactly one leaf forwards toward that CE per
+  VLAN and the other stands by;
+- **All-Active** (M10.17) — every operational attachment carries known unicast,
+  the Designated Forwarder role narrows to overlay BUM delivery alone, and a
+  remote leaf reaches an address through *any* eligible leaf by **aliasing**.
+
+Preference-based and AC-DF election, sticky MAC and MAC protection,
+duplicate-MAC dampening, MLAG/vPC, cross-device LACP, multihoming for an L3VNI
+or for IPv6, EVPN over MPLS and Segment Routing are deliberately **not**
+modelled. Everything this document describes is what the engine actually does;
+nothing below is aspirational.
 
 ## The Ethernet Segment
 
@@ -117,6 +121,87 @@ the election; the decision belongs to EVPN forwarding logic alone.
 Losing the role flushes what that attachment learned, in that VLAN only. Every
 other port's entries stay exactly where they were.
 
+## All-Active forwarding
+
+`redundancy-mode all-active` changes what the DF role *means*, not who wins it.
+The election is the same one, over the same candidate list; what narrows is its
+scope:
+
+| | Single-Active | All-Active |
+| --- | --- | --- |
+| CE-originated frame arriving on the attachment | DF only | any operational attachment |
+| known unicast toward the CE | DF only | any operational attachment |
+| overlay BUM toward the segment | DF only | **DF only** |
+| remote resolution of a MAC behind the segment | current DF, with backups | **aliasing** over the eligible set |
+
+There is exactly one seam for this: `attachmentForwards(port, vlan, delivery)`.
+Every forwarding path asks it instead of testing an ESI for itself, so the two
+modes differ in one function rather than in scattered branches. Split horizon is
+still checked **first and independently**, because it is a property of where the
+frame came from rather than of who is forwarding.
+
+Only the DF delivering overlay BUM is what keeps a broadcast reaching the CE
+once rather than once per leaf.
+
+## Aliasing
+
+A remote leaf may forward an address through a leaf that never advertised it.
+That is the point of aliasing: a Type 2 route from Leaf1 plus a **per-EVI**
+Ethernet A-D route from Leaf2 makes Leaf2 usable for that address, with no MAC
+learned or advertised there at all.
+
+Eligibility is decided in one place — `aliasingCandidates(esi, vni)` — and a
+VTEP qualifies only when every condition holds at once:
+
+- it advertised a **Type 4** route for this ESI (so its route target matched), or
+  it is this device with an operational local attachment;
+- its **per-ES** Ethernet A-D route is present, so it still has a working
+  attachment — one withdrawal removes it from every MAC behind the segment;
+- its **per-EVI** Ethernet A-D route is present, so it can serve *this* EVI;
+- the **underlay** can actually reach it;
+- it advertised the **same redundancy mode**. Two leaves that disagree about who
+  may forward would duplicate or black-hole traffic, so the mismatch is reported
+  in Problems and the peer is never aliased to.
+
+The mode travels on the Type 4 route as a structured field. A route written
+before M10.17 carries none, which reads as the Single-Active this engine always
+assumed — so an older lab is unchanged.
+
+### Choosing one path
+
+For each flow exactly one eligible VTEP is chosen, by hashing a stable flow key
+over the canonically ordered candidate list:
+
+```
+ESI | VNI | source MAC | destination MAC
+    [ | source IP | destination IP | protocol [ | source port | destination port ] ]
+```
+
+Only fields the engine actually models take part, read in one fixed order. The
+hash is FNV-1a — never `Math.random`, never `Map` insertion order, never
+wall-clock time — so the browser worker and the verifier select the same leaf for
+the same conversation. Every frame of one flow takes the same path, so nothing is
+reordered, and **one frame goes to one leaf**: a known unicast is never
+duplicated to every alias.
+
+Sorting the candidates before the modulus is what makes adding or removing a path
+a *bounded* reassignment rather than a reshuffle driven by arrival order.
+
+This is educational ECMP-like selection over one Ethernet Segment. It is
+deliberately not a general routing ECMP implementation.
+
+### Failure
+
+When one All-Active PE or attachment disappears its Type 1 and Type 4 routes are
+withdrawn, and that alone removes it from eligibility everywhere. The remaining
+paths continue, **no address is relearned**, and the DF is recomputed only if the
+candidate set actually changed. There is no fallback to Single-Active semantics:
+an All-Active segment with one surviving path is an All-Active segment with one
+path.
+
+If the last usable path goes, the address is not installed at all rather than
+pointed at a leaf that has already said it cannot deliver, and Problems says so.
+
 ## Split horizon
 
 A frame that entered the fabric on Ethernet Segment X must never be handed back
@@ -128,11 +213,14 @@ any attachment of that segment.
 Split horizon is checked first and independently of the DF role, because it is a
 property of where the frame came from rather than of who is forwarding.
 
-## Remote MAC paths: primary and backup
+## Remote MAC paths
 
 A MAC learned behind a multihomed attachment is advertised as a Type 2 route
-carrying a non-zero ESI. The receiving leaf then resolves it through the
-**segment**, not through the route's own next hop:
+carrying a non-zero ESI. The receiving leaf resolves it through the **segment**,
+not through the route's own next hop — and what "resolve" means depends on the
+mode.
+
+**Single-Active** produces a primary and its backups:
 
 - **primary** — the segment's current Designated Forwarder, among the VTEPs that
   advertise usable per-ES reachability;
@@ -143,7 +231,13 @@ Single-Active never forwards over a backup: that would be aliasing. The backup
 exists so a failover is a *selection* rather than a relearn, and so the state is
 visible before anything fails.
 
-This dependency lives in one function. There is no `if (esi)` scattered through
+**All-Active** produces an *alias set* instead, and deliberately does not reuse
+the primary/backup words: every member is a live path, so the table stores the
+set and one member of it is chosen per flow at forwarding time. The row a `show`
+command or a grading check reads is the flow-independent default, so state is
+stable before a single packet is sent.
+
+Both dependencies live in one function. There is no `if (esi)` scattered through
 the ingress, unicast egress and BUM egress paths.
 
 ## Failover
@@ -202,11 +296,18 @@ failure → mass withdrawal → new DF → recovery is walkable one step at a ti
 
 ## Known limitations
 
-- Single-Active only; All-Active and MAC mobility are M10.17.
-- The DF election is the modulus one; HRW and preference are not implemented.
+- The DF election is the modulus one; preference-based election and AC-DF are
+  not implemented.
 - A segment attaches to an access switchport or a Port-channel; a Port-channel
-  is an ordinary single-chassis bundle, never a multi-chassis one.
+  is an ordinary single-chassis bundle, never a multi-chassis one. There is no
+  MLAG/vPC control plane and no cross-device LACP.
+- Because there is no ESI-LAG, an All-Active CE built from an ordinary L2 switch
+  is a **shared segment**: the DF rule and split horizon bound what crosses it,
+  but a broadcast the DF delivers to that switch can still be repeated toward
+  the other leaf. A real ESI-LAG is what removes that in hardware, and it is
+  deliberately not invented here.
 - Multihoming applies to bridged L2VNIs; an L3VNI and IPv6 are out of scope.
 - There is no ESI label, no EVPN over MPLS and no Segment Routing.
+- Sticky MAC, MAC protection and duplicate-MAC dampening are not modelled.
 
 See also `docs/vxlan-evpn.md` and `docs/routing-bgp.md`.

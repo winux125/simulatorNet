@@ -10,6 +10,7 @@ import {
   type PagpMode,
   type PagpPacket,
 } from "../packets/etherchannel";
+import { hashFlowKey } from "../util/hash";
 import type { Mac } from "../util/mac";
 import { ControlProtocolConfigurationError, enforceStructuralLimit } from "./limits";
 import { ProtocolActivity } from "./protocol-activity";
@@ -750,13 +751,4 @@ function newMember(port: string, mode: EtherChannelMode): MemberRuntime {
 function partnerStateOf(mode: LacpActivity | PagpMode | undefined, synchronized: boolean): LacpPortState {
   const activity: LacpActivity = mode === "active" ? "active" : "passive";
   return lacpStateOf(activity, synchronized, synchronized, synchronized);
-}
-
-/** FNV-1a: a small, stable, seed-free hash. Never `Math.random`. */
-export function hashFlowKey(key: string): number {
-  let hash = 2_166_136_261;
-  for (let index = 0; index < key.length; index++) {
-    hash = Math.imul(hash ^ key.charCodeAt(index), 16_777_619) >>> 0;
-  }
-  return hash >>> 0;
 }

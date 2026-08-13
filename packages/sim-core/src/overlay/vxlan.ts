@@ -140,11 +140,22 @@ export interface RemoteMacEntry {
   /**
    * The other VTEPs that could carry this MAC, in deterministic order.
    *
-   * Single-Active never installs these for forwarding — there is no aliasing
-   * and no ECMP in M10.16. They exist so a failover is a selection rather than
-   * a relearn, and so the state is visible before anything fails.
+   * Single-Active never installs these for forwarding — that would be aliasing.
+   * They exist so a failover is a selection rather than a relearn, and so the
+   * state is visible before anything fails.
    */
   readonly backupVteps: readonly Ipv4[];
+  /** How the segment is shared; absent for a single-homed address. */
+  readonly redundancyMode?: "single-active" | "all-active";
+  /**
+   * **All-Active only**: every VTEP that may carry this address right now.
+   *
+   * This is deliberately not Single-Active's primary/backup shape. Each of
+   * these is a live path, and which one a given flow takes is decided per flow
+   * at forwarding time — so the table stores the *set*, never one winner with a
+   * list of understudies. Empty for Single-Active and for a single-homed MAC.
+   */
+  readonly aliasVteps: readonly Ipv4[];
 }
 
 /**
@@ -542,16 +553,24 @@ export class VxlanEngine {
     remoteVtep: Ipv4,
     nowNs: number,
     source: RemoteMacSource,
-    multihoming?: { ethernetSegmentId?: string; backupVteps?: readonly Ipv4[] },
+    multihoming?: {
+      ethernetSegmentId?: string;
+      backupVteps?: readonly Ipv4[];
+      aliasVteps?: readonly Ipv4[];
+      redundancyMode?: "single-active" | "all-active";
+    },
   ): boolean {
     const key = this.macKey(vni, mac);
     const existing = this.remoteMacs.get(key);
     if (!existing && this.remoteMacs.size >= DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumRemoteMacsPerVtep) return false;
     const backupVteps = [...(multihoming?.backupVteps ?? [])].sort(compareAddresses);
+    const aliasVteps = [...(multihoming?.aliasVteps ?? [])].sort(compareAddresses);
     const changed = existing?.remoteVtep !== remoteVtep
       || existing?.source !== source
       || existing?.ethernetSegmentId !== multihoming?.ethernetSegmentId
-      || (existing?.backupVteps ?? []).join(",") !== backupVteps.join(",");
+      || existing?.redundancyMode !== multihoming?.redundancyMode
+      || (existing?.backupVteps ?? []).join(",") !== backupVteps.join(",")
+      || (existing?.aliasVteps ?? []).join(",") !== aliasVteps.join(",");
     this.remoteMacs.set(key, {
       vni,
       mac: normalizeMac(mac),
@@ -560,6 +579,8 @@ export class VxlanEngine {
       lastSeenNs: nowNs,
       ethernetSegmentId: multihoming?.ethernetSegmentId,
       backupVteps,
+      redundancyMode: multihoming?.redundancyMode,
+      aliasVteps,
     });
     return changed;
   }

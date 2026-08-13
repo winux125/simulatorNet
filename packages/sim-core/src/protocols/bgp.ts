@@ -389,6 +389,9 @@ function evpnNlriOf(route: EvpnRoute): EvpnNlri {
       routeDistinguisher: route.routeDistinguisher,
       esi: route.esi,
       originatingVtep: route.originatingVtep,
+      // How the originator shares the segment travels with it: a receiver that
+      // could not read the mode would have to guess who may forward.
+      redundancyMode: route.redundancyMode,
       routeTargets: [...route.routeTargets],
       nextHop: route.nextHop,
       pathAttributes: route.pathAttributes,

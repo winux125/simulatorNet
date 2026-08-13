@@ -447,16 +447,19 @@ export const EsiSchema = z.string()
 /**
  * `evpn ethernet-segment <name>`: one CE attached to two leaves.
  *
- * M10.16 models **Single-Active** redundancy only, so the mode is a literal
- * rather than an enum: an all-active configuration is reported at the parser
- * boundary instead of being stored as something the engine cannot honour.
- * There is deliberately no DF preference field — the election is the documented
- * modulus one, and a persisted preference nothing reads would be a lie.
+ * **Single-Active** (M10.16) keeps one forwarder per VLAN and stands the others
+ * by; **All-Active** (M10.17) lets every operational attachment carry known
+ * unicast and narrows the Designated Forwarder role to overlay BUM delivery.
+ * The enum lists exactly what the engine honours, so an unsupported mode is
+ * reported at the parser boundary rather than stored as something else.
+ *
+ * There is deliberately no DF preference field: preference-based election is not
+ * modelled, and a persisted preference nothing reads would be a lie.
  */
 export const EvpnEthernetSegmentConfigSchema = z.object({
   id: z.string().min(1).max(64),
   esi: EsiSchema,
-  redundancyMode: z.literal("single-active"),
+  redundancyMode: z.enum(["single-active", "all-active"]),
   /** Access switchports or Port-channels; never a Loopback, SVI or routed port. */
   interfaces: z.array(z.string().min(1).max(64)).max(8).default([]),
 }).strict();

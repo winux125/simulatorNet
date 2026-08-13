@@ -837,7 +837,10 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
   // `evpn ethernet-segment <name>` blocks and the `ethernet-segment <name>` line
   // that binds one to an interface are read apart and reconciled at the end, so
   // a segment defined after its attachment still finds it.
-  const ethernetSegments = new Map<string, { esi?: string; redundancyMode?: "single-active" }>();
+  const ethernetSegments = new Map<string, {
+    esi?: string;
+    redundancyMode?: "single-active" | "all-active";
+  }>();
   const segmentAttachments = new Map<string, string>();
   let currentEthernetSegment: string | undefined;
   const clearVxlanContext = (): void => {
@@ -1082,10 +1085,12 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
         continue;
       }
       if (head === "redundancy-mode" && tokens.length === 2) {
-        // All-Active — and with it aliasing and MAC mobility — is not modelled,
-        // so it is reported honestly instead of being downgraded in silence.
-        if (tokens[1]?.toLowerCase() !== "single-active") { unparsed(line); continue; }
-        segment.redundancyMode = "single-active";
+        // Only the two modes the engine honours are read. Anything else — a
+        // preference-based or AC-DF variant — is reported honestly instead of
+        // being downgraded into something the author never asked for.
+        const mode = tokens[1]?.toLowerCase();
+        if (mode !== "single-active" && mode !== "all-active") { unparsed(line); continue; }
+        segment.redundancyMode = mode;
         applied(line);
         continue;
       }
@@ -2166,7 +2171,8 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
   // rather than invented into something the engine would refuse anyway.
   const segments = [...ethernetSegments.entries()]
     .flatMap(([id, segment]) => {
-      if (segment.esi === undefined || segment.redundancyMode !== "single-active") return [];
+      const redundancyMode = segment.redundancyMode;
+      if (segment.esi === undefined || redundancyMode === undefined) return [];
       const attachments = [...segmentAttachments.entries()]
         .filter(([, segmentId]) => segmentId === id)
         .map(([interfaceId]) => interfaceId)
@@ -2174,7 +2180,7 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       return [{
         id,
         esi: segment.esi,
-        redundancyMode: "single-active" as const,
+        redundancyMode,
         interfaces: attachments,
       }];
     })

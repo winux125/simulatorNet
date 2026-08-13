@@ -183,6 +183,16 @@ export interface EvpnEthernetSegmentRoute {
   readonly routeDistinguisher: string;
   readonly esi: string;
   readonly originatingVtep: Ipv4;
+  /**
+   * How the originating VTEP shares the segment.
+   *
+   * Absent — every route written before M10.17 — reads as the `single-active`
+   * this engine has always assumed, so an older lab is unchanged. It travels as
+   * a structured field rather than encoded bytes, exactly like every other
+   * protocol value here, and it exists so two leaves that disagree about who may
+   * forward are *reported* rather than left to duplicate or black-hole traffic.
+   */
+  readonly redundancyMode?: "single-active" | "all-active";
   readonly routeTargets: readonly string[];
   readonly nextHop: Ipv4;
   readonly pathAttributes: BgpPathAttributes;

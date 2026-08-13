@@ -64,13 +64,17 @@ describe("EVPN multihoming configuration text", () => {
     expect(renderDeviceConfiguration(rebuilt)).toContain("evpn ethernet-segment ES-CE1");
   });
 
-  it("reports every multihoming construct M10.16 does not model", () => {
+  it("reads All-Active and reports every multihoming construct that is not modelled", () => {
     const parsed = parseIosConfig(`
 hostname LEAF1
 !
 evpn ethernet-segment ES-CE1
  identifier ${ESI}
  redundancy-mode all-active
+!
+evpn ethernet-segment ES-PREF
+ identifier 0000:0000:0000:0000:0002
+ redundancy-mode port-active
  df-preference 200
  ethernet-segment df-election type preference
 !
@@ -87,7 +91,7 @@ interface Gi0/1
 `, INTERFACES);
     const unparsed = parsed.unparsedLines.join("\n");
     for (const line of [
-      "redundancy-mode all-active",
+      "redundancy-mode port-active",
       "df-preference 200",
       "ethernet-segment df-election type preference",
       "identifier 0000:0000:0000:0000:0000",
@@ -95,8 +99,31 @@ interface Gi0/1
     ]) {
       expect(unparsed, `expected '${line}' to be reported as unsupported`).toContain(line);
     }
-    // A segment with no supported redundancy mode is dropped, never invented
-    // into a Single-Active one the author never asked for.
-    expect(parsed.evpn?.ethernetSegments).toBeUndefined();
+    // All-Active is modelled since M10.17, so it is read rather than reported.
+    expect(unparsed).not.toContain("redundancy-mode all-active");
+    // A segment with no supported redundancy mode is still dropped, never
+    // invented into a mode the author never asked for.
+    expect(parsed.evpn?.ethernetSegments).toEqual([{
+      id: "ES-CE1",
+      esi: ESI,
+      redundancyMode: "all-active",
+      interfaces: ["Gi0/1"],
+    }]);
+  });
+
+  it("round-trips an All-Active segment through render and parse", () => {
+    const allActive = {
+      ...config,
+      evpn: {
+        ...config.evpn!,
+        ethernetSegments: [{ ...config.evpn!.ethernetSegments![0]!, redundancyMode: "all-active" as const }],
+      },
+    } as Layer3SwitchDeviceConfig;
+    const text = renderDeviceConfiguration(allActive);
+    expect(text).toContain(" redundancy-mode all-active");
+    const rebuilt = buildDeviceConfigFromIos("l3-switch", parseIosConfig(text, INTERFACES), INTERFACES, "LEAF1").config;
+    if (rebuilt?.kind !== "l3-switch") throw new Error("expected an L3 Switch configuration");
+    expect(rebuilt.evpn?.ethernetSegments).toEqual(allActive.evpn!.ethernetSegments);
+    expect(renderDeviceConfiguration(rebuilt)).toBe(text);
   });
 });

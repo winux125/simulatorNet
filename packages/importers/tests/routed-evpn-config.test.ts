@@ -228,9 +228,8 @@ describe("routed EVPN import subset", () => {
       "route-type 4",
       "ip arp suppression",
       "nve anycast-vtep 10.255.0.99",
-      // M10.16 is Single-Active only: all-active, HRW, an ESI preference and
-      // AC-DF are reported rather than accepted as something they are not.
-      "redundancy-mode all-active",
+      // Preference-based DF and AC-DF stay unmodelled, so a vendor spelling of
+      // them is reported rather than accepted as something it is not.
       "df-election type highest-random-weight",
       "df-preference 200",
       "ac-df disable",
@@ -238,8 +237,16 @@ describe("routed EVPN import subset", () => {
     ]) {
       expect(unparsed, `expected '${line}' to be reported as unsupported`).toContain(line);
     }
-    // A segment whose redundancy mode is not modelled never becomes one.
-    expect(parsed.evpn?.ethernetSegments).toBeUndefined();
+    // All-Active is modelled since M10.17, so the canonical spelling is read.
+    expect(unparsed).not.toContain("redundancy-mode all-active");
+    expect(parsed.evpn?.ethernetSegments).toEqual([{
+      id: "ES-ALL-ACTIVE",
+      esi: "0000:0000:0000:0000:0002",
+      redundancyMode: "all-active",
+      interfaces: [],
+    }]);
+    // A segment whose redundancy mode is *not* modelled still never becomes one.
+    expect(parsed.evpn?.ethernetSegments?.some((segment) => segment.id === "ES-RESERVED")).toBe(false);
     // An IPv6 tenant advertisement is not invented into an IPv4-only Type 5.
     expect(parsed.vrfs.some((vrf) => vrf.advertiseEvpn === true)).toBe(false);
     // Nothing unsupported leaked into the mapped configuration.

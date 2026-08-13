@@ -807,7 +807,7 @@ export interface VxlanEvpnView {
   ethernetSegments: Array<{
     id: string;
     esi: string;
-    redundancyMode: "single-active";
+    redundancyMode: "single-active" | "all-active";
     interfaces: string[];
     operationalInterfaces: string[];
     up: boolean;

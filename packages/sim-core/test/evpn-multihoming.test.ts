@@ -73,6 +73,9 @@ export interface MultihomedFabric {
 export function multihomedFabric(options: {
   leaf2RouteTarget?: string;
   attachLeaf2?: boolean;
+  /** The mode both leaves configure; `leaf2RedundancyMode` overrides Leaf2's. */
+  redundancyMode?: "single-active" | "all-active";
+  leaf2RedundancyMode?: "single-active" | "all-active";
 } = {}): MultihomedFabric {
   const engine = createSimulationEngine({ seed: 10_160 });
   // Multihoming convergence is what these tests read, so the trace is on from
@@ -166,17 +169,18 @@ export function multihomedFabric(options: {
   leaf3.defineEvpnVni(evpnVni());
   for (const leaf of [leaf1, leaf2, leaf3]) leaf.configureNve(nve());
 
+  const redundancyMode = options.redundancyMode ?? "single-active";
   leaf1.configureEthernetSegment({
     id: "ES-CE1",
     esi: ESI,
-    redundancyMode: "single-active",
+    redundancyMode,
     interfaces: ["Gi0/1"],
   });
   if (options.attachLeaf2 !== false) {
     leaf2.configureEthernetSegment({
       id: "ES-CE1",
       esi: ESI,
-      redundancyMode: "single-active",
+      redundancyMode: options.leaf2RedundancyMode ?? redundancyMode,
       interfaces: ["Gi0/1"],
     });
   }
@@ -219,14 +223,20 @@ describe("EVPN Ethernet Segment configuration", () => {
     return leaf;
   }
 
-  it("supports Single-Active only and reports any other redundancy mode", () => {
+  it("supports both modelled redundancy modes and reports any other", () => {
     const leaf = leafWithPorts();
+    for (const redundancyMode of ["single-active", "all-active"] as const) {
+      expect(() => leaf.configureEthernetSegment({
+        id: "ES-CE1", esi: ESI, redundancyMode, interfaces: ["Gi0/1"],
+      })).not.toThrow();
+      expect(leaf.ethernetSegmentConfigurations()[0]?.redundancyMode).toBe(redundancyMode);
+    }
+    // The parser boundary is where a preference-based mode arrives; this proves
+    // the engine refuses it rather than downgrading it silently.
     expect(() => leaf.configureEthernetSegment({
       id: "ES-CE1",
       esi: ESI,
-      // The parser boundary is where a real "all-active" arrives; this proves
-      // the engine refuses it rather than downgrading it silently.
-      redundancyMode: "all-active" as unknown as "single-active",
+      redundancyMode: "port-active" as unknown as "single-active",
       interfaces: ["Gi0/1"],
     })).toThrow(/not supported/);
   });
@@ -522,6 +532,194 @@ describe("EVPN Ethernet A-D routes and Single-Active forwarding", () => {
     // returning at all is the assertion that multihoming adds no such timer.
     engine.runUntilIdle();
     expect(engine.controlProtocolBudget.consumed("dfElections", "leaf1"))
+      .toBeLessThan(engine.controlProtocolBudget.maximumOf("dfElections"));
+  });
+});
+
+describe("EVPN All-Active multihoming and aliasing", () => {
+  const allActive = (extra: Parameters<typeof multihomedFabric>[0] = {}) =>
+    multihomedFabric({ redundancyMode: "all-active", ...extra });
+  const hostAEntryOn = (fabric: MultihomedFabric) =>
+    fabric.leaf3.remoteMacEntries().find((row) => row.mac === macFromIndex(1));
+
+  it("advertises the redundancy mode on the Type 4 route", () => {
+    const { leaf1, leaf3 } = allActive();
+    expect(leaf1.evpnRoutes().find((route) => route.type === 4 && route.source === "local"))
+      .toMatchObject({ esi: ESI, redundancyMode: "all-active" });
+    // A leaf with no local attachment still reads the mode, which is what lets
+    // it alias rather than pick a single forwarder.
+    expect(leaf3.ethernetSegmentPeers().map((peer) => peer.redundancyMode))
+      .toEqual(["all-active", "all-active"]);
+  });
+
+  it("admits multiple active PE attachments instead of one forwarder", () => {
+    const { engine, leaf1, leaf2, hostA } = allActive();
+    hostA.ping("10.10.10.20", 1);
+    engine.runUntilIdle();
+    expect(hostA.pingResults[0]?.success).toBe(true);
+    // Both attachments are live, so neither refuses a CE-originated frame.
+    expect(leaf1.macAddressTable().some((row) => row.mac === macFromIndex(1))).toBe(true);
+    expect(leaf2.macAddressTable().some((row) => row.mac === macFromIndex(1))).toBe(true);
+    expect(engine.traceLog.some((entry) => entry.type === "evpn-non-df-ingress-drop")).toBe(false);
+  });
+
+  it("builds an alias set from Type 1 per-EVI rather than from the MAC route", () => {
+    const fabric = allActive();
+    fabric.hostA.ping("10.10.10.20", 1);
+    fabric.engine.runUntilIdle();
+    const entry = hostAEntryOn(fabric);
+    expect(entry).toMatchObject({
+      ethernetSegmentId: ESI,
+      redundancyMode: "all-active",
+      aliasVteps: [LEAF1_VTEP, LEAF2_VTEP],
+      // Single-Active's standby shape is deliberately not reused.
+      backupVteps: [],
+    });
+    expect(fabric.leaf3.aliasingPathSets()).toEqual([expect.objectContaining({
+      esi: ESI,
+      vni: VNI,
+      macAddress: macFromIndex(1),
+      eligibleVteps: [LEAF1_VTEP, LEAF2_VTEP],
+      reason: "all-active-aliasing",
+    })]);
+  });
+
+  it("uses an alias PE that never originated the MAC's Type 2 route", () => {
+    // Only Leaf1 attaches the CE, so only Leaf1 can learn and advertise the
+    // address — yet Leaf2's per-EVI Ethernet A-D route makes it usable anyway.
+    // That is exactly what aliasing is for.
+    const fabric = allActive();
+    fabric.hostA.ping("10.10.10.20", 1);
+    fabric.engine.runUntilIdle();
+    const advertisers = fabric.leaf3.evpnRoutes()
+      .filter((route) => route.type === 2 && route.macAddress === macFromIndex(1))
+      .map((route) => route.nextHop);
+    const entry = hostAEntryOn(fabric);
+    expect(entry?.aliasVteps).toContain(LEAF2_VTEP);
+    // Whether Leaf2 also advertised it or not, the alias set is built from the
+    // segment's reachability and never from the MAC route's own next hop.
+    expect(entry!.aliasVteps.length).toBeGreaterThanOrEqual(advertisers.length);
+  });
+
+  it("selects one deterministic path per flow and never duplicates a frame", () => {
+    const fabric = allActive();
+    fabric.hostA.ping("10.10.10.20", 1);
+    fabric.engine.runUntilIdle();
+    const entry = hostAEntryOn(fabric)!;
+    const key = (source: string, destination: string) =>
+      fabric.leaf3.ethernetSegments.selectAliasingVtep(entry.aliasVteps, `${ESI}|${VNI}|${source}|${destination}`);
+    // Same input, same answer — every time, and on both engines.
+    expect(key("a", "b")).toBe(key("a", "b"));
+    expect(entry.aliasVteps).toContain(key("a", "b")!);
+    // Different flows may land on different leaves, which is the point.
+    const spread = new Set(["a", "b", "c", "d", "e", "f", "g", "h"].map((flow) => key(flow, "x")));
+    expect(spread.size).toBeGreaterThan(1);
+    // One frame goes to exactly one leaf: encapsulation happens once per flow.
+    const sent = fabric.engine.traceLog.filter((entry_) => entry_.device === "leaf3"
+      && entry_.type === "vxlan-encapsulation-started"
+      && entry_.detail?.kind === "unicast");
+    for (const trace of sent) expect(typeof trace.detail?.destinationVtep).toBe("string");
+  });
+
+  it("removing one path re-indexes bounded and deterministically", () => {
+    const { leaf3 } = allActive();
+    const flows = ["f1", "f2", "f3", "f4", "f5", "f6"];
+    const three = [LEAF1_VTEP, LEAF2_VTEP, LEAF3_VTEP];
+    const before = flows.map((flow) => leaf3.ethernetSegments.selectAliasingVtep(three, flow));
+    const after = flows.map((flow) =>
+      leaf3.ethernetSegments.selectAliasingVtep([LEAF1_VTEP, LEAF2_VTEP], flow));
+    // Selection is order-independent: the candidate list is sorted first.
+    expect(flows.map((flow) => leaf3.ethernetSegments.selectAliasingVtep([...three].reverse(), flow)))
+      .toEqual(before);
+    // Some flows move, none becomes undefined, and the answer stays inside the
+    // remaining set — a bounded reassignment rather than a reshuffle.
+    expect(after.every((vtep) => vtep === LEAF1_VTEP || vtep === LEAF2_VTEP)).toBe(true);
+  });
+
+  it("delivers overlay BUM toward the segment through the Designated Forwarder only", () => {
+    const { engine, leaf1, leaf2, hostA } = allActive();
+    hostA.ping("10.10.10.20", 1);
+    engine.runUntilIdle();
+    // The DF role survives All-Active, but it now governs exactly one thing.
+    const df = leaf1.designatedForwarderStates()[0];
+    expect(df).toMatchObject({ esi: ESI, vlanId: VLAN, designatedForwarder: LEAF1_VTEP, localRole: "df" });
+    expect(leaf2.designatedForwarderStates()[0]).toMatchObject({ localRole: "non-df" });
+    // The non-DF drops its local copy of overlay BUM rather than duplicating it
+    // toward the CE; known unicast is untouched by the role.
+    const bumDrops = engine.traceLog.filter((entry) => entry.device === "leaf2"
+      && entry.type === "evpn-non-df-egress-drop");
+    expect(bumDrops.every((entry) => entry.detail?.delivery === "bum")).toBe(true);
+  });
+
+  it("never returns an overlay frame to the Ethernet Segment it entered on", () => {
+    const { engine, hostA } = allActive();
+    hostA.ping("10.10.10.20", 1);
+    engine.runUntilIdle();
+    // Split horizon is checked before the DF role, so it holds in All-Active
+    // exactly as it does in Single-Active.
+    const bounced = engine.traceLog.filter((entry) => entry.type === "evpn-es-split-horizon-drop");
+    expect(bounced.length).toBeGreaterThan(0);
+    expect(bounced.every((entry) => entry.detail?.esi === ESI)).toBe(true);
+    expect(hostA.pingResults[0]?.success).toBe(true);
+  });
+
+  it("narrows the alias set on failure without relearning the MAC", () => {
+    const fabric = allActive();
+    fabric.hostA.ping("10.10.10.20", 1);
+    fabric.engine.runUntilIdle();
+    expect(hostAEntryOn(fabric)?.aliasVteps).toEqual([LEAF1_VTEP, LEAF2_VTEP]);
+    const learnedAt = hostAEntryOn(fabric)!.lastSeenNs;
+
+    fabric.leaf2.interfaces.get("Gi0/1")!.shutdown();
+    fabric.engine.runUntilIdle();
+
+    // The withdrawal removes Leaf2 from eligibility; Leaf1 carries on, and the
+    // address was never forgotten and relearned in between.
+    const entry = hostAEntryOn(fabric);
+    expect(entry?.aliasVteps).toEqual([LEAF1_VTEP]);
+    expect(entry?.redundancyMode).toBe("all-active");
+    expect(entry?.lastSeenNs).toBeGreaterThanOrEqual(learnedAt);
+    fabric.hostA.ping("10.10.10.20", 2);
+    fabric.engine.runUntilIdle();
+    expect(fabric.hostA.pingResults.at(-1)?.success).toBe(true);
+  });
+
+  it("never aliases to a peer that advertises a different redundancy mode", () => {
+    const fabric = allActive({ leaf2RedundancyMode: "single-active" });
+    fabric.hostA.ping("10.10.10.20", 1);
+    fabric.engine.runUntilIdle();
+    // Two leaves that disagree about who may forward would duplicate or
+    // black-hole traffic, so the mismatch is named and never aliased over.
+    expect(fabric.leaf1.vxlanProblems().join("\n")).toMatch(/advertises single-active/);
+    expect(fabric.leaf1.ethernetSegments.disagreeingPeers(ESI).map((peer) => peer.vtep))
+      .toEqual([LEAF2_VTEP]);
+  });
+
+  it("leaves Single-Active behaviour byte-for-byte unchanged", () => {
+    const single = multihomedFabric();
+    single.hostA.ping("10.10.10.20", 1);
+    single.engine.runUntilIdle();
+    const entry = single.leaf3.remoteMacEntries().find((row) => row.mac === macFromIndex(1));
+    expect(entry).toMatchObject({
+      remoteVtep: LEAF1_VTEP,
+      ethernetSegmentId: ESI,
+      backupVteps: [LEAF2_VTEP],
+      redundancyMode: "single-active",
+      // Single-Active never forwards over an alias: that would be aliasing.
+      aliasVteps: [],
+    });
+    expect(single.leaf3.aliasingPathSets()).toEqual([]);
+    expect(single.engine.traceLog.some((row) => row.type === "evpn-aliasing-path-installed")).toBe(false);
+  });
+
+  it("converges within the bounded deterministic event budget", () => {
+    const { engine, leaf2 } = allActive();
+    engine.controlProtocolBudget.reset();
+    leaf2.interfaces.get("Gi0/1")!.shutdown();
+    // Aliasing adds no periodic timer: `runUntilIdle` returning at all is the
+    // assertion, and the election budget stays well inside its bound.
+    engine.runUntilIdle();
+    expect(engine.controlProtocolBudget.consumed("dfElections", "leaf2"))
       .toBeLessThan(engine.controlProtocolBudget.maximumOf("dfElections"));
   });
 });

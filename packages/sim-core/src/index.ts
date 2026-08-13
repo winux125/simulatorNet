@@ -128,6 +128,7 @@ export * from "./services/host-applications";
 export * from "./services/server-services";
 
 // Address utilities
+export * from "./util/hash";
 export * from "./util/mac";
 export * from "./util/ipv4";
 export * from "./util/ipv6";

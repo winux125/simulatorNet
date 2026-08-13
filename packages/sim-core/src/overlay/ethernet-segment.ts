@@ -3,7 +3,9 @@ import {
   DEFAULT_CONTROL_PROTOCOL_LIMITS,
   enforceStructuralLimit,
 } from "../protocols/limits";
+import { selectByFlowKey } from "../util/hash";
 import { ipToInt, type Ipv4 } from "../util/ipv4";
+import type { Mac } from "../util/mac";
 
 /**
  * An Ethernet Segment Identifier, in the canonical five-group form the rest of
@@ -26,17 +28,21 @@ export const ESI_MAX: Esi = "ffff:ffff:ffff:ffff:ffff";
 const ESI_PATTERN = /^[0-9a-f]{4}(:[0-9a-f]{4}){4}$/u;
 
 /**
- * M10.16 models **Single-Active** multihoming only.
+ * How the leaves of one Ethernet Segment share it.
  *
- * All-Active — and with it aliasing, per-flow load balancing across several
- * active PEs and MAC mobility — is deliberately left to a later milestone. The
- * union has one member so that an unsupported mode is a type error here and a
- * reported, never silently downgraded, value at every parser boundary.
+ * **Single-Active** (M10.16): exactly one leaf carries tenant traffic for a
+ * VLAN and the others stand by. **All-Active** (M10.17): every operational
+ * attachment carries known unicast, and the Designated Forwarder role narrows to
+ * one thing only — who delivers overlay BUM toward the shared segment.
+ *
+ * Preference-based and AC-DF variants are not modelled, so an unsupported mode
+ * is a type error here and a reported, never silently downgraded, value at every
+ * parser boundary.
  */
-export type EvpnRedundancyMode = "single-active";
+export type EvpnRedundancyMode = "single-active" | "all-active";
 
 export function isEvpnRedundancyMode(value: string): value is EvpnRedundancyMode {
-  return value === "single-active";
+  return value === "single-active" || value === "all-active";
 }
 
 /**
@@ -84,6 +90,52 @@ export interface EvpnEsPeer {
   readonly local: boolean;
   /** `true` once a per-ES Ethernet A-D route backs the segment route. */
   readonly reachable: boolean;
+  /**
+   * The redundancy mode the peer advertised on its Type 4 route.
+   *
+   * A route written before M10.17 carries none, which reads as the
+   * Single-Active this engine has always assumed. A peer whose mode differs
+   * from the local segment's is reported and never aliased to: two leaves that
+   * disagree about who may forward would duplicate or black-hole traffic.
+   */
+  readonly redundancyMode: EvpnRedundancyMode;
+  /** `true` when the peer's mode matches the local segment's. */
+  readonly modeAgrees: boolean;
+}
+
+/** Why one `<ESI, VNI, MAC>` resolves to the VTEP it does. */
+export type EvpnAliasingReason =
+  /** All-Active: one of several equally usable PEs, chosen per flow. */
+  | "all-active-aliasing"
+  /** Single-Active: the segment's current Designated Forwarder. */
+  | "single-active-designated-forwarder"
+  /** No usable Ethernet A-D reachability remains for the segment. */
+  | "no-usable-path";
+
+/**
+ * The runtime path state of one MAC behind a multihomed Ethernet Segment.
+ *
+ * This is deliberately *not* Single-Active's primary/backup shape. In All-Active
+ * every eligible VTEP is a live path, so the state that matters is the eligible
+ * set and which member of it one flow selected — never "the one that forwards
+ * and the ones that do not".
+ *
+ * Every field is runtime: none of it is ever serialized into a `LabDocument`,
+ * and the browser worker and the verifier rebuild all of it from the same
+ * structured configuration and the same imported routes.
+ */
+export interface EvpnAliasingPathSet {
+  readonly esi: Esi;
+  readonly vni: number;
+  readonly macAddress: Mac;
+  /** The VTEP whose Type 2 route announced the address. */
+  readonly advertisingVtep: Ipv4;
+  /** Every VTEP that may carry the address, in canonical address order. */
+  readonly eligibleVteps: readonly Ipv4[];
+  /** The one this VTEP programs by default; a flow may select another. */
+  readonly selectedVtep: Ipv4;
+  readonly redundancyMode: EvpnRedundancyMode;
+  readonly reason: EvpnAliasingReason;
 }
 
 /**
@@ -115,6 +167,13 @@ export interface EthernetSegmentHooks {
   overlayVlansOf(name: string): readonly number[];
   /** This VTEP's own source address, or `undefined` while the NVE is down. */
   localVtep(): Ipv4 | undefined;
+  /**
+   * Whether the underlay can actually reach a remote VTEP right now.
+   *
+   * An alias is only usable if the packet can get there, so this is part of
+   * eligibility rather than something the forwarding path discovers by failing.
+   */
+  underlayReachable(vtep: Ipv4): boolean;
 }
 
 function compareAddresses(left: Ipv4, right: Ipv4): number {
@@ -184,6 +243,8 @@ export function electDesignatedForwarder(
 interface EsRouteEntry {
   readonly vtep: Ipv4;
   readonly routerId: Ipv4 | undefined;
+  /** Absent on a pre-M10.17 route, which means the Single-Active it assumed. */
+  readonly redundancyMode: EvpnRedundancyMode;
 }
 
 /**
@@ -209,6 +270,7 @@ export class EthernetSegmentEngine {
     interfaceOperationalUp: () => false,
     overlayVlansOf: () => [],
     localVtep: () => undefined,
+    underlayReachable: () => false,
   };
 
   useHooks(hooks: EthernetSegmentHooks): void {
@@ -232,7 +294,8 @@ export class EthernetSegmentEngine {
     }
     if (!isEvpnRedundancyMode(configuration.redundancyMode)) {
       throw new ControlProtocolConfigurationError(
-        `Redundancy mode '${configuration.redundancyMode}' is not supported; only 'single-active' is modelled`,
+        `Redundancy mode '${configuration.redundancyMode}' is not supported;`
+        + " only 'single-active' and 'all-active' are modelled",
         "redundancyMode",
       );
     }
@@ -377,12 +440,20 @@ export class EthernetSegmentEngine {
    * Replace the Type 4 derived peer table. Returns `true` when something moved,
    * so the caller only re-runs the DF election when the candidate set changed.
    */
-  replaceEsRoutes(entries: readonly { esi: Esi; vtep: Ipv4; routerId?: Ipv4 }[]): boolean {
+  replaceEsRoutes(
+    entries: readonly { esi: Esi; vtep: Ipv4; routerId?: Ipv4; redundancyMode?: EvpnRedundancyMode }[],
+  ): boolean {
     const next = new Map<Esi, Map<Ipv4, EsRouteEntry>>();
     for (const entry of entries) {
       const perEsi = next.get(entry.esi) ?? new Map<Ipv4, EsRouteEntry>();
       if (perEsi.size >= DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumEsPeersPerSegment) continue;
-      perEsi.set(entry.vtep, { vtep: entry.vtep, routerId: entry.routerId });
+      perEsi.set(entry.vtep, {
+        vtep: entry.vtep,
+        routerId: entry.routerId,
+        // A Type 4 written before M10.17 carries no mode, and Single-Active is
+        // exactly what this engine assumed of it.
+        redundancyMode: entry.redundancyMode ?? "single-active",
+      });
       next.set(entry.esi, perEsi);
     }
     if (signatureOfEsRoutes(next) === signatureOfEsRoutes(this.esRoutes)) return false;
@@ -436,6 +507,7 @@ export class EthernetSegmentEngine {
     for (const segment of this.operationalSegments()) esis.add(segment.esi);
     for (const esi of [...esis].sort()) {
       const remote = this.esRoutes.get(esi);
+      const localMode = this.segmentForEsi(esi)?.redundancyMode;
       if (localVtep !== undefined && this.stateForEsi(esi)?.up === true) {
         rows.push({
           esi,
@@ -443,6 +515,8 @@ export class EthernetSegmentEngine {
           routerId: undefined,
           local: true,
           reachable: this.adPerEs.get(esi)?.has(localVtep) ?? true,
+          redundancyMode: localMode ?? "single-active",
+          modeAgrees: true,
         });
       }
       for (const entry of [...(remote?.values() ?? [])]) {
@@ -453,6 +527,10 @@ export class EthernetSegmentEngine {
           routerId: entry.routerId,
           local: false,
           reachable: this.adPerEs.get(esi)?.has(entry.vtep) === true,
+          redundancyMode: entry.redundancyMode,
+          // A leaf with no local attachment holds no opinion of its own, so it
+          // never reports a peer as disagreeing with a mode it does not have.
+          modeAgrees: localMode === undefined || entry.redundancyMode === localMode,
         });
       }
     }
@@ -463,6 +541,19 @@ export class EthernetSegmentEngine {
 
   peersForEsi(esi: Esi): EvpnEsPeer[] {
     return this.peers().filter((peer) => peer.esi === esi);
+  }
+
+  /** The redundancy mode one VTEP advertised for a segment. */
+  redundancyModeOf(esi: Esi, vtep: Ipv4): EvpnRedundancyMode | undefined {
+    if (vtep === this.hooks.localVtep() && this.segmentForEsi(esi)) {
+      return this.segmentForEsi(esi)!.redundancyMode;
+    }
+    return this.esRoutes.get(esi)?.get(vtep)?.redundancyMode;
+  }
+
+  /** Peers of a locally All-Active segment that call themselves something else. */
+  disagreeingPeers(esi: Esi): EvpnEsPeer[] {
+    return this.peersForEsi(esi).filter((peer) => !peer.local && !peer.modeAgrees);
   }
 
   /** Whether one VTEP still backs a segment with a per-ES Ethernet A-D route. */
@@ -532,19 +623,89 @@ export class EthernetSegmentEngine {
   }
 
   /**
-   * The one place a `<ESI, VLAN>` forwarding decision is made for an attachment.
+   * The one place a `<ESI, VLAN>` egress decision is made for an attachment.
    *
    * Every forwarding path asks this rather than testing `esi` itself, so the
-   * Single-Active rule lives in one function instead of being scattered across
-   * the ingress, unicast egress and BUM egress paths.
+   * rule lives in one function instead of being scattered across the ingress,
+   * unicast egress and BUM egress paths.
+   *
+   * In **Single-Active** only the Designated Forwarder carries anything, which
+   * is exactly the M10.16 behaviour. In **All-Active** every operational
+   * attachment carries known unicast and the DF role narrows to one job: only
+   * the DF delivers BUM toward the shared segment, so a broadcast reaches the CE
+   * once rather than once per leaf.
    */
-  attachmentForwards(port: string, vlanId: number): boolean {
-    const esi = this.esiForInterface(port);
-    if (esi === undefined) return true;
-    const state = this.dfState(esi, vlanId);
+  attachmentForwards(port: string, vlanId: number, delivery: "unicast" | "bum" = "bum"): boolean {
+    const segment = this.segmentForInterface(port);
+    if (segment === undefined) return true;
+    const state = this.dfState(segment.esi, vlanId);
     // A VLAN the segment does not carry is not multihomed traffic at all.
     if (!state) return true;
+    if (segment.redundancyMode === "all-active" && delivery === "unicast") return true;
     return state.localRole === "df";
+  }
+
+  /**
+   * Whether a frame arriving on one attachment may be relayed and learned.
+   *
+   * A Single-Active standby carries no tenant data in either direction, so it
+   * refuses the frame *before* it is learned — otherwise the non-DF would
+   * advertise a MAC it is not allowed to forward to. An All-Active attachment is
+   * always live, so a CE-originated frame may enter through any of them.
+   */
+  attachmentAcceptsIngress(port: string, vlanId: number): boolean {
+    const segment = this.segmentForInterface(port);
+    if (segment === undefined) return true;
+    if (segment.redundancyMode === "all-active") return true;
+    const state = this.dfState(segment.esi, vlanId);
+    if (!state) return true;
+    return state.localRole === "df";
+  }
+
+  // --- All-Active aliasing -------------------------------------------------
+
+  /**
+   * The VTEPs that may carry traffic for one `<ESI, VNI>`, in canonical order.
+   *
+   * This is the **one** place aliasing eligibility is decided, so no forwarding
+   * branch grows an `if (esi)` test of its own. A VTEP qualifies only when every
+   * condition holds at once:
+   *
+   * - it advertised a Type 4 route for this ESI, or it is this device with an
+   *   operational local attachment — the route target had to match for either;
+   * - its per-ES Ethernet A-D route is present, so it still has a working
+   *   attachment: one withdrawal removes it from every MAC behind the segment;
+   * - its per-EVI Ethernet A-D route is present, so it can serve *this* EVI;
+   * - the underlay can actually reach it;
+   * - it advertised the same redundancy mode, because two leaves that disagree
+   *   about who may forward would duplicate or black-hole traffic.
+   *
+   * The local VTEP is excluded: an address this leaf serves itself is behind a
+   * local attachment, and ordinary flooding and learning find it.
+   */
+  aliasingCandidates(esi: Esi, vni: number): Ipv4[] {
+    const localVtep = this.hooks.localVtep();
+    const mode = this.segmentForEsi(esi)?.redundancyMode;
+    return this.dfCandidates(esi).filter((vtep) => vtep !== localVtep
+      && this.hasEsReachability(esi, vtep)
+      && this.hasEviReachability(esi, vni, vtep)
+      && this.hooks.underlayReachable(vtep)
+      && (mode === undefined || this.redundancyModeOf(esi, vtep) === mode));
+  }
+
+  /**
+   * Choose one eligible VTEP for one flow, deterministically.
+   *
+   * The candidate list is canonically ordered before the choice is made, so the
+   * same flow always reaches the same leaf in the browser worker and in the
+   * verifier — and adding or removing one path re-indexes the modulus, which
+   * keeps reassignment bounded rather than a reshuffle of everything.
+   *
+   * This is educational ECMP-like selection over one Ethernet Segment. It is
+   * deliberately not a general routing ECMP implementation.
+   */
+  selectAliasingVtep(candidates: readonly Ipv4[], flowKey: string): Ipv4 | undefined {
+    return selectByFlowKey([...candidates].sort(compareAddresses), flowKey);
   }
 
   resetRuntime(): void {
@@ -561,7 +722,10 @@ function eviKey(esi: Esi, vni: number): string {
 function signatureOfEsRoutes(table: ReadonlyMap<Esi, ReadonlyMap<Ipv4, EsRouteEntry>>): string {
   return [...table.entries()]
     .map(([esi, peers]) => `${esi}=${[...peers.values()]
-      .map((entry) => `${entry.vtep}/${entry.routerId ?? ""}`)
+      // The mode is part of the signature: a peer that switched between
+      // Single-Active and All-Active has to re-run the election and rebuild
+      // every alias set, exactly as an arriving or departing peer does.
+      .map((entry) => `${entry.vtep}/${entry.routerId ?? ""}/${entry.redundancyMode}`)
       .sort()
       .join(",")}`)
     .sort()
