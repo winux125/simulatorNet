@@ -88,7 +88,8 @@ export * from "./mpls/label-forwarding";
 // Deterministic VXLAN layer-2 overlays (see docs/vxlan-evpn.md)
 export * from "./overlay/vxlan";
 
-// Deterministic EVPN Single-Active multihoming (see docs/evpn-multihoming.md)
+// Deterministic EVPN multihoming (see docs/evpn-multihoming.md)
+export * from "./overlay/df-election";
 export * from "./overlay/ethernet-segment";
 
 // Reusable deterministic quality of service

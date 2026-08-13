@@ -6,6 +6,15 @@ import {
 import { selectByFlowKey } from "../util/hash";
 import { ipToInt, type Ipv4 } from "../util/ipv4";
 import type { Mac } from "../util/mac";
+import {
+  agreedDfAlgorithm,
+  electDesignatedForwarderModulus,
+  electEvpnDesignatedForwarder,
+  isEvpnDfAlgorithm,
+  type EvpnDfAlgorithm,
+  type EvpnDfCandidateWeight,
+  type EvpnDfFallbackReason,
+} from "./df-election";
 
 /**
  * An Ethernet Segment Identifier, in the canonical five-group form the rest of
@@ -59,6 +68,12 @@ export interface EvpnEthernetSegmentConfiguration {
   readonly redundancyMode: EvpnRedundancyMode;
   /** Access switchports or Port-channels; never a Loopback, SVI, NVE or routed port. */
   readonly interfaces: readonly string[];
+  /**
+   * `df-election hrw`. Absent means the modulus election of RFC 7432 §8.5, so a
+   * segment written before M10.17 keeps exactly the winner it always had —
+   * nothing is silently reinterpreted as highest-random-weight.
+   */
+  readonly dfAlgorithm?: EvpnDfAlgorithm;
 }
 
 /** Why one Ethernet Segment is not operational. */
@@ -72,6 +87,7 @@ export interface EvpnEthernetSegmentState {
   readonly id: string;
   readonly esi: Esi;
   readonly redundancyMode: EvpnRedundancyMode;
+  readonly dfAlgorithm: EvpnDfAlgorithm;
   readonly interfaces: readonly string[];
   /** The subset that currently carries traffic; empty means the ES is down. */
   readonly operationalInterfaces: readonly string[];
@@ -101,6 +117,8 @@ export interface EvpnEsPeer {
   readonly redundancyMode: EvpnRedundancyMode;
   /** `true` when the peer's mode matches the local segment's. */
   readonly modeAgrees: boolean;
+  /** The DF election the peer advertised; absent on a route means `default`. */
+  readonly dfAlgorithm: EvpnDfAlgorithm;
 }
 
 /** Why one `<ESI, VNI, MAC>` resolves to the VTEP it does. */
@@ -150,7 +168,17 @@ export interface EvpnDfState {
   readonly vlanId: number;
   readonly candidates: readonly Ipv4[];
   readonly designatedForwarder: Ipv4 | undefined;
+  /** The candidate that takes over if the winner withdraws. */
+  readonly backupDesignatedForwarder: Ipv4 | undefined;
   readonly localRole: "df" | "non-df";
+  /** What the local segment asked for. */
+  readonly requestedAlgorithm: EvpnDfAlgorithm;
+  /** What every participant actually ran; `default` when one of them dissents. */
+  readonly effectiveAlgorithm: EvpnDfAlgorithm;
+  /** Present only when HRW was requested and not agreed. */
+  readonly fallbackReason: EvpnDfFallbackReason | undefined;
+  /** Per-candidate HRW weights, in candidate order. Empty for the modulus one. */
+  readonly candidateWeights: readonly EvpnDfCandidateWeight[];
 }
 
 /** The questions the segment engine asks its device; it never reaches inside. */
@@ -223,28 +251,23 @@ export function requireMultihomedEsi(value: string, field = "esi"): Esi {
 }
 
 /**
- * The deterministic `<ESI, VLAN>` Designated Forwarder election.
+ * The default `<ESI, VLAN>` Designated Forwarder election.
  *
- * This is the documented default modulus election of RFC 7432 §8.5: order the
- * candidate VTEP addresses numerically, then pick `vlan mod N`. It is the only
- * algorithm M10.16 implements — highest-random-weight and preference-based
- * election are deliberately out of scope, so nothing here can quietly choose a
- * different winner than a peer did.
+ * This is the documented modulus election of RFC 7432 §8.5 and stays the
+ * behaviour of every segment that does not ask for something else. The algorithm
+ * itself lives in `./df-election` beside highest-random-weight, so the two can
+ * never drift apart; this name is kept because the rest of the engine and its
+ * tests have always called it.
  */
-export function electDesignatedForwarder(
-  candidates: readonly Ipv4[],
-  vlanId: number,
-): Ipv4 | undefined {
-  if (candidates.length === 0) return undefined;
-  const ordered = [...candidates].sort(compareAddresses);
-  return ordered[((vlanId % ordered.length) + ordered.length) % ordered.length];
-}
+export const electDesignatedForwarder = electDesignatedForwarderModulus;
 
 interface EsRouteEntry {
   readonly vtep: Ipv4;
   readonly routerId: Ipv4 | undefined;
   /** Absent on a pre-M10.17 route, which means the Single-Active it assumed. */
   readonly redundancyMode: EvpnRedundancyMode;
+  /** Absent on a pre-M10.17 route, which means the modulus election. */
+  readonly dfAlgorithm: EvpnDfAlgorithm;
 }
 
 /**
@@ -336,11 +359,21 @@ export class EthernetSegmentEngine {
       }
       if (!interfaces.includes(name)) interfaces.push(name);
     }
+    const dfAlgorithm = configuration.dfAlgorithm ?? "default";
+    if (!isEvpnDfAlgorithm(dfAlgorithm)) {
+      throw new ControlProtocolConfigurationError(
+        `DF election '${dfAlgorithm}' is not supported; only 'default' and 'hrw' are modelled`,
+        "dfAlgorithm",
+      );
+    }
     this.segments.set(id, {
       id,
       esi,
       redundancyMode: configuration.redundancyMode,
       interfaces: interfaces.sort((a, b) => a.localeCompare(b)),
+      // An absent algorithm stays absent, so a pre-M10.17 segment round-trips
+      // without gaining a key it never had.
+      ...(configuration.dfAlgorithm === undefined ? {} : { dfAlgorithm }),
     });
   }
 
@@ -412,6 +445,7 @@ export class EthernetSegmentEngine {
         id: segment.id,
         esi: segment.esi,
         redundancyMode: segment.redundancyMode,
+        dfAlgorithm: segment.dfAlgorithm ?? "default",
         interfaces: [...segment.interfaces],
         operationalInterfaces,
         up: reason === undefined,
@@ -441,7 +475,13 @@ export class EthernetSegmentEngine {
    * so the caller only re-runs the DF election when the candidate set changed.
    */
   replaceEsRoutes(
-    entries: readonly { esi: Esi; vtep: Ipv4; routerId?: Ipv4; redundancyMode?: EvpnRedundancyMode }[],
+    entries: readonly {
+      esi: Esi;
+      vtep: Ipv4;
+      routerId?: Ipv4;
+      redundancyMode?: EvpnRedundancyMode;
+      dfAlgorithm?: EvpnDfAlgorithm;
+    }[],
   ): boolean {
     const next = new Map<Esi, Map<Ipv4, EsRouteEntry>>();
     for (const entry of entries) {
@@ -450,9 +490,11 @@ export class EthernetSegmentEngine {
       perEsi.set(entry.vtep, {
         vtep: entry.vtep,
         routerId: entry.routerId,
-        // A Type 4 written before M10.17 carries no mode, and Single-Active is
-        // exactly what this engine assumed of it.
+        // A Type 4 written before M10.17 carries neither field, and
+        // Single-Active with the modulus election is exactly what this engine
+        // assumed of it.
         redundancyMode: entry.redundancyMode ?? "single-active",
+        dfAlgorithm: entry.dfAlgorithm ?? "default",
       });
       next.set(entry.esi, perEsi);
     }
@@ -507,7 +549,8 @@ export class EthernetSegmentEngine {
     for (const segment of this.operationalSegments()) esis.add(segment.esi);
     for (const esi of [...esis].sort()) {
       const remote = this.esRoutes.get(esi);
-      const localMode = this.segmentForEsi(esi)?.redundancyMode;
+      const local = this.segmentForEsi(esi);
+      const localMode = local?.redundancyMode;
       if (localVtep !== undefined && this.stateForEsi(esi)?.up === true) {
         rows.push({
           esi,
@@ -517,6 +560,7 @@ export class EthernetSegmentEngine {
           reachable: this.adPerEs.get(esi)?.has(localVtep) ?? true,
           redundancyMode: localMode ?? "single-active",
           modeAgrees: true,
+          dfAlgorithm: local?.dfAlgorithm ?? "default",
         });
       }
       for (const entry of [...(remote?.values() ?? [])]) {
@@ -531,6 +575,7 @@ export class EthernetSegmentEngine {
           // A leaf with no local attachment holds no opinion of its own, so it
           // never reports a peer as disagreeing with a mode it does not have.
           modeAgrees: localMode === undefined || entry.redundancyMode === localMode,
+          dfAlgorithm: entry.dfAlgorithm,
         });
       }
     }
@@ -593,18 +638,58 @@ export class EthernetSegmentEngine {
     for (const segment of this.states()) {
       if (!segment.up) continue;
       const candidates = this.dfCandidates(segment.esi);
+      const { effective, fallbackReason } = this.agreedAlgorithmFor(segment.esi, segment.dfAlgorithm, candidates);
       for (const vlanId of segment.vlanIds) {
-        const designatedForwarder = electDesignatedForwarder(candidates, vlanId);
+        const result = electEvpnDesignatedForwarder(candidates, {
+          esi: segment.esi,
+          ethernetTag: vlanId,
+          algorithm: effective,
+        });
         rows.push({
           esi: segment.esi,
           vlanId,
-          candidates,
-          designatedForwarder,
-          localRole: designatedForwarder !== undefined && designatedForwarder === localVtep ? "df" : "non-df",
+          candidates: result.candidates,
+          designatedForwarder: result.designatedForwarder,
+          backupDesignatedForwarder: result.backupDesignatedForwarder,
+          localRole: result.designatedForwarder !== undefined && result.designatedForwarder === localVtep
+            ? "df"
+            : "non-df",
+          requestedAlgorithm: segment.dfAlgorithm,
+          effectiveAlgorithm: result.algorithm,
+          fallbackReason,
+          candidateWeights: result.weights,
         });
       }
     }
     return rows.sort((a, b) => a.esi.localeCompare(b.esi) || a.vlanId - b.vlanId);
+  }
+
+  /**
+   * The algorithm a segment actually runs.
+   *
+   * HRW needs every operational participant to agree, so what each *candidate*
+   * advertised is what is consulted — not merely every peer that ever announced
+   * the ESI. A leaf whose Type 4 is gone is not electing anything, and letting
+   * it veto the algorithm would make convergence depend on stale state.
+   */
+  private agreedAlgorithmFor(
+    esi: Esi,
+    requested: EvpnDfAlgorithm,
+    candidates: readonly Ipv4[],
+  ): { effective: EvpnDfAlgorithm; fallbackReason: EvpnDfFallbackReason | undefined } {
+    const localVtep = this.hooks.localVtep();
+    const algorithms = candidates.map((vtep) => vtep === localVtep
+      ? requested
+      : this.esRoutes.get(esi)?.get(vtep)?.dfAlgorithm ?? "default");
+    return agreedDfAlgorithm(requested, algorithms);
+  }
+
+  /** The DF election one VTEP advertised for a segment. */
+  dfAlgorithmOf(esi: Esi, vtep: Ipv4): EvpnDfAlgorithm | undefined {
+    if (vtep === this.hooks.localVtep() && this.segmentForEsi(esi)) {
+      return this.segmentForEsi(esi)!.dfAlgorithm ?? "default";
+    }
+    return this.esRoutes.get(esi)?.get(vtep)?.dfAlgorithm;
   }
 
   dfState(esi: Esi, vlanId: number): EvpnDfState | undefined {
@@ -722,10 +807,10 @@ function eviKey(esi: Esi, vni: number): string {
 function signatureOfEsRoutes(table: ReadonlyMap<Esi, ReadonlyMap<Ipv4, EsRouteEntry>>): string {
   return [...table.entries()]
     .map(([esi, peers]) => `${esi}=${[...peers.values()]
-      // The mode is part of the signature: a peer that switched between
-      // Single-Active and All-Active has to re-run the election and rebuild
-      // every alias set, exactly as an arriving or departing peer does.
-      .map((entry) => `${entry.vtep}/${entry.routerId ?? ""}/${entry.redundancyMode}`)
+      // The mode and the algorithm are part of the signature: a peer that
+      // changed either has to re-run the election and rebuild every alias set,
+      // exactly as an arriving or departing peer does.
+      .map((entry) => [entry.vtep, entry.routerId ?? "", entry.redundancyMode, entry.dfAlgorithm].join("/"))
       .sort()
       .join(",")}`)
     .sort()

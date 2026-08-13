@@ -98,16 +98,96 @@ from the simulator's own origin metadata, not from a label.
 ## Designated Forwarder election
 
 For each `<ESI, VLAN>` exactly one operational VTEP is the Designated Forwarder.
-The election is the documented default modulus one of RFC 7432 §8.5: order the
-candidate VTEP addresses numerically, then pick `vlan mod N`.
-
 Every participating leaf runs the same election over the same canonically ordered
 candidate list, so they all reach an identical answer without one telling another
 what it decided. Input order never matters — the list is sorted first.
 
-Highest-random-weight and preference-based election are not implemented, and
-there is no `df-preference` field anywhere in the configuration: a persisted
-preference that nothing reads would be a lie.
+Two algorithms are modelled, and both live in one module (`overlay/df-election`)
+so they cannot drift apart.
+
+**`default`** is the modulus election of RFC 7432 §8.5: order the candidate VTEP
+addresses numerically, then pick `vlan mod N`. It is what every segment runs
+unless it asks for something else, so a lab written before M10.17 keeps exactly
+the winner it always had.
+
+**`hrw`** is highest-random-weight (`df-election hrw`). Each candidate computes a
+weight per `<ESI, Ethernet Tag>` and the highest wins; the next-highest is the
+**backup**, computed by the same function so a failure never needs a second,
+differently written election to agree with the first. A tie breaks on the higher
+address.
+
+```
+seed   = FNV-1a("<esi>|<ethernetTag>")
+weight = (M · ((M · seed + I) XOR address)) + I   (mod 2^31)
+M = 1103515245, I = 12345
+```
+
+The candidate's own address is genuinely part of the result, which is what makes
+this *not* the modulus election under another name: two candidate sets of the
+same size and order can produce different winners, and adding a third candidate
+does not renumber the other two. Every operation is 32-bit integer arithmetic, so
+the browser worker and the verifier compute bit-identical weights with no
+floating point anywhere.
+
+### Capability agreement
+
+The algorithm travels on the Type 4 route. HRW runs only when **every**
+operational participant advertises it; one legacy or default-only leaf makes the
+whole segment fall back to the modulus election. That is not politeness — two
+leaves running different elections for one `<ESI, VLAN>` could each believe they
+are the Designated Forwarder, which is precisely the split the election exists to
+prevent. The fallback is therefore consistent by construction, and it is
+**informational**: the segment still elects exactly one forwarder.
+
+`show evpn df detail` reports the requested algorithm, the effective one, the DF,
+the backup, every candidate weight and the fallback reason.
+
+Preference-based election and AC-DF are not implemented, and there is no
+`df-preference` field anywhere in the configuration: a persisted preference that
+nothing reads would be a lie.
+
+## MAC Mobility
+
+A sequence number is how the fabric agrees where an address lives *now*. It rides
+the Type 2 route as structured data — there is no sticky bit, because sticky MAC
+and MAC protection are not modelled and a flag nothing enforced would be a lie.
+
+A first local advertisement is **sequence 0**, and carries no mobility field at
+all, so a route written before M10.17 and one written today are the same bytes.
+
+An increment happens only when ownership genuinely changes **location**, and
+location is the Ethernet Segment when there is one — never the port underneath
+it. That single definition is what makes the two cases fall out correctly:
+
+- a station that really moves to another segment, or to a single-homed port on
+  another leaf, **is** a move: `sequence = highest observed + 1`;
+- a second leaf of one **All-Active** segment seeing the same frame is *not*: both
+  leaves are the same place, so aliasing never starts a sequence race.
+
+Nothing else increments it. Not a BGP session reset, not an NVE restart, not a
+re-rendered Type 2 route, and not the same station talking again on the same
+attachment.
+
+Comparison lives in the one EVPN best-path comparator, before every other rule,
+exactly as RFC 7432 §15 requires. It has to sit *inside* that comparator rather
+than beside it, because a route reflector advertises only its best path — a
+reflector that could not read the sequence would hand its clients the old
+location and nothing downstream could undo it.
+
+A leaf that hears a higher sequence for an address it still holds locally gives
+that address up: it forgets that one entry — never the whole port — and withdraws
+its own route.
+
+### A contested address
+
+When two genuinely different places advertise one address at the same highest
+sequence, a deterministic winner is chosen by the comparator's stable VTEP
+ordering and the conflict is named. Whoever loses **concedes**: having lost at
+sequence N it does not bid again until somebody moves the address past N. That is
+what stops two leaves counting each other upwards for ever.
+
+Full duplicate-MAC dampening is deliberately out of scope. What is guaranteed
+here is only that the loop ends and that every observer picks the same winner.
 
 ## Single-Active forwarding
 
@@ -296,8 +376,10 @@ failure → mass withdrawal → new DF → recovery is walkable one step at a ti
 
 ## Known limitations
 
-- The DF election is the modulus one; preference-based election and AC-DF are
-  not implemented.
+- Preference-based DF election and AC-DF are not implemented; the two modelled
+  algorithms are the modulus one and HRW.
+- MAC Mobility has no dampening: a contested address settles on one owner and
+  stops climbing, but it is not frozen or rate-limited.
 - A segment attaches to an access switchport or a Port-channel; a Port-channel
   is an ordinary single-chassis bundle, never a multi-chassis one. There is no
   MLAG/vPC control plane and no cross-device LACP.

@@ -72,6 +72,17 @@ export class ForwardingDatabase<Scope extends string | number> {
     return removed;
   }
 
+  /**
+   * Discard exactly one address inside one scope.
+   *
+   * MAC Mobility is what needs this: a leaf that learns the fabric has moved an
+   * address elsewhere must stop claiming *that* address, while every other
+   * entry the same port learned is still perfectly valid.
+   */
+  forget(scope: Scope, mac: Mac): boolean {
+    return this.table.delete(this.key(scope, mac));
+  }
+
   clearPortInScope(scope: Scope, port: string): number {
     let removed = 0;
     for (const entry of [...this.table.values()]) {

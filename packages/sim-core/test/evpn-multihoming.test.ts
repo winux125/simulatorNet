@@ -76,6 +76,9 @@ export function multihomedFabric(options: {
   /** The mode both leaves configure; `leaf2RedundancyMode` overrides Leaf2's. */
   redundancyMode?: "single-active" | "all-active";
   leaf2RedundancyMode?: "single-active" | "all-active";
+  /** The DF election both leaves ask for; `leaf2DfAlgorithm` overrides Leaf2's. */
+  dfAlgorithm?: "default" | "hrw";
+  leaf2DfAlgorithm?: "default" | "hrw";
 } = {}): MultihomedFabric {
   const engine = createSimulationEngine({ seed: 10_160 });
   // Multihoming convergence is what these tests read, so the trace is on from
@@ -175,6 +178,7 @@ export function multihomedFabric(options: {
     esi: ESI,
     redundancyMode,
     interfaces: ["Gi0/1"],
+    dfAlgorithm: options.dfAlgorithm,
   });
   if (options.attachLeaf2 !== false) {
     leaf2.configureEthernetSegment({
@@ -182,6 +186,7 @@ export function multihomedFabric(options: {
       esi: ESI,
       redundancyMode: options.leaf2RedundancyMode ?? redundancyMode,
       interfaces: ["Gi0/1"],
+      dfAlgorithm: options.leaf2DfAlgorithm ?? options.dfAlgorithm,
     });
   }
   engine.runUntilIdle();
@@ -533,6 +538,69 @@ describe("EVPN Ethernet A-D routes and Single-Active forwarding", () => {
     engine.runUntilIdle();
     expect(engine.controlProtocolBudget.consumed("dfElections", "leaf1"))
       .toBeLessThan(engine.controlProtocolBudget.maximumOf("dfElections"));
+  });
+});
+
+describe("EVPN HRW Designated Forwarder election in a fabric", () => {
+  it("advertises the requested algorithm and runs it once everyone agrees", () => {
+    const { leaf1, leaf2 } = multihomedFabric({ dfAlgorithm: "hrw" });
+    expect(leaf1.evpnRoutes().find((route) => route.type === 4 && route.source === "local"))
+      .toMatchObject({ esi: ESI, dfAlgorithm: "hrw" });
+    const first = leaf1.designatedForwarderStates()[0]!;
+    const second = leaf2.designatedForwarderStates()[0]!;
+    expect(first).toMatchObject({ requestedAlgorithm: "hrw", effectiveAlgorithm: "hrw", fallbackReason: undefined });
+    // Both leaves reached the identical answer independently, weights included.
+    expect(second.designatedForwarder).toBe(first.designatedForwarder);
+    expect(second.backupDesignatedForwarder).toBe(first.backupDesignatedForwarder);
+    expect(second.candidateWeights).toEqual(first.candidateWeights);
+    expect(first.candidateWeights.map((entry) => entry.vtep)).toEqual([LEAF1_VTEP, LEAF2_VTEP]);
+    // Exactly one leaf is DF, whichever way the weights fell.
+    expect([first.localRole, second.localRole].filter((role) => role === "df")).toHaveLength(1);
+  });
+
+  it("falls back to the modulus election consistently when one peer cannot do HRW", () => {
+    const { leaf1, leaf2, engine } = multihomedFabric({ dfAlgorithm: "hrw", leaf2DfAlgorithm: "default" });
+    const first = leaf1.designatedForwarderStates()[0]!;
+    const second = leaf2.designatedForwarderStates()[0]!;
+    expect(first).toMatchObject({
+      requestedAlgorithm: "hrw",
+      effectiveAlgorithm: "default",
+      fallbackReason: "peer-algorithm-mismatch",
+    });
+    // The leaf that never asked for HRW simply runs the default; both end up
+    // running the same election, which is the whole point of the agreement.
+    expect(second).toMatchObject({ requestedAlgorithm: "default", effectiveAlgorithm: "default" });
+    expect(first.designatedForwarder).toBe(second.designatedForwarder);
+    expect(first.designatedForwarder).toBe(LEAF1_VTEP);
+    expect(first.candidateWeights).toEqual([]);
+    // The fallback is informational, not a failure.
+    expect(engine.traceLog.some((entry) => entry.type === "evpn-df-algorithm-fallback")).toBe(true);
+  });
+
+  it("keeps a segment that asks for nothing on the M10.16 modulus election", () => {
+    const { leaf1 } = multihomedFabric();
+    expect(leaf1.designatedForwarderStates()[0]).toMatchObject({
+      requestedAlgorithm: "default",
+      effectiveAlgorithm: "default",
+      designatedForwarder: LEAF1_VTEP,
+      backupDesignatedForwarder: LEAF2_VTEP,
+      candidateWeights: [],
+    });
+    expect(leaf1.ethernetSegmentConfigurations()[0]?.dfAlgorithm).toBeUndefined();
+  });
+
+  it("recalculates deterministically when a candidate disappears", () => {
+    const fabric = multihomedFabric({ dfAlgorithm: "hrw" });
+    const before = fabric.leaf1.designatedForwarderStates()[0]!;
+    fabric.leaf2.interfaces.get("Gi0/1")!.shutdown();
+    fabric.engine.runUntilIdle();
+    const after = fabric.leaf1.designatedForwarderStates()[0]!;
+    expect(after.candidates).toEqual([LEAF1_VTEP]);
+    expect(after.designatedForwarder).toBe(LEAF1_VTEP);
+    expect(after.backupDesignatedForwarder).toBeUndefined();
+    // The surviving leaf forwards whether or not it was the DF before.
+    expect(after.localRole).toBe("df");
+    void before;
   });
 });
 

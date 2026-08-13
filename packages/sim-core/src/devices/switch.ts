@@ -602,6 +602,20 @@ export class L2Switch extends Device {
     return removed;
   }
 
+  /**
+   * Forget exactly one locally learned address in one VLAN.
+   *
+   * EVPN MAC Mobility is what needs this: a leaf that hears the fabric has
+   * moved an address elsewhere must stop claiming *that* address, while every
+   * other entry the same port learned is still perfectly valid.
+   */
+  protected forgetLocalMac(vlanId: number, mac: Mac): boolean {
+    const normalized = normalizeMac(mac);
+    const entry = this.macTable.get(normalized);
+    if (entry?.vlan === vlanId) this.macTable.delete(normalized);
+    return this.fdb.forget(vlanId, normalized);
+  }
+
   /** Forget what one logical port learned in one VLAN, leaving the rest intact. */
   protected flushForwardingOnPort(logicalPort: string, vlanId: number): number {
     const removed = this.fdb.clearPortInScope(vlanId, logicalPort);

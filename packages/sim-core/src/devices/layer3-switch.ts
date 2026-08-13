@@ -37,6 +37,7 @@ import {
   type EvpnEthernetSegmentState,
   type EvpnRedundancyMode,
 } from "../overlay/ethernet-segment";
+import type { EvpnDfAlgorithm } from "../overlay/df-election";
 import type { ImportedEvpnPrefixRoute, VrfConfiguration, VrfRoute } from "../routing/vrf";
 import { ipToInt, type Ipv4 } from "../util/ipv4";
 import type { Ipv6 } from "../util/ipv6";
@@ -146,6 +147,51 @@ interface MultihomingPath {
   readonly redundancyMode?: EvpnRedundancyMode;
 }
 
+/**
+ * What this VTEP advertises for an address it currently owns locally.
+ *
+ * `location` is what a move is measured against: the Ethernet Segment an
+ * attachment belongs to, or the port itself when it is single-homed. Two leaves
+ * of one All-Active segment share a location, which is exactly why a frame
+ * appearing on the second of them is not a move.
+ */
+interface LocalMacMobility {
+  readonly sequence: number;
+  readonly location: string;
+}
+
+/** The highest sequence a peer advertised for an address, and from where. */
+interface ObservedMacMobility {
+  readonly sequence: number;
+  readonly vtep: Ipv4;
+  readonly esi: Esi | undefined;
+}
+
+/**
+ * One address's MAC Mobility state, for inspection.
+ *
+ * Runtime only: a sequence number describes where an address has been during
+ * this run, so it is never serialized into a `LabDocument` and the browser
+ * worker and the verifier each rebuild it by replaying the same learns and the
+ * same BGP UPDATEs.
+ */
+export interface EvpnMacMobilityState {
+  readonly vni: number;
+  readonly macAddress: Mac;
+  readonly sequence: number;
+  /** `local` when this VTEP owns the address, otherwise the owning VTEP. */
+  readonly owner: Ipv4 | "local";
+  /** The Ethernet Segment or port the address currently lives behind. */
+  readonly location: string;
+  readonly previousOwner: Ipv4 | undefined;
+  /**
+   * `stable` — never moved; `moved` — this leaf holds the current location;
+   * `superseded` — this leaf still has a local copy, but the fabric holds the
+   * address somewhere newer and this copy loses.
+   */
+  readonly state: "stable" | "moved" | "superseded";
+}
+
 /** VLAN switching plus a composed Router control/data plane for SVIs and routed ports. */
 export class Layer3Switch extends L2Switch {
   override readonly deviceType = "l3-switch" as const;
@@ -186,6 +232,28 @@ export class Layer3Switch extends L2Switch {
    * second. Runtime only.
    */
   private readonly multihomingAdvertisers = new Map<string, Ipv4>();
+  /**
+   * `<vni>|<mac>` → this VTEP's MAC Mobility state for an address it owns.
+   *
+   * Runtime only, and never persisted: a sequence number describes where an
+   * address has been during *this* run, so rebuilding the lab starts it over —
+   * which is exactly what the verifier does too.
+   */
+  private readonly macMobility = new Map<string, LocalMacMobility>();
+  /** `<vni>|<mac>` → the highest sequence any peer advertised. Runtime only. */
+  private readonly observedMacMobility = new Map<string, ObservedMacMobility>();
+  /** The last sequence reported for an address, so a move is announced once. */
+  private readonly observedMacSequences = new Map<string, number>();
+  /**
+   * `<vni>|<mac>` → the sequence this leaf has already conceded the address to.
+   *
+   * It is what stops two leaves that both genuinely see one address from
+   * counting each other upwards for ever. Having lost at sequence N, this leaf
+   * will not bid again until somebody moves the address past N — so a contested
+   * address settles on one owner instead of oscillating. Full duplicate-MAC
+   * dampening is deliberately out of scope; this only guarantees the loop ends.
+   */
+  private readonly concededMacMobility = new Map<string, number>();
   /** `<esi>|<vtep>` pairs backed by a per-ES A-D route, to spot a withdrawal. */
   private readonly lastEsReachability = new Set<string>();
   /** SVIs configured with `fabric forwarding mode anycast-gateway`. */
@@ -865,6 +933,13 @@ export class Layer3Switch extends L2Switch {
     this.multihomingAdvertisers.clear();
     this.segmentMacs.clear();
     this.lastEsReachability.clear();
+    // A sequence number describes where an address has been during this run, so
+    // clearing the overlay's runtime starts mobility over — exactly as
+    // rebuilding the lab in the verifier does.
+    this.macMobility.clear();
+    this.observedMacMobility.clear();
+    this.observedMacSequences.clear();
+    this.concededMacMobility.clear();
   }
 
   /** `shutdown`/`no shutdown` on nve1, as one bounded restart. */
@@ -1277,8 +1352,138 @@ export class Layer3Switch extends L2Switch {
         previousVtep: remote.remoteVtep,
       });
     }
+    this.updateLocalMacMobility(member.vni, normalizeMac(mac), port);
     this.traceVxlan("vxlan-mac-learned-local", { vni: member.vni, vlan, mac: normalizeMac(mac), port });
     this.onOverlayMacTableChanged();
+  }
+
+  /**
+   * The one place a MAC Mobility sequence number is decided.
+   *
+   * A sequence increments only when *ownership genuinely changes location*. It
+   * deliberately does not increment because a BGP session reset, an NVE restart,
+   * a re-rendered Type 2 route or a relearn on the same attachment happened —
+   * none of those is a move, and treating them as one would make two leaves
+   * chase each other upwards for ever.
+   *
+   * Two leaves of one All-Active Ethernet Segment share a **location**, so a
+   * frame appearing on the second of them is aliasing rather than mobility. That
+   * distinction lives here, once, instead of as an `if (esi)` in every path that
+   * observes an address.
+   */
+  private updateLocalMacMobility(vni: number, mac: Mac, port: string): void {
+    const key = `${vni}|${mac}`;
+    const location = this.macLocationOf(port);
+    const current = this.macMobility.get(key);
+    // The same attachment — or another member of the same Ethernet Segment —
+    // relearning the address is not a move at all.
+    if (current?.location === location) return;
+    const observed = this.observedMacMobility.get(key);
+    const observedLocation = observed === undefined
+      ? undefined
+      : observed.esi ?? `vtep:${observed.vtep}`;
+    if (observed === undefined || observedLocation === location) {
+      // First local advertisement, or the fabric already believes the address
+      // lives right here: sequence 0 unless this device already owns a higher
+      // one from an earlier move of its own.
+      if (this.macMobility.size < DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumRemoteMacsPerVtep) {
+        this.macMobility.set(key, { sequence: current?.sequence ?? 0, location });
+      }
+      return;
+    }
+    // Having already lost this address at that sequence, this leaf does not bid
+    // again: two leaves that both genuinely see one address would otherwise
+    // count each other upwards for ever. It keeps the address locally at its own
+    // sequence and simply loses the comparison, which is the stable answer.
+    const conceded = this.concededMacMobility.get(key);
+    if (conceded !== undefined && observed.sequence <= conceded) {
+      this.macMobility.set(key, { sequence: current?.sequence ?? 0, location });
+      this.traceVxlan("evpn-duplicate-mac-detected", {
+        vni,
+        mac,
+        sequence: observed.sequence,
+        owner: observed.vtep,
+        location,
+        reason: "already-conceded",
+      });
+      this.recordEvpnFault(
+        `duplicate-${vni}-${mac}`,
+        `${this.name} sees MAC ${mac} in VNI ${vni} locally, but the fabric holds it at ${observed.vtep}`
+        + ` with sequence ${observed.sequence}; the local copy is not re-advertised as a move.`,
+      );
+      return;
+    }
+    // A genuine move: the address was somewhere else and is now here.
+    const sequence = Math.max(observed.sequence, current?.sequence ?? 0) + 1;
+    this.traceVxlan("evpn-mac-mobility-detected", {
+      vni,
+      mac,
+      from: observedLocation,
+      to: location,
+      previousSequence: observed.sequence,
+    });
+    if (this.macMobility.size >= DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumRemoteMacsPerVtep
+      && !this.macMobility.has(key)) return;
+    this.macMobility.set(key, { sequence, location });
+    this.traceVxlan("evpn-mac-mobility-sequence-incremented", {
+      vni,
+      mac,
+      sequence,
+      previousSequence: observed.sequence,
+      location,
+    });
+  }
+
+  /**
+   * Where an address lives, for mobility purposes.
+   *
+   * An Ethernet Segment *is* the location when there is one, because every leaf
+   * attached to it is the same place as far as the fabric is concerned. Only a
+   * single-homed port is a location of its own.
+   */
+  private macLocationOf(port: string): string {
+    const esi = this.ethernetSegments.esiForInterface(this.logicalPortOf(port));
+    return esi ?? `local:${this.logicalPortOf(port)}`;
+  }
+
+  /** The mobility sequence this VTEP advertises for one address it owns. */
+  macMobilitySequence(vni: number, mac: Mac): number {
+    return this.macMobility.get(`${vni}|${normalizeMac(mac)}`)?.sequence ?? 0;
+  }
+
+  /**
+   * Every address whose mobility this VTEP tracks, local and observed.
+   *
+   * Runtime only: the browser worker and the verifier rebuild all of it by
+   * replaying the same learns and the same BGP UPDATEs.
+   */
+  macMobilityStates(): EvpnMacMobilityState[] {
+    this.syncRoutingPlane();
+    const keys = new Set([...this.macMobility.keys(), ...this.observedMacMobility.keys()]);
+    return [...keys]
+      .map((key): EvpnMacMobilityState => {
+        const [vniText, mac] = key.split("|") as [string, Mac];
+        const owned = this.macMobility.get(key);
+        const observed = this.observedMacMobility.get(key);
+        // Whichever sequence is higher is where the fabric agrees the address
+        // is, and this leaf's own copy is no exception to that rule.
+        const localWins = owned !== undefined && owned.sequence >= (observed?.sequence ?? -1);
+        const sequence = Math.max(owned?.sequence ?? 0, observed?.sequence ?? 0);
+        return {
+          vni: Number(vniText),
+          macAddress: mac,
+          sequence,
+          owner: localWins ? "local" : observed!.vtep,
+          location: localWins
+            ? owned!.location
+            : observed!.esi ?? `vtep:${observed!.vtep}`,
+          previousOwner: localWins ? observed?.vtep : undefined,
+          state: owned !== undefined && observed !== undefined && observed.sequence > owned.sequence
+            ? "superseded"
+            : sequence === 0 ? "stable" : "moved",
+        };
+      })
+      .sort((a, b) => a.vni - b.vni || a.macAddress.localeCompare(b.macAddress));
   }
 
   // --- EVPN Ethernet Segments (Single-Active multihoming) -------------------
@@ -1451,7 +1656,16 @@ export class Layer3Switch extends L2Switch {
   private runDesignatedForwarderElection(cause: string): void {
     const states = this.ethernetSegments.dfStates();
     const signature = states
-      .map((state) => `${state.esi}|${state.vlanId}|${state.designatedForwarder ?? ""}|${state.localRole}`)
+      .map((state) => [
+        state.esi,
+        state.vlanId,
+        state.designatedForwarder ?? "",
+        state.localRole,
+        // A silent switch between algorithms would change the winner without a
+        // single trace line, so the effective one is part of the signature.
+        state.effectiveAlgorithm,
+        state.backupDesignatedForwarder ?? "",
+      ].join("|"))
       .join("\n");
     if (signature === this.dfSignature) return;
     const previous = new Map(this.dfSignature.split("\n").filter(Boolean).map((line) => {
@@ -1473,8 +1687,23 @@ export class Layer3Switch extends L2Switch {
         vlan: state.vlanId,
         candidates: state.candidates,
         designatedForwarder: state.designatedForwarder,
+        backupDesignatedForwarder: state.backupDesignatedForwarder,
         localRole: state.localRole,
+        requestedAlgorithm: state.requestedAlgorithm,
+        effectiveAlgorithm: state.effectiveAlgorithm,
+        weights: state.candidateWeights,
       });
+      // Falling back is informational: the segment still elects one forwarder,
+      // it simply does it the way every participant can.
+      if (state.fallbackReason !== undefined) {
+        this.traceVxlan("evpn-df-algorithm-fallback", {
+          esi: state.esi,
+          vlan: state.vlanId,
+          requestedAlgorithm: state.requestedAlgorithm,
+          effectiveAlgorithm: state.effectiveAlgorithm,
+          reason: state.fallbackReason,
+        });
+      }
       if (before && before.role !== state.localRole) {
         this.traceVxlan("evpn-df-role-changed", {
           esi: state.esi,
@@ -1493,6 +1722,128 @@ export class Layer3Switch extends L2Switch {
         }
       }
     }
+  }
+
+  /**
+   * Which advertisement of one `<VNI, MAC>` wins, and why.
+   *
+   * MAC Mobility is applied **before** the best-path comparator, exactly as
+   * RFC 7432 §15 describes: the highest sequence number identifies where the
+   * address actually is now, and every lower one is a stale memory of where it
+   * used to be. Only the survivors are then compared, so there is still exactly
+   * one comparator and no EVPN-specific fork of it.
+   *
+   * Two advertisements that share one non-zero ESI are not a conflict at all:
+   * they are two leaves of the same Ethernet Segment describing the same place,
+   * which is what All-Active aliasing looks like from here.
+   */
+  private selectMacRoute(vni: number, mac: Mac, candidates: readonly EvpnRoute[]): EvpnRoute | undefined {
+    const sequenceOf = (route: EvpnRoute): number =>
+      route.type === 2 ? route.mobility?.sequence ?? 0 : 0;
+    const highest = Math.max(...candidates.map(sequenceOf));
+    const current = candidates.filter((route) => sequenceOf(route) === highest);
+    for (const stale of candidates.filter((route) => sequenceOf(route) !== highest)) {
+      this.traceVxlan("evpn-stale-mac-route-rejected", {
+        vni,
+        mac,
+        vtep: evpnOriginatingVtep(stale),
+        sequence: sequenceOf(stale),
+        currentSequence: highest,
+      });
+    }
+    const ordered = [...current].sort(compareEvpnPaths);
+    const winner = ordered[0];
+    if (winner === undefined) return undefined;
+    this.observedMacMobility.set(`${vni}|${mac}`, {
+      sequence: highest,
+      vtep: evpnOriginatingVtep(winner),
+      esi: winner.type === 2 && winner.ethernetSegmentId !== undefined && winner.ethernetSegmentId !== ESI_ZERO
+        ? winner.ethernetSegmentId
+        : undefined,
+    });
+    const previous = this.observedMacSequences.get(`${vni}|${mac}`);
+    if (previous !== undefined && highest > previous) {
+      this.traceVxlan("evpn-mac-route-superseded", {
+        vni,
+        mac,
+        previousSequence: previous,
+        sequence: highest,
+        owner: evpnOriginatingVtep(winner),
+      });
+    }
+    this.observedMacSequences.set(`${vni}|${mac}`, highest);
+    if (ordered.length < 2) return winner;
+    // Same address, same highest sequence, genuinely different places. Full
+    // duplicate-MAC dampening is out of scope, so a deterministic temporary
+    // winner is chosen and the conflict is named rather than left to oscillate.
+    const locations = new Set(ordered.map((route) => {
+      const esi = route.type === 2 ? route.ethernetSegmentId : undefined;
+      return esi !== undefined && esi !== ESI_ZERO ? esi : `vtep:${evpnOriginatingVtep(route)}`;
+    }));
+    if (locations.size < 2) return winner;
+    this.traceVxlan("evpn-duplicate-mac-detected", {
+      vni,
+      mac,
+      sequence: highest,
+      vteps: ordered.map((route) => evpnOriginatingVtep(route)),
+      selected: evpnOriginatingVtep(winner),
+    });
+    this.recordEvpnFault(
+      `duplicate-${vni}-${mac}`,
+      `${this.name} received MAC ${mac} in VNI ${vni} from ${ordered.length} locations at sequence ${highest};`
+      + ` ${evpnOriginatingVtep(winner)} was selected.`,
+    );
+    return winner;
+  }
+
+  /**
+   * Give up an address this leaf still claims but the fabric has moved on from.
+   *
+   * A station that walked away leaves its old leaf holding a stale local entry
+   * with a *lower* sequence number. Keeping it would make the leaf go on
+   * advertising a location that no longer exists, so the entry is forgotten —
+   * that address only, never the whole port — and the withdrawal follows on the
+   * next export. Returns `true` when the address stays local for now, so the
+   * caller does not install a remote entry pointing back at this device.
+   */
+  private releaseSupersededLocalMac(vni: number, mac: Mac, winner: EvpnRoute): boolean {
+    const key = `${vni}|${mac}`;
+    const owned = this.macMobility.get(key);
+    if (owned === undefined) return false;
+    const sequence = winner.type === 2 ? winner.mobility?.sequence ?? 0 : 0;
+    // A route from somewhere this leaf already *is* — the other member of one
+    // All-Active segment — is not a competing location at all.
+    const winnerEsi = winner.type === 2 ? winner.ethernetSegmentId : undefined;
+    if (winnerEsi !== undefined && winnerEsi !== ESI_ZERO && winnerEsi === owned.location) return true;
+    if (sequence <= owned.sequence) return true;
+    const vlanId = this.vxlan.memberForVni(vni)?.vlanId;
+    // The same event from both sides: a newer route replaced this leaf's, and
+    // this leaf's is the stale one being refused.
+    this.traceVxlan("evpn-mac-route-superseded", {
+      vni,
+      mac,
+      previousSequence: owned.sequence,
+      sequence,
+      owner: evpnOriginatingVtep(winner),
+    });
+    this.traceVxlan("evpn-stale-mac-route-rejected", {
+      vni,
+      mac,
+      vtep: this.vxlan.state().sourceAddress,
+      sequence: owned.sequence,
+      currentSequence: sequence,
+      owner: evpnOriginatingVtep(winner),
+    });
+    this.macMobility.delete(key);
+    // Having lost at this sequence, this leaf will not bid again until somebody
+    // moves the address past it. That is what keeps a contested address from
+    // making two leaves count each other upwards for ever.
+    this.concededMacMobility.set(key, sequence);
+    if (vlanId !== undefined) this.forgetLocalMac(vlanId, mac);
+    // The stale Type 2 has to be withdrawn, and the signature is what decides
+    // whether anything is re-advertised at all.
+    this.evpnExportSignature = "";
+    return false;
   }
 
   /**
@@ -1927,9 +2278,11 @@ export class Layer3Switch extends L2Switch {
         ...shared,
         type: 4,
         routeDistinguisher: `${routerId}:0`,
-        // The mode travels with the segment route so a peer that disagrees is
-        // reported rather than left to duplicate or black-hole traffic.
+        // The mode and the election travel with the segment route: a peer that
+        // disagrees is reported rather than left to duplicate or black-hole
+        // traffic, and HRW runs only once everyone can.
         redundancyMode: state.redundancyMode,
+        dfAlgorithm: state.dfAlgorithm,
         routeId: `local:evpn:4:${state.esi}:${sourceAddress}`,
       });
       // Per-ES: "this VTEP still has a working attachment". One withdrawal
@@ -2042,11 +2395,15 @@ export class Layer3Switch extends L2Switch {
       });
       if (evpn.exportRouteTargets.length === 0) continue;
       for (const entry of localMacs.get(vni.vni) ?? []) {
+        const sequence = this.macMobilitySequence(vni.vni, entry.mac);
         routes.push({
           ...shared,
           type: 2,
           macAddress: entry.mac,
           ethernetSegmentId: entry.esi,
+          // Sequence 0 is the ordinary first advertisement, so it stays absent
+          // and a pre-M10.17 route keeps exactly the bytes it had.
+          ...(sequence === 0 ? {} : { mobility: { sequence } }),
           // The VNI is the delivery label in a VXLAN fabric.
           label: vni.vni,
           routeId: `local:evpn:2:${evpn.routeDistinguisher}:${vni.vni}:${entry.mac}`,
@@ -2142,6 +2499,7 @@ export class Layer3Switch extends L2Switch {
       vtep: Ipv4;
       routerId?: Ipv4;
       redundancyMode?: EvpnRedundancyMode;
+      dfAlgorithm?: EvpnDfAlgorithm;
     }> = [];
     const adPerEs: Array<{ esi: Esi; vtep: Ipv4 }> = [];
     const adPerEvi: Array<{ esi: Esi; vni: number; vtep: Ipv4 }> = [];
@@ -2185,6 +2543,7 @@ export class Layer3Switch extends L2Switch {
           vtep: route.originatingVtep,
           routerId: route.neighborRouterId,
           redundancyMode: route.redundancyMode,
+          dfAlgorithm: route.dfAlgorithm,
         });
         continue;
       }
@@ -2259,25 +2618,15 @@ export class Layer3Switch extends L2Switch {
       // this is an imported-route change, so it must never re-enter BGP.
       this.runDesignatedForwarderElection("es-peer-changed");
     }
+    this.observedMacMobility.clear();
     for (const [key, candidates] of macCandidates) {
       const [vniText, mac] = key.split(" ") as [string, Mac];
       const vni = Number(vniText);
-      // A duplicate MAC resolves through the one best-path comparator, so the
-      // same winner is chosen no matter which UPDATE arrived first.
-      const ordered = [...candidates].sort(compareEvpnPaths);
-      const winner = ordered[0]!;
-      if (ordered.length > 1) {
-        this.traceVxlan("evpn-duplicate-mac-detected", {
-          vni,
-          mac,
-          vteps: ordered.map((route) => evpnOriginatingVtep(route)),
-          selected: evpnOriginatingVtep(winner),
-        });
-        this.recordEvpnFault(
-          `duplicate-${vni}-${mac}`,
-          `${this.name} received MAC ${mac} in VNI ${vni} from ${ordered.length} VTEPs; ${evpnOriginatingVtep(winner)} was selected.`,
-        );
-      }
+      const winner = this.selectMacRoute(vni, mac, candidates);
+      if (winner === undefined) continue;
+      // A newer location supersedes whatever this leaf still believes, its own
+      // local entry included.
+      if (this.releaseSupersededLocalMac(vni, mac, winner)) continue;
       const path = this.resolveMultihomingPath(vni, mac, winner.type === 2 ? winner.ethernetSegmentId : undefined,
         evpnOriginatingVtep(winner));
       if (path === undefined) continue;
@@ -2358,7 +2707,12 @@ export class Layer3Switch extends L2Switch {
   private onOverlayMacTableChanged(): void {
     if (!this.evpnAddressFamilyActive()) return;
     this.traceEthernetSegmentOrigination();
-    const signature = this.evpnExports().map((route) => route.routeId).join("\n");
+    // The mobility sequence is part of the signature: a move that keeps the
+    // same route id still has to be re-advertised, or the fabric would never
+    // hear that the address is now here.
+    const signature = this.evpnExports()
+      .map((route) => `${route.routeId}|${route.type === 2 ? route.mobility?.sequence ?? 0 : ""}`)
+      .join("\n");
     if (signature === this.evpnExportSignature) return;
     this.evpnExportSignature = signature;
     this.traceVxlan("evpn-mac-route-originated", {

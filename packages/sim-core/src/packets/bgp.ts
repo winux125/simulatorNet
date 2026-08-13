@@ -105,11 +105,29 @@ export interface Vpnv6Nlri {
  * type and MAC rather than by a prefix. `label` is the VNI-scoped delivery
  * label; in a VXLAN fabric it is the VNI itself.
  */
+/**
+ * The MAC Mobility extended community of RFC 7432 §15, as structured data.
+ *
+ * The sequence number is the whole of it: a higher one supersedes a lower one
+ * for the same `<MAC, VNI>`, which is how the fabric agrees where an address
+ * lives after it moves. There is deliberately no sticky bit — sticky MAC and MAC
+ * protection are not modelled, and a flag nothing enforced would be a lie.
+ */
+export interface EvpnMacMobility {
+  readonly sequence: number;
+}
+
 export interface EvpnMacIpRoute {
   readonly type: 2;
   readonly routeDistinguisher: string;
   readonly ethernetTag: number;
   readonly macAddress: string;
+  /**
+   * Mobility state, when the address has ever moved. Absent means sequence 0 —
+   * every route written before M10.17 reads as a first advertisement, so an
+   * older lab is unchanged.
+   */
+  readonly mobility?: EvpnMacMobility;
   /** Optional IPv4 binding. IPv6 bindings and ARP suppression are not modelled. */
   readonly ipAddress?: Ipv4;
   /**
@@ -193,6 +211,16 @@ export interface EvpnEthernetSegmentRoute {
    * forward are *reported* rather than left to duplicate or black-hole traffic.
    */
   readonly redundancyMode?: "single-active" | "all-active";
+  /**
+   * The DF election the originator asked for.
+   *
+   * This is the capability every participant has to agree on before
+   * highest-random-weight can run: one leaf that cannot do it makes the whole
+   * segment fall back to the modulus election, consistently and without anyone
+   * announcing a decision. Absent — every route written before M10.17 — means
+   * `default`.
+   */
+  readonly dfAlgorithm?: "default" | "hrw";
   readonly routeTargets: readonly string[];
   readonly nextHop: Ipv4;
   readonly pathAttributes: BgpPathAttributes;

@@ -334,8 +334,19 @@ export function compareVpnv6Paths(left: Vpnv6Route, right: Vpnv6Route): number {
  * The one best-path comparator again, for EVPN. An EVPN NLRI has no prefix, so
  * the advertising VTEP breaks the final tie — which is what makes a duplicate
  * MAC resolve to the same winner regardless of UPDATE arrival order.
+ *
+ * **MAC Mobility comes first**, exactly as RFC 7432 §15 requires: a higher
+ * sequence number says where the address is *now*, and every lower one is a
+ * stale memory of where it used to be. It has to sit inside this one comparator
+ * rather than beside it, because a route reflector advertises only its best path
+ * — so a reflector that could not read the sequence would hand its clients the
+ * old location and no amount of care downstream could undo it.
  */
 export function compareEvpnPaths(left: EvpnRoute, right: EvpnRoute): number {
+  const sequenceOf = (route: EvpnRoute): number =>
+    route.type === 2 ? route.mobility?.sequence ?? 0 : 0;
+  const mobility = sequenceOf(right) - sequenceOf(left);
+  if (mobility !== 0) return mobility;
   const decided = compareBgpPaths(evpnComparable(left), evpnComparable(right));
   if (decided !== 0) return decided;
   return ipToInt(evpnOriginatingVtep(left)) - ipToInt(evpnOriginatingVtep(right));
@@ -389,9 +400,11 @@ function evpnNlriOf(route: EvpnRoute): EvpnNlri {
       routeDistinguisher: route.routeDistinguisher,
       esi: route.esi,
       originatingVtep: route.originatingVtep,
-      // How the originator shares the segment travels with it: a receiver that
-      // could not read the mode would have to guess who may forward.
+      // How the originator shares the segment, and which election it can run,
+      // travel with it: a receiver that could not read either would have to
+      // guess who may forward.
       redundancyMode: route.redundancyMode,
+      dfAlgorithm: route.dfAlgorithm,
       routeTargets: [...route.routeTargets],
       nextHop: route.nextHop,
       pathAttributes: route.pathAttributes,
@@ -437,6 +450,9 @@ function evpnNlriOf(route: EvpnRoute): EvpnNlri {
     routeTargets: [...route.routeTargets],
     nextHop: route.nextHop,
     label: route.label,
+    // Mobility rides the MAC route, so a receiver can tell a newer location
+    // from a stale one without asking anybody.
+    mobility: route.mobility,
     pathAttributes: route.pathAttributes,
     routeId: route.routeId,
   };
