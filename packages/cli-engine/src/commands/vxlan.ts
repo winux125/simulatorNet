@@ -282,14 +282,15 @@ function evpnRouteSubject(route: EvpnRoute): string {
 /**
  * The `config-if` context as an attachment name.
  *
- * An Ethernet Segment attaches a CE, so it lives on an access switchport: an
- * SVI or a subinterface is refused here rather than reaching the engine.
+ * An Ethernet Segment attaches a CE, so it lives on an access switchport or a
+ * Port-channel: an SVI or a subinterface is refused here rather than reaching
+ * the engine, which then applies the remaining eligibility rules.
  */
 function accessPortName(session: SessionApi): string {
   const context = session.ifaceCtx;
   if (!context) throw new InvalidModeError("Enter 'interface <name>' first");
   if (context.sviVlan !== undefined || context.isSubinterface) {
-    throw new InvalidModeError("An Ethernet Segment is configured on an access switchport");
+    throw new InvalidModeError("An Ethernet Segment is configured on an access switchport or a Port-channel");
   }
   return context.physical;
 }

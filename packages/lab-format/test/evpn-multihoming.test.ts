@@ -124,12 +124,88 @@ describe("EVPN Ethernet Segment persistence", () => {
     expect(validate(segmented(["Gi0/1"], ["Gi0/1"]))).toThrow(/already belongs to Ethernet Segment 'ES-A'/);
     // A routed core port has no CE hanging off it.
     expect(validate(segmented(["Gi0/2"]))).toThrow(/must be an access switchport/);
-    // A Port-channel has no L3-Switch configuration block to bind it to.
-    expect(validate(segmented(["Port-channel1"]))).toThrow(/is not an access switchport on this device/);
+    // A Port-channel is bindable since M10.17, but only one this device has.
+    expect(validate(segmented(["Port-channel1"]))).toThrow(/is not a switchport on this device/);
     // A segment on a VLAN that maps to no VNI transports nothing.
     expect(validate(leafConfig({ nve: undefined }))).toThrow(/maps to no VNI/);
     // The valid configuration still passes, so none of the above is over-broad.
     expect(validate(leafConfig())).not.toThrow();
+  });
+
+  it("binds a segment to a logical Port-channel and builds it", () => {
+    // M10.17: the bundle survives a configuration round-trip, so it can finally
+    // be named as an attachment. The members are not — the bundle is.
+    const bundled = leafConfig({
+      interfaces: [
+        { id: "Gi0/1", shutdown: false, mode: "access", accessVlan: 10, nativeVlan: 1 },
+        { id: "Gi0/2", shutdown: false, mode: "access", accessVlan: 10, nativeVlan: 1 },
+      ],
+      etherChannels: [{
+        channelId: 1,
+        mode: "active",
+        members: ["Gi0/1", "Gi0/2"],
+        switchport: { mode: "access", accessVlan: 10, nativeVlan: 1 },
+      }],
+      evpn: {
+        ...leafConfig().evpn!,
+        ethernetSegments: [{
+          id: "ES-CE1",
+          esi: ESI,
+          redundancyMode: "single-active",
+          interfaces: ["Port-channel1"],
+        }],
+      },
+    });
+    expect(() => validateLabSemantics(canonicalizeLabDocument(labWith(bundled)))).not.toThrow();
+    const leaf = buildLabFromDocument(canonicalizeLabDocument(labWith(bundled))).getDevice("leaf1") as Layer3Switch;
+    expect(leaf.ethernetSegmentConfigurations()[0]?.interfaces).toEqual(["Port-channel1"]);
+    // The member is not an attachment of its own: the bundle already is one.
+    expect(leaf.ethernetSegmentIdOf("Gi0/1")).toBe(ESI);
+    expect(() => validateLabSemantics(canonicalizeLabDocument(labWith(leafConfig({
+      ...bundled,
+      evpn: {
+        ...bundled.evpn!,
+        ethernetSegments: [{ id: "ES-CE1", esi: ESI, redundancyMode: "single-active", interfaces: ["Gi0/1"] }],
+      },
+    }))))).toThrow(/belongs to Port-channel1/);
+  });
+
+  it("accepts a trunk Port-channel and still refuses a trunk access port", () => {
+    // A CE-facing bundle is normally VLAN-aware, and the election is already
+    // per `<ESI, VLAN>`. A bare physical port stays the access port M10.16
+    // defined, so the widening is exactly one attachment kind.
+    const trunked = (mode: "access" | "trunk") => leafConfig({
+      interfaces: [
+        { id: "Gi0/1", shutdown: false, mode, accessVlan: 10, nativeVlan: 10 },
+        { id: "Gi0/2", shutdown: false, mode: "access", accessVlan: 10, nativeVlan: 1 },
+      ],
+      etherChannels: mode === "trunk"
+        ? [{
+            channelId: 1,
+            mode: "on" as const,
+            members: ["Gi0/1"],
+            switchport: { mode: "trunk" as const, accessVlan: 1, nativeVlan: 10, allowedVlans: [10] },
+          }]
+        : undefined,
+      evpn: {
+        ...leafConfig().evpn!,
+        ethernetSegments: [{
+          id: "ES-CE1",
+          esi: ESI,
+          redundancyMode: "single-active",
+          interfaces: [mode === "trunk" ? "Port-channel1" : "Gi0/1"],
+        }],
+      },
+    });
+    expect(() => validateLabSemantics(canonicalizeLabDocument(labWith(trunked("trunk"))))).not.toThrow();
+    const trunkPort = leafConfig({
+      interfaces: [
+        { id: "Gi0/1", shutdown: false, mode: "trunk", accessVlan: 10, nativeVlan: 10 },
+        { id: "Gi0/2", shutdown: false, mode: "access", accessVlan: 10, nativeVlan: 1 },
+      ],
+    });
+    expect(() => validateLabSemantics(canonicalizeLabDocument(labWith(trunkPort))))
+      .toThrow(/must be an access switchport/);
   });
 
   it("loads a document whose peer disagrees, and leaves it to Problems", () => {

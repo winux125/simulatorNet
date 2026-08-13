@@ -46,6 +46,10 @@ export interface ImportedInterfaceConfig {
   vrfId?: string;
   switchportMode?: "access" | "trunk";
   accessVlan?: number;
+  /** `switchport trunk native vlan <id>`. */
+  nativeVlan?: number;
+  /** `switchport trunk allowed vlan <list>`; absent means "all VLANs". */
+  allowedVlans?: number[];
   /** `spanning-tree portfast` / `spanning-tree bpduguard enable`. */
   portFast?: boolean;
   bpduGuard?: boolean;
@@ -97,6 +101,29 @@ export interface ImportedSviConfig {
   vrfId?: string;
   /** `fabric forwarding mode anycast-gateway`, valid only on an SVI. */
   anycastGateway?: boolean;
+}
+
+/**
+ * `interface Port-channel<n>` recognised from a configuration file.
+ *
+ * The bundle is a real logical interface, so the settings that live on it are
+ * read here rather than inferred from a member. Membership stays exactly one
+ * `channel-group` line per member: the two models must never be able to
+ * disagree about which port belongs to which bundle.
+ *
+ * A bundle's administrative state is deliberately not read. It is derived from
+ * its members, so `shutdown` on a Port-channel is reported as unsupported
+ * instead of being accepted into a field nothing could apply.
+ */
+export interface ImportedPortChannelConfig {
+  channelId: number;
+  description?: string;
+  switchportMode?: "access" | "trunk";
+  accessVlan?: number;
+  nativeVlan?: number;
+  allowedVlans?: number[];
+  /** `port-channel min-links <n>`. */
+  minimumLinks?: number;
 }
 
 /** `interface Loopback<n>` recognised from an imported startup-config. */
@@ -186,6 +213,12 @@ export interface ConfigLineOutcome {
 export interface ImportedDeviceConfiguration {
   hostname?: string;
   interfaces: ImportedInterfaceConfig[];
+  /**
+   * `interface Port-channel<n>` blocks. A bundle is logical, so it is never
+   * matched against the device's physical port list; it exists once at least
+   * one member declares `channel-group <n>`.
+   */
+  portChannels: ImportedPortChannelConfig[];
   /**
    * `interface Vlan<n>` blocks. An SVI is a logical interface, so it is never
    * matched against the device's physical port list; only a device kind that
@@ -400,6 +433,79 @@ const PREFIX_ALIASES: ReadonlyArray<readonly [RegExp, string]> = [
   [/^(?:management|mgmt|ma)/u, "ma"],
   [/^(?:vlan|vl)/u, "vlan"],
 ];
+
+/** The canonical name of one logical bundle, as the rest of the model spells it. */
+function portChannelInterfaceId(channelId: number): string {
+  return `Port-channel${channelId}`;
+}
+
+/** A switchport target: a physical port or the logical bundle above it. */
+interface SwitchportTarget {
+  switchportMode?: "access" | "trunk";
+  accessVlan?: number;
+  nativeVlan?: number;
+  allowedVlans?: number[];
+}
+
+/**
+ * The `switchport …` lines a physical port and a Port-channel share.
+ *
+ * One implementation serves both, so a bundle can never read a VLAN list
+ * differently from the member that inherits it. Returns `false` for a line this
+ * subset does not model, which the caller then reports.
+ */
+function applySwitchportLine(target: SwitchportTarget, tokens: readonly string[]): boolean {
+  if (tokens[0]?.toLowerCase() !== "switchport") return false;
+  const second = tokens[1]?.toLowerCase();
+  if (second === "mode" && (tokens[2] === "access" || tokens[2] === "trunk")) {
+    target.switchportMode = tokens[2];
+    return true;
+  }
+  if (second === "access" && tokens[2]?.toLowerCase() === "vlan" && /^\d+$/u.test(tokens[3] ?? "")) {
+    const vlanId = Number(tokens[3]);
+    if (vlanId < 1 || vlanId > 4_094) return false;
+    target.accessVlan = vlanId;
+    return true;
+  }
+  if (second !== "trunk") return false;
+  if (tokens[2]?.toLowerCase() === "native" && tokens[3]?.toLowerCase() === "vlan" && /^\d+$/u.test(tokens[4] ?? "")) {
+    const vlanId = Number(tokens[4]);
+    if (vlanId < 1 || vlanId > 4_094) return false;
+    target.nativeVlan = vlanId;
+    return true;
+  }
+  // `switchport trunk allowed vlan <list>`. Only the plain comma/range list is
+  // modelled: `add`, `remove`, `except` and `none` mutate a set this parser
+  // never sees whole, so they are reported instead of half-applied.
+  if (tokens[2]?.toLowerCase() === "allowed" && tokens[3]?.toLowerCase() === "vlan" && tokens.length === 5) {
+    const allowed = parseVlanListText(tokens[4]!);
+    if (!allowed) return false;
+    target.allowedVlans = allowed;
+    return true;
+  }
+  return false;
+}
+
+/** `10,20` or `10-12,20` into a sorted, deduplicated and bounded VLAN list. */
+function parseVlanListText(text: string): number[] | undefined {
+  if (!/^[\d,-]+$/u.test(text)) return undefined;
+  const vlans = new Set<number>();
+  for (const part of text.split(",")) {
+    const range = /^(\d+)-(\d+)$/u.exec(part);
+    if (range) {
+      const first = Number(range[1]);
+      const last = Number(range[2]);
+      if (first < 1 || last > 4_094 || first > last || last - first > 4_094) return undefined;
+      for (let vlanId = first; vlanId <= last; vlanId++) vlans.add(vlanId);
+      continue;
+    }
+    if (!/^\d+$/u.test(part)) return undefined;
+    const vlanId = Number(part);
+    if (vlanId < 1 || vlanId > 4_094) return undefined;
+    vlans.add(vlanId);
+  }
+  return vlans.size === 0 ? undefined : [...vlans].sort((a, b) => a - b);
+}
 
 /** Normalise an interface name so abbreviations and casing compare equal. */
 export function normalizeInterfaceName(name: string): string {
@@ -662,6 +768,7 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
 
   const result: ImportedDeviceConfiguration = {
     interfaces: [],
+    portChannels: [],
     svis: [],
     loopbacks: [],
     staticRoutes: [],
@@ -684,9 +791,11 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
   };
   const vlanNames = new Map<number, string>();
   const loopbacks = new Map<number, ImportedLoopbackConfig>();
+  const portChannels = new Map<number, ImportedPortChannelConfig>();
   const tunnels = new Map<number, ImportedTunnelConfig>();
   let current: ImportedInterfaceConfig | undefined;
   let currentLoopback: ImportedLoopbackConfig | undefined;
+  let currentPortChannel: ImportedPortChannelConfig | undefined;
   let currentVlan: number | undefined;
   let inOspf = false;
   let inOspfv3 = false;
@@ -796,6 +905,10 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     const tokens = trimmed.split(/\s+/u);
     const head = tokens[0]!.toLowerCase();
     const isIndented = raw.startsWith(" ") || raw.startsWith("\t");
+    // A Port-channel block is exactly its indented body, so any top-level line
+    // ends it. The `interface Port-channel<n>` branch below re-opens one after
+    // this clear, which is why the two can never overlap.
+    if (!isIndented) currentPortChannel = undefined;
 
     if (head === "hostname" && tokens[1]) { result.hostname = tokens[1]; applied(line); current = undefined; continue; }
     if ((head === "vrf" && tokens[1]?.toLowerCase() === "definition" && tokens[2])
@@ -1066,10 +1179,58 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
         applied(line);
         continue;
       }
+      // `interface Port-channel<n>`: the logical bundle, not a cabled port. Its
+      // membership is never read here — that stays one `channel-group` line per
+      // member, so the two models cannot disagree about who belongs to what.
+      const channelMatch = /^po(?:rt-channel)?(\d+)$/u.exec(normalizeInterfaceName(spec));
+      if (channelMatch) {
+        const id = Number(channelMatch[1]);
+        if (id < 1 || id > 64) { current = undefined; unparsed(line); continue; }
+        currentPortChannel = portChannels.get(id) ?? { channelId: id };
+        portChannels.set(id, currentPortChannel);
+        current = undefined;
+        currentLoopback = undefined;
+        currentTunnel = undefined;
+        applied(line);
+        continue;
+      }
       currentLoopback = undefined;
       currentTunnel = undefined;
       const actual = resolve.get(normalizeInterfaceName(spec));
       if (actual) { current = ensureInterface(actual); applied(line); } else { current = undefined; unparsed(line); }
+      continue;
+    }
+
+    // --- `interface Port-channel<n>` body ----------------------------------
+    // Read before every other indented handler: while a bundle block is open no
+    // physical interface is selected, so nothing else may claim these lines.
+    if (currentPortChannel !== undefined && isIndented) {
+      const channel = currentPortChannel;
+      if (head === "description" && tokens.length > 1) {
+        channel.description = tokens.slice(1).join(" ");
+        applied(line);
+        continue;
+      }
+      if (head === "port-channel" && tokens[1]?.toLowerCase() === "min-links" && /^\d+$/u.test(tokens[2] ?? "")) {
+        const minimum = Number(tokens[2]);
+        if (minimum < 1 || minimum > 8) { unparsed(line); continue; }
+        channel.minimumLinks = minimum;
+        applied(line);
+        continue;
+      }
+      // `ethernet-segment <name>` binds the *bundle* to a segment. The binding
+      // is reconciled with the segment definitions at the end, exactly as an
+      // access port's is, so the order of the two blocks never matters.
+      if (head === "ethernet-segment" && tokens.length === 2 && tokens[1]) {
+        segmentAttachments.set(portChannelInterfaceId(channel.channelId), tokens[1]);
+        applied(line);
+        continue;
+      }
+      if (applySwitchportLine(channel, tokens)) { applied(line); continue; }
+      // A bundle's administrative state is derived from its members, so
+      // `shutdown` is reported rather than accepted into a field that could
+      // never be applied back.
+      unparsed(line);
       continue;
     }
 
@@ -1858,11 +2019,11 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       if (head === "shutdown") { current.shutdown = true; applied(line); continue; }
       if (head === "no" && tokens[1]?.toLowerCase() === "shutdown") { current.shutdown = false; applied(line); continue; }
       if (head === "description" && tokens.length > 1) { current.description = tokens.slice(1).join(" "); applied(line); continue; }
-      if (head === "switchport" && tokens[1]?.toLowerCase() === "mode" && (tokens[2] === "access" || tokens[2] === "trunk")) {
-        current.switchportMode = tokens[2]; applied(line); continue;
-      }
-      if (head === "switchport" && tokens[1]?.toLowerCase() === "access" && tokens[2]?.toLowerCase() === "vlan" && /^\d+$/u.test(tokens[3] ?? "")) {
-        current.accessVlan = Number(tokens[3]); applied(line); continue;
+      // One switchport reader serves a physical port and a Port-channel alike,
+      // so a bundle can never read a VLAN list differently from its members.
+      if (head === "switchport") {
+        if (applySwitchportLine(current, tokens)) applied(line); else unparsed(line);
+        continue;
       }
       // --- interface control-protocol commands ----------------------------
       if (head === "spanning-tree" && tokens[1]?.toLowerCase() === "portfast") {
@@ -1965,6 +2126,7 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
     }))
     .sort((a, b) => a.vlanId - b.vlanId);
   result.loopbacks = [...loopbacks.values()].sort((a, b) => a.id - b.id);
+  result.portChannels = [...portChannels.values()].sort((a, b) => a.channelId - b.channelId);
   // A VNI declared on nve1 needs a VLAN before it means anything, and the VLAN
   // arrives from a separate `vlan configuration` block. A VNI that never got
   // one is dropped rather than mapped to an invented VLAN.

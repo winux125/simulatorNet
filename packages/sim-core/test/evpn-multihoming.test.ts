@@ -257,6 +257,54 @@ describe("EVPN Ethernet Segment configuration", () => {
       }), `expected '${name}' to be refused`).toThrow(/does not exist|cannot carry an Ethernet Segment/);
     }
   });
+
+  it("attaches a logical Port-channel and never one of its members", () => {
+    // M10.17: the bundle survives a configuration round-trip, so binding one no
+    // longer loses the binding on save. The member is refused because the bundle
+    // is already the attachment — accepting both would give one CE two segments.
+    const leaf = leafWithPorts();
+    leaf.addChannelGroupMember(1, "Gi0/1", "active");
+    leaf.addChannelGroupMember(1, "Gi0/2", "active");
+    leaf.configureEthernetSegment({
+      id: "ES-CE1", esi: ESI, redundancyMode: "single-active", interfaces: ["Port-channel1"],
+    });
+    expect(leaf.ethernetSegmentConfigurations()[0]?.interfaces).toEqual(["Port-channel1"]);
+    // Every member resolves to the bundle's segment, so forwarding and learning
+    // see one attachment rather than one per cable.
+    expect(leaf.ethernetSegmentIdOf("Gi0/1")).toBe(ESI);
+    expect(leaf.ethernetSegmentIdOf("Gi0/2")).toBe(ESI);
+    expect(() => leaf.configureEthernetSegment({
+      id: "ES-B", esi: "0000:0000:0000:0000:0002", redundancyMode: "single-active", interfaces: ["Gi0/1"],
+    })).toThrow(/cannot carry an Ethernet Segment/);
+  });
+
+  it("accepts a trunk Port-channel but still refuses a trunk access port", () => {
+    const leaf = leafWithPorts();
+    leaf.addChannelGroupMember(1, "Gi0/1", "on");
+    leaf.setTrunk("Port-channel1", { nativeVlan: VLAN, allowedVlans: [VLAN] });
+    expect(() => leaf.configureEthernetSegment({
+      id: "ES-CE1", esi: ESI, redundancyMode: "single-active", interfaces: ["Port-channel1"],
+    })).not.toThrow();
+    leaf.setTrunk("Gi0/2", { nativeVlan: VLAN, allowedVlans: [VLAN] });
+    expect(() => leaf.configureEthernetSegment({
+      id: "ES-B", esi: "0000:0000:0000:0000:0002", redundancyMode: "single-active", interfaces: ["Gi0/2"],
+    })).toThrow(/cannot carry an Ethernet Segment/);
+  });
+
+  it("keeps a bundle description as metadata that changes no behaviour", () => {
+    const leaf = leafWithPorts();
+    leaf.addChannelGroupMember(1, "Gi0/1", "active");
+    const before = leaf.etherChannelSummaries().map((row) => `${row.name}:${row.status}:${row.activeMembers.join(",")}`);
+    leaf.etherChannel.setDescription(1, "  CE-DUAL-HOMED  ");
+    expect(leaf.etherChannelConfigurations()[0]?.description).toBe("CE-DUAL-HOMED");
+    // Negotiation, membership and bundle state are untouched by metadata.
+    expect(leaf.etherChannelSummaries().map((row) => `${row.name}:${row.status}:${row.activeMembers.join(",")}`))
+      .toEqual(before);
+    // An empty description clears it rather than storing whitespace.
+    leaf.etherChannel.setDescription(1, "   ");
+    expect(leaf.etherChannelConfigurations()[0]?.description).toBeUndefined();
+    expect(() => leaf.etherChannel.setDescription(9, "nope")).toThrow(/does not exist/);
+  });
 });
 
 describe("EVPN Route Type 4 and Designated Forwarder election", () => {

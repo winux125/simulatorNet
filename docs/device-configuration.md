@@ -99,6 +99,46 @@ A PC, laptop, smartphone, hub or traffic generator has no configuration file:
 those devices keep the Desktop / IP Configuration surface, and
 `supportsDeviceConfigurationText` returns false for them.
 
+### The logical Port-channel block
+
+An EtherChannel bundle is a real logical interface, so the settings that live on
+it are written down rather than inferred from a member. The L2 Switch and the L3
+Switch render the same block:
+
+```text
+interface Port-channel10
+ description CE-DUAL-HOMED
+ switchport mode trunk
+ switchport trunk native vlan 99
+ switchport trunk allowed vlan 10,20
+ ethernet-segment ES-CE1
+ port-channel min-links 2
+!
+interface Gi0/1
+ channel-group 10 mode active
+!
+```
+
+Membership is never duplicated. It stays exactly one `channel-group` line per
+member, so the bundle block and the member lines can never disagree about which
+port belongs to which bundle. A bundle block that no member ever declares
+describes a bundle that cannot exist, so it is dropped — and any Ethernet
+Segment naming it loses that attachment rather than pointing at a port the
+device does not have.
+
+Two things are deliberately **not** in the block:
+
+- **administrative state.** A bundle's is derived from its members, so
+  `shutdown` on a Port-channel is reported as unsupported rather than accepted
+  into a field nothing could apply back.
+- **`switchport trunk allowed vlan add|remove|except|none`.** Those mutate a set
+  the parser never sees whole; only the plain list is read.
+
+Before M10.17 an L3 Switch rendered no Port-channel block at all, which is
+exactly why an Ethernet Segment could not be bound to one: the binding had
+nowhere to be written down. `LabDocument → running-config → parse/apply →
+LabDocument` now preserves the bundle and its segment binding.
+
 ## The parser
 
 One parser serves the importer and the device Configuration workspace, so an

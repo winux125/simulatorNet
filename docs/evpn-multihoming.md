@@ -42,16 +42,23 @@ VTEP, an ESI names exactly one segment and an attachment belongs to at most one.
 
 ### What may carry a segment
 
-An Ethernet Segment names the port a CE hangs off, so it is an **access
-switchport**. A Loopback, an SVI, `nve1` and a routed core port are all refused.
-So is a Port-channel: an L3 Switch renders a bundle through its members'
-`channel-group` lines and has no Port-channel configuration block to record the
-binding in, so accepting one would silently lose it on save. A member port of a
-bundle is refused too — the bundle would be the attachment, not the member.
+An Ethernet Segment names the port a CE hangs off, so it is a **switchport**. A
+Loopback, an SVI, `nve1` and a routed core port are all refused. A member port of
+a bundle is refused too — the bundle is the attachment, not the member, and
+accepting both would give one CE two segments.
+
+A bare physical port must be an **access** switchport, exactly as in M10.16. A
+**Port-channel** may be access *or* trunk: a CE-facing bundle is normally
+VLAN-aware, and the Designated Forwarder is already elected per `<ESI, VLAN>`, so
+a bundle simply carries whichever VLANs it is allowed. A Port-channel became
+bindable in M10.17, once the logical bundle survived a configuration round-trip —
+before that the binding had nowhere to be written down and would have been lost
+on save. See `docs/device-configuration.md`.
 
 There is deliberately no cross-device LACP: a CE dual-attached to two leaves is
 two ordinary links joined by a shared ESI on the EVPN side, which is exactly what
-the demos build.
+the demos build. A Port-channel is an ordinary single-chassis bundle, and no
+MLAG/vPC control plane is invented to make two leaves share one.
 
 ## Route Type 4 — Ethernet Segment
 
@@ -197,7 +204,8 @@ failure → mass withdrawal → new DF → recovery is walkable one step at a ti
 
 - Single-Active only; All-Active and MAC mobility are M10.17.
 - The DF election is the modulus one; HRW and preference are not implemented.
-- A segment attaches to an access switchport, never a Port-channel.
+- A segment attaches to an access switchport or a Port-channel; a Port-channel
+  is an ordinary single-chassis bundle, never a multi-chassis one.
 - Multihoming applies to bridged L2VNIs; an L3VNI and IPv6 are out of scope.
 - There is no ESI label, no EVPN over MPLS and no Segment Routing.
 

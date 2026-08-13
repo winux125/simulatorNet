@@ -72,6 +72,12 @@ export interface EtherChannelConfiguration {
   readonly members: readonly string[];
   /** Bundle stays down below this many distributing members; default 1. */
   readonly minimumLinks?: number;
+  /**
+   * `interface Port-channel<n>` → `description`. Pure metadata that never
+   * reaches negotiation, selection or forwarding: the bundle's administrative
+   * state stays derived from its members, exactly as it was before M10.17.
+   */
+  readonly description?: string;
 }
 
 export interface EtherChannelMemberSummary {
@@ -95,6 +101,7 @@ export interface EtherChannelSummary {
   readonly mode: EtherChannelMode;
   readonly status: "up" | "down";
   readonly minimumLinks: number;
+  readonly description?: string;
   readonly members: readonly EtherChannelMemberSummary[];
   readonly activeMembers: readonly string[];
   readonly suspendedMembers: readonly string[];
@@ -142,6 +149,7 @@ interface ChannelRuntime {
   protocol: EtherChannelProtocol;
   mode: EtherChannelMode;
   minimumLinks: number;
+  description: string | undefined;
   up: boolean;
   readonly members: Map<string, MemberRuntime>;
 }
@@ -190,6 +198,7 @@ export class EtherChannelStack {
         protocol,
         mode,
         minimumLinks: 1,
+        description: undefined,
         up: false,
         members: new Map(),
       };
@@ -240,6 +249,25 @@ export class EtherChannelStack {
     this.arm();
   }
 
+  /**
+   * `interface Port-channel<n>` → `description <text>`.
+   *
+   * Metadata only: nothing in negotiation, member selection or forwarding reads
+   * it, so setting one can never change how a bundle behaves.
+   */
+  setDescription(channelId: number, description: string | undefined): void {
+    const channel = this.requireChannel(channelId);
+    const trimmed = description?.trim();
+    if (trimmed !== undefined && trimmed.length > 200) {
+      throw new ControlProtocolConfigurationError("A description may be at most 200 characters", "description");
+    }
+    channel.description = trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+  }
+
+  descriptionOf(channelId: number): string | undefined {
+    return this.channels.get(channelId)?.description;
+  }
+
   /** Persistent configuration only; negotiation runtime is never included. */
   configurations(): EtherChannelConfiguration[] {
     return [...this.channels.values()]
@@ -250,6 +278,7 @@ export class EtherChannelStack {
         mode: channel.mode,
         members: [...channel.members.keys()].sort((a, b) => a.localeCompare(b)),
         minimumLinks: channel.minimumLinks === 1 ? undefined : channel.minimumLinks,
+        description: channel.description,
       }));
   }
 
@@ -661,6 +690,7 @@ export class EtherChannelStack {
           mode: channel.mode,
           status: channel.up ? "up" : "down",
           minimumLinks: channel.minimumLinks,
+          description: channel.description,
           members,
           activeMembers: members.filter((member) => member.bundled).map((member) => member.port),
           suspendedMembers: members.filter((member) => member.state === "suspended").map((member) => member.port),

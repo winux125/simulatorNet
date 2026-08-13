@@ -10,6 +10,7 @@ import type {
   DeviceConfig,
   DeviceType,
   EtherChannelConfig,
+  EvpnConfig,
   LoopbackInterfaceConfig,
   NeighborDiscoveryConfig,
   NveInterfaceConfig,
@@ -93,6 +94,17 @@ function spanningTreeFrom(
   };
 }
 
+/**
+ * Bundles, from the members that declare them and the block that configures
+ * them.
+ *
+ * Membership comes from `channel-group` alone and the logical block supplies
+ * only what lives on the bundle itself, so the two can never disagree about who
+ * belongs to what. A `interface Port-channel<n>` block whose members were never
+ * declared cannot be represented — `members` is non-empty by contract — so it is
+ * dropped rather than turned into a bundle with no ports, exactly as a tunnel
+ * that names an undefined profile loses the binding.
+ */
 function etherChannelsFrom(applied: ImportedDeviceConfiguration): EtherChannelConfig[] {
   const groups = new Map<number, EtherChannelConfig>();
   for (const iface of applied.interfaces) {
@@ -107,7 +119,78 @@ function etherChannelsFrom(applied: ImportedDeviceConfiguration): EtherChannelCo
     }
     groups.set(group.id, { channelId: group.id, mode: group.mode, members: [iface.id] });
   }
+  for (const block of applied.portChannels) {
+    const channel = groups.get(block.channelId);
+    if (!channel) continue;
+    groups.set(block.channelId, {
+      ...channel,
+      description: block.description,
+      minimumLinks: block.minimumLinks,
+      switchport: block.switchportMode === undefined
+        ? undefined
+        : {
+            mode: block.switchportMode,
+            accessVlan: block.accessVlan ?? 1,
+            nativeVlan: block.nativeVlan ?? 1,
+            allowedVlans: block.switchportMode === "trunk" ? block.allowedVlans : undefined,
+          },
+    });
+  }
   return [...groups.values()].sort((a, b) => a.channelId - b.channelId);
+}
+
+/** Bundles whose members the mapped device actually has; the rest cannot exist. */
+function presentEtherChannels(
+  applied: ImportedDeviceConfiguration,
+  interfaceIds: readonly string[],
+): EtherChannelConfig[] {
+  return etherChannelsFrom(applied)
+    // Members must exist on the mapped device, or the lab would not open.
+    .map((channel) => ({ ...channel, members: channel.members.filter((member) => interfaceIds.includes(member)) }))
+    .filter((channel) => channel.members.length > 0);
+}
+
+/** Every bundle a configuration actually declares, for reference checking. */
+function portChannelIdsOf(channels: readonly EtherChannelConfig[]): ReadonlySet<string> {
+  return new Set(channels.map((channel) => `Port-channel${channel.channelId}`));
+}
+
+/**
+ * Every VLAN a switchport names, so the rebuilt VLAN database contains the
+ * VLANs its own trunks carry rather than referencing ones it never declared.
+ */
+function switchportVlansOf(applied: ImportedDeviceConfiguration, into: Set<number>): void {
+  const targets = [...applied.interfaces, ...applied.portChannels];
+  for (const target of targets) {
+    if (target.accessVlan !== undefined) into.add(target.accessVlan);
+    if (target.switchportMode !== "trunk") continue;
+    if (target.nativeVlan !== undefined) into.add(target.nativeVlan);
+    for (const vlanId of target.allowedVlans ?? []) into.add(vlanId);
+  }
+}
+
+/**
+ * The EVPN block, with every Ethernet Segment attachment resolved.
+ *
+ * An attachment naming an interface the mapped device does not have — or a
+ * Port-channel no member ever declared — loses the binding rather than inventing
+ * a port, exactly as a tunnel that names an undefined profile does. A segment
+ * left with no attachment at all is dropped: it could never come up, and a
+ * document that carries one would only fail semantic validation later.
+ */
+function evpnFrom(
+  applied: ImportedDeviceConfiguration,
+  interfaceIds: readonly string[],
+  portChannelIds: ReadonlySet<string>,
+): EvpnConfig | undefined {
+  const evpn = applied.evpn;
+  const segments = evpn?.ethernetSegments;
+  if (!evpn || segments === undefined) return evpn;
+  const known = new Set([...interfaceIds, ...portChannelIds]);
+  const resolved = segments
+    .map((segment) => ({ ...segment, interfaces: segment.interfaces.filter((name) => known.has(name)) }))
+    .filter((segment) => segment.interfaces.length > 0);
+  return { ...evpn, ethernetSegments: resolved.length > 0 ? resolved : undefined };
 }
 
 /**
@@ -483,9 +566,7 @@ export function buildDeviceConfigFromIos(
   if (deviceType === "l3-switch") {
     const vlans = applied.vlans;
     const knownVlans = new Set<number>([1, ...vlans.map((vlan) => vlan.id)]);
-    for (const iface of applied.interfaces) {
-      if (iface.accessVlan !== undefined) knownVlans.add(iface.accessVlan);
-    }
+    switchportVlansOf(applied, knownVlans);
     // An SVI is a VLAN interface, so declaring one declares the VLAN it routes
     // for; without this the rebuilt configuration would reference a VLAN that
     // the VLAN database never contained.
@@ -503,6 +584,7 @@ export function buildDeviceConfigFromIos(
     const l3Routes = applied.staticRoutes.filter((route) =>
       isNetworkAddress(route.network, route.prefixLength)
       && l3Connected.some((iface) => inSubnet(route.nextHop, iface.address, iface.prefixLength)));
+    const l3Channels = presentEtherChannels(applied, interfaceIds);
     return {
       droppedRoutes: applied.staticRoutes.length - l3Routes.length,
       config: {
@@ -530,7 +612,8 @@ export function buildDeviceConfigFromIos(
             description: iface?.description,
             mode: iface?.switchportMode ?? "access",
             accessVlan: iface?.accessVlan ?? 1,
-            nativeVlan: 1,
+            nativeVlan: iface?.nativeVlan ?? 1,
+            allowedVlans: iface?.switchportMode === "trunk" ? iface.allowedVlans : undefined,
           };
         }),
         svis,
@@ -544,7 +627,7 @@ export function buildDeviceConfigFromIos(
         ipv6AclBindings: ipv6BindingsFrom(applied),
         qos: qosFrom(applied, interfaceIds),
         spanningTree: spanningTreeFrom(applied, knownVlans),
-        etherChannels: etherChannelsFrom(applied),
+        etherChannels: l3Channels,
         discovery: discoveryFrom(applied),
         loopbacks: loopbacksFrom(applied),
         ospf: ospfFrom(applied),
@@ -553,7 +636,7 @@ export function buildDeviceConfigFromIos(
         // The VTEP is an L3 Switch capability, so the overlay is mapped only
         // here; a Router or an L2 Switch never receives one.
         nve: nveFrom(applied, knownVlans),
-        evpn: applied.evpn,
+        evpn: evpnFrom(applied, interfaceIds, portChannelIdsOf(l3Channels)),
         // Tenant VRFs travel with the VTEP: an L3VNI is meaningless without the
         // routing context it transports.
         vrfs: applied.vrfs.length > 0 ? applied.vrfs : undefined,
@@ -587,13 +670,8 @@ export function buildDeviceConfigFromIos(
   if (deviceType === "l2-switch") {
     const vlans = applied.vlans.length > 0 ? applied.vlans : [];
     const knownVlans = new Set<number>([1, ...vlans.map((vlan) => vlan.id)]);
-    for (const iface of applied.interfaces) {
-      if (iface.accessVlan !== undefined) knownVlans.add(iface.accessVlan);
-    }
-    const channels = etherChannelsFrom(applied)
-      // Members must exist on the mapped device, or the lab would not open.
-      .map((channel) => ({ ...channel, members: channel.members.filter((member) => interfaceIds.includes(member)) }))
-      .filter((channel) => channel.members.length > 0);
+    switchportVlansOf(applied, knownVlans);
+    const channels = presentEtherChannels(applied, interfaceIds);
     return {
       droppedRoutes: 0,
       config: {
@@ -605,7 +683,15 @@ export function buildDeviceConfigFromIos(
         })),
         interfaces: interfaceIds.map((id) => {
           const iface = byId.get(id);
-          return { id, shutdown: iface?.shutdown ?? false, description: iface?.description, mode: iface?.switchportMode ?? "access", accessVlan: iface?.accessVlan ?? 1, nativeVlan: 1 };
+          return {
+            id,
+            shutdown: iface?.shutdown ?? false,
+            description: iface?.description,
+            mode: iface?.switchportMode ?? "access",
+            accessVlan: iface?.accessVlan ?? 1,
+            nativeVlan: iface?.nativeVlan ?? 1,
+            allowedVlans: iface?.switchportMode === "trunk" ? iface.allowedVlans : undefined,
+          };
         }),
         spanningTree: spanningTreeFrom(applied, knownVlans),
         etherChannels: channels,

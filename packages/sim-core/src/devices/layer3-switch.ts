@@ -1202,18 +1202,23 @@ export class Layer3Switch extends L2Switch {
   /**
    * Whether an attachment may carry an Ethernet Segment.
    *
-   * A segment names the port a CE hangs off, so it is an access switchport —
-   * never a Loopback, an SVI, `nve1` or a routed core port. A Port-channel is
-   * deliberately refused: an L3 Switch has no Port-channel configuration block
-   * to record the binding in, so accepting one would silently lose it on save.
-   * Nor is a bundled member accepted, because the bundle is the attachment.
+   * A segment names the port a CE hangs off, so it is a switchport — never a
+   * Loopback, an SVI, `nve1` or a routed core port. Nor is a *bundled member*
+   * accepted: the bundle is the attachment, and accepting both would give one
+   * CE two segments.
+   *
+   * A bare physical port stays the access port M10.16 defined. A Port-channel
+   * may also be a trunk, because a CE-facing bundle is normally VLAN-aware and
+   * the election is already per `<ESI, VLAN>` — it became bindable in M10.17,
+   * once the logical bundle survived a configuration round-trip.
    */
   private attachmentEligible(name: string): boolean {
-    if (name === NVE_INTERFACE_ID || /^(Loopback|Vlan|Port-channel)/iu.test(name)) return false;
+    if (name === NVE_INTERFACE_ID || /^(Loopback|Vlan)/iu.test(name)) return false;
     if (!this.attachmentExists(name)) return false;
     if (this.routedPorts.has(name)) return false;
     if (this.etherChannel.channelOf(name) !== undefined) return false;
-    return this.portConfigOf(name).mode === "access";
+    const mode = this.portConfigOf(name).mode;
+    return mode === "access" || (mode === "trunk" && parsePortChannelName(name) !== undefined);
   }
 
   /** The VLANs one attachment carries that are actually mapped to an L2VNI. */

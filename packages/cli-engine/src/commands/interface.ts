@@ -1,4 +1,4 @@
-import { loopbackName, tunnelName } from "@sim/sim-core";
+import { loopbackName, parsePortChannelName, tunnelName } from "@sim/sim-core";
 import { InvalidModeError, ValidationError } from "../errors/errors";
 import type { CommandSpec, SessionApi } from "../types";
 import {
@@ -47,7 +47,13 @@ export const interfaceCommands: CommandSpec[] = [
       const ctx = requireCtx(s);
       if (ctx.sviVlan !== undefined && isLayer3Switch(s.device)) s.device.setSviDescription(ctx.sviVlan, p.text!);
       else if (ctx.sviVlan !== undefined && isSwitch(s.device)) s.device.setManagementSviDescription(ctx.sviVlan, p.text!);
-      else s.device.getInterface(ctx.physical)?.setDescription(p.text!);
+      else {
+        // A Port-channel has no cable, so it is not in the physical interface
+        // map: its description lives on the bundle itself and is pure metadata.
+        const channelId = isSwitch(s.device) ? parsePortChannelName(ctx.physical) : undefined;
+        if (channelId !== undefined && isSwitch(s.device)) s.device.etherChannel.setDescription(channelId, p.text!);
+        else s.device.getInterface(ctx.physical)?.setDescription(p.text!);
+      }
     },
   },
   {

@@ -570,32 +570,93 @@ function validateEthernetSegments(
           `Interface '${name}' already belongs to Ethernet Segment '${owner}'`);
       }
       attachments.set(name, segment.id);
-      const iface = config.interfaces.find((entry) => entry.id === name);
-      if (!iface) {
-        // A Port-channel lands here too: an L3 Switch has no Port-channel
-        // configuration block, so a binding on one could never be saved.
+      const attachment = resolveSegmentAttachment(config, name);
+      if (!attachment) {
         fail("unknown-ethernet-segment-attachment", attachmentPath,
-          `Ethernet Segment '${segment.id}' names interface '${name}', which is not an access switchport on this device`);
+          `Ethernet Segment '${segment.id}' names interface '${name}', which is not a switchport on this device`);
+        return;
       }
-      // A segment attaches a CE, so it lives on an access switchport or a
-      // Port-channel — never a routed core port, a Loopback, an SVI or nve1.
-      if (iface && iface.mode !== "access") {
+      // A segment attaches a CE, so it lives on a switchport — never a routed
+      // core port, a Loopback, an SVI or nve1. A bare physical port stays the
+      // access port M10.16 defined; a Port-channel may also be a trunk, because
+      // a CE-facing bundle is normally VLAN-aware and the Designated Forwarder
+      // is already elected per `<ESI, VLAN>`.
+      if (attachment.mode !== "access" && !(attachment.bundle && attachment.mode === "trunk")) {
         fail("invalid-ethernet-segment-attachment", attachmentPath,
-          `Interface '${name}' must be an access switchport to carry an Ethernet Segment`);
+          `Interface '${name}' must be an access switchport${attachment.bundle ? " or a trunk Port-channel" : ""} to carry an Ethernet Segment`);
+        return;
       }
-      if (iface && iface.mode === "access" && !mappedVlans.has(iface.accessVlan)) {
-        fail("ethernet-segment-vlan-not-mapped", attachmentPath,
-          `Ethernet Segment '${segment.id}' attaches VLAN ${iface.accessVlan}, which maps to no VNI`);
+      // A bundled member is never the attachment: the bundle is, and accepting
+      // both would give one CE two segments.
+      if (attachment.memberOf !== undefined) {
+        fail("invalid-ethernet-segment-attachment", attachmentPath,
+          `Interface '${name}' belongs to Port-channel${attachment.memberOf}; name the bundle instead`);
+        return;
       }
-      if (iface && iface.mode === "access") {
-        const vni = mappedVlans.get(iface.accessVlan);
+      for (const vlanId of attachment.vlanIds) {
+        if (!mappedVlans.has(vlanId)) {
+          // A trunk carries many VLANs and only some of them need be stretched,
+          // so an unmapped one is only an error when *none* of them maps.
+          if (attachment.mode === "trunk") continue;
+          fail("ethernet-segment-vlan-not-mapped", attachmentPath,
+            `Ethernet Segment '${segment.id}' attaches VLAN ${vlanId}, which maps to no VNI`);
+          continue;
+        }
+        const vni = mappedVlans.get(vlanId);
         if (vni !== undefined && !evpnVnis.has(vni)) {
           fail("ethernet-segment-vni-not-defined", attachmentPath,
             `Ethernet Segment '${segment.id}' serves VNI ${vni}, which has no 'evpn vni ${vni} l2' block`);
         }
       }
+      if (attachment.mode === "trunk" && !attachment.vlanIds.some((vlanId) => mappedVlans.has(vlanId))) {
+        fail("ethernet-segment-vlan-not-mapped", attachmentPath,
+          `Ethernet Segment '${segment.id}' attaches '${name}', whose VLANs map to no VNI`);
+      }
     });
   });
+}
+
+/**
+ * The switchport an Ethernet Segment names: a physical port or the logical
+ * bundle above it.
+ *
+ * A Port-channel is resolved through `etherChannels` rather than the physical
+ * interface list, because a bundle has no cable — that is exactly the reference
+ * M10.17 made persistable.
+ */
+function resolveSegmentAttachment(
+  config: Layer3SwitchDeviceConfig,
+  name: string,
+): { mode: "access" | "trunk" | "routed"; vlanIds: number[]; bundle: boolean; memberOf?: number } | undefined {
+  const channelId = /^Port-channel(\d+)$/u.exec(name)?.[1];
+  if (channelId !== undefined) {
+    const channel = (config.etherChannels ?? []).find((entry) => entry.channelId === Number(channelId));
+    if (!channel) return undefined;
+    // A bundle with no configuration block of its own inherits its first
+    // member's switchport, exactly as the engine resolves it.
+    const member = config.interfaces.find((entry) => entry.id === channel.members[0]);
+    const reference = channel.switchport
+      ?? (member === undefined || member.mode === "routed" ? undefined : member);
+    const mode = reference?.mode ?? (member?.mode === "routed" ? "routed" : "access");
+    if (mode === "routed") return { mode: "routed", vlanIds: [], bundle: true };
+    return { mode, vlanIds: vlansCarriedBy(reference, mode), bundle: true };
+  }
+  const iface = config.interfaces.find((entry) => entry.id === name);
+  if (!iface) return undefined;
+  const memberOf = (config.etherChannels ?? []).find((entry) => entry.members.includes(name))?.channelId;
+  if (iface.mode === "routed") return { mode: "routed", vlanIds: [], bundle: false, memberOf };
+  return { mode: iface.mode, vlanIds: vlansCarriedBy(iface, iface.mode), bundle: false, memberOf };
+}
+
+/** The VLANs one switchport carries; `undefined` allowed VLANs means "all". */
+function vlansCarriedBy(
+  port: { accessVlan?: number; nativeVlan?: number; allowedVlans?: readonly number[] } | undefined,
+  mode: "access" | "trunk",
+): number[] {
+  if (mode === "access") return [port?.accessVlan ?? 1];
+  const vlans = new Set<number>(port?.allowedVlans ?? []);
+  vlans.add(port?.nativeVlan ?? 1);
+  return [...vlans].sort((a, b) => a - b);
 }
 
 /**

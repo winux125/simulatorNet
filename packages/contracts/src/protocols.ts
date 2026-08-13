@@ -83,6 +83,12 @@ export const EtherChannelConfigSchema = z.object({
   /** Physical member interfaces; the topology keeps every cable. */
   members: z.array(z.string().min(1)).min(1).max(8),
   minimumLinks: z.number().int().min(1).max(8).optional(),
+  /**
+   * `interface Port-channel<n>` → `description`. Pure metadata: the bundle's
+   * administrative state is still derived from its members, so there is no
+   * `shutdown` field here — a persisted flag nothing reads would be a lie.
+   */
+  description: z.string().max(200).optional(),
   switchport: PortChannelSwitchportConfigSchema.optional(),
 }).strict();
 export type EtherChannelConfig = z.infer<typeof EtherChannelConfigSchema>;

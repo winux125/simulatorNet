@@ -70,6 +70,9 @@ export function applyEtherChannelConfiguration(
     if (channel.minimumLinks !== undefined) {
       device.etherChannel.setMinimumLinks(channel.channelId, channel.minimumLinks);
     }
+    if (channel.description !== undefined) {
+      device.etherChannel.setDescription(channel.channelId, channel.description);
+    }
     const switchport = channel.switchport;
     if (!switchport) continue;
     const logical = portChannelName(channel.channelId);
@@ -444,6 +447,7 @@ export function serializeEtherChannelConfiguration(device: L2Switch): EtherChann
       mode: channel.mode,
       members: [...channel.members],
       minimumLinks: channel.minimumLinks,
+      description: channel.description,
       switchport: configured
         ? {
             mode: switchport.mode,

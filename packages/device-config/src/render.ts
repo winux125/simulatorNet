@@ -26,6 +26,7 @@ import {
   type ConsoleAccessConfiguration,
   type DeviceConfig,
   type DeviceType,
+  type EtherChannelConfig,
   type EvpnConfig,
   type VrfConfig,
   type FirewallDeviceConfig,
@@ -1016,16 +1017,7 @@ function renderSwitch(config: SwitchDeviceConfig): string[] {
     out.push(`vlan ${vlan.id}`, ` name ${vlan.name}`, "!");
   }
   out.push(...spanningTreeLines(config.spanningTree));
-  for (const channel of sorted(config.etherChannels, (a, b) => a.channelId - b.channelId)) {
-    out.push(`interface Port-channel${channel.channelId}`);
-    if (channel.switchport) {
-      out.push(` switchport mode ${channel.switchport.mode}`);
-      if (channel.switchport.mode === "access") out.push(` switchport access vlan ${channel.switchport.accessVlan}`);
-      else out.push(` switchport trunk native vlan ${channel.switchport.nativeVlan}`);
-    }
-    if (channel.minimumLinks !== undefined) out.push(` port-channel min-links ${channel.minimumLinks}`);
-    out.push("!");
-  }
+  out.push(...portChannelLines(config.etherChannels, undefined));
   const channelOf = new Map<string, { channelId: number; mode: string }>();
   for (const channel of config.etherChannels ?? []) {
     for (const member of channel.members) channelOf.set(member, { channelId: channel.channelId, mode: channel.mode });
@@ -1057,6 +1049,37 @@ function renderSwitch(config: SwitchDeviceConfig): string[] {
   out.push(...remoteAccessLines(config.remoteAccess));
   out.push(...snmpLines(config.snmp));
   out.push("end");
+  return out;
+}
+
+/**
+ * `interface Port-channel<n>`: the logical bundle's own configuration block.
+ *
+ * The bundle is a real logical interface, so the settings that live on it —
+ * description, switchport mode, access/native/allowed VLANs, minimum links and,
+ * on an L3 Switch, the Ethernet Segment it attaches — are rendered here rather
+ * than inferred from a member. Membership itself is never duplicated: it stays
+ * exactly one `channel-group` line per member, so the two models can never
+ * disagree about which port belongs to which bundle.
+ *
+ * A bundle's administrative state is deliberately absent. It is derived from its
+ * members, so a rendered `shutdown` would be a value nothing could apply back.
+ */
+function portChannelLines(
+  channels: readonly EtherChannelConfig[] | undefined,
+  evpn: EvpnConfig | undefined,
+): string[] {
+  const out: string[] = [];
+  for (const channel of sorted(channels, (a, b) => a.channelId - b.channelId)) {
+    const name = `Port-channel${channel.channelId}`;
+    out.push(`interface ${name}`);
+    if (channel.description) out.push(` description ${channel.description}`);
+    if (channel.switchport) out.push(...switchportLines(channel.switchport));
+    const segment = ethernetSegmentOf(evpn, name);
+    if (segment !== undefined) out.push(` ethernet-segment ${segment}`);
+    if (channel.minimumLinks !== undefined) out.push(` port-channel min-links ${channel.minimumLinks}`);
+    out.push("!");
+  }
   return out;
 }
 
@@ -1097,6 +1120,9 @@ function renderLayer3Switch(config: Layer3SwitchDeviceConfig): string[] {
   out.push(...qosLines(config.qos));
   // A segment has to be defined before an interface can join it.
   out.push(...ethernetSegmentLines(config.evpn));
+  // The bundle precedes its members: a member inherits the Port-channel's
+  // switchport configuration, and an Ethernet Segment may name the bundle.
+  out.push(...portChannelLines(config.etherChannels, config.evpn));
   const channelOf = new Map<string, { channelId: number; mode: string }>();
   for (const channel of config.etherChannels ?? []) {
     for (const member of channel.members) channelOf.set(member, { channelId: channel.channelId, mode: channel.mode });
