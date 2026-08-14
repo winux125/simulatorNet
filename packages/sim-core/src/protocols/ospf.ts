@@ -149,6 +149,13 @@ export interface OspfHost {
   ospfRoutesChanged(): void;
 }
 
+/** One LSA instance sent to a neighbour and not yet acknowledged. */
+interface UnacknowledgedLsa {
+  /** Sequence of the instance we are waiting for; a newer one starts over. */
+  sequence: number;
+  attempts: number;
+}
+
 interface NeighborRuntime {
   routerId: Ipv4;
   address: Ipv4;
@@ -162,7 +169,8 @@ interface NeighborRuntime {
   master: boolean;
   ddSequence: number;
   pendingRequests: string[];
-  retransmissions: number;
+  /** Retransmission list, keyed by LSA identity and bounded by the LSDB. */
+  unacknowledged: Map<string, UnacknowledgedLsa>;
   rejectionReason: string | undefined;
 }
 
@@ -193,6 +201,8 @@ export class OspfProcess {
   private sequence = 0x80000001;
   private spfRuns = 0;
   private lastSpfAtNs: number | undefined;
+  /** Fingerprint of the inputs the last SPF walk actually read. */
+  private lastSpfInputs: string | undefined;
   /** Virtual time of the most recent tick, used to freeze the dead timers. */
   private lastActiveAtNs: number | undefined;
   private readonly activity: ProtocolActivity;
@@ -396,6 +406,7 @@ export class OspfProcess {
     this.sequence = 0x80000001;
     this.spfRuns = 0;
     this.lastSpfAtNs = undefined;
+    this.lastSpfInputs = undefined;
     this.lastActiveAtNs = undefined;
     this.activity.resetBudget();
     this.host.ospfRoutesChanged();
@@ -625,7 +636,7 @@ export class OspfProcess {
         master: false,
         ddSequence: 0,
         pendingRequests: [],
-        retransmissions: 0,
+        unacknowledged: new Map(),
         rejectionReason: undefined,
       };
       this.neighbors.set(key, neighbor);
@@ -951,7 +962,12 @@ export class OspfProcess {
   private onLinkStateAck(packet: OspfLinkStateAckPacket, interfaceId: string): void {
     const neighbor = this.neighbors.get(neighborKey(interfaceId, packet.routerId));
     if (!neighbor) return;
-    neighbor.retransmissions = 0;
+    for (const header of packet.headers) {
+      const key = lsaKey(header.type, header.linkStateId, header.advertisingRouter);
+      // Only the acknowledged instance leaves the list; an older acknowledgement
+      // must not clear a newer advertisement that is still in flight.
+      if (neighbor.unacknowledged.get(key)?.sequence === header.sequence) neighbor.unacknowledged.delete(key);
+    }
     this.trace("ospf-lsa-acknowledged", {
       interface: interfaceId,
       neighborRouterId: packet.routerId,
@@ -985,10 +1001,33 @@ export class OspfProcess {
     for (const neighbor of [...this.neighbors.values()].sort(byNeighborOrder)) {
       if (neighbor.state !== "full") continue;
       if (neighbor.interfaceId === exceptInterfaceId) continue;
-      if (neighbor.retransmissions >= MAXIMUM_LSA_RETRANSMISSIONS) continue;
-      neighbor.retransmissions++;
-      this.sendLinkStateUpdate(neighbor.interfaceId, neighbor.address, lsas);
+      const due = lsas.filter((lsa) => this.admitToRetransmissionList(neighbor, lsa));
+      if (due.length === 0) continue;
+      this.sendLinkStateUpdate(neighbor.interfaceId, neighbor.address, due);
     }
+  }
+
+  /**
+   * The retransmission bound applies to *one LSA*, never to distinct LSAs.
+   *
+   * A neighbour that stops acknowledging must not keep us sending for ever, but
+   * an advertisement the neighbour has never been offered is not a
+   * retransmission: dropping it leaves a permanent hole in its database,
+   * because nothing here refreshes an LSA periodically and duplicate
+   * suppression stops it from ever being flooded again. A newer instance of the
+   * same LSA starts the count over, so a re-originated advertisement is always
+   * delivered.
+   */
+  private admitToRetransmissionList(neighbor: NeighborRuntime, lsa: OspfLsa): boolean {
+    const key = lsaKeyOf(lsa);
+    const pending = neighbor.unacknowledged.get(key);
+    if (pending === undefined || pending.sequence !== lsa.sequence) {
+      neighbor.unacknowledged.set(key, { sequence: lsa.sequence, attempts: 1 });
+      return true;
+    }
+    if (pending.attempts >= MAXIMUM_LSA_RETRANSMISSIONS) return false;
+    pending.attempts++;
+    return true;
   }
 
   private isNewer(header: OspfLsaHeader): boolean {
@@ -1117,9 +1156,29 @@ export class OspfProcess {
       sequence: finalLsa.sequence,
       links: finalLsa.type === "router" ? finalLsa.links.length : finalLsa.attachedRouters.length,
     });
-    for (const neighbor of this.neighbors.values()) neighbor.retransmissions = 0;
     this.floodLsas([finalLsa]);
     this.arm();
+  }
+
+  /**
+   * Hand a neighbour the whole database the moment the adjacency reaches Full.
+   *
+   * The database description exchange runs *before* Full, so every LSA this
+   * router originates *because of* that adjacency — its own Router LSA and the
+   * segment's Network LSA — is created afterwards, and ordinary flooding skips
+   * a neighbour that is still synchronizing. On a router that brings several
+   * segments up in one activity window, each later neighbour therefore missed
+   * the Network LSAs of the earlier ones for good, and SPF could not expand a
+   * transit segment whose Network LSA it did not hold.
+   *
+   * One bounded update per Full transition closes that window. The receiver's
+   * duplicate suppression discards everything it already holds, so nothing is
+   * re-flooded and the exchange terminates.
+   */
+  private synchronizeDatabase(neighbor: NeighborRuntime): void {
+    const lsas = this.sortedLsas();
+    if (lsas.length === 0) return;
+    this.sendLinkStateUpdate(neighbor.interfaceId, neighbor.address, lsas);
   }
 
   private sortedLsas(): OspfLsa[] {
@@ -1132,13 +1191,45 @@ export class OspfProcess {
   // --- SPF ----------------------------------------------------------------
 
   /**
+   * Everything the SPF walk reads, in one canonical string.
+   *
+   * SPF is a pure function of the database plus the local next-hop inputs, so a
+   * tick that changed none of them can only rebuild the identical tree. The
+   * fingerprint is derived from the very values the walk reads rather than from
+   * a dirty flag somebody has to remember to set — which is what stops a skipped
+   * run from ever hiding a real change.
+   */
+  private spfInputFingerprint(): string {
+    const parts: string[] = [this.activeRouterId ?? ""];
+    for (const lsa of this.sortedLsas()) {
+      parts.push(`l|${lsa.type}|${lsa.linkStateId}|${lsa.advertisingRouter}|${lsa.sequence}|${lsa.checksum}`);
+    }
+    for (const iface of this.enabledInterfaces()) {
+      const runtime = this.interfaceRuntime.get(iface.id);
+      parts.push(`i|${iface.id}|${iface.address ?? ""}|${iface.operationalUp ? 1 : 0}|`
+        + `${runtime?.designatedRouter ?? ""}`);
+      for (const neighbor of this.neighborsOn(iface.id)) {
+        parts.push(`n|${neighbor.routerId}|${neighbor.address}|${neighbor.state}`);
+      }
+    }
+    return parts.join("\n");
+  }
+
+  /**
    * Dijkstra over the link-state database. Candidates are always taken in a
    * deterministic order — total cost, then advertising router id, then the
    * stable interface identifier — so the same LSDB always yields the same tree.
+   *
+   * A run whose inputs are unchanged is skipped: it would install the same
+   * routes, and charging the per-operation budget for it is what put a lab of
+   * nine routers within a handful of runs of `maximumSpfRunsPerOperation`.
    */
   private runSpf(): void {
     const routerId = this.activeRouterId;
     if (routerId === undefined) return;
+    const inputs = this.spfInputFingerprint();
+    if (inputs === this.lastSpfInputs) return;
+    this.lastSpfInputs = inputs;
     this.charge("spfRuns");
     this.spfRuns++;
     this.lastSpfAtNs = this.engine.now();
@@ -1395,7 +1486,10 @@ export class OspfProcess {
     // so a restarted or re-cabled neighbour is picked up without waiting.
     this.arm();
     if (state === "full") {
+      // Originate first: the neighbour must also receive the Network LSA that
+      // this very adjacency has just brought into existence.
       this.originateLsas();
+      this.synchronizeDatabase(neighbor);
       this.runSpf();
     }
   }

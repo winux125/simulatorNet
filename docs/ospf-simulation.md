@@ -121,12 +121,29 @@ A point-to-point segment has no DR or BDR and both ends become fully adjacent.
 Router LSAs and Network LSAs carry a link-state id, advertising router, sequence
 number, age derived from virtual time, a deterministic logical checksum over the
 body, and their links or attached routers. A duplicate or older LSA is
-suppressed; retransmission is bounded.
+suppressed.
+
+The database description exchange runs *before* an adjacency reaches Full, so
+the Router LSA and Network LSA the adjacency itself creates only exist
+afterwards. A neighbour reaching Full is therefore handed the current database
+once; duplicate suppression makes that idempotent, so nothing is re-flooded.
+Without it a router that brings several segments up together leaves every later
+neighbour permanently short of the earlier segments' Network LSAs, and SPF
+cannot expand a transit segment whose Network LSA it does not hold.
+
+Retransmission is bounded **per LSA instance**, never per flood. A neighbour
+that stops acknowledging stops costing repeat updates, but an advertisement the
+neighbour has never been offered is not a retransmission: nothing here refreshes
+an LSA periodically, so dropping it would leave a permanent hole. A newer
+instance of the same LSA starts the count over.
 
 SPF is a deterministic Dijkstra. Candidates are always taken in the same order —
 total cost, then advertising router id, then the stable interface identifier — so
 the same database always produces the same tree and the same next hops. `Map`
-insertion order never affects the result.
+insertion order never affects the result. A run whose inputs are unchanged is
+skipped, so `show ip ospf` counts real computations; the guard is a fingerprint
+of the values the walk reads rather than a dirty flag, so it cannot hide a
+change.
 
 ## Route selection
 

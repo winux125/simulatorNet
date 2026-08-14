@@ -385,17 +385,20 @@ describe("OSPF link-state database and SPF", () => {
   it("suppresses a duplicate LSA", () => {
     const { engine, r1 } = buildChain();
     engine.runUntilIdle();
-    const before = r1.ospf.database().length;
+    const identity = (): string[] => r1.ospf.database()
+      .map((entry) => `${entry.type}/${entry.linkStateId}/${entry.advertisingRouter}/${entry.sequence}/${entry.checksum}`);
+    const before = identity();
     const spfBefore = r1.ospf.overview().spfRuns;
 
     r1.ospf.arm();
     engine.runUntilIdle();
 
-    expect(r1.ospf.database().length).toBe(before);
-    // The LSDB did not change, so no new LSA was flooded on its account.
-    expect(r1.ospf.database().map((entry) => entry.sequence))
-      .toEqual(r1.ospf.database().map((entry) => entry.sequence));
-    expect(r1.ospf.overview().spfRuns).toBeGreaterThan(spfBefore);
+    // The LSDB did not change, so no new LSA was flooded on its account — and
+    // an unchanged database yields an unchanged tree, so SPF is not re-run
+    // either. Charging the budget for an identical walk is what left a larger
+    // fabric within a few runs of `maximumSpfRunsPerOperation`.
+    expect(identity()).toEqual(before);
+    expect(r1.ospf.overview().spfRuns).toBe(spfBefore);
   });
 
   it("keeps hello and dead intervals in virtual nanoseconds", () => {
