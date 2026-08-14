@@ -1402,81 +1402,125 @@ export class OspfProcess {
     this.lastSpfAtNs = this.engine.now();
     this.trace("ospf-spf-started", { routerId, lsaCount: this.lsdb.size });
 
+    /**
+     * The tree holds both kinds of vertex the database describes. A transit
+     * segment is a vertex in its own right — that is how routers on the far
+     * side of it are reached, and it is also the only place its own prefix can
+     * come from.
+     */
     interface Vertex {
-      readonly routerId: Ipv4;
+      readonly kind: "router" | "network";
+      /** Router id for a router; the designated router's address for a network. */
+      readonly id: Ipv4;
       readonly cost: number;
       readonly nextHop: Ipv4 | undefined;
       readonly interfaceId: string | undefined;
     }
+    const vertexKey = (kind: Vertex["kind"], id: Ipv4): string => `${kind}|${id}`;
+
     const routerLsas = new Map<Ipv4, OspfLsa>();
+    const networkLsas = new Map<Ipv4, OspfLsa>();
     for (const lsa of this.sortedLsas()) {
       if (lsa.type === "router") routerLsas.set(lsa.linkStateId, lsa);
+      else networkLsas.set(lsa.linkStateId, lsa);
     }
-    const localLsa = routerLsas.get(routerId);
-    const settled = new Map<Ipv4, Vertex>();
-    const candidates: Vertex[] = [{ routerId, cost: 0, nextHop: undefined, interfaceId: undefined }];
+    const connectedNetworks = this.connectedNetworkInts();
+    const settled = new Map<string, Vertex>();
+    const candidates: Vertex[] = [
+      { kind: "router", id: routerId, cost: 0, nextHop: undefined, interfaceId: undefined },
+    ];
 
     while (candidates.length > 0) {
       candidates.sort((a, b) =>
         a.cost - b.cost
-        || ipToInt(a.routerId) - ipToInt(b.routerId)
+        || ipToInt(a.id) - ipToInt(b.id)
+        || a.kind.localeCompare(b.kind)
         || (a.interfaceId ?? "").localeCompare(b.interfaceId ?? ""));
       const current = candidates.shift()!;
-      if (settled.has(current.routerId)) continue;
-      settled.set(current.routerId, current);
-      const lsa = routerLsas.get(current.routerId);
+      const currentKey = vertexKey(current.kind, current.id);
+      if (settled.has(currentKey)) continue;
+      settled.set(currentKey, current);
+
+      if (current.kind === "network") {
+        // A network vertex costs nothing more to leave: the metric was already
+        // paid by the router link that reached it.
+        const lsa = networkLsas.get(current.id);
+        if (!lsa || lsa.type !== "network") continue;
+        for (const attached of lsa.attachedRouters) {
+          if (settled.has(vertexKey("router", attached))) continue;
+          const resolved = this.nextHopAcross(current.interfaceId, current.nextHop, attached);
+          if (resolved.interfaceId === undefined) continue;
+          candidates.push({ kind: "router", id: attached, cost: current.cost, ...resolved });
+        }
+        continue;
+      }
+
+      const lsa = routerLsas.get(current.id);
       if (!lsa || lsa.type !== "router") continue;
       for (const link of lsa.links) {
         if (link.type === "stub") continue;
-        const neighbors = link.type === "point-to-point"
-          ? [link.linkId]
-          : this.attachedRoutersOf(link.linkId).filter((attached) => attached !== current.routerId);
-        for (const neighborRouterId of neighbors) {
-          if (settled.has(neighborRouterId)) continue;
-          const resolved = current.routerId === routerId
-            ? this.localNextHopFor(link, neighborRouterId)
-            : { nextHop: current.nextHop, interfaceId: current.interfaceId };
-          if (resolved.interfaceId === undefined) continue;
-          candidates.push({
-            routerId: neighborRouterId,
-            cost: current.cost + link.metric,
-            nextHop: resolved.nextHop,
-            interfaceId: resolved.interfaceId,
-          });
-        }
+        const kind = link.type === "point-to-point" ? "router" : "network";
+        if (settled.has(vertexKey(kind, link.linkId))) continue;
+        const local = current.id === routerId;
+        const resolved = kind === "router"
+          ? (local
+            ? this.localNextHopFor(link, link.linkId)
+            : { nextHop: current.nextHop, interfaceId: current.interfaceId })
+          // A transit segment this router is attached to is reached directly:
+          // it has no next hop, and each router behind it resolves its own.
+          : (local
+            ? { nextHop: undefined, interfaceId: this.localInterfaceAddressed(link.linkData) }
+            : { nextHop: current.nextHop, interfaceId: current.interfaceId });
+        if (resolved.interfaceId === undefined) continue;
+        candidates.push({ kind, id: link.linkId, cost: current.cost + link.metric, ...resolved });
       }
     }
 
     const routes = new Map<string, OspfRoute>();
-    for (const [vertexRouterId, vertex] of settled) {
-      if (vertexRouterId === routerId) continue;
-      const lsa = routerLsas.get(vertexRouterId);
-      if (!lsa || lsa.type !== "router" || vertex.interfaceId === undefined) continue;
+    /** Keep the cheapest, then the lexicographically smaller egress. */
+    const offer = (network: Ipv4, maskInt: number, cost: number, vertex: Vertex): void => {
+      if (vertex.interfaceId === undefined) return;
+      // Anything we are directly connected to keeps its better distance.
+      if (connectedNetworks.has(ipToInt(network))) return;
+      const key = `${network}/${maskInt}`;
+      const existing = routes.get(key);
+      if (existing && (existing.cost < cost
+        || (existing.cost === cost && existing.interfaceId.localeCompare(vertex.interfaceId) <= 0))) {
+        return;
+      }
+      routes.set(key, { network, maskInt, nextHop: vertex.nextHop, interfaceId: vertex.interfaceId, cost });
+    };
+
+    // Settle order is by cost then identifier, so this is stable regardless of
+    // when an advertisement arrived or which router won a designated election.
+    const reached = [...settled.values()];
+    for (const vertex of reached) {
+      if (vertex.kind !== "router" || vertex.id === routerId) continue;
+      const lsa = routerLsas.get(vertex.id);
+      if (!lsa || lsa.type !== "router") continue;
       for (const link of lsa.links) {
         if (link.type !== "stub") continue;
         const maskInt = maskToInt(link.linkData);
-        const network = intToIp((ipToInt(link.linkId) & maskInt) >>> 0);
-        const key = `${network}/${maskInt}`;
-        // Skip anything we are directly connected to; connected always wins.
-        if (localLsa?.type === "router"
-          && localLsa.links.some((own) => own.type === "stub"
-            && ((ipToInt(own.linkId) & maskToInt(own.linkData)) >>> 0) === ipToInt(network))) {
-          continue;
-        }
-        const cost = vertex.cost + link.metric;
-        const existing = routes.get(key);
-        if (existing && (existing.cost < cost
-          || (existing.cost === cost && existing.interfaceId.localeCompare(vertex.interfaceId) <= 0))) {
-          continue;
-        }
-        routes.set(key, {
-          network,
-          maskInt,
-          nextHop: vertex.nextHop,
-          interfaceId: vertex.interfaceId,
-          cost,
-        });
+        offer(intToIp((ipToInt(link.linkId) & maskInt) >>> 0), maskInt, vertex.cost + link.metric, vertex);
       }
+    }
+
+    /**
+     * A reachable transit segment is a route to the *subnet*, never to the
+     * designated router's own address. The prefix comes from the Network LSA:
+     * its link-state id is the designated router's interface address and its
+     * mask is the segment's, so 10.0.23.1 with 255.255.255.252 is 10.0.23.0/30.
+     * Without this a segment between two remote routers took part in SPF and
+     * was still missing from the routing table, because only Router LSA stub
+     * links ever became routes and a broadcast segment is described by a
+     * transit link instead.
+     */
+    for (const vertex of reached) {
+      if (vertex.kind !== "network") continue;
+      const lsa = networkLsas.get(vertex.id);
+      if (!lsa || lsa.type !== "network") continue;
+      const maskInt = maskToInt(lsa.networkMask);
+      offer(intToIp((ipToInt(lsa.linkStateId) & maskInt) >>> 0), maskInt, vertex.cost, vertex);
     }
 
     const next = [...routes.values()].sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || a.maskInt - b.maskInt);
@@ -1507,11 +1551,47 @@ export class OspfProcess {
     this.host.ospfRoutesChanged();
   }
 
-  private attachedRoutersOf(designatedRouterAddress: Ipv4): Ipv4[] {
-    for (const lsa of this.sortedLsas()) {
-      if (lsa.type === "network" && lsa.linkStateId === designatedRouterAddress) return [...lsa.attachedRouters];
+  /**
+   * Networks this router is attached to itself, as integers.
+   *
+   * Taken from the live interfaces rather than from our own Router LSA, because
+   * a transit segment appears there as a transit link and has no stub to read a
+   * prefix from — which is exactly the case a directly attached transit route
+   * must not compete with.
+   */
+  private connectedNetworkInts(): Set<number> {
+    const networks = new Set<number>();
+    for (const iface of this.enabledInterfaces()) {
+      if (!iface.operationalUp || iface.address === undefined) continue;
+      networks.add((ipToInt(iface.address) & iface.maskInt) >>> 0);
     }
-    return [];
+    return networks;
+  }
+
+  /** The local interface that carries `address`, if this router owns it. */
+  private localInterfaceAddressed(address: Ipv4): string | undefined {
+    return this.enabledInterfaces().find((iface) => iface.address === address)?.id;
+  }
+
+  /**
+   * The first hop towards a router attached to an already-reached segment.
+   *
+   * A segment further away inherits the hop that reached it. One we are
+   * attached to has no hop yet, so each attached router resolves to its own
+   * address on that segment — or, for a router we never exchanged hellos with,
+   * to the designated router that describes it.
+   */
+  private nextHopAcross(
+    interfaceId: string | undefined,
+    inheritedNextHop: Ipv4 | undefined,
+    attachedRouterId: Ipv4,
+  ): { nextHop: Ipv4 | undefined; interfaceId: string | undefined } {
+    if (interfaceId === undefined) return { nextHop: undefined, interfaceId: undefined };
+    if (inheritedNextHop !== undefined) return { nextHop: inheritedNextHop, interfaceId };
+    const neighbor = this.neighborsOn(interfaceId).find((candidate) => candidate.routerId === attachedRouterId);
+    if (neighbor) return { nextHop: neighbor.address, interfaceId };
+    const designated = this.interfaceRuntime.get(interfaceId)?.designatedRouter;
+    return { nextHop: designated, interfaceId };
   }
 
   private localNextHopFor(

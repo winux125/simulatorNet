@@ -17,6 +17,7 @@ a learner expects, and it is deliberately not full RFC parity.
 | Router LSA and Network LSA | yes |
 | Reliable bounded flooding with acknowledgement | yes |
 | Dijkstra SPF and intra-area routes | yes |
+| Transit (Network LSA) subnets as routes | yes |
 | Passive interfaces | yes |
 | Configured and automatic router id | yes |
 | Network statements and interface activation | yes |
@@ -192,6 +193,41 @@ that lags the database it is shown.
 The result is linear rather than quadratic. A cold start costs **one execution
 per router** — 4, 8, 16, 32 and 64 routers spend exactly 4, 8, 16, 32 and 64 —
 where before it cost 47, 191 and then more than the whole budget.
+
+## Intra-area routes
+
+The walk settles both kinds of vertex the database describes, and both produce
+routes:
+
+- a **router** vertex contributes its Router LSA's stub links — a loopback, a
+  passive interface, and the subnet of a point-to-point segment;
+- a **network** vertex contributes the transit segment itself.
+
+The transit route is a route to the **subnet**, never to the designated
+router's address. The prefix comes from the Network LSA: its link-state id is
+the designated router's interface address and its mask is the segment's, so
+`10.0.23.1` with `255.255.255.252` installs `10.0.23.0/30`. The metric is the
+distance to the network vertex and the next hop is the first hop from the root
+towards it.
+
+This matters because a broadcast segment is described by a *transit* link and a
+Network LSA rather than by a stub. Before, only stub links became routes, so the
+subnet between two remote routers was in the database and took part in SPF —
+routers behind it were reachable — while the subnet itself was missing from
+every remote routing table. A point-to-point segment was unaffected, because
+that model emits a stub link beside the neighbour link.
+
+A segment the root is attached to is left to its connected route, which keeps
+the better administrative distance; no duplicate or competing OSPF entry is
+produced. A Network LSA may list any number of attached routers, and the route
+depends on none of their order, the order advertisements arrived, or which
+router won the election: vertices settle by cost then identifier, and an equal
+cost is broken by the stable egress interface name.
+
+When the segment stops being reachable — a link fails, an adjacency is lost, a
+Network LSA is withdrawn, the designated router changes or the area splits — the
+network vertex is no longer settled and the route is withdrawn, with
+`ospf-route-withdrawn` in the trace. It returns on reconvergence.
 
 ## Route selection
 

@@ -230,7 +230,8 @@ describe("OSPF transit network routes", () => {
 
     // Drop the elected designated router off the segment; the survivors elect a
     // new one and re-originate the Network LSA under a different link-state id.
-    const owner = shared.routers.find((router) => router.getInterface("Gi0/0")?.ip === designated)!;
+    const owner = shared.routers.find((router) => router.ospf.interfaceSummaries()
+      .some((entry) => entry.interfaceId === "Gi0/0" && entry.address === designated))!;
     owner.getInterface("Gi0/0")!.shutdown();
     shared.engine.runUntilIdle();
     for (const router of [...shared.routers, shared.remote]) router.ospf.arm();
