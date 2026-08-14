@@ -140,10 +140,58 @@ instance of the same LSA starts the count over.
 SPF is a deterministic Dijkstra. Candidates are always taken in the same order —
 total cost, then advertising router id, then the stable interface identifier — so
 the same database always produces the same tree and the same next hops. `Map`
-insertion order never affects the result. A run whose inputs are unchanged is
-skipped, so `show ip ospf` counts real computations; the guard is a fingerprint
-of the values the walk reads rather than a dirty flag, so it cannot hide a
-change.
+insertion order never affects the result.
+
+## SPF scheduling
+
+One stimulus produces a *wave*. An interface comes up, an adjacency reaches
+Full, the description exchange completes, and then every advertisement the
+fabric holds arrives one link-state update at a time. Recomputing on each of
+them rebuilds the same tree over and over, and because every router hears from
+every other one the cost of a cold start grows with the **square** of the area.
+
+Everything that can move the topology therefore goes through one request
+function rather than starting a walk itself: a tick, an installed update, an
+adjacency reaching Full or being lost, and a neighbour ageing out during
+inspection. The schedule is deliberately three separate things:
+
+| Step | What it is |
+| --- | --- |
+| **Request** | "the topology may have moved" — cheap, and there are many |
+| **Scheduled event** | one deterministic virtual event, at most one outstanding |
+| **Execution** | the actual Dijkstra walk — the only expensive step |
+
+The first request schedules an event `OSPF_SPF_COALESCE_DELAY_NS` (100 ms of
+virtual time) ahead. Every further request that arrives before it fires only
+advances a revision counter; it never creates a second event. When the event
+fires it snapshots the revision, walks once, and marks that revision complete —
+so a change that lands *during* the walk is still outstanding afterwards and
+schedules exactly one more event. That is what stops the coalescing from losing
+an update the way the pre-M10.17.1 dirty flag did.
+
+The delay is virtual, never wall-clock: no `setTimeout`, no `Date.now`, no
+debounce. A flood wave settles in a few milliseconds of virtual time, so 100 ms
+swallows a whole wave while staying far below the ten second hello interval, and
+Auto and Step reach the same state at the same virtual time.
+
+Two walks are skipped rather than performed:
+
+- one whose **inputs are unchanged** would install the same routes. The guard is
+  a fingerprint of the values the walk actually reads rather than a dirty flag,
+  so it cannot hide a change;
+- one over a database holding **nothing but this router's own advertisements**
+  describes a tree of one vertex, so while the routing table is already empty it
+  can only produce the empty result again. Every router passes through that
+  state before the wait timer lets its first adjacency form.
+
+`show ip ospf` counts executions, and so does `maximumSpfRunsPerOperation` —
+never requests or coalescing events. Anything that reads the routing table or
+the database first flushes a pending computation, so a reader never sees a tree
+that lags the database it is shown.
+
+The result is linear rather than quadratic. A cold start costs **one execution
+per router** — 4, 8, 16, 32 and 64 routers spend exactly 4, 8, 16, 32 and 64 —
+where before it cost 47, 191 and then more than the whole budget.
 
 ## Route selection
 
@@ -199,10 +247,52 @@ Both use the same deterministic virtual time and reach the same result.
 | Neighbours per device | 64 |
 | Interfaces per device | 64 |
 | LSAs per lab | 4,096 |
-| LSA floods per operation | 20,000 |
+| LSA floods per operation | 80,000 |
 | SPF runs per operation | 256 |
 | Adjacency transitions per operation | 4,096 |
-| OSPF protocol events per operation | 50,000 |
+| OSPF protocol events per operation | 320,000 |
+
+An **SPF run** is one executed Dijkstra walk. A request that was coalesced into
+a pending event, an event that found the fingerprint unchanged, and an event
+over a database describing only this router are all free.
+
+The two flooding bounds are sized from the shape of the protocol rather than
+guessed. Reliable flooding is inherently quadratic: an area of N routers holds
+up to 2N-1 advertisements and offers each of them once across each of the
+2(N-1) directed adjacencies of a minimal connected area. A 128-router cold
+start measures 59,593 offers and 226,420 protocol events, and the previous
+20,000 and 50,000 could not carry it under any topology, point-to-point
+included.
+
+That is deliberately a different judgement from the SPF budget. Repeated SPF was
+**redundant** work — the same tree rebuilt from the same inputs — and was
+removed rather than budgeted. Offering an advertisement to a neighbour that has
+not seen it is work the protocol actually has to do, so it is budgeted instead.
+
+## Supported convergence shape
+
+`maximumOspfRoutersPerLab` bounds what a lab may **describe**. What a single
+area reliably **converges** with default link performance is smaller, and the
+reason is outside OSPF:
+
+- a cold start floods every advertisement across every adjacency in one burst;
+- a large burst tail-drops on the link's egress queue, which defaults to 256
+  packets;
+- nothing here refreshes an LSA periodically and duplicate suppression stops a
+  lost one from ever being offered again, so a dropped update is **permanent**.
+
+Measured on a bounded-fan-out tree in area 0, an area of **96 routers**
+converges completely and drops nothing. At 128 the same fabric stays inside
+every OSPF bound — SPF, floods, events and adjacency transitions — and every
+adjacency reaches Full, yet 1,472 updates are tail-dropped and 127 routers end
+up short of the database. Giving that fabric a 4,096-packet queue drops nothing
+and converges completely, which is what identifies the queue rather than the
+protocol as the cause.
+
+Closing that gap needs either periodic LSA refresh or a change to the shared
+link model, and neither belongs to a scalability fix. Until then, treat 96
+routers in one area as the supported converged shape and reach for more
+bandwidth-shaped links, or fewer routers, beyond it.
 
 ## Browser / verifier determinism
 

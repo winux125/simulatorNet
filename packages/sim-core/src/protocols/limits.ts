@@ -45,10 +45,31 @@ export const DEFAULT_CONTROL_PROTOCOL_LIMITS = Object.freeze({
   maximumOspfNeighborsPerDevice: 64,
   maximumOspfInterfacesPerDevice: 64,
   maximumLsasPerLab: 4_096,
-  maximumLsaFloodsPerOperation: 20_000,
+  /**
+   * Reliable flooding is inherently quadratic: an area of N routers holds up to
+   * 2N-1 advertisements and every one of them is offered once across each of
+   * the 2(N-1) directed adjacencies of a minimal connected area. The advertised
+   * 128-router area therefore needs roughly 255 x 254 offers — a measured
+   * 59,593 for the leanest topology that limit permits — and the previous
+   * 20,000 could not carry it under *any* shape, point-to-point included.
+   *
+   * This is deliberately not the same judgement as the SPF budget below. SPF
+   * repetition was redundant work — the same tree rebuilt from the same inputs
+   * — and was removed rather than budgeted. Flooding an advertisement to a
+   * neighbour that has not seen it is work the protocol actually has to do, so
+   * it is budgeted instead, with roughly a third of headroom above the measured
+   * cold start of the largest supported area.
+   */
+  maximumLsaFloodsPerOperation: 80_000,
   maximumSpfRunsPerOperation: 256,
   maximumAdjacencyTransitionsPerOperation: 4_096,
-  maximumOspfEventsPerOperation: 50_000,
+  /**
+   * One flooded advertisement costs about four protocol events — the update and
+   * its acknowledgement, each charged once when sent and once when received —
+   * on top of hellos and the description exchange. A 128-router cold start
+   * measures 226,420.
+   */
+  maximumOspfEventsPerOperation: 320_000,
 
   // --- BGP -------------------------------------------------------------
   maximumBgpPeersPerDevice: 64,

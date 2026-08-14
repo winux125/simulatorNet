@@ -572,9 +572,12 @@ describe("OSPF configuration, determinism and limits", () => {
       "ospf-neighbor-state-changed:exchange",
       "ospf-neighbor-state-changed:loading",
       "ospf-neighbor-state-changed:full",
+      // One coalesced computation installs all three at once, so they appear in
+      // the routing table's canonical network order rather than split across
+      // the two separate walks the flood wave used to start.
       "ospf-route-installed:2.2.2.2",
-      "ospf-route-installed:10.0.23.0",
       "ospf-route-installed:3.3.3.3",
+      "ospf-route-installed:10.0.23.0",
     ]);
   });
 

@@ -1,4 +1,4 @@
-import { NS_PER_S } from "../engine/constants";
+import { NS_PER_MS, NS_PER_S } from "../engine/constants";
 import type { SimulationEngine } from "../engine/simulation-engine";
 import {
   lsaChecksum,
@@ -40,6 +40,21 @@ export const DEFAULT_OSPF_DEAD_INTERVAL_NS = 40 * NS_PER_S;
 export const DEFAULT_OSPF_COST = 10;
 export const DEFAULT_OSPF_PRIORITY = 1;
 export const OSPF_ADMINISTRATIVE_DISTANCE = 110;
+
+/**
+ * How long a router waits, in virtual time, between asking for SPF and running
+ * it — the deterministic equivalent of a real router's SPF throttle.
+ *
+ * One stimulus produces a *wave*: an interface comes up, an adjacency reaches
+ * Full, the description exchange completes, and every advertisement the fabric
+ * holds arrives one link-state update at a time. Running the walk on each of
+ * them rebuilds the same tree over and over and makes a cold start cost grow
+ * with the square of the fabric. The wave itself is short — cables are half a
+ * millisecond apart and a whole 128-router flood settles in a few dozen — so one
+ * deterministic delay an order of magnitude above it collapses the wave into a
+ * single computation while staying far below the ten second hello interval.
+ */
+export const OSPF_SPF_COALESCE_DELAY_NS = 100 * NS_PER_MS;
 
 const OSPF_QUIESCENCE_ROUNDS = 4;
 const OSPF_MAXIMUM_TICKS = 4_096;
@@ -113,6 +128,29 @@ export interface OspfRoute {
   readonly nextHop: Ipv4 | undefined;
   readonly interfaceId: string;
   readonly cost: number;
+}
+
+/**
+ * How the SPF schedule actually behaved, for tests and diagnostics.
+ *
+ * A request, a scheduled event and a computation are three different things,
+ * and only the last one is expensive — `maximumSpfRunsPerOperation` counts
+ * `executions` alone. These counters are runtime: they are never serialized
+ * into a `LabDocument`, a submission or a grading result.
+ */
+export interface OspfSpfCounters {
+  /** Times something asked for a recomputation. */
+  readonly requests: number;
+  /** Requests absorbed by an SPF event that was already scheduled. */
+  readonly coalescedRequests: number;
+  /** Deterministic virtual events the schedule created. */
+  readonly scheduledEvents: number;
+  /** Walks actually performed, which is what the per-operation budget bounds. */
+  readonly executions: number;
+  /** Walks skipped because every input the walk reads was unchanged. */
+  readonly skippedUnchanged: number;
+  /** Walks skipped because the database describes nothing but this router. */
+  readonly skippedEmptyTopology: number;
 }
 
 export interface OspfOverview {
@@ -203,6 +241,15 @@ export class OspfProcess {
   private lastSpfAtNs: number | undefined;
   /** Fingerprint of the inputs the last SPF walk actually read. */
   private lastSpfInputs: string | undefined;
+  /** Bumped by every request; the schedule only ever chases the latest one. */
+  private spfRequestedRevision = 0;
+  /** The revision the most recent computation observed. */
+  private spfCompletedRevision = 0;
+  /** True while a deterministic SPF event is on the queue. */
+  private spfScheduled = false;
+  /** Re-entrancy guard: installing routes makes other subsystems look back. */
+  private spfExecuting = false;
+  private spfMetrics = emptySpfCounters();
   /** Virtual time of the most recent tick, used to freeze the dead timers. */
   private lastActiveAtNs: number | undefined;
   private readonly activity: ProtocolActivity;
@@ -407,6 +454,12 @@ export class OspfProcess {
     this.spfRuns = 0;
     this.lastSpfAtNs = undefined;
     this.lastSpfInputs = undefined;
+    this.spfRequestedRevision = 0;
+    this.spfCompletedRevision = 0;
+    // An SPF event already on the queue is left to fire: it cannot be recalled,
+    // and it finds an unchanged fingerprint and costs nothing.
+    this.spfScheduled = false;
+    this.spfMetrics = emptySpfCounters();
     this.lastActiveAtNs = undefined;
     this.activity.resetBudget();
     this.host.ospfRoutesChanged();
@@ -480,7 +533,7 @@ export class OspfProcess {
     }
     this.sendHellos();
     this.originateLsas();
-    this.runSpf();
+    this.requestSpf("periodic tick");
   }
 
   // --- interfaces ---------------------------------------------------------
@@ -723,14 +776,22 @@ export class OspfProcess {
     return expired;
   }
 
-  /** Inspection entry point: age out dead neighbours, then recompute. */
+  /**
+   * Inspection entry point: age out dead neighbours, then recompute.
+   *
+   * The recomputation is not deferred here. Nothing runs the engine between
+   * this and the answer the caller is about to read, so a reader always sees a
+   * tree that matches the database it is shown.
+   */
   private refreshBeforeInspection(): void {
     if (!this.running || this.activeRouterId === undefined) return;
-    if (!this.expireNeighbors()) return;
-    this.electDesignatedRouters();
-    this.originateLsas();
-    this.runSpf();
-    this.arm();
+    if (this.expireNeighbors()) {
+      this.electDesignatedRouters();
+      this.originateLsas();
+      this.requestSpf("neighbour aged out during inspection");
+      this.arm();
+    }
+    this.flushPendingSpf();
   }
 
   // --- DR / BDR election --------------------------------------------------
@@ -954,7 +1015,7 @@ export class OspfProcess {
     if (installed > 0) {
       this.trace("ospf-lsdb-changed", { interface: interfaceId, installed, size: this.lsdb.size });
       this.floodLsas(packet.lsas.filter((lsa) => this.lsdb.get(lsaKeyOf(lsa)) === lsa), interfaceId);
-      this.runSpf();
+      this.requestSpf("link state database changed");
       this.arm();
     }
   }
@@ -1188,6 +1249,78 @@ export class OspfProcess {
       || ipToInt(a.advertisingRouter) - ipToInt(b.advertisingRouter));
   }
 
+  // --- SPF scheduling -----------------------------------------------------
+
+  /**
+   * The single entry point for "the topology may have moved, look again".
+   *
+   * Every place that used to start a walk — a tick, an installed link-state
+   * update, an adjacency reaching Full or being lost, a neighbour ageing out —
+   * asks here instead, so the scheduling decision lives in one function rather
+   * than as flags spread through the flooding code.
+   *
+   * The first request schedules one deterministic virtual event. Every further
+   * request that arrives before it fires only advances the requested revision;
+   * it never creates a second event. That is what turns a flood wave, which
+   * delivers the whole database one update at a time, into a single
+   * computation.
+   */
+  private requestSpf(reason: string): void {
+    if (!this.running || this.activeRouterId === undefined) return;
+    this.spfRequestedRevision++;
+    this.spfMetrics.requests++;
+    if (this.spfScheduled) {
+      this.spfMetrics.coalescedRequests++;
+      return;
+    }
+    this.scheduleSpf(reason);
+  }
+
+  private scheduleSpf(reason: string): void {
+    const engine = this.engineOrUndefined();
+    if (!engine) return; // no clock yet: the next arm() requests again
+    this.spfScheduled = true;
+    this.spfMetrics.scheduledEvents++;
+    this.trace("ospf-spf-scheduled", {
+      reason,
+      revision: this.spfRequestedRevision,
+      dueAtNs: engine.now() + OSPF_SPF_COALESCE_DELAY_NS,
+    });
+    engine.scheduleIn(OSPF_SPF_COALESCE_DELAY_NS, () => {
+      this.spfScheduled = false;
+      if (!this.running) return;
+      // Snapshot first: anything that changes while the walk runs must still be
+      // seen as outstanding afterwards, which is how a late change stops being
+      // lost the way it was before M10.17.1.
+      const observed = this.spfRequestedRevision;
+      this.executeSpf();
+      this.spfCompletedRevision = observed;
+      if (this.spfRequestedRevision !== this.spfCompletedRevision) {
+        this.scheduleSpf("state changed while spf was running");
+      }
+    });
+  }
+
+  /**
+   * Bring the tree up to date now, because somebody is about to read it.
+   *
+   * Inspection and forwarding must never see a routing table that a pending
+   * event has not caught up with yet. An event already on the queue is left
+   * alone — it will find an unchanged fingerprint and skip.
+   */
+  private flushPendingSpf(): void {
+    if (this.spfExecuting) return;
+    if (this.spfRequestedRevision === this.spfCompletedRevision) return;
+    const observed = this.spfRequestedRevision;
+    this.executeSpf();
+    this.spfCompletedRevision = observed;
+  }
+
+  /** How the schedule behaved. Runtime only; never serialized. */
+  spfCounters(): OspfSpfCounters {
+    return { ...this.spfMetrics };
+  }
+
   // --- SPF ----------------------------------------------------------------
 
   /**
@@ -1220,16 +1353,50 @@ export class OspfProcess {
    * deterministic order — total cost, then advertising router id, then the
    * stable interface identifier — so the same LSDB always yields the same tree.
    *
-   * A run whose inputs are unchanged is skipped: it would install the same
-   * routes, and charging the per-operation budget for it is what put a lab of
-   * nine routers within a handful of runs of `maximumSpfRunsPerOperation`.
+   * Two walks are skipped rather than charged.
+   *
+   * A run whose inputs are unchanged would install the same routes; the guard
+   * is a fingerprint of the values the walk reads rather than a dirty flag, so
+   * it cannot hide a change.
+   *
+   * A database that holds nothing but this router's own advertisements
+   * describes a tree of one vertex, so while the routing table is already empty
+   * the walk can only produce the empty result again. That is a redundant
+   * cold-start phase — every router goes through it before the wait timer lets
+   * a first adjacency form — and not a suppressed change: the moment any other
+   * router's advertisement arrives the fingerprint differs and the walk runs.
    */
-  private runSpf(): void {
+  private executeSpf(): void {
     const routerId = this.activeRouterId;
     if (routerId === undefined) return;
     const inputs = this.spfInputFingerprint();
-    if (inputs === this.lastSpfInputs) return;
+    if (inputs === this.lastSpfInputs) {
+      this.spfMetrics.skippedUnchanged++;
+      return;
+    }
+    if (this.routes.length === 0 && !this.hasRemoteLsa(routerId)) {
+      this.lastSpfInputs = inputs;
+      this.spfMetrics.skippedEmptyTopology++;
+      return;
+    }
     this.lastSpfInputs = inputs;
+    this.spfExecuting = true;
+    try {
+      this.walkShortestPathTree(routerId);
+    } finally {
+      this.spfExecuting = false;
+    }
+  }
+
+  private hasRemoteLsa(routerId: Ipv4): boolean {
+    for (const lsa of this.lsdb.values()) {
+      if (lsa.advertisingRouter !== routerId) return true;
+    }
+    return false;
+  }
+
+  private walkShortestPathTree(routerId: Ipv4): void {
+    this.spfMetrics.executions++;
     this.charge("spfRuns");
     this.spfRuns++;
     this.lastSpfAtNs = this.engine.now();
@@ -1368,6 +1535,9 @@ export class OspfProcess {
 
   /** Routes OSPF currently offers to the routing table. */
   routeTable(): OspfRoute[] {
+    // Forwarding reads this on every lookup, so a coalesced recomputation is
+    // never allowed to leave the routing table behind the database.
+    this.flushPendingSpf();
     return this.routes.map((route) => ({ ...route }));
   }
 
@@ -1456,6 +1626,7 @@ export class OspfProcess {
   }
 
   database(): OspfLsdbEntry[] {
+    this.flushPendingSpf();
     const now = this.engineOrUndefined()?.now() ?? 0;
     return this.sortedLsas().map((lsa) => ({
       type: lsa.type,
@@ -1490,7 +1661,7 @@ export class OspfProcess {
       // this very adjacency has just brought into existence.
       this.originateLsas();
       this.synchronizeDatabase(neighbor);
-      this.runSpf();
+      this.requestSpf("adjacency reached full");
     }
   }
 
@@ -1504,7 +1675,7 @@ export class OspfProcess {
     });
     // Losing an adjacency changes what we advertise and how we route.
     this.originateLsas();
-    this.runSpf();
+    this.requestSpf("adjacency lost");
   }
 
   private get engine(): SimulationEngine {
@@ -1524,6 +1695,24 @@ export class OspfProcess {
     if (!engine) return;
     engine.trace({ time: engine.now(), type, device: this.host.id, detail });
   }
+}
+
+function emptySpfCounters(): {
+  requests: number;
+  coalescedRequests: number;
+  scheduledEvents: number;
+  executions: number;
+  skippedUnchanged: number;
+  skippedEmptyTopology: number;
+} {
+  return {
+    requests: 0,
+    coalescedRequests: 0,
+    scheduledEvents: 0,
+    executions: 0,
+    skippedUnchanged: 0,
+    skippedEmptyTopology: 0,
+  };
 }
 
 function neighborKey(interfaceId: string, routerId: Ipv4): string {
