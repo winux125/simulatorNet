@@ -740,7 +740,7 @@ optional, so a pre-M10.15 lab opens unchanged. It must never store learned Type
 5 routes, imported VRF routes, routed-overlay runtime, ARP caches, counters or
 a remote-VTEP cache.
 
-### EVPN Single-Active multihoming
+### EVPN multihoming
 
 An **Ethernet Segment** is one CE attached to two leaves, named by a shared
 **ESI**. The ESI is a canonical five-group lowercase string
@@ -749,13 +749,17 @@ and displayed, so one canonical spelling is both the storage form and the
 comparison key. ESI 0 means single-homed and MAX-ESI is reserved; both are
 refused by the CLI, the parser, the schema and the engine alike. One ESI exists
 on several VTEPs — that is the point — but on one VTEP it names one segment, and
-an attachment belongs to at most one. A segment attaches to an **access
-switchport** only: a Loopback, SVI, `nve1`, routed port, Port-channel or bundled
-member is refused, and no cross-device LACP is invented.
+an attachment belongs to at most one. A segment attaches to a **physical access
+switchport** or a **logical Port-channel**: a Loopback, SVI, `nve1`, routed port
+or bundled member is refused. A Port-channel is an ordinary single-chassis
+bundle — no cross-device LACP and no MLAG/vPC control plane is invented — and it
+round-trips through the canonical configuration as its own interface block, which
+is what makes it a legal attachment at all.
 
-M10.16 models **Single-Active** redundancy alone. All-Active, aliasing, MAC
-mobility, HRW and preference-based DF election, AC-DF, duplicate-MAC dampening,
-MLAG/vPC, multihoming for an L3VNI or IPv6, and EVPN over MPLS are not modelled;
+**Single-Active** and **All-Active** redundancy are both modelled, as are
+aliasing, MAC Mobility and the HRW DF election. Preference-based DF election,
+AC-DF, sticky MAC, MAC protection, duplicate-MAC dampening, MLAG/vPC,
+multihoming for an L3VNI or IPv6, EVPN over MPLS and ESI-LAG extensions are not;
 an unsupported value is reported at every parser boundary, never downgraded.
 There is deliberately no `df-preference` field: a persisted preference nothing
 reads would be a lie.
@@ -771,21 +775,50 @@ target of its own: it borrows the export targets of the VNIs its attachment
 serves, so an RT mismatch isolates it exactly as it isolates a MAC. There is no
 MPLS ESI label.
 
-The **DF election** is the documented modulus one: order the candidate VTEP
-addresses numerically, pick `vlan mod N`. Every participant runs it over the same
-canonically ordered list and reaches an identical answer without telling anyone.
-Exactly one leaf is DF per `<ESI, VLAN>`. The non-DF keeps its attachment as a
-backup and carries no tenant data on it in either direction — a frame arriving
-there is refused *before* it is learned, so it never advertises a MAC it may not
-forward to. It is never administratively shut for losing the election.
+The **DF election** has two algorithms and `default` is the documented modulus
+one: order the candidate VTEP addresses numerically, pick `vlan mod N`. `hrw` is
+a real highest-random-weight election, isolated in one module, keyed on ESI,
+Ethernet tag and candidate VTEP; the highest weight is DF and the next is BDF.
+Every participant runs the same algorithm over the same canonically ordered list
+and reaches an identical answer without telling anyone — so HRW runs only when
+**every** operational participant advertises it, and one dissenter makes all of
+them fall back to the modulus election together. Two leaves must never compute a
+different forwarder for one `<ESI, VLAN>`. Exactly one leaf is DF. Losing the
+election never administratively shuts an attachment.
+
+Under **Single-Active** the non-DF keeps its attachment as a backup and carries
+no tenant data on it in either direction — a frame arriving there is refused
+*before* it is learned, so it never advertises a MAC it may not forward to.
+Under **All-Active** every operational attachment carries known unicast and the
+DF owns overlay BUM alone; a non-DF drops only its BUM copy.
 
 A **Type 2** learned behind a multihomed attachment carries a non-zero ESI, and
 the receiving leaf resolves it through the *segment* rather than the route's next
-hop: primary is the current DF with usable per-ES reachability, backups are the
-other VTEPs with per-EVI reachability, in stable address order. Single-Active
-never forwards over a backup. That dependency lives in one function, never as an
-`if (esi)` scattered through the forwarding paths — which is what lets a mass
-withdrawal move traffic with no address relearned and no topology rebuild.
+hop. Under Single-Active: primary is the current DF with usable per-ES
+reachability, backups are the other VTEPs with per-EVI reachability, in stable
+address order, and traffic never crosses a backup. Under All-Active every
+eligible VTEP is a live path — that is **aliasing**, and it is why a MAC can be
+reached over a leaf that never advertised it. One eligibility calculation serves
+both, and that dependency lives in one function, never as an `if (esi)` scattered
+through the forwarding paths — which is what lets a mass withdrawal or a lost
+alias move traffic with no address relearned and no topology rebuild.
+
+A flow picks **one** alias, never several: a stable flow key over the ESI, VNI,
+MACs and any IP addresses and transport ports present selects it, so the same
+flow lands on the same leaf every run, adding or removing a path reassigns a
+bounded set, and a known-unicast frame is never duplicated to every alias. This
+is an educational ECMP-like selection, not a second routing ECMP implementation.
+
+**MAC Mobility** is a sequence on Type 2, and the highest sequence wins. It
+increments only when ownership genuinely changes location — never for a BGP
+reset, an NVE restart, a re-render, a relearn on the same attachment, or a second
+leaf of the *same* All-Active segment seeing the frame, which is aliasing rather
+than a move. That distinction lives in one function. A first local advertisement
+carries no mobility attribute at all, so a pre-M10.17 route and this one are the
+same bytes. Two leaves claiming one address at the same sequence resolve through
+a deterministic VTEP order, and a leaf that has already lost does not bid again —
+otherwise the two would count each other upwards for ever. Dampening is not
+modelled.
 
 **Split horizon** stamps the ingress segment onto the VXLAN packet as simulator
 metadata, never an Ethernet or VXLAN header field, and is checked before the DF
@@ -795,11 +828,18 @@ Convergence keeps **no periodic timer** — a repeating event would leave the
 deterministic queue permanently non-empty and `runUntilIdle()` would never
 return.
 
-`LabDocument` stores `evpn.ethernetSegments` — name, ESI, redundancy mode and
-attachment list — and nothing else; the key is optional, so a pre-M10.16 lab
-opens unchanged. It must never store the discovered peer table, the elected
-Designated Forwarder, a Type 1 or Type 4 route, a primary/backup path, counters
-or failover state. See `docs/evpn-multihoming.md`.
+Convergence keeps no periodic timer here either: a mass withdrawal, a lost alias
+and a mobility increment are all evaluated when something looks, so the bounded
+queue still drains.
+
+`LabDocument` stores `evpn.ethernetSegments` — name, ESI, redundancy mode,
+attachment list and the optional `dfAlgorithm` — and nothing else; the key is
+optional, so a pre-M10.16 lab opens unchanged, and a segment that never named an
+election keeps no `dfAlgorithm` key, so a pre-M10.17 lab is never reinterpreted
+as HRW. It must never store the discovered peer table, the elected Designated
+Forwarder or Backup, a Type 1 or Type 4 route, a primary/backup path, an aliasing
+path set, a selected flow path, an HRW weight, a mobility sequence, a learned
+mobility route, counters or failover state. See `docs/evpn-multihoming.md`.
 
 ## TypeScript and code conventions
 

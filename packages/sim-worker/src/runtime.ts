@@ -542,6 +542,10 @@ export class SimulationWorkerRuntime {
       case "GET_EVPN_AD_ROUTES":
       case "GET_EVPN_ES_ROUTES":
       case "GET_EVPN_MULTIHOMING_PATHS":
+      // --- M10.17 All-Active: the same one view, more entry points ---
+      case "GET_EVPN_ALIASING_PATHS":
+      case "GET_EVPN_MAC_MOBILITY":
+      case "GET_EVPN_DF_DETAIL":
         return this.vxlanEvpnState(requireString(request, "deviceId"));
       case "CLEAR_EVPN_ROUTED_RUNTIME": {
         const deviceId = requireString(request, "deviceId");
@@ -2898,6 +2902,7 @@ export class SimulationWorkerRuntime {
         id: state.id,
         esi: state.esi,
         redundancyMode: state.redundancyMode,
+        dfAlgorithm: state.dfAlgorithm,
         interfaces: [...state.interfaces],
         operationalInterfaces: [...state.operationalInterfaces],
         up: state.up,
@@ -2910,22 +2915,50 @@ export class SimulationWorkerRuntime {
         routerId: peer.routerId,
         local: peer.local,
         reachable: peer.reachable,
+        redundancyMode: peer.redundancyMode,
+        modeAgrees: peer.modeAgrees,
+        dfAlgorithm: peer.dfAlgorithm,
       })),
       designatedForwarders: device.designatedForwarderStates().map((entry) => ({
         esi: entry.esi,
         vlanId: entry.vlanId,
         candidates: [...entry.candidates],
         designatedForwarder: entry.designatedForwarder,
+        backupDesignatedForwarder: entry.backupDesignatedForwarder,
         localRole: entry.localRole,
+        requestedAlgorithm: entry.requestedAlgorithm,
+        effectiveAlgorithm: entry.effectiveAlgorithm,
+        fallbackReason: entry.fallbackReason,
+        candidateWeights: entry.candidateWeights.map((weight) => ({ ...weight })),
       })),
+      // Single-Active keeps its primary/backup shape; All-Active gets its own
+      // table, because every eligible VTEP there is a live path.
       multihomingPaths: device.remoteMacEntries()
-        .flatMap((row) => row.ethernetSegmentId === undefined ? [] : [{
+        .flatMap((row) => row.ethernetSegmentId === undefined || row.redundancyMode === "all-active" ? [] : [{
           vni: row.vni,
           mac: row.mac,
           esi: row.ethernetSegmentId,
           primary: row.remoteVtep,
           backups: [...row.backupVteps],
         }]),
+      aliasingPaths: device.aliasingPathSets().map((row) => ({
+        vni: row.vni,
+        mac: row.macAddress,
+        esi: row.esi,
+        advertisingVtep: row.advertisingVtep,
+        eligibleVteps: [...row.eligibleVteps],
+        selectedVtep: row.selectedVtep,
+        reason: row.reason,
+      })),
+      macMobility: device.macMobilityStates().map((row) => ({
+        vni: row.vni,
+        mac: row.macAddress,
+        sequence: row.sequence,
+        owner: row.owner,
+        location: row.location,
+        previousOwner: row.previousOwner,
+        state: row.state,
+      })),
     };
   }
 

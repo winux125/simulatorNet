@@ -393,6 +393,8 @@ function MonitorSection(props: DeviceWindowProps & { section: DeviceWindowSectio
     "evpn-type1-runtime": "type1",
     "evpn-type4-runtime": "type4",
     "evpn-multihoming-runtime": "multihoming",
+    "evpn-aliasing-runtime": "aliasing",
+    "evpn-mac-mobility-runtime": "mac-mobility",
   };
   const vxlanSection = vxlanRuntimeSection[section];
   if (vxlanSection) return props.runtimeAvailable

@@ -840,6 +840,7 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
   const ethernetSegments = new Map<string, {
     esi?: string;
     redundancyMode?: "single-active" | "all-active";
+    dfAlgorithm?: "default" | "hrw";
   }>();
   const segmentAttachments = new Map<string, string>();
   let currentEthernetSegment: string | undefined;
@@ -1091,6 +1092,16 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
         const mode = tokens[1]?.toLowerCase();
         if (mode !== "single-active" && mode !== "all-active") { unparsed(line); continue; }
         segment.redundancyMode = mode;
+        applied(line);
+        continue;
+      }
+      if (head === "df-election" && tokens.length === 2) {
+        // Only the two elections the engine actually runs are read. A
+        // preference-based or AC-DF spelling is reported rather than accepted
+        // as an algorithm it is not.
+        const algorithm = tokens[1]?.toLowerCase();
+        if (algorithm !== "default" && algorithm !== "hrw") { unparsed(line); continue; }
+        segment.dfAlgorithm = algorithm;
         applied(line);
         continue;
       }
@@ -2182,6 +2193,8 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
         esi: segment.esi,
         redundancyMode,
         interfaces: attachments,
+        // A segment that never named an election keeps its pre-M10.17 shape.
+        ...(segment.dfAlgorithm === undefined ? {} : { dfAlgorithm: segment.dfAlgorithm }),
       }];
     })
     .sort((a, b) => a.esi.localeCompare(b.esi) || a.id.localeCompare(b.id));

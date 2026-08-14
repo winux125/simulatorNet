@@ -10,6 +10,7 @@ import {
   maskToInt,
   MAXIMUM_VNI,
   MINIMUM_VNI,
+  normalizeMac,
   NVE_INTERFACE_ID,
 } from "@sim/sim-core";
 import { InvalidModeError, ValidationError } from "../errors/errors";
@@ -299,8 +300,8 @@ function accessPortName(session: SessionApi): string {
  * Every segment edit goes through one atomic reconfigure, as the NVE does.
  *
  * A segment only exists once it has a usable ESI, so an edit made before
- * `identifier` is accepted and simply has nothing to apply yet — `single-active`
- * is both the default and the only mode M10.16 models.
+ * `identifier` is accepted and simply has nothing to apply yet. `single-active`
+ * stays the default, so a segment that never names a mode is unchanged.
  */
 function updateEthernetSegment(
   session: SessionApi,
@@ -331,11 +332,12 @@ function showEthernetSegments(session: SessionApi, detail: boolean, esi?: string
   const states = device.ethernetSegmentStates().filter((state) => wanted === undefined || state.esi === wanted);
   if (!states.length) return "% No Ethernet Segment is configured.";
   const summary = table(
-    ["Segment", "ESI", "Redundancy", "Interfaces", "State", "Reason"],
+    ["Segment", "ESI", "Redundancy", "DF election", "Interfaces", "State", "Reason"],
     states.map((state) => [
       state.id,
       state.esi,
       state.redundancyMode,
+      state.dfAlgorithm,
       state.interfaces.join(",") || "—",
       state.up ? "up" : "down",
       state.reason ?? "—",
@@ -348,19 +350,22 @@ function showEthernetSegments(session: SessionApi, detail: boolean, esi?: string
     summary,
     "",
     peers.length
-      ? table(["ESI", "VTEP", "Origin", "Reachability"], peers.map((peer) => [
+      ? table(["ESI", "VTEP", "Origin", "Reachability", "Redundancy", "DF election"], peers.map((peer) => [
         peer.esi,
         peer.vtep,
         peer.local ? "local" : "remote",
         peer.reachable ? "ethernet-ad" : "no ethernet-ad",
+        peer.modeAgrees ? peer.redundancyMode : `${peer.redundancyMode} (mismatch)`,
+        peer.dfAlgorithm,
       ]))
       : "% No Ethernet Segment peer is known.",
     "",
     df.length
-      ? table(["ESI", "VLAN", "Designated Forwarder", "Local role"], df.map((entry) => [
+      ? table(["ESI", "VLAN", "Designated Forwarder", "Backup", "Local role"], df.map((entry) => [
         entry.esi,
         String(entry.vlanId),
         entry.designatedForwarder ?? "none",
+        entry.backupDesignatedForwarder ?? "—",
         entry.localRole.toUpperCase(),
       ]))
       : "% No Designated Forwarder has been elected.",
@@ -372,13 +377,98 @@ function showDfTable(session: SessionApi, vlanId?: number): string {
   const rows = vtepOf(session).designatedForwarderStates()
     .filter((entry) => vlanId === undefined || entry.vlanId === vlanId);
   if (!rows.length) return "% No Designated Forwarder has been elected.";
-  return table(["ESI", "VLAN", "Candidates", "Designated Forwarder", "Local role"], rows.map((row) => [
-    row.esi,
-    String(row.vlanId),
-    row.candidates.join(",") || "—",
-    row.designatedForwarder ?? "none",
-    row.localRole.toUpperCase(),
-  ]));
+  return table(
+    ["ESI", "VLAN", "Candidates", "Designated Forwarder", "Backup", "Algorithm", "Local role"],
+    rows.map((row) => [
+      row.esi,
+      String(row.vlanId),
+      row.candidates.join(",") || "—",
+      row.designatedForwarder ?? "none",
+      row.backupDesignatedForwarder ?? "—",
+      row.effectiveAlgorithm,
+      row.localRole.toUpperCase(),
+    ]),
+  );
+}
+
+/**
+ * `show evpn df detail`: the election itself, including the weights.
+ *
+ * A fallback is reported as what it is — informational — because the segment
+ * still elects exactly one forwarder either way.
+ */
+function showDfDetail(session: SessionApi): string {
+  const rows = vtepOf(session).designatedForwarderStates();
+  if (!rows.length) return "% No Designated Forwarder has been elected.";
+  return rows.flatMap((row) => [
+    `Ethernet Segment ${row.esi}, VLAN ${row.vlanId}`,
+    `  Requested algorithm : ${row.requestedAlgorithm}`,
+    `  Effective algorithm : ${row.effectiveAlgorithm}`
+      + (row.fallbackReason === undefined ? "" : ` (fell back: ${row.fallbackReason})`),
+    `  Designated Forwarder: ${row.designatedForwarder ?? "none"}`,
+    `  Backup              : ${row.backupDesignatedForwarder ?? "—"}`,
+    `  Local role          : ${row.localRole.toUpperCase()}`,
+    row.candidateWeights.length === 0
+      ? "  Candidate weights   : — (modulus election computes none)"
+      : `  Candidate weights   : ${row.candidateWeights.map((entry) => `${entry.vtep}=${entry.weight}`).join(", ")}`,
+    "",
+  ]).join("\n").trimEnd();
+}
+
+/**
+ * Accept the Cisco `0200.0000.0001` shape and the colon form alike.
+ *
+ * The shape is checked here rather than left to `normalizeMac`, which is
+ * deliberately lenient: a typo at a prompt must be reported, never silently
+ * turned into an address that then matches nothing.
+ */
+function parseMacText(value: string): string {
+  const dotted = /^([0-9a-f]{4})\.([0-9a-f]{4})\.([0-9a-f]{4})$/iu.exec(value);
+  const candidate = dotted
+    ? `${dotted[1]}${dotted[2]}${dotted[3]}`.match(/.{2}/gu)!.join(":")
+    : value;
+  if (!/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/iu.test(candidate)) {
+    throw new ValidationError(`'${value}' is not a valid MAC address.`);
+  }
+  return normalizeMac(candidate);
+}
+
+/** `show evpn aliasing [mac <mac>]`: every live path of an All-Active address. */
+function showAliasing(session: SessionApi, mac?: string): string {
+  const wanted = mac === undefined ? undefined : parseMacText(mac);
+  const rows = vtepOf(session).aliasingPathSets()
+    .filter((row) => wanted === undefined || row.macAddress === wanted);
+  if (!rows.length) return "% No All-Active aliasing path is programmed.";
+  return table(
+    ["MAC", "ESI", "VNI", "Advertised by", "Eligible", "Selected", "State"],
+    rows.map((row) => [
+      row.macAddress,
+      row.esi,
+      String(row.vni),
+      row.advertisingVtep,
+      row.eligibleVteps.join(",") || "—",
+      row.selectedVtep,
+      row.reason,
+    ]),
+  );
+}
+
+/** `show evpn mac-mobility`: where the fabric believes each address lives. */
+function showMacMobility(session: SessionApi): string {
+  const rows = vtepOf(session).macMobilityStates();
+  if (!rows.length) return "% No MAC mobility state is tracked.";
+  return table(
+    ["VNI", "MAC", "Sequence", "Current owner", "Location", "Previous owner", "State"],
+    rows.map((row) => [
+      String(row.vni),
+      row.macAddress,
+      String(row.sequence),
+      row.owner,
+      row.location,
+      row.previousOwner ?? "—",
+      row.state,
+    ]),
+  );
 }
 
 /** A dotted subnet mask as a prefix length, rejecting a non-contiguous mask. */
@@ -792,7 +882,7 @@ export const vxlanCommands: CommandSpec[] = [
     run: () => undefined,
   },
 
-  // --- evpn ethernet-segment (Single-Active multihoming) ------------------
+  // --- evpn ethernet-segment (multihoming) --------------------------------
   {
     /**
      * `evpn ethernet-segment <name>` is its own top-level block, not a line
@@ -818,18 +908,45 @@ export const vxlanCommands: CommandSpec[] = [
   },
   {
     /**
-     * M10.16 models Single-Active redundancy only. All-active — and with it
-     * aliasing and MAC mobility — is refused here rather than accepted and
+     * Single-Active and All-Active are both modelled. Every other Cisco mode —
+     * preference-based, port-active — is refused here rather than accepted and
      * quietly treated as something else.
      */
-    pattern: "redundancy-mode {mode}", usage: "redundancy-mode single-active",
+    pattern: "redundancy-mode {mode}", usage: "redundancy-mode single-active|all-active",
     modes: ["config-evpn-es"], device: "l3-switch",
     run: (s, p) => {
-      if (p.mode !== "single-active") {
-        throw new ValidationError("Only 'single-active' redundancy is supported; all-active is not modelled.");
+      const mode = p.mode?.toLowerCase();
+      if (mode !== "single-active" && mode !== "all-active") {
+        throw new ValidationError(
+          "Only 'single-active' and 'all-active' redundancy are supported;"
+          + " preference-based and port-active modes are not modelled.",
+        );
       }
-      updateEthernetSegment(s, (current) => ({ ...current, redundancyMode: "single-active" }));
+      updateEthernetSegment(s, (current) => ({ ...current, redundancyMode: mode }));
     },
+  },
+  {
+    /**
+     * `df-election hrw`. The modulus election of RFC 7432 §8.5 stays the
+     * default, so a segment that never names one is unchanged — and HRW only
+     * runs once every participant advertises it.
+     */
+    pattern: "df-election {algorithm}", usage: "df-election default|hrw",
+    modes: ["config-evpn-es"], device: "l3-switch",
+    run: (s, p) => {
+      const algorithm = p.algorithm?.toLowerCase();
+      if (algorithm !== "default" && algorithm !== "hrw") {
+        throw new ValidationError(
+          "Only 'default' and 'hrw' DF election are supported;"
+          + " preference-based election and AC-DF are not modelled.",
+        );
+      }
+      updateEthernetSegment(s, (current) => ({ ...current, dfAlgorithm: algorithm }));
+    },
+  },
+  {
+    pattern: "no df-election", modes: ["config-evpn-es"], device: "l3-switch",
+    run: (s) => updateEthernetSegment(s, (current) => ({ ...current, dfAlgorithm: undefined })),
   },
   {
     pattern: "ethernet-segment {name}", usage: "ethernet-segment <name>",
@@ -864,10 +981,24 @@ export const vxlanCommands: CommandSpec[] = [
     run: (s, p) => showEthernetSegments(s, true, p.esi!),
   },
   { pattern: "show evpn df", modes: ["exec", "privileged"], device: "l3-switch", run: (s) => showDfTable(s) },
+  { pattern: "show evpn df detail", modes: ["exec", "privileged"], device: "l3-switch", run: showDfDetail },
   {
     pattern: "show evpn df vlan {vlan}", usage: "show evpn df vlan <1-4094>",
     modes: ["exec", "privileged"], device: "l3-switch",
     run: (s, p) => showDfTable(s, parseVlanId(p.vlan!)),
+  },
+  {
+    pattern: "show evpn aliasing", modes: ["exec", "privileged"], device: "l3-switch",
+    run: (s) => showAliasing(s),
+  },
+  {
+    pattern: "show evpn aliasing mac {mac}", usage: "show evpn aliasing mac <H.H.H>",
+    modes: ["exec", "privileged"], device: "l3-switch",
+    run: (s, p) => showAliasing(s, p.mac!),
+  },
+  {
+    pattern: "show evpn mac-mobility", modes: ["exec", "privileged"], device: "l3-switch",
+    run: showMacMobility,
   },
   { pattern: "show nve vni", modes: ["exec", "privileged"], device: "l3-switch", run: showNveVni },
   { pattern: "show nve peers", modes: ["exec", "privileged"], device: "l3-switch", run: showNvePeers },

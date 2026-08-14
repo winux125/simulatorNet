@@ -1694,6 +1694,152 @@ export const EvpnSplitHorizonGradingCheckSchema = CheckIdentitySchema.extend({
   }).strict(),
 }).strict();
 
+// --- M10.17 All-Active multihoming, aliasing, MAC mobility and HRW ---------
+//
+// As with the M10.16 checks above, every expected value here stays server-side:
+// a student result never echoes back the ESI, the mobility sequence, an HRW
+// weight or the candidate set that was supposed to win.
+
+/** One Ethernet Segment's redundancy mode, on one leaf. */
+export const EvpnAllActiveModeGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-all-active-mode"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    segmentId: z.string().min(1).max(64),
+    expectedMode: z.enum(["single-active", "all-active"]).default("all-active"),
+    /** Require every discovered peer of the segment to agree on the mode. */
+    requirePeerAgreement: z.boolean().default(false),
+  }).strict(),
+}).strict();
+
+/**
+ * An aliasing path set: a MAC one leaf advertised that another leaf can still
+ * reach over a second VTEP.
+ *
+ * `minimumEligibleVteps` is what makes this an aliasing check rather than a
+ * reachability one — a single eligible path is just an ordinary remote MAC.
+ */
+export const EvpnAliasingPathGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-aliasing-path"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    vni: VniSchema,
+    macAddress: MacAddressSchema,
+    expectedEsi: EsiSchema.optional(),
+    /** The leaf that originated the Type 2, when the lab pins it. */
+    expectedAdvertisingVtep: Ipv4Schema.optional(),
+    /** Every VTEP that must appear as eligible, in any order. */
+    expectedEligibleVteps: z.array(Ipv4Schema).max(8).optional(),
+    minimumEligibleVteps: z.number().int().min(1).max(8).default(2),
+    expected: z.enum(["present", "absent"]).default("present"),
+  }).strict(),
+}).strict();
+
+/**
+ * End-to-end reachability over an All-Active segment.
+ *
+ * `requireAliasedPath` additionally demands that the MAC was reached over a
+ * leaf that never advertised it, which is the thing Single-Active cannot do.
+ */
+export const EvpnAllActiveConnectivityGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-all-active-connectivity"),
+  configuration: z.object({
+    sourceDeviceId: z.string().min(1),
+    destinationIp: Ipv4Schema,
+    requireAliasedPath: z.boolean().default(false),
+  }).strict(),
+}).strict();
+
+/** The mobility sequence a MAC currently carries in one leaf's EVPN state. */
+export const EvpnMacMobilitySequenceGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-mac-mobility-sequence"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    vni: VniSchema,
+    macAddress: MacAddressSchema,
+    expectedSequence: z.number().int().min(0).max(4_294_967_295).optional(),
+    minimumSequence: z.number().int().min(0).max(4_294_967_295).optional(),
+  }).strict(),
+}).strict();
+
+/**
+ * Which leaf actually owns a MAC after a move.
+ *
+ * `requirePreviousOwnerStale` is how a lab proves the older advertisement lost
+ * rather than merely that a newer one exists.
+ */
+export const EvpnMacOwnerGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-mac-owner"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    vni: VniSchema,
+    macAddress: MacAddressSchema,
+    /** The VTEP that must own the address now. */
+    expectedOwner: Ipv4Schema.optional(),
+    expectedPreviousOwner: Ipv4Schema.optional(),
+    requirePreviousOwnerStale: z.boolean().default(false),
+  }).strict(),
+}).strict();
+
+/**
+ * An HRW election result on one leaf.
+ *
+ * Grading the BDF matters as much as the DF: it is what proves the election
+ * produced a full deterministic order rather than one lucky winner.
+ */
+export const EvpnHrwDfGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-hrw-df"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    esi: EsiSchema,
+    vlanId: z.number().int().min(1).max(4_094),
+    expectedDesignatedForwarder: Ipv4Schema.optional(),
+    expectedBackupDesignatedForwarder: Ipv4Schema.optional(),
+    /** The role this leaf itself must hold, when the lab pins it. */
+    expectedLocalRole: z.enum(["df", "non-df"]).optional(),
+    requireHrwEffective: z.boolean().default(true),
+  }).strict(),
+}).strict();
+
+/**
+ * The capability agreement itself: a segment whose participants disagree must
+ * fall back to the modulus election *consistently*, never leave two leaves
+ * computing different forwarders.
+ */
+export const EvpnHrwFallbackGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-hrw-fallback"),
+  configuration: z.object({
+    deviceId: z.string().min(1),
+    esi: EsiSchema,
+    vlanId: z.number().int().min(1).max(4_094),
+    expectedRequestedAlgorithm: z.enum(["default", "hrw"]).default("hrw"),
+    expectedEffectiveAlgorithm: z.enum(["default", "hrw"]).default("default"),
+    requireFallbackReason: z.boolean().default(true),
+  }).strict(),
+}).strict();
+
+/**
+ * End-to-end All-Active failover as a bounded deterministic action.
+ *
+ * It pings, takes the named attachment down, reconverges in virtual time and
+ * pings again — and, unlike the Single-Active check, it asserts the address was
+ * never relearned, because a surviving alias means no relearn is needed.
+ */
+export const EvpnAllActiveFailoverGradingCheckSchema = CheckIdentitySchema.extend({
+  type: z.literal("evpn-all-active-failover"),
+  configuration: z.object({
+    sourceDeviceId: z.string().min(1),
+    destinationIp: Ipv4Schema,
+    /** The leaf whose CE-facing attachment is taken down. */
+    failDeviceId: z.string().min(1),
+    failInterfaceId: z.string().min(1).max(64),
+    /** The leaf that must still carry the traffic afterwards. */
+    expectedSurvivingVtep: Ipv4Schema.optional(),
+    /** Require the MAC to survive without a single relearn. */
+    requireNoRelearn: z.boolean().default(true),
+  }).strict(),
+}).strict();
+
 /**
  * `copy running-config startup-config` was actually run on this device.
  *
@@ -1771,6 +1917,14 @@ export const GradingCheckSchema = z.discriminatedUnion("type", [
   EvpnMultihomingBackupGradingCheckSchema,
   EvpnSingleActiveFailoverGradingCheckSchema,
   EvpnSplitHorizonGradingCheckSchema,
+  EvpnAllActiveModeGradingCheckSchema,
+  EvpnAliasingPathGradingCheckSchema,
+  EvpnAllActiveConnectivityGradingCheckSchema,
+  EvpnMacMobilitySequenceGradingCheckSchema,
+  EvpnMacOwnerGradingCheckSchema,
+  EvpnHrwDfGradingCheckSchema,
+  EvpnHrwFallbackGradingCheckSchema,
+  EvpnAllActiveFailoverGradingCheckSchema,
   EvpnAnycastGatewayGradingCheckSchema,
   EvpnL3VniGradingCheckSchema,
   EvpnType5RouteGradingCheckSchema,

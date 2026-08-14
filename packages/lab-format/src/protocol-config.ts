@@ -286,6 +286,7 @@ export function applyEthernetSegmentConfiguration(
       esi: segment.esi,
       redundancyMode: segment.redundancyMode,
       interfaces: [...segment.interfaces],
+      dfAlgorithm: segment.dfAlgorithm,
     });
   }
 }
@@ -347,6 +348,9 @@ export function serializeEvpnConfiguration(device: Layer3Switch): EvpnConfig | u
     esi: segment.esi,
     redundancyMode: segment.redundancyMode,
     interfaces: [...segment.interfaces],
+    // A segment that never asked for an algorithm keeps exactly its pre-M10.17
+    // shape, so an older lab round-trips without gaining a key.
+    ...(segment.dfAlgorithm === undefined ? {} : { dfAlgorithm: segment.dfAlgorithm }),
   }));
   if (vnis.length === 0 && anycastGatewayMac === undefined && segments.length === 0) return undefined;
   return {

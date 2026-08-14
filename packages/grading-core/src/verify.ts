@@ -1521,6 +1521,190 @@ function runCheck(check: GradingCheck, runtime: VerificationRuntime): InternalCh
         reasons: [...new Set(refused.map((entry) => entry.type))],
       });
     }
+    case "evpn-all-active-mode": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const segment = device.ethernetSegmentStates()
+        .find((entry) => entry.id === check.configuration.segmentId);
+      // Peer agreement is a separate demand: a leaf may be correctly configured
+      // while the far end still disagrees, and a lab may grade either fact.
+      const peers = segment === undefined
+        ? []
+        : device.ethernetSegmentPeers().filter((peer) => peer.esi === segment.esi && !peer.local);
+      const agreed = peers.every((peer) => peer.modeAgrees);
+      const passed = segment !== undefined
+        && segment.redundancyMode === check.configuration.expectedMode
+        && (!check.configuration.requirePeerAgreement || (peers.length > 0 && agreed));
+      return result(check, passed, `Ethernet Segment '${check.configuration.segmentId}' runs ${segment ? segment.redundancyMode : "no"} redundancy`, {
+        found: segment !== undefined,
+        actualMode: segment?.redundancyMode,
+        peerCount: peers.length,
+        peersAgree: agreed,
+      });
+    }
+    case "evpn-aliasing-path": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const mac = normalizeMac(check.configuration.macAddress);
+      const path = device.aliasingPathSets()
+        .find((row) => row.vni === check.configuration.vni && row.macAddress === mac);
+      const eligible = path?.eligibleVteps ?? [];
+      const expectedEligible = check.configuration.expectedEligibleVteps;
+      const matches = path !== undefined
+        && eligible.length >= check.configuration.minimumEligibleVteps
+        && (check.configuration.expectedEsi === undefined || path.esi === check.configuration.expectedEsi)
+        && (check.configuration.expectedAdvertisingVtep === undefined
+          || path.advertisingVtep === check.configuration.expectedAdvertisingVtep)
+        && (expectedEligible === undefined || expectedEligible.every((vtep) => eligible.includes(vtep)));
+      const passed = check.configuration.expected === "present" ? matches : !matches;
+      return result(check, passed, `MAC ${mac} ${path ? `has ${eligible.length} eligible aliasing path(s)` : "has no aliasing path set"} in VNI ${check.configuration.vni}`, {
+        found: path !== undefined,
+        eligibleCount: eligible.length,
+        minimumEligibleVteps: check.configuration.minimumEligibleVteps,
+        reason: path?.reason,
+        expected: check.configuration.expected,
+      });
+    }
+    case "evpn-all-active-connectivity": {
+      const outcome = executePing(runtime, check.configuration.sourceDeviceId, check.configuration.destinationIp);
+      if (!outcome) return errorResult(check, `Ping-capable device '${check.configuration.sourceDeviceId}' was not found`);
+      // Reaching a MAC over a leaf that never advertised it is the one thing
+      // Single-Active cannot do, so that is what "aliased" means here.
+      const aliased = [...built.devices.values()].some((device) => device instanceof Layer3Switch
+        && device.aliasingPathSets().some((row) => row.eligibleVteps.length > 1
+          && row.selectedVtep !== row.advertisingVtep));
+      const passed = outcome.success && (!check.configuration.requireAliasedPath || aliased);
+      return result(check, passed, `All-Active destination ${outcome.success ? "is reachable" : "is unreachable"}`, {
+        reachable: outcome.success,
+        aliasedPathUsed: aliased,
+        requireAliasedPath: check.configuration.requireAliasedPath,
+      });
+    }
+    case "evpn-mac-mobility-sequence": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const mac = normalizeMac(check.configuration.macAddress);
+      const state = device.macMobilityStates()
+        .find((row) => row.vni === check.configuration.vni && row.macAddress === mac);
+      const passed = state !== undefined
+        && (check.configuration.expectedSequence === undefined
+          || state.sequence === check.configuration.expectedSequence)
+        && (check.configuration.minimumSequence === undefined
+          || state.sequence >= check.configuration.minimumSequence);
+      // The expected sequence stays in the hidden spec; only the verdict and
+      // the observed state travel back.
+      return result(check, passed, `MAC ${mac} ${state ? `carries mobility sequence ${state.sequence}` : "has no mobility state"} in VNI ${check.configuration.vni}`, {
+        found: state !== undefined,
+        actualSequence: state?.sequence,
+        state: state?.state,
+      });
+    }
+    case "evpn-mac-owner": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const mac = normalizeMac(check.configuration.macAddress);
+      const state = device.macMobilityStates()
+        .find((row) => row.vni === check.configuration.vni && row.macAddress === mac);
+      // `local` means this leaf owns the address, so it is compared as this
+      // leaf's own VTEP address rather than as a literal.
+      const localAddress = device.vxlan.state().sourceAddress;
+      const owner = state?.owner === "local" ? localAddress : state?.owner;
+      const passed = state !== undefined
+        && (check.configuration.expectedOwner === undefined || owner === check.configuration.expectedOwner)
+        && (check.configuration.expectedPreviousOwner === undefined
+          || state.previousOwner === check.configuration.expectedPreviousOwner)
+        && (!check.configuration.requirePreviousOwnerStale || state.previousOwner !== undefined);
+      return result(check, passed, `MAC ${mac} ${state ? `is owned by ${owner ?? "an unknown VTEP"}` : "has no recorded owner"}`, {
+        found: state !== undefined,
+        ownerIsLocal: state?.owner === "local",
+        hasPreviousOwner: state?.previousOwner !== undefined,
+        state: state?.state,
+      });
+    }
+    case "evpn-hrw-df": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const state = device.designatedForwarderStates()
+        .find((entry) => entry.esi === check.configuration.esi && entry.vlanId === check.configuration.vlanId);
+      const passed = state !== undefined
+        && (!check.configuration.requireHrwEffective || state.effectiveAlgorithm === "hrw")
+        && (check.configuration.expectedDesignatedForwarder === undefined
+          || state.designatedForwarder === check.configuration.expectedDesignatedForwarder)
+        && (check.configuration.expectedBackupDesignatedForwarder === undefined
+          || state.backupDesignatedForwarder === check.configuration.expectedBackupDesignatedForwarder)
+        && (check.configuration.expectedLocalRole === undefined
+          || state.localRole === check.configuration.expectedLocalRole);
+      // The expected winner, the backup and every weight stay hidden: only
+      // whether the election ran as asked, and this leaf's own role, travel.
+      return result(check, passed, `${device.name} ran the ${state?.effectiveAlgorithm ?? "no"} election for VLAN ${check.configuration.vlanId}`, {
+        found: state !== undefined,
+        effectiveAlgorithm: state?.effectiveAlgorithm,
+        actualRole: state?.localRole,
+        hasBackup: state?.backupDesignatedForwarder !== undefined,
+        candidateCount: state?.candidates.length ?? 0,
+      });
+    }
+    case "evpn-hrw-fallback": {
+      const device = vtepOf(built, check.configuration.deviceId);
+      if (!device) return errorResult(check, "VXLAN tunnel endpoint was not found");
+      const state = device.designatedForwarderStates()
+        .find((entry) => entry.esi === check.configuration.esi && entry.vlanId === check.configuration.vlanId);
+      const passed = state !== undefined
+        && state.requestedAlgorithm === check.configuration.expectedRequestedAlgorithm
+        && state.effectiveAlgorithm === check.configuration.expectedEffectiveAlgorithm
+        && (!check.configuration.requireFallbackReason || state.fallbackReason !== undefined);
+      return result(check, passed, `${device.name} requested ${state?.requestedAlgorithm ?? "no"} election and ran ${state?.effectiveAlgorithm ?? "none"}`, {
+        found: state !== undefined,
+        requestedAlgorithm: state?.requestedAlgorithm,
+        effectiveAlgorithm: state?.effectiveAlgorithm,
+        fellBack: state?.fallbackReason !== undefined,
+      });
+    }
+    case "evpn-all-active-failover": {
+      const before = executePing(runtime, check.configuration.sourceDeviceId, check.configuration.destinationIp);
+      if (!before) return errorResult(check, `Ping-capable device '${check.configuration.sourceDeviceId}' was not found`);
+      const failing = vtepOf(built, check.configuration.failDeviceId);
+      const attachment = failing?.interfaces.get(check.configuration.failInterfaceId);
+      if (!failing || !attachment) {
+        return errorResult(check, `Attachment '${check.configuration.failInterfaceId}' was not found`);
+      }
+      // What must survive the failure: every address that already had an alias
+      // path, recorded before the attachment goes down so a relearn is visible.
+      const remote = [...built.devices.values()].filter((device): device is Layer3Switch =>
+        device instanceof Layer3Switch && device !== failing);
+      const beforePaths = new Map(remote.flatMap((device) => device.aliasingPathSets()
+        .map((row) => [`${device.id}|${row.vni}|${row.macAddress}`, row.eligibleVteps.length] as const)));
+      attachment.shutdown();
+      // One bounded deterministic action, as the Single-Active check is: the
+      // engine never goes idle while BGP holds its sessions, so convergence is
+      // what is waited for rather than silence.
+      runtime.runUntil(() => remote.every((device) => device.aliasingPathSets()
+        .every((row) => !row.eligibleVteps.includes(failing.vxlan.state().sourceAddress ?? ""))));
+      const after = executePing(runtime, check.configuration.sourceDeviceId, check.configuration.destinationIp);
+      // A relearn would drop the address and re-add it, so an address that had
+      // a path before and has none now is exactly what must not happen.
+      const survived = [...beforePaths.keys()].every((key) => {
+        const [deviceId, vniText, mac] = key.split("|") as [string, string, string];
+        const device = remote.find((entry) => entry.id === deviceId);
+        return device?.aliasingPathSets()
+          .some((row) => row.vni === Number(vniText) && row.macAddress === mac
+            && row.eligibleVteps.length > 0) === true;
+      });
+      const carriedBySurvivor = check.configuration.expectedSurvivingVtep === undefined
+        || remote.some((device) => device.aliasingPathSets()
+          .some((row) => row.selectedVtep === check.configuration.expectedSurvivingVtep));
+      const passed = before.success
+        && after?.success === true
+        && carriedBySurvivor
+        && (!check.configuration.requireNoRelearn || survived);
+      return result(check, passed, `Traffic ${after?.success ? "continued" : "stopped"} after the All-Active attachment failed`, {
+        beforeFailure: before.success,
+        afterFailure: after?.success ?? false,
+        pathsTracked: beforePaths.size,
+        survivedWithoutRelearn: survived,
+        carriedBySurvivor,
+      });
+    }
     case "evpn-customer-isolation": {
       // The underlay carries the outer IPv4/UDP only: a Spine or P device must
       // never learn a tenant MAC, and a VTEP must never import a VNI whose

@@ -462,6 +462,12 @@ export const EvpnEthernetSegmentConfigSchema = z.object({
   redundancyMode: z.enum(["single-active", "all-active"]),
   /** Access switchports or Port-channels; never a Loopback, SVI or routed port. */
   interfaces: z.array(z.string().min(1).max(64)).max(8).default([]),
+  /**
+   * `df-election hrw`. Optional, and absent means the modulus election of
+   * RFC 7432 §8.5 — so a segment written before M10.17 keeps exactly the winner
+   * it always had and is never silently reinterpreted as highest-random-weight.
+   */
+  dfAlgorithm: z.enum(["default", "hrw"]).optional(),
 }).strict();
 export type EvpnEthernetSegmentConfig = z.infer<typeof EvpnEthernetSegmentConfigSchema>;
 

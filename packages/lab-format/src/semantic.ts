@@ -548,6 +548,9 @@ function validateEthernetSegments(
   const attachments = new Map<string, string>();
   const seenIds = new Set<string>();
   const seenEsis = new Set<string>();
+  // One ESI names one segment on one device, so two local definitions that
+  // disagree about the mode or the election could never both be honoured.
+  const modeOfEsi = new Map<string, string>();
   segments.forEach((segment, index) => {
     const segmentPath = `${path}.evpn.ethernetSegments[${index}]`;
     if (seenIds.has(segment.id)) {
@@ -556,6 +559,13 @@ function validateEthernetSegments(
     if (seenEsis.has(segment.esi)) {
       fail("duplicate-esi", `${segmentPath}.esi`, `ESI ${segment.esi} is already used on this device`);
     }
+    const signature = `${segment.redundancyMode}/${segment.dfAlgorithm ?? "default"}`;
+    const declared = modeOfEsi.get(segment.esi);
+    if (declared !== undefined && declared !== signature) {
+      fail("conflicting-ethernet-segment-mode", `${segmentPath}.redundancyMode`,
+        `ESI ${segment.esi} is declared both ${declared} and ${signature} on this device`);
+    }
+    modeOfEsi.set(segment.esi, signature);
     seenIds.add(segment.id);
     seenEsis.add(segment.esi);
     if (segment.interfaces.length === 0) {

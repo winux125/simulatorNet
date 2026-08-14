@@ -799,15 +799,18 @@ export interface VxlanEvpnView {
     backupVteps: string[];
   }>;
   /**
-   * M10.16 EVPN Single-Active multihoming. Every table here is runtime: the
-   * discovered peers, the elected Designated Forwarder and each primary/backup
-   * path are rebuilt from structured configuration by the browser worker and the
-   * verifier alike, and none of them reaches a `LabDocument`.
+   * EVPN multihoming, Single-Active and All-Active. Every table here is runtime:
+   * the discovered peers, the elected Designated Forwarder, each primary/backup
+   * path, every aliasing set and all mobility state are rebuilt from structured
+   * configuration by the browser worker and the verifier alike, and none of them
+   * reaches a `LabDocument`.
    */
   ethernetSegments: Array<{
     id: string;
     esi: string;
     redundancyMode: "single-active" | "all-active";
+    /** The election this segment asked for; `default` is the modulus one. */
+    dfAlgorithm: "default" | "hrw";
     interfaces: string[];
     operationalInterfaces: string[];
     up: boolean;
@@ -820,21 +823,54 @@ export interface VxlanEvpnView {
     routerId?: string;
     local: boolean;
     reachable: boolean;
+    /** What the peer advertised, and whether it matches the local segment. */
+    redundancyMode: "single-active" | "all-active";
+    modeAgrees: boolean;
+    dfAlgorithm: "default" | "hrw";
   }>;
   designatedForwarders: Array<{
     esi: string;
     vlanId: number;
     candidates: string[];
     designatedForwarder?: string;
+    backupDesignatedForwarder?: string;
     localRole: "df" | "non-df";
+    requestedAlgorithm: "default" | "hrw";
+    /** What every participant actually ran; `default` when one dissents. */
+    effectiveAlgorithm: "default" | "hrw";
+    fallbackReason?: string;
+    candidateWeights: Array<{ vtep: string; weight: number }>;
   }>;
-  /** One row per remote MAC that sits behind an Ethernet Segment. */
+  /** One row per remote MAC that sits behind a Single-Active segment. */
   multihomingPaths: Array<{
     vni: number;
     mac: string;
     esi: string;
     primary: string;
     backups: string[];
+  }>;
+  /**
+   * All-Active aliasing. Every eligible VTEP is a live path, so this is the set
+   * and the flow-independent default — never a winner with understudies.
+   */
+  aliasingPaths: Array<{
+    vni: number;
+    mac: string;
+    esi: string;
+    advertisingVtep: string;
+    eligibleVteps: string[];
+    selectedVtep: string;
+    reason: string;
+  }>;
+  /** Where the fabric believes each address lives, and how it got there. */
+  macMobility: Array<{
+    vni: number;
+    mac: string;
+    sequence: number;
+    owner: string;
+    location: string;
+    previousOwner?: string;
+    state: "stable" | "moved" | "superseded";
   }>;
   evpnRoutes: Array<{
     type: 1 | 2 | 3 | 4 | 5;
@@ -1162,6 +1198,10 @@ export type SimWorkerRequest =
   | { type: "GET_EVPN_AD_ROUTES"; requestId: string; deviceId: string }
   | { type: "GET_EVPN_ES_ROUTES"; requestId: string; deviceId: string }
   | { type: "GET_EVPN_MULTIHOMING_PATHS"; requestId: string; deviceId: string }
+  // --- M10.17 All-Active inspection (runtime, never persisted) ---
+  | { type: "GET_EVPN_ALIASING_PATHS"; requestId: string; deviceId: string }
+  | { type: "GET_EVPN_MAC_MOBILITY"; requestId: string; deviceId: string }
+  | { type: "GET_EVPN_DF_DETAIL"; requestId: string; deviceId: string }
   // --- M10.7 management plane (inspection + bounded runtime actions) ---
   | { type: "GET_REMOTE_SESSIONS"; requestId: string; deviceId: string }
   | { type: "CLEAR_REMOTE_LINE"; requestId: string; deviceId: string; line: number }
@@ -1370,6 +1410,9 @@ export interface SimWorkerPayloadByType {
   GET_EVPN_AD_ROUTES: VxlanEvpnView;
   GET_EVPN_ES_ROUTES: VxlanEvpnView;
   GET_EVPN_MULTIHOMING_PATHS: VxlanEvpnView;
+  GET_EVPN_ALIASING_PATHS: VxlanEvpnView;
+  GET_EVPN_MAC_MOBILITY: VxlanEvpnView;
+  GET_EVPN_DF_DETAIL: VxlanEvpnView;
   GET_REMOTE_SESSIONS: RemoteSessionsView;
   CLEAR_REMOTE_LINE: RemoteSessionsView;
   GET_AAA_STATUS: AaaStatusResponse;

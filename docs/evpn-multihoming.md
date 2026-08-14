@@ -341,38 +341,121 @@ and interface state changes in virtual time.
 
 ## What is persisted
 
-`LabDocument` stores the Ethernet Segments only — name, ESI, redundancy mode and
-attachment list — under `evpn.ethernetSegments`. The key is optional, so every
-lab written before M10.16 opens unchanged and gains nothing.
+`LabDocument` stores the Ethernet Segments only — name, ESI, redundancy mode,
+attachment list and the optional `dfAlgorithm` — under `evpn.ethernetSegments`.
+The key is optional, so every lab written before M10.16 opens unchanged and gains
+nothing; and a segment that never named an election keeps no `dfAlgorithm` key at
+all, so a pre-M10.17 lab is byte-identical and is never reinterpreted as HRW.
 
-It must never store the discovered peer table, the elected Designated Forwarder,
-a Type 1 or Type 4 route, a primary/backup path, counters or any failover state.
-The browser worker and the verifier rebuild every one of them from the structured
-configuration and the imported routes.
+An attachment may name a physical access switchport or a logical
+`Port-channel<n>`, which round-trips through the canonical configuration as its
+own interface block (see `docs/device-configuration.md`).
+
+It must never store the discovered peer table, the elected Designated Forwarder
+or Backup, a Type 1 or Type 4 route, a primary/backup path, an aliasing path set,
+a selected flow path, an HRW weight, a mobility sequence, a learned mobility
+route, counters or any failover state. The browser worker and the verifier
+rebuild every one of them from the structured configuration and the imported
+routes, which is what keeps the two in step.
 
 ## Inspection
+
+Configuration:
+
+```
+evpn ethernet-segment ES-CE1
+ identifier 0000:0000:0000:0000:0001
+ redundancy-mode single-active|all-active
+ df-election default|hrw
+!
+interface Gi0/3            ! or interface Port-channel10
+ ethernet-segment ES-CE1
+```
+
+`redundancy-mode` defaults to `single-active` and `df-election` to the modulus
+algorithm, so a segment that names neither behaves exactly as it did before.
+Every other vendor spelling — preference-based election, AC-DF, port-active — is
+reported at the CLI, the parser and the importer alike, never downgraded.
+
+Inspection:
 
 ```
 show evpn ethernet-segment
 show evpn ethernet-segment detail
 show evpn ethernet-segment esi <esi>
 show evpn df
+show evpn df detail
 show evpn df vlan <vlan>
+show evpn aliasing
+show evpn aliasing mac <mac>
+show evpn mac-mobility
 show bgp l2vpn evpn route-type 1
+show bgp l2vpn evpn route-type 2
 show bgp l2vpn evpn route-type 4
 show mac address-table remote
 ```
 
-A managed L3 Switch window carries the same tables under `VXLAN & EVPN` —
-Ethernet Segments, ES Peers, DF Election, EVPN Type 1, EVPN Type 4 and
-Multihoming Paths — inside the one reusable panel, exactly as QoS, VPN and the
-rest of EVPN do. The selected section is UI state and never reaches
-`LabDocument`, a submission, grading or the database.
+`show evpn df detail` reports the requested algorithm, the effective one, any
+fallback reason, the DF, the BDF and every candidate weight — a weight exists
+only under HRW, so its presence is itself the proof of which election ran.
 
-Packet Trace adds four filters: **Ethernet Segment**, **EVPN Multihoming**, **DF
-Election** and **Fast Failover**, so the sequence Type 4 discovery → Type 1
-advertisement → DF election → Type 2 association → primary/backup programming →
-failure → mass withdrawal → new DF → recovery is walkable one step at a time.
+A managed L3 Switch window carries the same tables under `VXLAN & EVPN` —
+Ethernet Segments, ES Peers, DF Election, EVPN Type 1, EVPN Type 4, Multihoming
+Paths, Aliasing Paths and MAC Mobility — inside the one reusable panel, exactly
+as QoS, VPN and the rest of EVPN do. No new top-level tab is created, and the
+selected section is UI state that never reaches `LabDocument`, a submission,
+grading or the database.
+
+The worker exposes the same runtime as plain JSON through
+`GET_EVPN_ETHERNET_SEGMENTS`, `GET_EVPN_ES_PEERS`, `GET_EVPN_DF_STATE`,
+`GET_EVPN_DF_DETAIL`, `GET_EVPN_MULTIHOMING_PATHS`, `GET_EVPN_ALIASING_PATHS` and
+`GET_EVPN_MAC_MOBILITY`.
+
+Packet Trace adds four filters to the M10.16 set: **All-Active**, **Aliasing**,
+**MAC Mobility** and **HRW**, beside **Ethernet Segment**, **EVPN Multihoming**,
+**DF Election** and **Fast Failover**. `EVPN Multihoming` selects the whole
+family and each of the others selects one stage, the way `QoS` and `VPN` already
+do; `All-Active` cuts across the stages instead, matching the events the engine
+actually stamped as all-active rather than guessing from an event name. Two flows
+are walkable one step at a time:
+
+```
+Type 1 per-EVI → alias candidates → deterministic VTEP selection → VXLAN forwarding
+local MAC move → mobility detected → sequence incremented → Type 2 update
+              → older route superseded → stale route rejected → forwarding follows
+```
+
+## Grading
+
+Eight checks are available, and every expected value in them stays server-side: a
+student result never echoes back an ESI, a sequence, an HRW weight or a candidate
+set.
+
+| Check | Grades |
+| --- | --- |
+| `evpn-all-active-mode` | the segment's redundancy mode, optionally that every peer agrees |
+| `evpn-aliasing-path` | an alias set, its eligible VTEPs and the leaf that advertised it |
+| `evpn-all-active-connectivity` | reachability, optionally over a leaf that never advertised the MAC |
+| `evpn-mac-mobility-sequence` | the sequence an address currently carries |
+| `evpn-mac-owner` | which leaf owns an address, and whether the older one is stale |
+| `evpn-hrw-df` | the elected DF, the BDF, the local role and that HRW actually ran |
+| `evpn-hrw-fallback` | that a mixed segment fell back to the modulus election consistently |
+| `evpn-all-active-failover` | a bounded failover, and that no address had to be relearned |
+
+## Demonstration labs
+
+Two labs are loadable from the Demo Labs dialog and are never opened
+automatically:
+
+- **EVPN All-Active Aliasing** — one CE dual-attached to two leaves through a
+  shared all-active ESI. One leaf advertises the address; both carry it. Losing
+  one attachment leaves traffic flowing with nothing relearned.
+- **EVPN MAC Mobility and HRW DF Election** — two Ethernet Segments and one
+  station that exists in two places under a single MAC and IP, only ever
+  connected at one of them. Unplugging it from the CE leaves the CE-to-leaf
+  uplinks up, so the old segment still advertises the address while the new leaf
+  learns it: the sequence advances from 0 to 1 exactly once, and both segments
+  elect their forwarder with HRW.
 
 ## Known limitations
 

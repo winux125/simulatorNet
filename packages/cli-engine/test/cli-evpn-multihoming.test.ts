@@ -3,7 +3,7 @@ import { Layer3Switch, createSimulationEngine, macFromIndex } from "@sim/sim-cor
 import { describe, expect, it } from "vitest";
 
 /**
- * M10.16 — the multihoming CLI surface.
+ * M10.16/M10.17 — the multihoming CLI surface.
  *
  * Coverage stays at the parsing/adapter boundary: that the right command
  * reaches the right engine call with the right arguments, and that an
@@ -74,12 +74,56 @@ describe("EVPN multihoming CLI", () => {
     expect(device.ethernetSegmentConfigurations()[0]?.esi).toBe(ESI);
   });
 
-  it("reports all-active honestly instead of downgrading it", () => {
+  it("accepts all-active and still refuses a mode that is not modelled", () => {
     const { device, session } = leafSession();
     session.execute("evpn ethernet-segment ES-CE1");
     session.execute(`identifier ${ESI}`);
-    expect(session.execute("redundancy-mode all-active")).toMatch(/Only 'single-active' redundancy is supported/);
+    session.execute("redundancy-mode all-active");
+    expect(device.ethernetSegmentConfigurations()[0]?.redundancyMode).toBe("all-active");
+    // Preference-based and port-active are reported, never downgraded.
+    expect(session.execute("redundancy-mode port-active")).toMatch(/preference-based and port-active modes are not modelled/);
+    expect(device.ethernetSegmentConfigurations()[0]?.redundancyMode).toBe("all-active");
+    session.execute("redundancy-mode single-active");
     expect(device.ethernetSegmentConfigurations()[0]?.redundancyMode).toBe("single-active");
+  });
+
+  it("selects the DF algorithm and leaves an unnamed one at the modulus default", () => {
+    const { device, session } = leafSession();
+    session.execute("evpn ethernet-segment ES-CE1");
+    session.execute(`identifier ${ESI}`);
+    // An absent algorithm stays absent, so a pre-M10.17 lab is never
+    // reinterpreted as HRW.
+    expect(device.ethernetSegmentConfigurations()[0]?.dfAlgorithm).toBeUndefined();
+    session.execute("df-election hrw");
+    expect(device.ethernetSegmentConfigurations()[0]?.dfAlgorithm).toBe("hrw");
+    expect(session.execute("df-election preference")).toMatch(/preference-based election and AC-DF are not modelled/);
+    expect(device.ethernetSegmentConfigurations()[0]?.dfAlgorithm).toBe("hrw");
+    session.execute("no df-election");
+    expect(device.ethernetSegmentConfigurations()[0]?.dfAlgorithm).toBeUndefined();
+  });
+
+  it("shows the All-Active inspection surface even before anything is learned", () => {
+    const { session } = leafSession();
+    session.execute("evpn ethernet-segment ES-CE1");
+    session.execute(`identifier ${ESI}`);
+    session.execute("redundancy-mode all-active");
+    session.execute("df-election hrw");
+    session.execute("exit");
+    session.execute("interface Gi0/1");
+    session.execute("ethernet-segment ES-CE1");
+    session.execute("end");
+
+    const summary = session.execute("show evpn ethernet-segment");
+    expect(summary).toContain("all-active");
+    expect(summary).toContain("hrw");
+    // Nothing is learned in this harness, so every runtime view is honestly empty
+    // rather than inventing a path, a sequence or an election.
+    expect(session.execute("show evpn aliasing")).toMatch(/No All-Active aliasing path/);
+    expect(session.execute("show evpn aliasing mac 0200.0000.0001")).toMatch(/No All-Active aliasing path/);
+    expect(session.execute("show evpn aliasing mac not-a-mac")).toMatch(/is not a valid MAC address/);
+    expect(session.execute("show evpn mac-mobility")).toMatch(/No MAC mobility state/);
+    expect(session.execute("show evpn df detail")).toMatch(/No Designated Forwarder/);
+    expect(session.execute("show bgp l2vpn evpn route-type 1")).toMatch(/EVPN table is empty|\[1\]/);
   });
 
   it("refuses an attachment that could never serve a CE", () => {

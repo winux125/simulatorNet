@@ -29,7 +29,9 @@ export type VxlanSection =
   | "df-election"
   | "type1"
   | "type4"
-  | "multihoming";
+  | "multihoming"
+  | "aliasing"
+  | "mac-mobility";
 
 export const VXLAN_SECTIONS: ReadonlyArray<{ id: VxlanSection; label: string }> = [
   { id: "nve", label: "NVE" },
@@ -44,6 +46,8 @@ export const VXLAN_SECTIONS: ReadonlyArray<{ id: VxlanSection; label: string }> 
   { id: "bgp-evpn", label: "BGP EVPN" },
   { id: "remote-macs", label: "Remote MACs" },
   { id: "multihoming", label: "Multihoming Paths" },
+  { id: "aliasing", label: "Aliasing Paths" },
+  { id: "mac-mobility", label: "MAC Mobility" },
   { id: "type1", label: "EVPN Type 1" },
   { id: "type2", label: "EVPN Type 2" },
   { id: "type3", label: "EVPN Type 3" },
@@ -343,14 +347,15 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
             <p className="section-eyebrow">EVPN Multihoming</p>
             <h2>Ethernet Segments</h2>
             <p className="section-note">
-              An Ethernet Segment is one CE attached to two leaves, named by a shared ESI. M10.16
-              models <strong>Single Active</strong> redundancy only: exactly one leaf forwards toward
-              the CE for each VLAN, and the other keeps a deterministic backup. All-active,
-              aliasing and MAC mobility are deliberately not modelled.
+              An Ethernet Segment is one CE attached to two leaves, named by a shared ESI.
+              {" "}<strong>Single Active</strong> lets exactly one leaf forward toward the CE for each
+              VLAN while the other keeps a deterministic backup. <strong>All Active</strong> lets every
+              operational attachment carry known unicast — the Designated Forwarder then owns only
+              overlay BUM — and remote leaves reach the MAC over any eligible leaf through aliasing.
             </p>
             <table className="data-table">
               <thead><tr>
-                <th>Segment</th><th>ESI</th><th>Redundancy</th><th>Attachments</th>
+                <th>Segment</th><th>ESI</th><th>Redundancy</th><th>DF algorithm</th><th>Attachments</th>
                 <th>VLANs</th><th>Status</th>
               </tr></thead>
               <tbody>
@@ -358,22 +363,26 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
                   <tr key={row.id}>
                     <td><code>{row.id}</code></td>
                     <td><code>{row.esi}</code></td>
-                    <td>Single Active</td>
+                    <td>{row.redundancyMode === "all-active" ? "All Active" : "Single Active"}</td>
+                    <td>{row.dfAlgorithm === "hrw" ? "HRW" : "Default"}</td>
                     <td><code>{row.interfaces.join(", ") || "—"}</code></td>
                     <td><code>{row.vlanIds.join(", ") || "—"}</code></td>
                     <td>{row.up ? "up" : `down${row.reason ? ` (${row.reason})` : ""}`}</td>
                   </tr>
                 ))}
                 {view.ethernetSegments.length === 0 && (
-                  <tr><td colSpan={6}>No Ethernet Segment is configured.</td></tr>
+                  <tr><td colSpan={7}>No Ethernet Segment is configured.</td></tr>
                 )}
               </tbody>
             </table>
             <p className="section-note">
               Configure it from the CLI: <code>evpn ethernet-segment &lt;name&gt;</code> →
-              {" "}<code>identifier &lt;esi&gt;</code> and <code>redundancy-mode single-active</code>,
-              then <code>interface &lt;access port&gt;</code> → <code>ethernet-segment &lt;name&gt;</code>.
-              The VLAN and VNI come from the existing VLAN-to-VNI mapping.
+              {" "}<code>identifier &lt;esi&gt;</code>,
+              {" "}<code>redundancy-mode single-active|all-active</code> and the optional
+              {" "}<code>df-election default|hrw</code>, then
+              {" "}<code>interface &lt;access port|Port-channel&gt;</code> →
+              {" "}<code>ethernet-segment &lt;name&gt;</code>. The VLAN and VNI come from the existing
+              VLAN-to-VNI mapping.
             </p>
             <VxlanProblems problems={view.problems} />
           </>
@@ -388,7 +397,10 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
               leaf's attachment is invalidated in one message.
             </p>
             <table className="data-table">
-              <thead><tr><th>ESI</th><th>VTEP</th><th>Router ID</th><th>Origin</th><th>Reachability</th></tr></thead>
+              <thead><tr>
+                <th>ESI</th><th>VTEP</th><th>Router ID</th><th>Origin</th><th>Reachability</th>
+                <th>Redundancy</th><th>DF algorithm</th>
+              </tr></thead>
               <tbody>
                 {view.ethernetSegmentPeers.map((row) => (
                   <tr key={`${row.esi}-${row.vtep}`}>
@@ -397,10 +409,15 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
                     <td><code>{row.routerId ?? "—"}</code></td>
                     <td>{row.local ? "local" : "remote"}</td>
                     <td>{row.reachable ? "Ethernet A-D" : "no Ethernet A-D"}</td>
+                    <td>
+                      {row.redundancyMode === "all-active" ? "All Active" : "Single Active"}
+                      {row.modeAgrees ? "" : " (mismatch)"}
+                    </td>
+                    <td>{row.dfAlgorithm === "hrw" ? "HRW" : "Default"}</td>
                   </tr>
                 ))}
                 {view.ethernetSegmentPeers.length === 0 && (
-                  <tr><td colSpan={5}>No Ethernet Segment peer is known.</td></tr>
+                  <tr><td colSpan={7}>No Ethernet Segment peer is known.</td></tr>
                 )}
               </tbody>
             </table>
@@ -413,12 +430,19 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
             <p className="section-note">
               Every participating leaf runs the same deterministic election over the same canonically
               ordered candidate list, so all of them reach an identical answer without one telling
-              another what it decided. Exactly one leaf is DF per <code>&lt;ESI, VLAN&gt;</code>; the
-              non-DF keeps its attachment as a backup and does not forward toward the CE.
+              another what it decided. Exactly one leaf is DF per <code>&lt;ESI, VLAN&gt;</code>.
+              Under Single Active the non-DF keeps its attachment as a silent backup; under All
+              Active it still carries known unicast and only stays out of overlay BUM.
+            </p>
+            <p className="section-note">
+              <strong>Default</strong> is the RFC 7432 modulus election. <strong>HRW</strong> runs only
+              when every operational participant advertises it — if one asks for the modulus, all of
+              them fall back to it, so two leaves can never compute a different forwarder.
             </p>
             <table className="data-table">
               <thead><tr>
-                <th>ESI</th><th>VLAN</th><th>Candidates</th><th>Designated Forwarder</th><th>Local role</th>
+                <th>ESI</th><th>VLAN</th><th>Candidates</th><th>Designated Forwarder</th>
+                <th>Backup</th><th>Algorithm</th><th>Local role</th>
               </tr></thead>
               <tbody>
                 {view.designatedForwarders.map((row) => (
@@ -427,11 +451,117 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
                     <td><code>{row.vlanId}</code></td>
                     <td><code>{row.candidates.join(", ") || "—"}</code></td>
                     <td><code>{row.designatedForwarder ?? "none"}</code></td>
+                    <td><code>{row.backupDesignatedForwarder ?? "—"}</code></td>
+                    <td>
+                      {row.effectiveAlgorithm === "hrw" ? "HRW" : "Default"}
+                      {row.fallbackReason === undefined
+                        ? ""
+                        : ` (fell back: ${row.fallbackReason})`}
+                    </td>
                     <td><strong>{row.localRole === "df" ? "DF" : "non-DF"}</strong></td>
                   </tr>
                 ))}
                 {view.designatedForwarders.length === 0 && (
-                  <tr><td colSpan={5}>No Designated Forwarder has been elected.</td></tr>
+                  <tr><td colSpan={7}>No Designated Forwarder has been elected.</td></tr>
+                )}
+              </tbody>
+            </table>
+            {view.designatedForwarders.some((row) => row.candidateWeights.length > 0) && (
+              <table className="data-table">
+                <thead><tr><th>ESI</th><th>VLAN</th><th>Candidate weights</th></tr></thead>
+                <tbody>
+                  {view.designatedForwarders
+                    .filter((row) => row.candidateWeights.length > 0)
+                    .map((row) => (
+                      <tr key={`w-${row.esi}-${row.vlanId}`}>
+                        <td><code>{row.esi}</code></td>
+                        <td><code>{row.vlanId}</code></td>
+                        <td>
+                          <code>
+                            {row.candidateWeights
+                              .map((entry) => `${entry.vtep}=${entry.weight}`)
+                              .join(", ")}
+                          </code>
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            )}
+          </>
+        )}
+
+        {section === "aliasing" && (
+          <>
+            <h2>Aliasing Paths</h2>
+            <p className="section-note">
+              Under All Active a MAC is advertised by whichever leaf happened to learn it, but every
+              leaf with a usable Ethernet A-D per-EVI route for the same ESI and VNI can reach it.
+              A remote leaf therefore forwards over any eligible leaf — that is aliasing, and it is
+              why losing one path needs no address to be relearned.
+            </p>
+            <p className="section-note">
+              One flow always picks one path. The selection hashes a stable flow key over the ESI,
+              VNI, MACs and any IP addresses and ports present, so the same flow lands on the same
+              leaf every run and a known-unicast frame is never duplicated to every alias.
+            </p>
+            <table className="data-table">
+              <thead><tr>
+                <th>MAC</th><th>ESI</th><th>VNI</th><th>Advertised by</th>
+                <th>Eligible leaves</th><th>Selected leaf</th><th>State</th>
+              </tr></thead>
+              <tbody>
+                {view.aliasingPaths.map((row) => (
+                  <tr key={`${row.vni}-${row.mac}`}>
+                    <td><code>{row.mac}</code></td>
+                    <td><code>{row.esi}</code></td>
+                    <td><code>{row.vni}</code></td>
+                    <td><code>{row.advertisingVtep}</code></td>
+                    <td><code>{row.eligibleVteps.join(", ") || "—"}</code></td>
+                    <td><code>{row.selectedVtep}</code></td>
+                    <td>{row.reason}</td>
+                  </tr>
+                ))}
+                {view.aliasingPaths.length === 0 && (
+                  <tr><td colSpan={7}>No All-Active aliasing path is programmed.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </>
+        )}
+
+        {section === "mac-mobility" && (
+          <>
+            <h2>MAC Mobility</h2>
+            <p className="section-note">
+              A Type 2 route carries a mobility sequence, and the highest sequence wins. A leaf that
+              genuinely takes over an address increments past the highest it has seen, so the older
+              advertisement becomes stale and cannot steal the MAC back.
+            </p>
+            <p className="section-note">
+              A sequence never moves because a BGP session reset, an NVE restart or a re-render, and
+              never because a second leaf of the <em>same</em> All-Active segment saw the frame — that
+              is aliasing, not a move. Only a change of owning attachment or Ethernet Segment counts.
+            </p>
+            <table className="data-table">
+              <thead><tr>
+                <th>MAC</th><th>VNI</th><th>Sequence</th><th>Current owner</th>
+                <th>Location</th><th>Previous owner</th><th>State</th>
+              </tr></thead>
+              <tbody>
+                {view.macMobility.map((row) => (
+                  <tr key={`${row.vni}-${row.mac}`}>
+                    <td><code>{row.mac}</code></td>
+                    <td><code>{row.vni}</code></td>
+                    <td><code>{row.sequence}</code></td>
+                    <td><code>{row.owner}</code></td>
+                    <td><code>{row.location}</code></td>
+                    <td><code>{row.previousOwner ?? "—"}</code></td>
+                    <td>{row.state}</td>
+                  </tr>
+                ))}
+                {view.macMobility.length === 0 && (
+                  <tr><td colSpan={7}>No MAC mobility state is tracked.</td></tr>
                 )}
               </tbody>
             </table>

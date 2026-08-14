@@ -130,7 +130,8 @@ export const TRACE_PROTOCOL_FILTERS = [
   "Route Reflection", "Community", "Aggregation",
   "MPLS", "LDP", "VPNv4", "VPNv6", "L3VPN",
   "VXLAN", "EVPN", "BUM", "VTEP", "L3VNI", "IRB", "Type 5",
-  "EVPN Multihoming", "Ethernet Segment", "DF Election", "Fast Failover",
+  "EVPN Multihoming", "Ethernet Segment", "DF Election", "HRW", "Fast Failover",
+  "All-Active", "Aliasing", "MAC Mobility",
   "IPv6", "ICMPv6", "NDP", "SLAAC", "DHCPv6", "OSPFv3", "IPv6 ACL",
   "Wireless", "Beacon", "Probe", "Authentication", "Association", "Roaming",
   "Telnet", "SSH", "AAA", "RADIUS", "TACACS+", "SNMP",
@@ -340,6 +341,13 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
     if (filter === "BGP") return event.type.startsWith("bgp-")
       || event.type.startsWith("prefix-list-") || event.type.startsWith("route-map-") || event.type.startsWith("route-policy-")
       || event.type.startsWith("community-list-") || event.type.startsWith("as-path-list-");
+    // "EVPN Multihoming" is the whole family; Ethernet Segment, DF Election,
+    // HRW, Aliasing, MAC Mobility and Fast Failover each select one stage.
+    if (filter === "EVPN Multihoming") return isEvpnMultihomingTrace(protocol);
+    // "All-Active" cuts across those stages instead: it is every multihoming
+    // event the engine actually stamped as all-active, never a guess from the
+    // event name.
+    if (filter === "All-Active") return isAllActiveTrace(event, protocol);
     return protocol === filter;
   });
   return <div className="dock-table-wrap"><div className="trace-filter"><label>Protocol filter <select aria-label="Packet trace protocol filter" value={filter} onChange={(event) => setFilter(event.target.value)}>{TRACE_PROTOCOL_FILTERS.map((protocol) => <option key={protocol}>{protocol}</option>)}</select></label><span>{visible.length} records</span></div><table className="data-table packet-table"><thead><tr><th>Time</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Family</th><th>Ports</th><th>Event</th><th>QoS</th><th>Result</th></tr></thead><tbody>{visible.slice(-300).reverse().map((event, index) => {
@@ -366,6 +374,41 @@ function isVpnTraceEvent(type: string): boolean {
 /** True when a BGP event names the `l2vpn-evpn` address family. */
 function evpnFamily(event: SimulationTraceEvent): boolean {
   return (event.detail as { addressFamily?: unknown } | undefined)?.addressFamily === "l2vpn-evpn";
+}
+
+/** Every stage the "EVPN Multihoming" family filter gathers back together. */
+const evpnMultihomingProtocols = new Set([
+  "EVPN Multihoming", "Ethernet Segment", "DF Election", "HRW", "Fast Failover",
+  "Aliasing", "MAC Mobility",
+]);
+
+function isEvpnMultihomingTrace(protocol: string): boolean {
+  return evpnMultihomingProtocols.has(protocol);
+}
+
+/**
+ * An HRW election, including the fallback away from one.
+ *
+ * A segment that asked for HRW and fell back to the modulus is still an HRW
+ * event — that fallback is exactly what a learner filtering on HRW wants to
+ * find — so the requested algorithm counts as much as the effective one.
+ */
+function isHrwTraceEvent(event: SimulationTraceEvent): boolean {
+  const detail = event.detail as { requestedAlgorithm?: unknown; effectiveAlgorithm?: unknown } | undefined;
+  return detail?.requestedAlgorithm === "hrw" || detail?.effectiveAlgorithm === "hrw";
+}
+
+/**
+ * All-Active multihoming, as the engine stamped it.
+ *
+ * The redundancy mode travels in the trace detail, so this never infers the
+ * mode from an event name. Aliasing exists only under All-Active, so those
+ * events belong to the family whether or not they carry the field.
+ */
+function isAllActiveTrace(event: SimulationTraceEvent, protocol: string): boolean {
+  if (protocol === "Aliasing") return true;
+  if (!isEvpnMultihomingTrace(protocol)) return false;
+  return (event.detail as { redundancyMode?: unknown } | undefined)?.redundancyMode === "all-active";
 }
 
 /** The one protocol-filter classifier the Packet Trace dropdown selects on. */
@@ -428,7 +471,17 @@ export function traceProtocol(event: SimulationTraceEvent): string {
   if (type === "evpn-es-route-originated" || type === "evpn-es-route-imported"
     || type === "evpn-es-route-withdrawn" || type === "evpn-es-peer-discovered"
     || type === "evpn-es-state-changed") return "Ethernet Segment";
-  if (type.startsWith("evpn-df-")) return "DF Election";
+  // M10.17: aliasing and mobility each get a filter, so a learner can walk
+  // Type 1 per-EVI → alias candidates → the selected VTEP, or a local move →
+  // sequence increment → superseded route, without the rest of the overlay.
+  if (type.startsWith("evpn-aliasing-")) return "Aliasing";
+  if (type.startsWith("evpn-mac-mobility-") || type === "evpn-mac-route-superseded"
+    || type === "evpn-stale-mac-route-rejected" || type === "evpn-duplicate-mac-detected") {
+    return "MAC Mobility";
+  }
+  // An HRW election — including the fallback *away* from one — is its own
+  // filter; a segment that never asked for HRW stays plain DF Election.
+  if (type.startsWith("evpn-df-")) return isHrwTraceEvent(event) ? "HRW" : "DF Election";
   if (type === "evpn-es-mass-withdraw" || type === "evpn-multihoming-failover"
     || type === "evpn-es-unreachable" || type === "evpn-ad-route-withdrawn") return "Fast Failover";
   if (type.startsWith("evpn-ad-route-") || type.startsWith("evpn-multihoming-")

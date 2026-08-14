@@ -214,6 +214,34 @@ describe("routed EVPN import subset", () => {
     }
   });
 
+  it("maps the M10.17 All-Active segment and its HRW election", () => {
+    // The canonical spellings the CLI and the renderer use are the ones the
+    // importer reads, so a `.cfg` written by SimulatorNet re-imports exactly.
+    const text = MULTIHOMING
+      .replace(" redundancy-mode single-active", " redundancy-mode all-active\n df-election hrw");
+    const config = map(text);
+    expect(config.evpn?.ethernetSegments).toEqual([{
+      id: "ES-CE1",
+      esi: "0000:0000:0000:0000:0001",
+      redundancyMode: "all-active",
+      interfaces: ["Gi0/1"],
+      dfAlgorithm: "hrw",
+    }]);
+    const unparsed = parseIosConfig(text, INTERFACES).unparsedLines.join("\n");
+    for (const line of ["redundancy-mode all-active", "df-election hrw"]) {
+      expect(unparsed, `expected '${line}' to be understood`).not.toContain(line);
+    }
+    // `df-election default` is read too, and stays the modulus election.
+    const explicit = map(MULTIHOMING.replace(
+      " redundancy-mode single-active",
+      " redundancy-mode single-active\n df-election default",
+    ));
+    expect(explicit.evpn?.ethernetSegments?.[0]?.dfAlgorithm).toBe("default");
+    // A segment that never names one gains no key at all, so a pre-M10.17
+    // configuration is never reinterpreted as HRW.
+    expect(map(MULTIHOMING).evpn?.ethernetSegments?.[0]).not.toHaveProperty("dfAlgorithm");
+  });
+
   it("reports every routed-EVPN construct SimulatorNet does not model", () => {
     const parsed = parseIosConfig(UNSUPPORTED, INTERFACES);
     const unparsed = parsed.unparsedLines.join("\n");

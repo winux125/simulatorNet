@@ -676,8 +676,13 @@ function ethernetSegmentLines(evpn: EvpnConfig | undefined): string[] {
       `evpn ethernet-segment ${segment.id}`,
       ` identifier ${segment.esi}`,
       ` redundancy-mode ${segment.redundancyMode}`,
-      "!",
     );
+    // The modulus election is the default, so it is not printed — exactly as
+    // IOS omits every other value that is already the default.
+    if (segment.dfAlgorithm !== undefined && segment.dfAlgorithm !== "default") {
+      out.push(` df-election ${segment.dfAlgorithm}`);
+    }
+    out.push("!");
   }
   return out;
 }

@@ -82,6 +82,8 @@ export type DeviceWindowSectionId =
   | "evpn-type1-runtime"
   | "evpn-type4-runtime"
   | "evpn-multihoming-runtime"
+  | "evpn-aliasing-runtime"
+  | "evpn-mac-mobility-runtime"
   | "aaa-runtime"
   | "snmp-runtime";
 
@@ -243,14 +245,17 @@ function monitorSections(type: DeviceType): DeviceWindowSectionDefinition[] {
       sections.push({ id: "evpn-type5-runtime", label: "EVPN Type 5", group: "VXLAN & EVPN" });
       sections.push({ id: "evpn-vrf-routes-runtime", label: "VRF Routes", group: "VXLAN & EVPN" });
       sections.push({ id: "evpn-routed-overlay-runtime", label: "Routed Overlay", group: "VXLAN & EVPN" });
-      // M10.16 multihoming stays inside the same reusable panel: the segment,
-      // who forwards for it and where a MAC actually sits are all runtime.
+      // Multihoming stays inside the same reusable panel: the segment, who
+      // forwards for it, every alias path and where a MAC actually sits are all
+      // runtime, rebuilt by the browser worker and the verifier alike.
       sections.push({ id: "evpn-es-runtime", label: "Ethernet Segments", group: "VXLAN & EVPN" });
       sections.push({ id: "evpn-es-peers-runtime", label: "ES Peers", group: "VXLAN & EVPN" });
       sections.push({ id: "evpn-df-runtime", label: "DF Election", group: "VXLAN & EVPN" });
       sections.push({ id: "evpn-type1-runtime", label: "EVPN Type 1", group: "VXLAN & EVPN" });
       sections.push({ id: "evpn-type4-runtime", label: "EVPN Type 4", group: "VXLAN & EVPN" });
       sections.push({ id: "evpn-multihoming-runtime", label: "Multihoming Paths", group: "VXLAN & EVPN" });
+      sections.push({ id: "evpn-aliasing-runtime", label: "Aliasing Paths", group: "VXLAN & EVPN" });
+      sections.push({ id: "evpn-mac-mobility-runtime", label: "MAC Mobility", group: "VXLAN & EVPN" });
     }
     if (type === "router") {
       sections.push({ id: "mpls-runtime", label: "MPLS Forwarding", group: "MPLS & L3VPN" });

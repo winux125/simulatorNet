@@ -13,6 +13,7 @@ import { MBGP_IPV6_DEMO_LABS } from "./mbgp-ipv6-demo-labs";
 import { VXLAN_EVPN_DEMO_LABS } from "./vxlan-evpn-demo-labs";
 import { ROUTED_EVPN_DEMO_LABS } from "./routed-evpn-demo-labs";
 import { EVPN_MULTIHOMING_DEMO_LABS } from "./evpn-multihoming-demo-labs";
+import { EVPN_ALL_ACTIVE_DEMO_LABS } from "./evpn-all-active-demo-labs";
 import { ALL_DEVICES_ICON_DEMO } from "./icon-profile-demo";
 
 function ports(prefix: string, count: number): Array<{ id: string }> {
@@ -343,6 +344,8 @@ export const DEMO_LABS = [
   ...ROUTED_EVPN_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
   // M10.16 EVPN Single-Active multihoming: Ethernet Segments, DF and failover.
   ...EVPN_MULTIHOMING_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
+  // M10.17 EVPN All-Active multihoming: aliasing, MAC mobility and HRW.
+  ...EVPN_ALL_ACTIVE_DEMO_LABS.map((document) => ({ id: document.id, label: document.title, document })),
 ] as const;
 
 export type DemoLabId = (typeof DEMO_LABS)[number]["id"];

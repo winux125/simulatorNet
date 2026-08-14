@@ -851,6 +851,9 @@ function canonicalVxlan(config: Layer3SwitchDeviceConfig | undefined) {
             esi: segment.esi.toLowerCase(),
             redundancyMode: segment.redundancyMode,
             interfaces: [...new Set(segment.interfaces)].sort((a, b) => a.localeCompare(b)),
+            // An absent algorithm stays absent, so a pre-M10.17 lab is
+            // byte-identical and is never reinterpreted as HRW.
+            ...(segment.dfAlgorithm === undefined ? {} : { dfAlgorithm: segment.dfAlgorithm }),
           })),
     },
     vrfs: config?.vrfs === undefined ? undefined : [...config.vrfs]
