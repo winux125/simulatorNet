@@ -252,12 +252,21 @@ describe("OSPF reliable flooding over finite queues", () => {
       }
       expect(missingRoutes).toEqual([]);
 
+      // Batching keeps the burst inside the queue, so nothing is lost and the
+      // recovery path is never needed on a healthy fabric.
+      expect(tailDropsOf(fabric.routers)).toBe(0);
+      for (const index of sample) {
+        expect(fabric.routers[index]!.ospf.floodCounters().outstanding).toBe(0);
+        expect(fabric.routers[index]!.ospf.floodCounters().abandoned).toBe(0);
+        expect(fabric.routers[index]!.ospf.retransmissionTimerArmed).toBe(false);
+      }
+
       // Named individually so a future failure says *which* bound moved.
       const budget = fabric.engine.controlProtocolBudget;
       expect(budget.consumed("spfRuns")).toBeLessThanOrEqual(budget.maximumOf("spfRuns"));
-      // The linear contract M10.17.2 established: at most two walks per router
-      // for a whole cold start, however the flooding underneath recovers.
-      expect(budget.consumed("spfRuns")).toBeLessThanOrEqual(2 * routerCount);
+      // The linear contract M10.17.2 established, kept over a finite queue:
+      // exactly one Dijkstra walk per router for a whole cold start.
+      expect(budget.consumed("spfRuns")).toBe(routerCount);
       expect(budget.consumed("lsaFloods")).toBeLessThan(budget.maximumOf("lsaFloods"));
       expect(budget.consumed("ospfEvents")).toBeLessThan(budget.maximumOf("ospfEvents"));
       expect(budget.consumed("adjacencyTransitions")).toBeLessThan(budget.maximumOf("adjacencyTransitions"));
@@ -462,6 +471,53 @@ describe("OSPF reliable flooding over finite queues", () => {
       expect(router.ospf.retransmissionTimerArmed).toBe(false);
     }
     expect(engine.pendingEventCount()).toBe(0);
+  });
+
+  it("carries one flood wave in bounded batches instead of one packet per advertisement", () => {
+    const fabric = buildArea(64);
+    fabric.engine.runUntilIdle();
+
+    // A batch is a list of advertisements in one Link State Update, so far more
+    // are offered than packets are sent — that ratio is the whole point.
+    const offers = fabric.routers.reduce((sum, router) => sum + router.ospf.floodCounters().offers, 0);
+    const updates = fabric.routers.reduce((sum, router) =>
+      sum + router.ospf.floodCounters().initialUpdates + router.ospf.floodCounters().retransmittedUpdates, 0);
+    expect(offers).toBeGreaterThan(10 * updates);
+
+    // No packet ever carries more than the bound, however large the database.
+    const oversized = fabric.engine.traceLog
+      .filter((entry) => entry.type === "ospf-lsa-flooded" && entry.detail?.received === undefined)
+      .filter((entry) => Number(entry.detail?.count ?? 0) > 64);
+    expect(oversized).toEqual([]);
+
+    // And the batching never swallows a revision: every database is complete.
+    const reference = databaseOf(fabric.routers[0]!);
+    expect(reference).toHaveLength(2 * 64 - 1);
+    for (const index of sampleIndexes(64)) expect(databaseOf(fabric.routers[index]!)).toEqual(reference);
+  });
+
+  it("still floods a revision that arrives after a batch was already scheduled", () => {
+    // The M10.17.2 shape: two changes land in the same instant, so the second
+    // one arrives while the first one's batch is already pending. Neither the
+    // flood batch nor the SPF schedule may lose it.
+    const fabric = buildArea(8);
+    fabric.engine.runUntilIdle();
+    const leaf = fabric.routers[7]!;
+    expect(hasOspfRoute(leaf, loopbackOf(3))).toBe(true);
+
+    fabric.routers[0]!.getInterface("Gi0/3")!.shutdown();
+    fabric.routers[0]!.getInterface("Gi0/4")!.shutdown();
+    fabric.engine.runUntilIdle();
+    expect(hasOspfRoute(leaf, loopbackOf(3))).toBe(false);
+    expect(hasOspfRoute(leaf, loopbackOf(4))).toBe(false);
+
+    fabric.routers[0]!.getInterface("Gi0/3")!.noShutdown();
+    fabric.routers[0]!.getInterface("Gi0/4")!.noShutdown();
+    fabric.engine.runUntilIdle();
+
+    expect(hasOspfRoute(leaf, loopbackOf(3))).toBe(true);
+    expect(hasOspfRoute(leaf, loopbackOf(4))).toBe(true);
+    expect(databaseOf(leaf)).toEqual(databaseOf(fabric.routers[0]!));
   });
 
   it("clears the retransmission list when the adjacency is lost and floods again on restore", () => {

@@ -215,6 +215,37 @@ anyway** — that is what makes the sender's retry stop — while installing
 nothing. It mutates no database, and because the input fingerprint is unchanged
 it never even asks for an SPF walk.
 
+### Batching
+
+Reliable retransmission alone makes the area converge. It does not make the
+burst smaller: the 128-router cold start still tail-dropped 1,472 packets and
+paid a second Dijkstra walk on every router that had to wait for a retry, which
+is 255 of the 256 walks the budget allows.
+
+So a flood is **batched**. A Link State Update is conceptually a list of
+advertisements, and registrations are collected and drained once rather than
+sent one advertisement at a time. Because the batch is built from the
+retransmission list itself, there is one place that decides what a neighbour
+still owes us — no second mechanism, and no revision can disappear because a
+batch was already scheduled. A registration that lands before the drain joins
+that batch; one that lands after arms the next; a newer instance replaces the
+entry and starts its own count.
+
+A batch is bounded by `MAXIMUM_LSAS_PER_LINK_STATE_UPDATE` (64), so a large
+area never builds one unbounded packet. The engine models an OSPF packet as a
+fixed educational wire size rather than encoding RFC 2328 bytes, so a byte or
+MTU bound would be vacuous here; a real implementation bounds by MTU instead.
+
+`OSPF_FLOOD_BATCH_DELAY_NS` is deliberately **zero**. The drain runs at the same
+virtual instant, after every event already queued there, so it batches a whole
+wave without adding latency to a single hop. That was measured, not assumed: a
+positive interval collapses the same fabrics to exactly the same packet count —
+it buys nothing — while paying its cost once per hop, and at half a millisecond
+a 128-hop chain no longer fits inside `OSPF_SPF_COALESCE_DELAY_NS` and needs a
+second walk on every router. **Pacing here is batching, not delay**, and it is
+never a substitute for the acknowledgement logic: correctness comes from
+retransmission, and batching only bounds the load.
+
 ## SPF scheduling
 
 One stimulus produces a *wave*. An interface comes up, an adjacency reaches
@@ -355,22 +386,38 @@ Both use the same deterministic virtual time and reach the same result.
 | Neighbours per device | 64 |
 | Interfaces per device | 64 |
 | LSAs per lab | 4,096 |
-| LSA floods per operation | 80,000 |
+| LSA floods per operation | 64,000 |
 | SPF runs per operation | 256 |
 | Adjacency transitions per operation | 4,096 |
-| OSPF protocol events per operation | 320,000 |
+| OSPF protocol events per operation | 96,000 |
 
 An **SPF run** is one executed Dijkstra walk. A request that was coalesced into
 a pending event, an event that found the fingerprint unchanged, and an event
 over a database describing only this router are all free.
 
-The two flooding bounds are sized from the shape of the protocol rather than
-guessed. Reliable flooding is inherently quadratic: an area of N routers holds
-up to 2N-1 advertisements and offers each of them once across each of the
-2(N-1) directed adjacencies of a minimal connected area. A 128-router cold
-start measures 59,593 offers and 226,420 protocol events, and the previous
-20,000 and 50,000 could not carry it under any topology, point-to-point
-included.
+The two flooding bounds are measured rather than guessed, from the most
+expensive supported shape at `maximumOspfRoutersPerLab`:
+
+| 128-router cold start | Before M10.17.3 | After |
+| --- | --- | --- |
+| Packets queued | 112,982 | 6,344 |
+| Tail drops | 1,472 | 0 |
+| LSA offers (`lsaFloods`) | 59,593 | 48,895 |
+| Protocol events (`ospfEvents`) | 226,420 | 11,672 |
+| SPF executions | 128 | 128 |
+
+An **LSA flood** is one advertisement offered to one neighbour, which is
+inherently quadratic: 2N-1 advertisements across 2(N-1) directed adjacencies.
+48,895 is identical on a fan-out tree of 2, 8 or 32 and on a 128-hop chain. A
+*re-offer* is not counted, because an instance already on a neighbour's
+retransmission list is never sent again by a later flood — that is what took the
+figure down from 59,593.
+
+An **OSPF protocol event** is one packet sent or received, so batching moves it
+by more than an order of magnitude. The 11,672 above is a fan-out tree; the
+bound is sized from the worst supported shape, a 128-hop chain that relays every
+advertisement at every hop and measures **72,644**. Both budgets keep about a
+third of headroom above their worst measurement.
 
 That is deliberately a different judgement from the SPF budget. Repeated SPF was
 **redundant** work — the same tree rebuilt from the same inputs — and was

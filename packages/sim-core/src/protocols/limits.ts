@@ -46,30 +46,33 @@ export const DEFAULT_CONTROL_PROTOCOL_LIMITS = Object.freeze({
   maximumOspfInterfacesPerDevice: 64,
   maximumLsasPerLab: 4_096,
   /**
-   * Reliable flooding is inherently quadratic: an area of N routers holds up to
-   * 2N-1 advertisements and every one of them is offered once across each of
-   * the 2(N-1) directed adjacencies of a minimal connected area. The advertised
-   * 128-router area therefore needs roughly 255 x 254 offers — a measured
-   * 59,593 for the leanest topology that limit permits — and the previous
-   * 20,000 could not carry it under *any* shape, point-to-point included.
+   * Offering an advertisement to a neighbour is inherently quadratic: an area of
+   * N routers holds up to 2N-1 advertisements and offers each of them once
+   * across each of the 2(N-1) directed adjacencies of a minimal connected area.
+   * A 128-router cold start measures **48,895** offers — identically on a
+   * fan-out tree of 2, 8 or 32 and on a 128-hop chain — so this carries the
+   * largest supported area with roughly a third of headroom.
    *
    * This is deliberately not the same judgement as the SPF budget below. SPF
-   * repetition was redundant work — the same tree rebuilt from the same inputs
-   * — and was removed rather than budgeted. Flooding an advertisement to a
+   * repetition was redundant work — the same tree rebuilt from the same inputs —
+   * and was removed rather than budgeted. Offering an advertisement to a
    * neighbour that has not seen it is work the protocol actually has to do, so
-   * it is budgeted instead, with roughly a third of headroom above the measured
-   * cold start of the largest supported area.
+   * it is budgeted instead. A *re-offer* is not: an instance already on a
+   * neighbour's retransmission list is never sent again by a later flood, which
+   * is what took the figure down from the 59,593 M10.17.2 measured.
    */
-  maximumLsaFloodsPerOperation: 80_000,
+  maximumLsaFloodsPerOperation: 64_000,
   maximumSpfRunsPerOperation: 256,
   maximumAdjacencyTransitionsPerOperation: 4_096,
   /**
-   * One flooded advertisement costs about four protocol events — the update and
-   * its acknowledgement, each charged once when sent and once when received —
-   * on top of hellos and the description exchange. A 128-router cold start
-   * measures 226,420.
+   * A protocol event is one OSPF packet sent or received, so this tracks packets
+   * rather than advertisements: batching a flood wave into one Link State Update
+   * per neighbour took a 128-router cold start from 226,420 events to 11,672 on
+   * a bounded fan-out tree. The bound is sized from the most expensive supported
+   * shape instead — a 128-hop chain, where every advertisement is relayed at
+   * every hop — which measures **72,644**, again with about a third of headroom.
    */
-  maximumOspfEventsPerOperation: 320_000,
+  maximumOspfEventsPerOperation: 96_000,
 
   // --- BGP -------------------------------------------------------------
   maximumBgpPeersPerDevice: 64,
