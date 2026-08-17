@@ -39,18 +39,15 @@ import {
 const FANOUT = 32;
 
 /**
- * The largest single area this release converges with default link
- * performance.
+ * The area size this file asserts the *linear SPF* contract on.
  *
- * `maximumOspfRoutersPerLab` is 128, and that is what a lab may *describe*. A
- * single area does not converge at that size for a reason outside OSPF: a cold
- * start floods every advertisement across every adjacency in one burst, a
- * 128-router burst tail-drops on the default 256-packet link egress queue, and
- * a dropped update is permanent because nothing refreshes an LSA periodically.
- * Measured, that costs 1,472 dropped updates and leaves 127 of 128 routers
- * short; giving the same fabric a 4,096-packet queue drops nothing and
- * converges completely. Closing the gap needs either LSA refresh or a change to
- * the shared link model, neither of which belongs to this milestone.
+ * `maximumOspfRoutersPerLab` is 128 and, since M10.17.3 made flooding reliable,
+ * that whole area converges on the default link model — the contract lives in
+ * `ospf-flooding-reliability.test.ts`, which owns everything about a finite
+ * egress queue. What is asserted here is the narrower property this file exists
+ * for: one Dijkstra walk per router, exactly. At 128 the cold start is also the
+ * most expensive case in the suite, so the SPF contract is measured at 96 and
+ * the flooding contract is measured once, next door.
  */
 const SUPPORTED_CONVERGED_AREA_ROUTERS = 96;
 
@@ -83,7 +80,8 @@ function parentIndexOf(index: number): number {
   return Math.floor((index - 1) / FANOUT);
 }
 
-function buildFabric(routerCount: number, options: { seed?: number; queueLimitPackets?: number } = {}): Fabric {
+/** Always the default link model: no custom queue, capacity or loss. */
+function buildFabric(routerCount: number, options: { seed?: number } = {}): Fabric {
   const engine = createSimulationEngine({ seed: options.seed ?? 10_172 });
   const routers: Router[] = [];
   for (let index = 0; index < routerCount; index++) {
@@ -99,8 +97,7 @@ function buildFabric(routerCount: number, options: { seed?: number; queueLimitPa
     routers[parentIndex]!.configureInterface(parentPort, { ip: `10.0.${index}.1`, mask: 30 });
     routers[index]!.addInterface("Gi0/0", macFromIndex(5_000 + index));
     routers[index]!.configureInterface("Gi0/0", { ip: `10.0.${index}.2`, mask: 30 });
-    engine.connect(`r${parentIndex}`, parentPort, `r${index}`, "Gi0/0",
-      options.queueLimitPackets === undefined ? undefined : { queueLimitPackets: options.queueLimitPackets });
+    engine.connect(`r${parentIndex}`, parentPort, `r${index}`, "Gi0/0");
   }
   for (const router of routers) {
     router.ospf.createProcess(1);
@@ -326,38 +323,6 @@ describe("OSPF SPF scalability", () => {
     // fabric size is never limited by the shape of the generator instead.
     const busiest = Math.max(...fabric.routers.map((router) => router.ospf.neighborSummaries().length));
     expect(busiest).toBeLessThanOrEqual(DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumOspfNeighborsPerDevice);
-  });
-
-  it("attributes the largest describable area's shortfall to flood loss, not to SPF", { timeout: 180_000 }, () => {
-    // This documents the boundary instead of hiding it. At
-    // `maximumOspfRoutersPerLab` the cold start is inside every OSPF bound —
-    // SPF included — and still leaves routers short, because the flood burst
-    // overruns the link egress queue and a dropped update is never re-offered.
-    const routerCount = DEFAULT_CONTROL_PROTOCOL_LIMITS.maximumOspfRoutersPerLab;
-    const fabric = buildFabric(routerCount);
-    converge(fabric.engine);
-
-    const budget = fabric.engine.controlProtocolBudget;
-    expect(budget.consumed("spfRuns")).toBe(routerCount);
-    expect(budget.consumed("spfRuns")).toBeLessThanOrEqual(budget.maximumOf("spfRuns"));
-    expect(budget.consumed("lsaFloods")).toBeLessThan(budget.maximumOf("lsaFloods"));
-    expect(budget.consumed("ospfEvents")).toBeLessThan(budget.maximumOf("ospfEvents"));
-    // Every adjacency is Full, so this is not an adjacency defect either.
-    const adjacencies = fabric.routers.reduce((sum, router) => sum + router.ospf.neighborSummaries().length, 0);
-    expect(adjacencies).toBe(2 * (routerCount - 1));
-
-    // What is left is the egress queue. Handing the same fabric a
-    // 4,096-packet queue instead of the default 256 drops nothing and
-    // converges all 255 advertisements onto all 128 routers; that control is
-    // not re-run here because one 128-router cold start already dominates the
-    // suite's runtime.
-    const tailDrops = fabric.routers.reduce((sum, router) => {
-      for (const iface of router.interfaces.values()) sum += iface.egress.snapshot().dropsByReason["tail-drop"] ?? 0;
-      return sum;
-    }, 0);
-    expect(tailDrops).toBeGreaterThan(0);
-    expect(Math.min(...fabric.routers.map((router) => router.ospf.database().length)))
-      .toBeLessThan(2 * routerCount - 1);
   });
 
   it("installs every transit subnet of the fabric, not only the loopbacks", () => {

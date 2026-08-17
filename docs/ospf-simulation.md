@@ -16,6 +16,8 @@ a learner expects, and it is deliberately not full RFC parity.
 | Full adjacency: ExStart → Exchange → Loading → Full | yes |
 | Router LSA and Network LSA | yes |
 | Reliable bounded flooding with acknowledgement | yes |
+| Link State Retransmission List and RxmtInterval | yes |
+| LSA ageing, `LSRefreshTime`, `MaxAge` flushing | **no** |
 | Dijkstra SPF and intra-area routes | yes |
 | Transit (Network LSA) subnets as routes | yes |
 | Passive interfaces | yes |
@@ -132,16 +134,86 @@ Without it a router that brings several segments up together leaves every later
 neighbour permanently short of the earlier segments' Network LSAs, and SPF
 cannot expand a transit segment whose Network LSA it does not hold.
 
-Retransmission is bounded **per LSA instance**, never per flood. A neighbour
-that stops acknowledging stops costing repeat updates, but an advertisement the
-neighbour has never been offered is not a retransmission: nothing here refreshes
-an LSA periodically, so dropping it would leave a permanent hole. A newer
-instance of the same LSA starts the count over.
-
 SPF is a deterministic Dijkstra. Candidates are always taken in the same order —
 total cost, then advertising router id, then the stable interface identifier — so
 the same database always produces the same tree and the same next hops. `Map`
 insertion order never affects the result.
+
+## Reliable flooding
+
+**A link is finite, so handing an update to an interface is not delivery.** The
+frame is queued on the transmitting interface and clocked onto the wire at the
+link's capacity, and the default egress queue holds 256 packets. A cold start
+floods the fabric's whole database across every adjacency at once, so a large
+area overruns that queue and part of the burst is tail-dropped — and the OSPF
+sender is never told. It finds out because no acknowledgement arrives.
+
+That is the whole design. OSPF is never special-cased inside the link queue, it
+never receives synchronous knowledge that a packet was dropped, and it never
+retries because it saw a drop.
+
+### The retransmission list
+
+Every advertisement offered to a neighbour is first written to that neighbour's
+**Link State Retransmission List**. An entry holds the LSA key, the *instance*
+identity — sequence and body checksum together, which is exactly what
+`isNewer` compares — the virtual time of the first and the most recent
+transmission, and how many transmissions the instance has had.
+
+| Event | What happens to the entry |
+| --- | --- |
+| The advertisement is offered | the entry is created, or replaced if a newer instance supersedes it |
+| An acknowledgement names the same instance | the entry is removed |
+| An acknowledgement names an older instance | nothing: the newer one is still in flight |
+| The neighbour sends the same instance back | implied acknowledgement, the entry is removed |
+| A newer instance is originated | the entry is replaced and the count starts again |
+| The database no longer holds the instance | the entry is dropped rather than re-sent |
+| The adjacency falls below Exchange | the whole list is cleared |
+
+A list is per neighbour and per instance, so one neighbour's acknowledgement can
+never stand in for another's, and an acknowledgement never means "this
+neighbour is up to date".
+
+### The retransmission timer
+
+`OSPF_RETRANSMISSION_INTERVAL_NS` is RFC 2328's **RxmtInterval**: five seconds
+of virtual time. It is far longer than the milliseconds a flood wave takes to
+clock out, so the retry meets an empty queue rather than the congestion that
+caused the loss, and far shorter than the forty second dead interval, so a
+recovered adjacency is never rebuilt.
+
+When it fires, every instance still unacknowledged is offered again, ordered by
+neighbour router id, then interface, then LSA key — so two runs of the same lab
+emit the same packets in the same order.
+
+Like the IPsec lifetimes, this keeps **no periodic timer**. A repeating event
+would leave the deterministic queue permanently non-empty and `runUntilIdle()`
+would never return. One event exists while at least one instance is
+unacknowledged, and the walk re-arms only while entries remain, so a converged
+area schedules nothing at all.
+
+### The bound
+
+Retransmissions are bounded **per LSA instance**, at three. Three retries span
+fifteen virtual seconds, which stays inside the dead interval, and it is what
+the supported 128-router area needs: the measured cold start loses its updates
+in one burst and recovers every one of them on the first retry, so the remaining
+two are headroom rather than the expected path.
+
+When the bound is spent the instance is **reported**, never quietly forgotten:
+a problem appears in `show ip ospf` and the Problems panel, and
+`ospf-lsa-retransmission-exhausted` appears in the trace. The advertisement
+itself stays in the database and the adjacency stays up — as on a real router,
+where only the dead interval tears an adjacency down. That bound is also what
+guarantees a neighbour which has stopped acknowledging cannot keep the
+retransmission timer, and therefore the simulation, alive.
+
+### Duplicates
+
+A retransmitted advertisement the receiver already holds is **acknowledged
+anyway** — that is what makes the sender's retry stop — while installing
+nothing. It mutates no database, and because the input fingerprint is unchanged
+it never even asks for an SPF walk.
 
 ## SPF scheduling
 
@@ -270,8 +342,8 @@ evaluated on the next tick or the next inspection.
 
 - **Auto** drains the bounded events until the protocol has converged.
 - **Step** exposes Hello, each neighbour state change, LSA origination, flooding,
-  acknowledgement, SPF start/completion and route installation as individual
-  events. The Packet Trace `OSPF` filter isolates them.
+  retransmission, acknowledgement, SPF start/completion and route installation
+  as individual events. The Packet Trace `OSPF` filter isolates them.
 
 Both use the same deterministic virtual time and reach the same result.
 
@@ -307,28 +379,42 @@ not seen it is work the protocol actually has to do, so it is budgeted instead.
 
 ## Supported convergence shape
 
-`maximumOspfRoutersPerLab` bounds what a lab may **describe**. What a single
-area reliably **converges** with default link performance is smaller, and the
-reason is outside OSPF:
+`maximumOspfRoutersPerLab` is **128**, and since M10.17.3 that is what a single
+area actually converges — not merely what a lab may describe — on the default
+link model: no custom queue depth, no boosted capacity, no disabled loss model
+and no static routes.
 
-- a cold start floods every advertisement across every adjacency in one burst;
-- a large burst tail-drops on the link's egress queue, which defaults to 256
-  packets;
-- nothing here refreshes an LSA periodically and duplicate suppression stops a
-  lost one from ever being offered again, so a dropped update is **permanent**.
+A 128-router connected area 0 reaches every adjacency Full, converges one
+identical link-state database, installs the remote loopbacks and the remote
+transit subnets, finishes `runUntilIdle()` and stays inside every OSPF bound.
 
-Measured on a bounded-fan-out tree in area 0, an area of **96 routers**
-converges completely and drops nothing. At 128 the same fabric stays inside
-every OSPF bound — SPF, floods, events and adjacency transitions — and every
-adjacency reaches Full, yet 1,472 updates are tail-dropped and 127 routers end
-up short of the database. Giving that fabric a 4,096-packet queue drops nothing
-and converges completely, which is what identifies the queue rather than the
-protocol as the cause.
+**The contract is reliable convergence, not zero packet loss.** Before flooding
+was made reliable, the same fabric tail-dropped 1,472 updates on the default
+256-packet egress queue and left 127 of 128 routers permanently short, because
+no timer ever offered a lost advertisement again. Transient drops are now
+recovered by retransmission, so a lossy moment costs a retry rather than a
+divergent area.
 
-Closing that gap needs either periodic LSA refresh or a change to the shared
-link model, and neither belongs to a scalability fix. Until then, treat 96
-routers in one area as the supported converged shape and reach for more
-bandwidth-shaped links, or fewer routers, beyond it.
+Beyond 128 routers, or on a shape whose busiest device exceeds
+`maximumOspfNeighborsPerDevice`, a lab is outside the supported contract.
+
+## What is still missing
+
+Reliable flooding is deliberately **not** LSA ageing. This release still has no:
+
+- **`LSRefreshTime`** — an advertisement is never re-originated every thirty
+  minutes just because time passed;
+- **`MaxAge` flushing** — an advertisement is never aged out of the database, and
+  a `MaxAge` LSA is never flooded to withdraw one;
+- **normal LSA ageing** — `age` is derived from virtual time on read and never
+  drives a protocol decision.
+
+Cold convergence belongs to reliable flooding, and that is where it is
+implemented; a periodic refresh would have papered over the missing
+retransmission rather than fixing it, and a repeating refresh event would leave
+the deterministic queue permanently non-empty. Withdrawal is instead driven by
+re-origination — a router that loses an adjacency re-issues its Router LSA
+without that link — which covers every case a single-area lab can build.
 
 ## Browser / verifier determinism
 

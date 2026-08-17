@@ -56,8 +56,33 @@ export const OSPF_ADMINISTRATIVE_DISTANCE = 110;
  */
 export const OSPF_SPF_COALESCE_DELAY_NS = 100 * NS_PER_MS;
 
+/**
+ * How long a router waits for a Link State Acknowledgment before offering the
+ * same advertisement again — RFC 2328's RxmtInterval, five seconds, in virtual
+ * time.
+ *
+ * A link is finite. A cold start hands the whole database to every adjacency at
+ * once, and on the default 256-packet egress queue a large area tail-drops part
+ * of that burst; nothing here ages or refreshes an LSA, so a lost update would
+ * otherwise be lost for good. Five seconds is far longer than the milliseconds
+ * a flood wave takes to clock out, so the retry meets an empty queue rather than
+ * the congestion that caused the loss, and far shorter than the forty second
+ * dead interval, so a recovered adjacency never has to be rebuilt.
+ */
+export const OSPF_RETRANSMISSION_INTERVAL_NS = 5 * NS_PER_S;
+
 const OSPF_QUIESCENCE_ROUNDS = 4;
 const OSPF_MAXIMUM_TICKS = 4_096;
+/**
+ * Retransmissions of one LSA instance to one neighbour, *after* the first offer.
+ *
+ * Three retries span fifteen virtual seconds, which stays inside the dead
+ * interval and is what the supported 128-router area needs: the measured cold
+ * start loses its updates in one burst and recovers every one of them on the
+ * first retry, so the remaining two are headroom rather than the expected path.
+ * The bound is what stops a neighbour that has stopped acknowledging from
+ * keeping the retransmission timer — and therefore the simulation — alive.
+ */
 const MAXIMUM_LSA_RETRANSMISSIONS = 3;
 
 export interface OspfNetworkStatement {
@@ -187,11 +212,57 @@ export interface OspfHost {
   ospfRoutesChanged(): void;
 }
 
-/** One LSA instance sent to a neighbour and not yet acknowledged. */
+/**
+ * One LSA instance offered to a neighbour and not yet acknowledged.
+ *
+ * The header *is* the instance identity: sequence and checksum together are
+ * what `isNewer` compares, so a re-originated body can never be mistaken for
+ * the advertisement still in flight, and an acknowledgement for the older
+ * instance can never clear the newer one.
+ */
 interface UnacknowledgedLsa {
-  /** Sequence of the instance we are waiting for; a newer one starts over. */
-  sequence: number;
+  readonly header: OspfLsaHeader;
+  readonly firstSentAtNs: number;
+  lastSentAtNs: number;
+  /** Transmissions of this instance so far, the first offer included. */
   attempts: number;
+}
+
+/** One outstanding retransmission-list entry, for inspection and tests. */
+export interface OspfRetransmissionEntry {
+  readonly neighborRouterId: Ipv4;
+  readonly interfaceId: string;
+  readonly type: OspfLsaHeader["type"];
+  readonly linkStateId: Ipv4;
+  readonly advertisingRouter: Ipv4;
+  readonly sequence: number;
+  readonly checksum: number;
+  readonly attempts: number;
+  readonly firstSentAtNs: number;
+  readonly lastSentAtNs: number;
+}
+
+/**
+ * How reliable flooding actually behaved, for tests and diagnostics.
+ *
+ * Runtime only: never serialized into a `LabDocument`, a submission or a
+ * grading result.
+ */
+export interface OspfFloodCounters {
+  /** LSA instances put on a retransmission list for the first time. */
+  readonly offers: number;
+  /** Instances offered again because no acknowledgement arrived. */
+  readonly retransmissions: number;
+  /** Instances an acknowledgement cleared, explicit or implied. */
+  readonly acknowledgements: number;
+  /** Instances given up on after the retransmission bound, each with a problem. */
+  readonly abandoned: number;
+  /** Link State Update packets carrying first offers. */
+  readonly initialUpdates: number;
+  /** Link State Update packets carrying retransmissions. */
+  readonly retransmittedUpdates: number;
+  /** Instances still waiting for an acknowledgement right now. */
+  readonly outstanding: number;
 }
 
 interface NeighborRuntime {
@@ -250,6 +321,9 @@ export class OspfProcess {
   /** Re-entrancy guard: installing routes makes other subsystems look back. */
   private spfExecuting = false;
   private spfMetrics = emptySpfCounters();
+  /** True while one deterministic retransmission event is on the queue. */
+  private retransmissionScheduled = false;
+  private floodMetrics = emptyFloodCounters();
   /** Virtual time of the most recent tick, used to freeze the dead timers. */
   private lastActiveAtNs: number | undefined;
   private readonly activity: ProtocolActivity;
@@ -457,9 +531,13 @@ export class OspfProcess {
     this.spfRequestedRevision = 0;
     this.spfCompletedRevision = 0;
     // An SPF event already on the queue is left to fire: it cannot be recalled,
-    // and it finds an unchanged fingerprint and costs nothing.
+    // and it finds an unchanged fingerprint and costs nothing. A retransmission
+    // event is left the same way — every neighbour has just been dropped, so it
+    // finds no outstanding instance and stops rather than rescheduling.
     this.spfScheduled = false;
     this.spfMetrics = emptySpfCounters();
+    this.retransmissionScheduled = false;
+    this.floodMetrics = emptyFloodCounters();
     this.lastActiveAtNs = undefined;
     this.activity.resetBudget();
     this.host.ospfRoutesChanged();
@@ -986,17 +1064,27 @@ export class OspfProcess {
       .map((request) => this.lsdb.get(lsaKey(request.type, request.linkStateId, request.advertisingRouter)))
       .filter((lsa): lsa is OspfLsa => lsa !== undefined);
     if (lsas.length === 0) return;
-    this.sendLinkStateUpdate(interfaceId, neighbor.address, lsas);
+    // The reply goes on the retransmission list like any other offer. RFC 2328
+    // relies on the requester repeating its Link State Request instead; this
+    // model has no request timer, so a tail-dropped reply would leave a
+    // neighbour stuck in Loading with no way back.
+    this.offerLsas(neighbor, lsas);
   }
 
   private onLinkStateUpdate(packet: OspfLinkStateUpdatePacket, interfaceId: string): void {
     const neighbor = this.neighbors.get(neighborKey(interfaceId, packet.routerId));
     let installed = 0;
     for (const lsa of packet.lsas) {
+      // Implied acknowledgement: the neighbour has just sent us back the very
+      // instance we are waiting for it to confirm, so it evidently holds it.
+      if (neighbor) this.acknowledgeInstance(neighbor, lsaHeaderOf(lsa));
       if (!this.installLsa(lsa, interfaceId)) continue;
       installed++;
     }
     if (neighbor) {
+      // A duplicate must still be acknowledged — that is what makes the sender's
+      // retransmission stop — while installing nothing, so it mutates no
+      // database and starts no SPF walk.
       const acknowledgement: OspfLinkStateAckPacket = {
         kind: "ospf",
         type: "lsack",
@@ -1023,23 +1111,45 @@ export class OspfProcess {
   private onLinkStateAck(packet: OspfLinkStateAckPacket, interfaceId: string): void {
     const neighbor = this.neighbors.get(neighborKey(interfaceId, packet.routerId));
     if (!neighbor) return;
+    let cleared = 0;
     for (const header of packet.headers) {
-      const key = lsaKey(header.type, header.linkStateId, header.advertisingRouter);
-      // Only the acknowledged instance leaves the list; an older acknowledgement
-      // must not clear a newer advertisement that is still in flight.
-      if (neighbor.unacknowledged.get(key)?.sequence === header.sequence) neighbor.unacknowledged.delete(key);
+      if (this.acknowledgeInstance(neighbor, header)) cleared++;
     }
     this.trace("ospf-lsa-acknowledged", {
       interface: interfaceId,
       neighborRouterId: packet.routerId,
       count: packet.headers.length,
+      cleared,
+      outstanding: neighbor.unacknowledged.size,
     });
     if (neighbor.state === "loading" || neighbor.state === "exchange") {
       this.setNeighborState(neighbor, "full", "link state database synchronized");
     }
   }
 
-  private sendLinkStateUpdate(interfaceId: string, destination: Ipv4, lsas: readonly OspfLsa[]): void {
+  /**
+   * Clear exactly the acknowledged instance from one neighbour's list.
+   *
+   * Matching is on the whole instance identity, never on the LSA key alone: an
+   * acknowledgement that names an older sequence — or the same sequence with a
+   * different body — must leave a newer advertisement outstanding, and an
+   * acknowledgement is never allowed to mean "the neighbour is up to date".
+   */
+  private acknowledgeInstance(neighbor: NeighborRuntime, header: OspfLsaHeader): boolean {
+    const key = lsaKey(header.type, header.linkStateId, header.advertisingRouter);
+    const pending = neighbor.unacknowledged.get(key);
+    if (pending === undefined || !isSameLsaInstance(pending.header, header)) return false;
+    neighbor.unacknowledged.delete(key);
+    this.floodMetrics.acknowledgements++;
+    return true;
+  }
+
+  private sendLinkStateUpdate(
+    interfaceId: string,
+    destination: Ipv4,
+    lsas: readonly OspfLsa[],
+    reason: "initial" | "retransmission" = "initial",
+  ): void {
     const iface = this.descriptorOf(interfaceId);
     if (!iface?.address || lsas.length === 0) return;
     const packet: OspfLinkStateUpdatePacket = {
@@ -1052,7 +1162,13 @@ export class OspfProcess {
     };
     this.charge("lsaFloods", lsas.length);
     this.charge("ospfEvents");
-    this.trace("ospf-lsa-flooded", { interface: interfaceId, destination, count: lsas.length });
+    if (reason === "retransmission") this.floodMetrics.retransmittedUpdates++;
+    else this.floodMetrics.initialUpdates++;
+    this.trace(reason === "retransmission" ? "ospf-lsa-retransmitted" : "ospf-lsa-flooded", {
+      interface: interfaceId,
+      destination,
+      count: lsas.length,
+    });
     this.host.ospfSend(interfaceId, destination, packet);
   }
 
@@ -1062,33 +1178,181 @@ export class OspfProcess {
     for (const neighbor of [...this.neighbors.values()].sort(byNeighborOrder)) {
       if (neighbor.state !== "full") continue;
       if (neighbor.interfaceId === exceptInterfaceId) continue;
-      const due = lsas.filter((lsa) => this.admitToRetransmissionList(neighbor, lsa));
-      if (due.length === 0) continue;
-      this.sendLinkStateUpdate(neighbor.interfaceId, neighbor.address, due);
+      this.offerLsas(neighbor, lsas);
     }
   }
 
   /**
-   * The retransmission bound applies to *one LSA*, never to distinct LSAs.
+   * Offer advertisements to one neighbour and remember what it still owes us.
    *
-   * A neighbour that stops acknowledging must not keep us sending for ever, but
-   * an advertisement the neighbour has never been offered is not a
-   * retransmission: dropping it leaves a permanent hole in its database,
-   * because nothing here refreshes an LSA periodically and duplicate
-   * suppression stops it from ever being flooded again. A newer instance of the
-   * same LSA starts the count over, so a re-originated advertisement is always
-   * delivered.
+   * Handing the packet to the interface is *not* delivery. It is queued behind
+   * a finite egress queue that may tail-drop it, and the OSPF sender is never
+   * told that happened — it finds out because no acknowledgement arrives. The
+   * retransmission list is therefore written before the update is sent, and the
+   * entry is what makes the loss recoverable.
+   */
+  private offerLsas(neighbor: NeighborRuntime, lsas: readonly OspfLsa[]): void {
+    const due = lsas.filter((lsa) => this.admitToRetransmissionList(neighbor, lsa));
+    if (due.length === 0) return;
+    this.sendLinkStateUpdate(neighbor.interfaceId, neighbor.address, due);
+    this.scheduleRetransmission();
+  }
+
+  /**
+   * Put one instance on a neighbour's retransmission list, if it is not already
+   * there, and report whether this update has to carry it.
+   *
+   * An instance that is already outstanding is deliberately *not* sent again
+   * here: the retransmission timer owns it, and re-offering it on every flood
+   * that mentions it is exactly the burst amplification a finite queue cannot
+   * absorb. A newer instance replaces the stale entry and starts its own count,
+   * so a re-originated advertisement is always delivered.
    */
   private admitToRetransmissionList(neighbor: NeighborRuntime, lsa: OspfLsa): boolean {
     const key = lsaKeyOf(lsa);
+    const header = lsaHeaderOf(lsa);
     const pending = neighbor.unacknowledged.get(key);
-    if (pending === undefined || pending.sequence !== lsa.sequence) {
-      neighbor.unacknowledged.set(key, { sequence: lsa.sequence, attempts: 1 });
-      return true;
-    }
-    if (pending.attempts >= MAXIMUM_LSA_RETRANSMISSIONS) return false;
-    pending.attempts++;
+    if (pending !== undefined && isSameLsaInstance(pending.header, header)) return false;
+    const now = this.engine.now();
+    neighbor.unacknowledged.set(key, {
+      header,
+      firstSentAtNs: now,
+      lastSentAtNs: now,
+      attempts: 1,
+    });
+    this.floodMetrics.offers++;
     return true;
+  }
+
+  // --- retransmission -----------------------------------------------------
+
+  /**
+   * Arm the retransmission timer, but only while something is outstanding.
+   *
+   * Like the IPsec lifetimes, this deliberately keeps **no periodic timer**: a
+   * repeating event would leave the deterministic queue permanently non-empty
+   * and `runUntilIdle()` would never return. One event exists while at least one
+   * instance is unacknowledged, and the walk only re-arms itself while entries
+   * remain, so a converged area schedules nothing at all.
+   */
+  private scheduleRetransmission(): void {
+    if (this.retransmissionScheduled) return;
+    const engine = this.engineOrUndefined();
+    if (!engine || !this.hasOutstandingRetransmissions()) return;
+    this.retransmissionScheduled = true;
+    engine.scheduleIn(OSPF_RETRANSMISSION_INTERVAL_NS, () => {
+      this.retransmissionScheduled = false;
+      if (!this.running) return;
+      this.retransmitUnacknowledged();
+    });
+  }
+
+  private hasOutstandingRetransmissions(): boolean {
+    for (const neighbor of this.neighbors.values()) {
+      if (neighbor.unacknowledged.size > 0) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Offer every still-unacknowledged instance once more.
+   *
+   * The walk is ordered by neighbour router id, then interface, then LSA key —
+   * and there is one entry per key, holding the instance currently in flight —
+   * so two runs of the same lab emit the same packets in the same order.
+   * Everything one neighbour is still owed travels in a single Link State
+   * Update, which is what keeps a recovery from repeating the burst that caused
+   * the loss.
+   */
+  private retransmitUnacknowledged(): void {
+    const engine = this.engineOrUndefined();
+    if (!engine) return;
+    const now = engine.now();
+    for (const neighbor of [...this.neighbors.values()].sort(byRetransmissionOrder)) {
+      if (neighbor.unacknowledged.size === 0) continue;
+      const due: OspfLsa[] = [];
+      for (const key of [...neighbor.unacknowledged.keys()].sort(compareRetransmissionKeys)) {
+        const pending = neighbor.unacknowledged.get(key)!;
+        const current = this.lsdb.get(key);
+        // The instance is gone, or a newer one has replaced it and carries its
+        // own entry: this one is no longer correctness state worth a packet.
+        if (current === undefined || !isSameLsaInstance(pending.header, lsaHeaderOf(current))) {
+          neighbor.unacknowledged.delete(key);
+          continue;
+        }
+        if (pending.attempts > MAXIMUM_LSA_RETRANSMISSIONS) {
+          neighbor.unacknowledged.delete(key);
+          this.floodMetrics.abandoned++;
+          this.reportUnacknowledged(neighbor, pending);
+          continue;
+        }
+        pending.attempts++;
+        pending.lastSentAtNs = now;
+        this.floodMetrics.retransmissions++;
+        due.push(current);
+      }
+      if (due.length > 0) {
+        this.sendLinkStateUpdate(neighbor.interfaceId, neighbor.address, due, "retransmission");
+      }
+    }
+    this.scheduleRetransmission();
+  }
+
+  /**
+   * A neighbour that never acknowledged is reported, never quietly forgotten.
+   *
+   * The advertisement itself stays in the database and the adjacency stays up —
+   * exactly as on a real router, where only the dead interval tears an adjacency
+   * down — so the lab shows an operator-visible problem rather than a silently
+   * divergent area.
+   */
+  private reportUnacknowledged(neighbor: NeighborRuntime, pending: UnacknowledgedLsa): void {
+    const { type, linkStateId, advertisingRouter, sequence } = pending.header;
+    const message = `${neighbor.interfaceId}: ${type} LSA ${linkStateId} from ${advertisingRouter}`
+      + ` was not acknowledged by ${neighbor.routerId} after ${MAXIMUM_LSA_RETRANSMISSIONS} retransmissions`;
+    this.problems.add(message);
+    this.trace("ospf-lsa-retransmission-exhausted", {
+      interface: neighbor.interfaceId,
+      neighborRouterId: neighbor.routerId,
+      type,
+      linkStateId,
+      advertisingRouter,
+      sequence,
+      attempts: pending.attempts,
+    });
+  }
+
+  /** Outstanding retransmission-list entries, in the walk's own stable order. */
+  retransmissionEntries(): OspfRetransmissionEntry[] {
+    const entries: OspfRetransmissionEntry[] = [];
+    for (const neighbor of [...this.neighbors.values()].sort(byRetransmissionOrder)) {
+      for (const key of [...neighbor.unacknowledged.keys()].sort(compareRetransmissionKeys)) {
+        const pending = neighbor.unacknowledged.get(key)!;
+        entries.push({
+          neighborRouterId: neighbor.routerId,
+          interfaceId: neighbor.interfaceId,
+          type: pending.header.type,
+          linkStateId: pending.header.linkStateId,
+          advertisingRouter: pending.header.advertisingRouter,
+          sequence: pending.header.sequence,
+          checksum: pending.header.checksum,
+          attempts: pending.attempts,
+          firstSentAtNs: pending.firstSentAtNs,
+          lastSentAtNs: pending.lastSentAtNs,
+        });
+      }
+    }
+    return entries;
+  }
+
+  /** How reliable flooding behaved. Runtime only; never serialized. */
+  floodCounters(): OspfFloodCounters {
+    return { ...this.floodMetrics, outstanding: this.retransmissionEntries().length };
+  }
+
+  /** True while a retransmission event is on the deterministic queue. */
+  get retransmissionTimerArmed(): boolean {
+    return this.retransmissionScheduled;
   }
 
   private isNewer(header: OspfLsaHeader): boolean {
@@ -1234,12 +1498,12 @@ export class OspfProcess {
    *
    * One bounded update per Full transition closes that window. The receiver's
    * duplicate suppression discards everything it already holds, so nothing is
-   * re-flooded and the exchange terminates.
+   * re-flooded and the exchange terminates. It travels through the ordinary
+   * retransmission list, because this single packet carries the whole database
+   * and losing it to a full egress queue is precisely what must be recoverable.
    */
   private synchronizeDatabase(neighbor: NeighborRuntime): void {
-    const lsas = this.sortedLsas();
-    if (lsas.length === 0) return;
-    this.sendLinkStateUpdate(neighbor.interfaceId, neighbor.address, lsas);
+    this.offerLsas(neighbor, this.sortedLsas());
   }
 
   private sortedLsas(): OspfLsa[] {
@@ -1726,6 +1990,11 @@ export class OspfProcess {
     this.charge("adjacencyTransitions");
     const previous = neighbor.state;
     neighbor.state = state;
+    // An adjacency that falls below Exchange is no longer synchronizing, so
+    // whatever it had not acknowledged is void: the database exchange starts
+    // again from scratch. Keeping the entries would retransmit into an adjacency
+    // that no longer exists and would hold the retransmission timer open.
+    if (state !== "full" && state !== "loading" && state !== "exchange") neighbor.unacknowledged.clear();
     this.trace("ospf-neighbor-state-changed", {
       interface: neighbor.interfaceId,
       neighborRouterId: neighbor.routerId,
@@ -1795,8 +2064,57 @@ function emptySpfCounters(): {
   };
 }
 
+function emptyFloodCounters(): {
+  offers: number;
+  retransmissions: number;
+  acknowledgements: number;
+  abandoned: number;
+  initialUpdates: number;
+  retransmittedUpdates: number;
+} {
+  return {
+    offers: 0,
+    retransmissions: 0,
+    acknowledgements: 0,
+    abandoned: 0,
+    initialUpdates: 0,
+    retransmittedUpdates: 0,
+  };
+}
+
 function neighborKey(interfaceId: string, routerId: Ipv4): string {
   return `${interfaceId} ${routerId}`;
+}
+
+/**
+ * Two headers describe the same advertisement *instance*.
+ *
+ * Sequence alone is not enough: `isNewer` also compares the body checksum, so
+ * an acknowledgement or a retransmission must agree on both before it is
+ * allowed to clear or repeat correctness state.
+ */
+function isSameLsaInstance(a: OspfLsaHeader, b: OspfLsaHeader): boolean {
+  return a.sequence === b.sequence && a.checksum === b.checksum;
+}
+
+/**
+ * The retransmission walk's neighbour order: router id first, then interface.
+ *
+ * Flooding orders neighbours by interface because it works one segment at a
+ * time; a retransmission is about who still owes an acknowledgement, so it is
+ * ordered by the peer. Both are total and stable, which is all determinism
+ * needs.
+ */
+function byRetransmissionOrder(
+  a: { interfaceId: string; routerId: Ipv4 },
+  b: { interfaceId: string; routerId: Ipv4 },
+): number {
+  return compareOspfRouterIds(a.routerId, b.routerId) || a.interfaceId.localeCompare(b.interfaceId);
+}
+
+/** LSA keys in a stable order: type, then link-state id, then advertising router. */
+function compareRetransmissionKeys(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 function lsaKeyOf(lsa: OspfLsa): string {

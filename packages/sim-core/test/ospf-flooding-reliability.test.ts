@@ -18,15 +18,8 @@ import {
  * onto the wire at the link's capacity, and the default egress queue holds 256
  * packets. A cold start floods the whole database across every adjacency in one
  * burst, so the busiest router overruns that queue and part of the burst is
- * tail-dropped — and a tail drop is invisible to the sender. Nothing here
- * refreshes an LSA periodically, duplicate suppression stops a lost one from
- * ever being offered again, and the retransmission list is written but never
- * read, so no timer ever offers it a second time.
- *
- * The result is a permanently divergent area whose adjacencies are all Full,
- * whose budgets are all intact, and whose Problems panel is empty.
- *
- * These tests pin that chain end to end:
+ * tail-dropped — and a tail drop is invisible to the sender. The measured chain
+ * was:
  *
  *   LSA originated
  *   → the update is accepted by the OSPF sender
@@ -35,9 +28,17 @@ import {
  *   → the sender never offers it again
  *   → convergence is incomplete, for ever.
  *
- * The fix is reliable flooding, never a bigger default queue: every fabric here
- * uses the default link model, and the one deliberately tiny queue exists only
- * to make a single loss observable at a size a reader can follow.
+ * The last step is the defect. The retransmission list was written when an
+ * advertisement was flooded and never read again, so no timer ever noticed the
+ * missing acknowledgement, and because nothing here refreshes an LSA and
+ * duplicate suppression stops a held one from being re-flooded, the hole was
+ * permanent — in an area whose adjacencies were all Full, whose budgets were all
+ * intact and whose Problems panel was empty.
+ *
+ * The fix is reliable flooding, never a bigger default queue. Every fabric here
+ * uses the default link model; the one deliberately tiny queue exists to make a
+ * loss observable at a size a reader can follow, and the expected contract is
+ * reliable convergence rather than zero packet loss.
  */
 
 /** Children per parent, as in `ospf-scalability.test.ts`: bounded fan-out. */
@@ -90,21 +91,23 @@ function buildArea(routerCount: number): Fabric {
   return { engine, routers };
 }
 
+interface Hub {
+  readonly engine: SimulationEngine;
+  readonly core: Router;
+  readonly leaves: readonly Router[];
+  /** The core interface facing the first leaf. */
+  readonly constrainedPort: string;
+}
+
 /**
- * One core and `leafCount` leaves, with the *first* cable given a one-packet
- * egress queue and a slow capacity.
+ * One core and `leafCount` leaves.
  *
- * Nothing about that cable is a workaround: it is the ordinary link model with
- * a deliberately small bound, and it makes the loss the 128-router area suffers
- * reproducible at a size where the exact advertisement can be named.
+ * With `constrained`, the *first* cable is given a one-packet egress queue and
+ * a slow capacity. Nothing about that cable is a workaround: it is the ordinary
+ * link model with a deliberately small bound, and it reproduces the loss the
+ * 128-router area suffers at a size where a single advertisement can be named.
  */
-function buildConstrainedHub(leafCount: number): {
-  engine: SimulationEngine;
-  core: Router;
-  leaves: readonly Router[];
-  /** The core interface whose queue is deliberately too small. */
-  constrainedPort: string;
-} {
+function buildHub(leafCount: number, options: { constrained?: boolean } = {}): Hub {
   const engine = createSimulationEngine({ seed: 10_173 });
   engine.enableTrace();
   const core = engine.add(new Router("core", "CORE"));
@@ -121,7 +124,7 @@ function buildConstrainedHub(leafCount: number): {
     core.addInterface(`Gi0/${index}`, macFromIndex(1 + index));
     core.configureInterface(`Gi0/${index}`, { ip: `10.0.${number}.1`, mask: 24 });
     engine.connect("core", `Gi0/${index}`, `r${number}`, "Gi0/0",
-      index === 0 ? { queueLimitPackets: 1, capacityBps: 1_000_000 } : undefined);
+      index === 0 && options.constrained ? { queueLimitPackets: 1, capacityBps: 1_000_000 } : undefined);
     leaves.push(leaf);
   }
   for (const router of [core, ...leaves]) {
@@ -130,6 +133,42 @@ function buildConstrainedHub(leafCount: number): {
     router.ospf.setPassiveInterface("Loopback0", true);
   }
   return { engine, core, leaves, constrainedPort: "Gi0/0" };
+}
+
+function buildConstrainedHub(leafCount: number): Hub {
+  return buildHub(leafCount, { constrained: true });
+}
+
+/**
+ * Three routers, each cabled to both others, on the default link model.
+ *
+ * Every advertisement therefore reaches each router twice — once from each
+ * neighbour — so duplicates arrive without any packet ever being dropped.
+ */
+function buildTriangle(): Fabric {
+  const engine = createSimulationEngine({ seed: 10_173 });
+  engine.enableTrace();
+  const routers: Router[] = [];
+  for (let index = 0; index < 3; index++) {
+    const router = engine.add(new Router(`r${index}`, `R${index}`));
+    router.getOrCreateLoopback(0);
+    router.setInterfaceIp("Loopback0", loopbackOf(index), 32);
+    routers.push(router);
+  }
+  const segments = [[0, 1], [1, 2], [0, 2]] as const;
+  for (const [segment, [left, right]] of segments.entries()) {
+    routers[left]!.addInterface(`Gi0/${segment}`, macFromIndex(300 + segment * 2));
+    routers[left]!.configureInterface(`Gi0/${segment}`, { ip: `10.9.${segment}.1`, mask: 30 });
+    routers[right]!.addInterface(`Gi0/${segment}`, macFromIndex(301 + segment * 2));
+    routers[right]!.configureInterface(`Gi0/${segment}`, { ip: `10.9.${segment}.2`, mask: 30 });
+    engine.connect(`r${left}`, `Gi0/${segment}`, `r${right}`, `Gi0/${segment}`);
+  }
+  for (const router of routers) {
+    router.ospf.createProcess(1);
+    router.ospf.addNetwork("0.0.0.0", "255.255.255.255", 0);
+    router.ospf.setPassiveInterface("Loopback0", true);
+  }
+  return { engine, routers };
 }
 
 /** First, middle and last router — a stable, size-independent sample. */
@@ -228,7 +267,7 @@ describe("OSPF reliable flooding over finite queues", () => {
     },
   );
 
-  it("names the exact advertisement a full egress queue swallows", () => {
+  it("recovers the exact advertisement a full egress queue swallowed", () => {
     const { engine, core, leaves, constrainedPort } = buildConstrainedHub(5);
     engine.runUntilIdle();
     const starved = leaves[0]!;
@@ -236,82 +275,254 @@ describe("OSPF reliable flooding over finite queues", () => {
     // 1. The adjacency is healthy: this is not a neighbour or election defect.
     expect(core.ospf.neighborSummaries().map((neighbor) => neighbor.state))
       .toEqual(["full", "full", "full", "full", "full"]);
-    expect(core.ospf.overview().problems).toEqual([]);
 
-    // 2. The sender holds the complete database, so it had the advertisement.
-    expect(databaseOf(core)).toHaveLength(2 * leaves.length + 1);
-
-    // 3. The egress queue — not OSPF — refused packets on that one cable.
+    // 2. The egress queue — not OSPF — really did refuse packets on that cable.
+    //    The contract is reliable convergence, not zero packet loss.
     expect(tailDropsOn(core, constrainedPort)).toBeGreaterThan(0);
 
-    // 4. The receiver is short, and every instance it lacks is one the sender
-    //    holds, with the sender's own sequence and checksum. The set is read
-    //    from state rather than pinned to a particular leaf, because which
-    //    advertisement lands in a full queue is not a protocol contract.
-    const missing = missingFrom(starved, core);
-    expect(missing.length).toBeGreaterThan(0);
-    expect(databaseOf(core)).toEqual(expect.arrayContaining(missing));
-    const [type, linkStateId, advertisingRouter, sequence] = missing[0]!.split("/");
-    const held = core.ospf.database()
-      .find((entry) => entry.type === type && entry.linkStateId === linkStateId
-        && entry.advertisingRouter === advertisingRouter);
-    expect(held).toBeDefined();
-    expect(String(held!.sequence)).toBe(sequence);
+    // 3. The sender noticed, because no acknowledgement arrived, and offered the
+    //    lost instances again. Which advertisement lands in a full queue is not
+    //    a protocol contract, so the count is read from state, never pinned.
+    const counters = core.ospf.floodCounters();
+    expect(counters.retransmissions).toBeGreaterThan(0);
+    expect(counters.retransmittedUpdates).toBeGreaterThan(0);
+    const retransmitted = engine.traceLog
+      .filter((entry) => entry.device === "core" && entry.type === "ospf-lsa-retransmitted");
+    expect(retransmitted.length).toBe(counters.retransmittedUpdates);
+    expect(retransmitted.every((entry) => entry.detail?.interface === constrainedPort)).toBe(true);
 
-    // 5. The sender offered advertisements on that interface and was never told
-    //    any of them was dropped: it saw fewer acknowledgements than offers.
-    const offered = engine.traceLog
-      .filter((entry) => entry.device === "core" && entry.type === "ospf-lsa-flooded"
-        && entry.detail?.interface === constrainedPort)
-      .reduce((sum, entry) => sum + Number(entry.detail?.count ?? 0), 0);
-    const acknowledged = engine.traceLog
-      .filter((entry) => entry.device === "core" && entry.type === "ospf-lsa-acknowledged"
-        && entry.detail?.interface === constrainedPort)
-      .reduce((sum, entry) => sum + Number(entry.detail?.count ?? 0), 0);
-    expect(offered).toBeGreaterThan(0);
-    expect(acknowledged).toBeLessThan(offered);
+    // 4. Every offer ended acknowledged or superseded; none was abandoned, and
+    //    nothing is still waiting.
+    expect(counters.abandoned).toBe(0);
+    expect(counters.outstanding).toBe(0);
+    expect(core.ospf.retransmissionEntries()).toEqual([]);
 
-    // 6. And nothing was ever offered a second time: the retransmission list is
-    //    written when an advertisement is flooded and never read again, so no
-    //    timer exists to notice the missing acknowledgement. This is the defect.
-    expect(engine.traceLog.filter((entry) => entry.type.startsWith("ospf-lsa-retransmi"))).toEqual([]);
-  });
-
-  it("never recovers a swallowed advertisement while the adjacency lives on", () => {
-    const { engine, core, leaves } = buildConstrainedHub(5);
-    engine.runUntilIdle();
-    const starved = leaves[0]!;
-    const missing = missingFrom(starved, core);
-    expect(missing.length).toBeGreaterThan(0);
-
-    // Every queue is empty and every event has run, so nothing is merely slow.
-    expect(engine.pendingEventCount()).toBe(0);
-    expect(core.getInterface("Gi0/0")!.egress.snapshot().depthPackets).toBe(0);
-
-    // Thirty further seconds of virtual time — three hello intervals, and six
-    // times RFC 2328's five second RxmtInterval — while the adjacency is still
-    // well inside its forty second dead interval. Nothing changes.
-    engine.advanceTo(engine.now() + 30_000_000_000);
-    engine.runUntilIdle();
-
-    expect(starved.ospf.neighborSummaries().map((neighbor) => neighbor.state)).toEqual(["full"]);
-    expect(missingFrom(starved, core)).toEqual(missing);
-    // The loss is silent: nothing is reported anywhere.
+    // 5. The starved neighbour holds the sender's database, instance for
+    //    instance — sequence and checksum included.
+    expect(missingFrom(starved, core)).toEqual([]);
+    expect(databaseOf(starved)).toEqual(databaseOf(core));
+    expect(databaseOf(core)).toHaveLength(2 * leaves.length + 1);
     expect(core.ospf.overview().problems).toEqual([]);
-    expect(starved.ospf.overview().problems).toEqual([]);
   });
 
-  it("keeps the loss inside the link model rather than the protocol bounds", () => {
-    const { engine, core, leaves } = buildConstrainedHub(5);
+  it("recovers every advertisement several tail drops swallowed", () => {
+    const { engine, core, leaves } = buildConstrainedHub(8);
     engine.runUntilIdle();
 
-    // Every OSPF bound has headroom, so no budget explains the shortfall — only
-    // the finite egress queue does.
+    // More than one packet was lost, in both directions of the constrained
+    // cable: updates on the way out and acknowledgements on the way back.
+    expect(tailDropsOf([core, ...leaves])).toBeGreaterThan(1);
+    expect(engine.pendingEventCount()).toBe(0);
+
+    const reference = databaseOf(core);
+    expect(reference).toHaveLength(2 * leaves.length + 1);
+    for (const leaf of leaves) {
+      expect(databaseOf(leaf)).toEqual(reference);
+      expect(leaf.ospf.floodCounters().outstanding).toBe(0);
+      expect(leaf.ospf.overview().problems).toEqual([]);
+    }
+    expect(core.ospf.floodCounters().outstanding).toBe(0);
+    expect(core.ospf.floodCounters().abandoned).toBe(0);
+    expect(core.ospf.overview().problems).toEqual([]);
+
+    // And the recovery is inside every OSPF bound: the fix is reliable
+    // flooding, not a larger budget and not a larger queue.
     const budget = engine.controlProtocolBudget;
     for (const key of ["spfRuns", "lsaFloods", "ospfEvents", "adjacencyTransitions"] as const) {
       expect(budget.consumed(key)).toBeLessThan(budget.maximumOf(key));
     }
-    expect(tailDropsOf([core, ...leaves])).toBeGreaterThan(0);
-    expect(missingFrom(leaves[0]!, core).length).toBeGreaterThan(0);
+  });
+
+  it("acknowledges a duplicate advertisement without touching the database", () => {
+    // A triangle floods every advertisement to each router twice — once from
+    // each neighbour — so duplicates arrive with no packet loss at all.
+    const { engine, routers } = buildTriangle();
+    engine.runUntilIdle();
+
+    const offered = engine.traceLog
+      .filter((entry) => entry.type === "ospf-lsa-flooded" && entry.detail?.received === undefined)
+      .reduce((sum, entry) => sum + Number(entry.detail?.count ?? 0), 0);
+    const installed = engine.traceLog
+      .filter((entry) => entry.type === "ospf-lsa-flooded" && entry.detail?.received === true);
+    // Strictly more advertisements were offered than installed: duplicates.
+    expect(offered).toBeGreaterThan(installed.length);
+
+    // No instance was ever installed twice on one router, so a duplicate never
+    // mutated a database — while every offer was still acknowledged, which is
+    // what makes the sender's retransmission stop.
+    const installations = new Map<string, number>();
+    for (const entry of installed) {
+      const key = `${entry.device}|${entry.detail!.type}|${entry.detail!.linkStateId}`
+        + `|${entry.detail!.advertisingRouter}|${entry.detail!.sequence}`;
+      installations.set(key, (installations.get(key) ?? 0) + 1);
+    }
+    expect([...installations.values()].filter((count) => count > 1)).toEqual([]);
+
+    const reference = databaseOf(routers[0]!);
+    for (const router of routers) {
+      expect(databaseOf(router)).toEqual(reference);
+      expect(router.ospf.floodCounters().outstanding).toBe(0);
+      expect(router.ospf.floodCounters().abandoned).toBe(0);
+      // A duplicate carries no new information, so it never asks for a walk:
+      // the fingerprint guard is never even reached.
+      expect(router.ospf.spfCounters().executions).toBeLessThanOrEqual(2);
+    }
+  });
+
+  it("leaves an instance outstanding that its own neighbour never acknowledged", () => {
+    // One leaf stops answering entirely; the other keeps acknowledging. A list
+    // is per neighbour and per instance, so one neighbour's acknowledgement can
+    // never stand in for another's.
+    const { engine, core, leaves } = buildHub(2);
+    engine.runUntilIdle();
+    const silent = leaves[0]!;
+    const silentRouterId = silent.ospf.overview().routerId!;
+    silent.ospf.removeProcess();
+
+    const startedAtNs = engine.now();
+    core.ospf.configureInterface("Gi0/1", { cost: 42 });
+    engine.advanceTo(startedAtNs + 1_000_000_000); // one second: before any retry
+
+    const outstanding = core.ospf.retransmissionEntries();
+    expect(outstanding).toHaveLength(1);
+    expect(outstanding[0]!.neighborRouterId).toBe(silentRouterId);
+    expect(outstanding[0]!.interfaceId).toBe("Gi0/0");
+    expect(outstanding[0]!.attempts).toBe(1);
+    expect(outstanding[0]!.firstSentAtNs).toBe(startedAtNs);
+    expect(outstanding[0]!.lastSentAtNs).toBe(startedAtNs);
+    // The instance the entry names is exactly the one the sender advertises.
+    const local = core.ospf.database()
+      .find((entry) => entry.advertisingRouter === core.ospf.overview().routerId && entry.type === "router");
+    expect(outstanding[0]!.sequence).toBe(local!.sequence);
+    expect(outstanding[0]!.checksum).toBe(local!.checksum);
+    // The answering leaf did acknowledge, and that cleared only its own entry.
+    expect(core.ospf.floodCounters().acknowledgements).toBeGreaterThan(0);
+  });
+
+  it("starts the retransmission count over when a newer instance replaces the old one", () => {
+    const { engine, core, leaves } = buildHub(2);
+    engine.runUntilIdle();
+    leaves[0]!.ospf.removeProcess();
+
+    core.ospf.configureInterface("Gi0/1", { cost: 42 });
+    engine.advanceTo(engine.now() + 1_000_000_000);
+    const first = core.ospf.retransmissionEntries()[0]!;
+    expect(first).toBeDefined();
+
+    // A newer instance of the same advertisement: the stale entry is replaced
+    // rather than kept, so the retries start again for what is actually in
+    // flight and a re-originated advertisement is always delivered.
+    core.ospf.configureInterface("Gi0/1", { cost: 43 });
+    engine.advanceTo(engine.now() + 11_000_000_000);
+
+    const second = core.ospf.retransmissionEntries()[0]!;
+    expect(second).toBeDefined();
+    expect(second.sequence).toBeGreaterThan(first.sequence);
+    expect(second.firstSentAtNs!).toBeGreaterThan(first.firstSentAtNs!);
+    // There is one entry per LSA key, never one per instance.
+    expect(core.ospf.retransmissionEntries()).toHaveLength(1);
+  });
+
+  it("gives up after a deterministic number of retransmissions and says so", () => {
+    const { engine, core, leaves } = buildHub(2);
+    engine.runUntilIdle();
+    const silentRouterId = leaves[0]!.ospf.overview().routerId!;
+    const coreRouterId = core.ospf.overview().routerId!;
+    leaves[0]!.ospf.removeProcess();
+
+    core.ospf.configureInterface("Gi0/1", { cost: 42 });
+    engine.runUntilIdle();
+
+    // Three retries, then the instance is reported rather than dropped in
+    // silence. The advertisement itself stays in the database and the adjacency
+    // is left to the dead interval, exactly as on a real router.
+    const counters = core.ospf.floodCounters();
+    expect(counters.retransmissions).toBe(3);
+    expect(counters.retransmittedUpdates).toBe(3);
+    expect(counters.abandoned).toBe(1);
+    expect(counters.outstanding).toBe(0);
+    expect(core.ospf.overview().problems).toEqual([
+      `Gi0/0: router LSA ${coreRouterId} from ${coreRouterId}`
+      + ` was not acknowledged by ${silentRouterId} after 3 retransmissions`,
+    ]);
+    expect(engine.traceLog.filter((entry) => entry.type === "ospf-lsa-retransmission-exhausted"))
+      .toHaveLength(1);
+    // Bounded: the run still reaches quiescence rather than retrying for ever.
+    expect(engine.pendingEventCount()).toBe(0);
+  });
+
+  it("keeps no retransmission timer once every instance is acknowledged", () => {
+    const { engine, core, leaves } = buildConstrainedHub(5);
+    engine.runUntilIdle();
+
+    // Nothing outstanding, so nothing is scheduled: like the IPsec lifetimes,
+    // reliable flooding keeps no periodic timer and `runUntilIdle()` returns.
+    for (const router of [core, ...leaves]) {
+      expect(router.ospf.retransmissionEntries()).toEqual([]);
+      expect(router.ospf.retransmissionTimerArmed).toBe(false);
+    }
+    expect(engine.pendingEventCount()).toBe(0);
+  });
+
+  it("clears the retransmission list when the adjacency is lost and floods again on restore", () => {
+    const { engine, core, leaves, constrainedPort } = buildConstrainedHub(5);
+    engine.runUntilIdle();
+    const detached = leaves[0]!;
+    expect(missingFrom(detached, core)).toEqual([]);
+
+    core.getInterface(constrainedPort)!.shutdown();
+    engine.runUntilIdle();
+    // The adjacency is gone, so nothing it had not acknowledged is still owed.
+    expect(core.ospf.neighborSummaries().map((neighbor) => neighbor.interfaceId))
+      .not.toContain(constrainedPort);
+    expect(core.ospf.retransmissionEntries()
+      .filter((entry) => entry.interfaceId === constrainedPort)).toEqual([]);
+    expect(core.ospf.retransmissionTimerArmed).toBe(false);
+    expect(engine.pendingEventCount()).toBe(0);
+
+    core.getInterface(constrainedPort)!.noShutdown();
+    engine.runUntilIdle();
+
+    // A restored cable resumes ordinary flooding and converges again.
+    expect(detached.ospf.neighborSummaries().map((neighbor) => neighbor.state)).toEqual(["full"]);
+    expect(missingFrom(detached, core)).toEqual([]);
+    expect(core.ospf.floodCounters().outstanding).toBe(0);
+  });
+
+  it("repeats an identical constrained-queue run from the same topology and seed", () => {
+    const first = buildConstrainedHub(5);
+    const second = buildConstrainedHub(5);
+    first.engine.runUntilIdle();
+    second.engine.runUntilIdle();
+
+    expect(second.engine.now()).toBe(first.engine.now());
+    expect(tailDropsOf([second.core, ...second.leaves]))
+      .toBe(tailDropsOf([first.core, ...first.leaves]));
+    expect(second.core.ospf.floodCounters()).toEqual(first.core.ospf.floodCounters());
+    for (const [index, router] of [second.core, ...second.leaves].entries()) {
+      const reference = [first.core, ...first.leaves][index]!;
+      expect(databaseOf(router)).toEqual(databaseOf(reference));
+      expect(router.routingTable()).toEqual(reference.routingTable());
+    }
+  });
+
+  it("reaches the same constrained-queue state through Auto and through Step", () => {
+    const auto = buildConstrainedHub(5);
+    const step = buildConstrainedHub(5);
+    auto.engine.runUntilIdle();
+    let guard = 0;
+    while (step.engine.runNextEvent()) {
+      if (++guard > 1_000_000) throw new Error("step run did not terminate");
+    }
+
+    expect(step.engine.now()).toBe(auto.engine.now());
+    expect(step.engine.controlProtocolBudget.consumed("spfRuns"))
+      .toBe(auto.engine.controlProtocolBudget.consumed("spfRuns"));
+    for (const [index, router] of [step.core, ...step.leaves].entries()) {
+      const reference = [auto.core, ...auto.leaves][index]!;
+      expect(databaseOf(router)).toEqual(databaseOf(reference));
+      expect(router.routingTable()).toEqual(reference.routingTable());
+      expect(router.ospf.floodCounters()).toEqual(reference.ospf.floodCounters());
+    }
   });
 });
