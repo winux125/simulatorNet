@@ -35,7 +35,7 @@ import { boundText } from "../security/text";
 import { parseIosConfig } from "../config/ios-config";
 import { buildDeviceConfigFromIos, parseVpcsConfig } from "../config/apply";
 import { readSimulatorNetLabPackage } from "../native/simlab";
-import { readPacketTracerSource } from "../packet-tracer/native";
+import { describePacketTracerFailure, readPacketTracerSource } from "../packet-tracer/native";
 import { slugify } from "./slug";
 import type {
   ImportedSourceArtifact,
@@ -349,11 +349,8 @@ export async function inspectLabImport(
       // crash: the caller offers the companion Migration Assistant instead. The
       // reason is carried through so the user is told which it was.
       if (cause instanceof PacketTracerDecodeError) {
-        throw new UnsupportedImportFormatError(cause.message, {
-          format: detection.format,
-          reason: cause.code,
-          suggestsCompanionFallback: cause.suggestsCompanionFallback,
-        });
+        const failure = describePacketTracerFailure(cause);
+        throw new UnsupportedImportFormatError(failure.message, { format: detection.format, ...failure });
       }
       throw cause;
     }

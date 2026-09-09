@@ -16,19 +16,41 @@ The original file is never modified.
 | Containerlab | `.clab.yml` or `.clab.yaml` | Topology and supported host/link configuration |
 | Cisco Modeling Labs | YAML | Topology, positions, annotations, supported configuration |
 | VIRL | `.virl` XML | Topology, positions, annotations, supported configuration |
-| Packet Tracer | `.pkt`, `.pka` | Recognized only; direct conversion is not available |
+| Packet Tracer | `.pkt`, `.pka` | Topology, positions, models, supported configuration; a `.pka` also offers its contained networks |
 
 Detection is content-first. File extensions help disambiguate known structures
-but do not override unsafe or unrecognized content. Packet Tracer files are
-reported honestly as recognized-but-unsupported; they are never guessed or
-partially decoded.
+but do not override unsafe or unrecognized content. A Packet Tracer container
+is the one exception, because it is ciphertext until it has been decoded:
+detection is extension-led, and only the decoder can confirm what the file is.
+A container it cannot read is reported as a typed refusal — never guessed at,
+and never partially decoded.
 
-Packet Tracer sources can instead enter the explicit **Migration Assistant**.
-This is a reconstruction from companion files supplied by the user, not a PKT
+## Packet Tracer
+
+A `.pkt` or `.pka` is decoded in the browser, on a Web Worker, and never
+uploaded. The file itself is not stored: only its name and the Packet Tracer
+version that wrote it are kept as source metadata.
+
+A `.pka` activity usually contains more than one network — the initial state,
+the student's saved progress, and the completed answer. The wizard lists every
+one with its device and link counts and asks which to import. **The answer
+network is never the default**, and choosing it is called out explicitly.
+Activity title and instructions are imported as lab text; Packet Tracer grading
+rules are not converted.
+
+Device configuration goes through SimulatorNet's own IOS parser, so an imported
+router or switch supports exactly what the CLI supports and nothing is invented
+alongside it. An unrecognized model becomes a named placeholder rather than a
+guessed device, and an interface with no SimulatorNet equivalent leaves its link
+uncreated and reported rather than attached to some other free port.
+
+When a container cannot be decoded — an unsupported container version, a failed
+authentication tag, a corrupt file, or a safety limit — the wizard says which,
+and Packet Tracer sources may still enter the explicit **Migration Assistant**.
+That is a reconstruction from companion files supplied by the user, not a PKT
 converter: screenshots become locked diagram references, device configuration
 text and addressing rows become mapping proposals, and physical links are
-created only from an explicit `connections.csv`. The original `.pkt`/`.pka`
-name is retained as source metadata; its bytes are never parsed. See
+created only from an explicit `connections.csv`. See
 [Packet Tracer migration](packet-tracer-migration.md).
 
 Device support is reported per mapping:

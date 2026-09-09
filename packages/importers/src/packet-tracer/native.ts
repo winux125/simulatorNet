@@ -28,8 +28,10 @@ import {
   decodePacketTracer,
   DEFAULT_PACKET_TRACER_LIMITS,
   normalizeCoordinates,
+  PacketTracerDecodeError,
   resolveInterfaceOnDevice,
   type DecodedPacketTracerFile,
+  type PacketTracerDecodeErrorCode,
   type PacketTracerDecodeStage,
   type PacketTracerDevice,
   type PacketTracerDocument,
@@ -49,6 +51,13 @@ import type {
   ParsedSourceTopology,
 } from "../types";
 import { resolveDeviceMapping } from "../mapping/registry";
+
+/**
+ * Re-exported so a consumer that only ever holds an `ImportPlan` — the web
+ * import wizard, its decode worker — never has to depend on the container
+ * package to name a progress stage or a refusal.
+ */
+export type { PacketTracerDecodeErrorCode, PacketTracerDecodeStage, PacketTracerNetworkRole };
 
 const PLATFORM = "packet-tracer";
 
@@ -501,5 +510,43 @@ export async function readPacketTracerSource(
     activityTitle: document.activity?.title,
     activityInstructions: document.activity?.instructions,
     parsed: withDecodeNotes,
+  };
+}
+
+/** Why a Packet Tracer read failed, as plain data. */
+export interface PacketTracerFailure {
+  readonly message: string;
+  /** The decoder's typed reason, absent when the failure came from elsewhere. */
+  readonly reason?: PacketTracerDecodeErrorCode;
+  /** True when a different file — or companion data — could still succeed. */
+  readonly suggestsCompanionFallback: boolean;
+  /** True when the caller aborted the read; not an error to report. */
+  readonly cancelled: boolean;
+}
+
+/**
+ * Describe a failed Packet Tracer read without keeping the exception.
+ *
+ * An `Error` loses its subclass and its own fields to structured cloning, so a
+ * decode running in a Web Worker cannot post one back. Every caller — the
+ * planner here, that worker, the wizard — classifies a refusal through this one
+ * function, so they cannot disagree about which files the companion Migration
+ * Assistant is still worth offering for.
+ */
+export function describePacketTracerFailure(cause: unknown): PacketTracerFailure {
+  if (cause instanceof PacketTracerDecodeError) {
+    return {
+      message: cause.message,
+      reason: cause.code,
+      suggestsCompanionFallback: cause.suggestsCompanionFallback,
+      cancelled: cause.code === "PACKET_TRACER_CANCELLED",
+    };
+  }
+  // A decoded container that then fails to map is a SimulatorNet-side problem,
+  // and companion files would not fix it. Say so rather than blaming the file.
+  return {
+    message: cause instanceof Error ? cause.message : "The Packet Tracer file could not be read",
+    suggestsCompanionFallback: false,
+    cancelled: false,
   };
 }

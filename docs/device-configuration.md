@@ -281,5 +281,6 @@ second persistence format.
 External PNETLab / GNS3 / CML configurations still convert one way: source text
 → structured configuration → SimulatorNet running and startup state. Whatever
 the importer could not parse stays in the import report and never becomes an
-active running configuration. Packet Tracer `.pkt` / `.pka` remain
-recognised-but-unsupported.
+active running configuration. A decoded Packet Tracer `.pkt` / `.pka` takes the
+same route: an imported running-config is handed to this same parser rather than
+to one of its own, so it can never support a command the CLI does not.

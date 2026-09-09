@@ -18,6 +18,9 @@ import {
   type ImportResult,
   type ImportSupportLevel,
   type LabImportFormat,
+  type PacketTracerDecodeStage,
+  type PacketTracerInspection,
+  type PacketTracerNetworkSummary,
 } from "@sim/importers";
 import {
   AlertCircle,
@@ -28,6 +31,7 @@ import {
   FileArchive,
   FileSearch,
   FileWarning,
+  Loader2,
   Search,
   ShieldCheck,
   Upload,
@@ -36,6 +40,11 @@ import {
 import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 import { DeviceIcon } from "../../components/DeviceIcon";
 import { Button, IconButton } from "../../ui";
+import {
+  createPacketTracerImportClient,
+  PacketTracerInspectError,
+  type PacketTracerImportClient,
+} from "../../worker/packet-tracer-client";
 
 registerBuiltinImportAdapters();
 
@@ -46,10 +55,29 @@ interface ImportLabWizardProps {
   onError(message: string): void;
 }
 
-type WizardPhase = "detecting" | "ready" | "unsupported" | "error" | "importing" | "result";
+type WizardPhase = "detecting" | "decoding" | "ready" | "unsupported" | "error" | "importing" | "result";
 type WizardStep = 0 | 1 | 2 | 3 | 4;
 
 const STEPS = ["Select File", "Inspect", "Map Devices", "Review Warnings", "Import Result"] as const;
+
+/**
+ * Decode progress is named, never a percentage. The container's cost is not
+ * knowable until it has been decrypted and inflated, so a bar would be fiction.
+ */
+const DECODE_STAGES: ReadonlyArray<readonly [PacketTracerDecodeStage, string]> = [
+  ["reading", "Reading file"],
+  ["detecting", "Identifying container"],
+  ["decoding", "Decoding container"],
+  ["decompressing", "Decompressing"],
+  ["parsing", "Parsing topology"],
+];
+
+const NETWORK_ROLES: Record<PacketTracerNetworkSummary["role"], string> = {
+  initial: "Initial network",
+  answer: "Answer network",
+  current: "Saved progress",
+  unknown: "Network",
+};
 const DEVICE_OPTIONS = DEVICE_TYPES.filter((type) => type !== "external-appliance");
 const FOCUSABLE = [
   "button:not([disabled])",
@@ -101,16 +129,35 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
   const [migrationGuideOpen, setMigrationGuideOpen] = useState(false);
   const [companionFiles, setCompanionFiles] = useState<File[]>([]);
   const [migrationError, setMigrationError] = useState<string>();
+  const [inspection, setInspection] = useState<PacketTracerInspection>();
+  const [decodeStage, setDecodeStage] = useState<PacketTracerDecodeStage>();
+  const [decodeFailure, setDecodeFailure] = useState<PacketTracerInspectError>();
+  /** Set only by the network chooser; the decoder picks the default otherwise. */
+  const [requestedNetworkId, setRequestedNetworkId] = useState<string>();
   const dialogRef = useRef<HTMLElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const companionInputRef = useRef<HTMLInputElement>(null);
+  const packetTracerRef = useRef<PacketTracerImportClient>(undefined);
+
+  // One decoder for the wizard's lifetime: switching files or networks reuses
+  // the thread, and closing the wizard releases it with nothing left running.
+  useEffect(() => {
+    const client = createPacketTracerImportClient();
+    packetTracerRef.current = client;
+    return () => {
+      packetTracerRef.current = undefined;
+      client.dispose();
+    };
+  }, []);
 
   useEffect(() => {
     setActiveFile(file);
+    setRequestedNetworkId(undefined);
   }, [file]);
 
   useEffect(() => {
     let cancelled = false;
+    const abort = new AbortController();
     setPhase("detecting");
     setPlan(undefined);
     setResult(undefined);
@@ -121,6 +168,9 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
     setMigrationGuideOpen(false);
     setCompanionFiles([]);
     setMigrationError(undefined);
+    setInspection(undefined);
+    setDecodeStage(undefined);
+    setDecodeFailure(undefined);
     void (async () => {
       try {
         const bytes = new Uint8Array(await activeFile.arrayBuffer());
@@ -131,9 +181,25 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
         if (!detection.supported) {
           if (cancelled) return;
           setPhase("unsupported");
-          setMessage(detection.format.startsWith("packet-tracer")
-            ? "Direct conversion is not available because SimulatorNet does not have a supported public parser for the PKT/PKA format."
-            : "This file was not recognised as a supported network-lab format.");
+          setMessage("This file was not recognised as a supported network-lab format.");
+          return;
+        }
+        if (detection.format === "packet-tracer-pkt" || detection.format === "packet-tracer-pka") {
+          // Decrypting, inflating and parsing a container is far too much work
+          // for the React thread, so it happens on the decode worker. Nothing
+          // leaves the browser: the file is never sent to the API.
+          setPhase("decoding");
+          const decoded = await packetTracerRef.current!.inspect({
+            filename: activeFile.name,
+            bytes,
+            networkId: requestedNetworkId,
+            signal: abort.signal,
+            onStage: (stage) => { if (!cancelled) setDecodeStage(stage); },
+          });
+          if (cancelled) return;
+          setInspection(decoded);
+          setPlan(decoded.plan);
+          setPhase("ready");
           return;
         }
         const inspected = await inspectLabImport(source);
@@ -142,13 +208,23 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
         setPhase("ready");
       } catch (error) {
         if (cancelled) return;
+        if (error instanceof PacketTracerInspectError) {
+          if (error.cancelled) return;
+          setDecodeFailure(error);
+          setPhase("unsupported");
+          setMessage(error.message);
+          return;
+        }
         const detail = error instanceof Error ? error.message : "Import inspection failed";
         setPhase(error instanceof UnsupportedImportFormatError ? "unsupported" : "error");
         setMessage(detail);
       }
     })();
-    return () => { cancelled = true; };
-  }, [activeFile]);
+    return () => {
+      cancelled = true;
+      abort.abort();
+    };
+  }, [activeFile, requestedNetworkId]);
 
   useEffect(() => {
     dialogRef.current?.focus();
@@ -158,6 +234,7 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
     if (!next) return;
     setStep(0);
     setActiveFile(next);
+    setRequestedNetworkId(undefined);
   };
 
   const buildMigrationPlan = async () => {
@@ -250,9 +327,18 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
 
   const ready = phase === "ready" && Boolean(plan);
   const canContinue = ready && (step !== 1 || (plan?.parsed.nodes.length ?? 0) > 0);
-  const packetTracerUnsupported = step === 0
-    && phase === "unsupported"
-    && (detectedFormat === "packet-tracer-pkt" || detectedFormat === "packet-tracer-pka");
+  // Packet Tracer owns the whole of step 0: decoding, then either its own
+  // summary with explicit actions, or the companion fallback. Each carries the
+  // actions it needs, so the generic footer would only duplicate them.
+  const packetTracerFailed = step === 0 && decodeFailure !== undefined;
+  const packetTracerDecoding = step === 0 && phase === "decoding";
+  const packetTracerDecoded = step === 0
+    && inspection !== undefined
+    && (phase === "ready" || phase === "importing");
+  const packetTracerStep = packetTracerFailed || packetTracerDecoding || packetTracerDecoded;
+  const formatLabel = packetTracerFailed
+    ? `${formatName(detectedFormat)} · Could not be decoded`
+    : formatName(plan?.format ?? detectedFormat);
 
   return (
     <div
@@ -280,9 +366,10 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
             </div>
           </div>
           <dl className="import-wizard__file-meta">
-            <div><dt>Format</dt><dd>{packetTracerUnsupported
-              ? "Packet Tracer · Recognised, unsupported for direct conversion"
-              : formatName(plan?.format ?? detectedFormat)}</dd></div>
+            <div><dt>Format</dt><dd>{formatLabel}</dd></div>
+            {inspection?.packetTracerVersion && (
+              <div><dt>Version</dt><dd data-testid="packet-tracer-version">{inspection.packetTracerVersion}</dd></div>
+            )}
             <div><dt>File</dt><dd title={activeFile.name}>{activeFile.name}</dd></div>
           </dl>
           <IconButton data-import-close label="Close import wizard" icon={<X size={16} />} disabled={phase === "importing"} onClick={onCancel} />
@@ -298,9 +385,11 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
 
         <div className="import-wizard__body" data-scroll-owner="import-wizard-body">
           {step === 0 && (
-            packetTracerUnsupported ? (
+            packetTracerFailed ? (
               <PacketTracerMigrationStep
                 file={activeFile}
+                reason={decodeFailure!.message}
+                suggestsCompanionFallback={decodeFailure!.suggestsCompanionFallback}
                 migrationMode={migrationMode}
                 guideOpen={migrationGuideOpen}
                 files={companionFiles}
@@ -310,6 +399,19 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
                 onReconstruct={() => setMigrationMode(true)}
                 onChoose={() => companionInputRef.current?.click()}
                 onBuild={() => void buildMigrationPlan()}
+              />
+            ) : packetTracerDecoding ? (
+              <PacketTracerDecodingStep file={activeFile} stage={decodeStage} onCancel={onCancel} />
+            ) : packetTracerDecoded ? (
+              <PacketTracerImportStep
+                inspection={inspection!}
+                plan={plan!}
+                busy={phase === "importing"}
+                error={phase === "ready" ? message : undefined}
+                onSelectNetwork={setRequestedNetworkId}
+                onReviewMapping={() => setStep(2)}
+                onImport={() => void runImport()}
+                onCancel={onCancel}
               />
             ) : (
               <SelectFileStep
@@ -363,7 +465,7 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
           />
         </div>
 
-        {!packetTracerUnsupported && <footer className="import-wizard__footer" data-testid="import-wizard-footer">
+        {!packetTracerStep && <footer className="import-wizard__footer" data-testid="import-wizard-footer">
           <div>
             {step > 0 && step < 4 && <Button variant="ghost" disabled={phase === "importing"} onClick={() => setStep((step - 1) as WizardStep)}>Back</Button>}
             <Button variant="ghost" disabled={phase === "importing"} onClick={onCancel}>{step === 4 ? "Close" : "Cancel"}</Button>
@@ -396,8 +498,145 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
   );
 }
 
-function PacketTracerMigrationStep({ file, migrationMode, guideOpen, files, error, onClose, onGuide, onReconstruct, onChoose, onBuild }: {
+/**
+ * Progress for a decode in flight. Named stages only: the container does not
+ * declare its own size until it has been inflated, so any percentage here would
+ * be invented.
+ */
+function PacketTracerDecodingStep({ file, stage, onCancel }: {
   file: File;
+  stage: PacketTracerDecodeStage | undefined;
+  onCancel(): void;
+}) {
+  const reached = DECODE_STAGES.findIndex(([id]) => id === stage);
+  return (
+    <div className="import-step packet-tracer-import" data-testid="packet-tracer-decoding">
+      <header className="import-step-heading">
+        <p>Packet Tracer Import</p>
+        <h3>Decoding {file.name}</h3>
+        <span>The file is decoded in this browser, on a background thread. It is never uploaded.</span>
+      </header>
+      <ol className="packet-tracer-import__stages" aria-label="Decode progress">
+        {DECODE_STAGES.map(([id, label], index) => (
+          <li key={id} className={index === reached ? "is-current" : index < reached ? "is-complete" : ""}>
+            <span aria-hidden="true">
+              {index < reached ? <CheckCircle2 size={13} /> : index === reached ? <Loader2 size={13} className="is-spinning" /> : index + 1}
+            </span>
+            <strong>{label}</strong>
+          </li>
+        ))}
+      </ol>
+      <div className="import-state" role="status">
+        <FileSearch size={16} />
+        <span>{reached < 0 ? "Starting…" : `${DECODE_STAGES[reached]![1]}…`}</span>
+      </div>
+      <div className="packet-tracer-migration__actions">
+        <Button variant="ghost" onClick={onCancel}>Cancel</Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The decoded summary and the two things a user can do with it. The network
+ * chooser appears only for a file that genuinely holds more than one, and the
+ * answer network is never the pre-selected one.
+ */
+function PacketTracerImportStep({ inspection, plan, busy, error, onSelectNetwork, onReviewMapping, onImport, onCancel }: {
+  inspection: PacketTracerInspection;
+  plan: ImportPlan;
+  busy: boolean;
+  error?: string;
+  onSelectNetwork(networkId: string): void;
+  onReviewMapping(): void;
+  onImport(): void;
+  onCancel(): void;
+}) {
+  const report = plan.report;
+  const summary = [
+    ["Devices", String(plan.parsed.nodes.length)],
+    ["Links", String(plan.parsed.links.length)],
+    ["Configurations", String(report.importedStartupConfigs)],
+    ["Warnings", String(report.warningCount)],
+  ] as const;
+  const selected = inspection.networks.find((network) => network.id === inspection.selectedNetworkId);
+  return (
+    <div className="import-step packet-tracer-import" data-testid="packet-tracer-import">
+      <div className="packet-tracer-import__card" role="status">
+        <CheckCircle2 size={24} />
+        <div>
+          <p className="section-eyebrow">Packet Tracer Import</p>
+          <h3>Packet Tracer file decoded</h3>
+          <p>
+            {inspection.packetTracerVersion
+              ? `Written by Packet Tracer ${inspection.packetTracerVersion}.`
+              : "The container declared no version."}
+            {" "}Topology and supported configuration are converted; runtime state, grading rules and passwords are not.
+          </p>
+        </div>
+      </div>
+      <div className="import-summary-grid">
+        {summary.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
+      </div>
+      {inspection.activityTitle && (
+        <section className="packet-tracer-import__activity" aria-label="Packet Tracer activity">
+          <h4>{inspection.activityTitle}</h4>
+          {inspection.activityInstructions && <p>{inspection.activityInstructions}</p>}
+          <small>Activity instructions are imported as lab text. Packet Tracer grading rules are not converted.</small>
+        </section>
+      )}
+      {inspection.networks.length > 1 && (
+        <fieldset className="packet-tracer-import__networks" data-testid="packet-tracer-networks">
+          <legend>Which network should be imported?</legend>
+          <p>{inspection.selectionReason}</p>
+          {inspection.networks.map((network) => (
+            <label key={network.id} className={network.id === inspection.selectedNetworkId ? "is-selected" : ""}>
+              <input
+                type="radio"
+                name="packet-tracer-network"
+                value={network.id}
+                checked={network.id === inspection.selectedNetworkId}
+                disabled={busy}
+                onChange={() => onSelectNetwork(network.id)}
+              />
+              <span>
+                <strong>{network.name}</strong>
+                <small>
+                  {NETWORK_ROLES[network.role]} · {network.deviceCount} devices · {network.linkCount} links
+                  {network.configuredDeviceCount > 0 ? ` · ${network.configuredDeviceCount} configured` : ""}
+                </small>
+              </span>
+              {network.role === "answer" && <em>Contains the completed solution</em>}
+            </label>
+          ))}
+        </fieldset>
+      )}
+      {selected?.role === "answer" && (
+        <div className="import-state is-error" role="alert">
+          <AlertTriangle size={16} />
+          <span>This is the activity's answer network. Importing it brings in the completed solution.</span>
+        </div>
+      )}
+      {error && <div className="import-state is-error" role="alert"><AlertCircle size={16} /><span>{error}</span></div>}
+      <div className="import-safe-notice">
+        <ShieldCheck size={17} />
+        <p><strong>Decoded locally.</strong> The file was read in this browser and never sent to a server. Only its name and version are kept as source metadata.</p>
+      </div>
+      <div className="packet-tracer-migration__actions">
+        <Button variant="ghost" disabled={busy} onClick={onCancel}>Cancel</Button>
+        <Button data-testid="packet-tracer-review" disabled={busy} onClick={onReviewMapping}>Review Mapping</Button>
+        <Button variant="primary" data-testid="packet-tracer-import-lab" disabled={busy || !plan.importable} onClick={onImport}>
+          {busy ? "Importing…" : "Import Lab"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function PacketTracerMigrationStep({ file, reason, suggestsCompanionFallback, migrationMode, guideOpen, files, error, onClose, onGuide, onReconstruct, onChoose, onBuild }: {
+  file: File;
+  reason: string;
+  suggestsCompanionFallback: boolean;
   migrationMode: boolean;
   guideOpen: boolean;
   files: readonly File[];
@@ -414,9 +653,14 @@ function PacketTracerMigrationStep({ file, migrationMode, guideOpen, files, erro
         <FileWarning size={24} />
         <div>
           <p className="section-eyebrow">Recognised source</p>
-          <h3>Packet Tracer file recognised</h3>
-          <p>Direct conversion is not available because SimulatorNet does not have a supported public parser for the PKT/PKA format.</p>
-          <small><strong>{file.name}</strong> is retained only as source metadata. Its content is not parsed.</small>
+          <h3>Packet Tracer file could not be decoded</h3>
+          <p>{reason}</p>
+          <small>
+            {suggestsCompanionFallback
+              ? "Re-saving the lab from Packet Tracer may produce a container this decoder reads. Otherwise, reconstruct it from companion files below."
+              : "This file was refused by a safety limit rather than by its format, so a different export of the same lab is unlikely to help."}
+            {" "}<strong>{file.name}</strong> is retained only as source metadata.
+          </small>
         </div>
       </div>
       <div className="packet-tracer-migration__actions">
@@ -482,6 +726,7 @@ function SelectFileStep({ file, phase, message, onChoose, onDrop }: {
           ["GNS3", "Project or portable archive"],
           ["Containerlab", "YAML topology"],
           ["CML / VIRL", "YAML or XML topology"],
+          ["Packet Tracer", "PKT lab or PKA activity"],
         ].map(([name, detail]) => <div key={name}><CheckCircle2 size={14} /><span><strong>{name}</strong><small>{detail}</small></span></div>)}
       </div>
       <div className="import-safe-notice"><ShieldCheck size={17} /><p><strong>Safe local conversion.</strong> No VM images, executables, scripts or remote resources are run. Maximum input size is {fileSize(DEFAULT_IMPORT_LIMITS.maxInputBytes)}.</p></div>
