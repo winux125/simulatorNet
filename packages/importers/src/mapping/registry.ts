@@ -48,6 +48,24 @@ export const IMPORT_DEVICE_MAPPINGS: ImportDeviceMapping[] = [
   // Infrastructure.
   { sourcePlatform: "*", sourceKinds: ["ethernet-hub", "hub"], targetDeviceType: "hub", supportLevel: "topology-only", interfaceNaming: "preserve" },
   { sourcePlatform: "*", sourceKinds: ["cloud", "nat-cloud", "internet"], targetDeviceType: "cloud", supportLevel: "topology-only", interfaceNaming: "preserve" },
+
+  // Packet Tracer. Its devices are simulated rather than virtualised, so a
+  // mapped device needs no console login and its IOS-like configuration is
+  // applied through the shared parser. These rows also cover the two tokens the
+  // platform-neutral table above has no entry for ("pc" and "bridge"), which
+  // would otherwise fall through to a placeholder.
+  { sourcePlatform: "packet-tracer", sourceKinds: ["pc"], targetDeviceType: "pc", supportLevel: "configuration-partial", interfaceNaming: "preserve" },
+  { sourcePlatform: "packet-tracer", sourceKinds: ["laptop"], targetDeviceType: "laptop", supportLevel: "configuration-partial", interfaceNaming: "preserve" },
+  { sourcePlatform: "packet-tracer", sourceKinds: ["server"], targetDeviceType: "server", supportLevel: "configuration-partial", interfaceNaming: "preserve" },
+  { sourcePlatform: "packet-tracer", sourceKinds: ["smartphone"], targetDeviceType: "smartphone", supportLevel: "topology-only", interfaceNaming: "preserve" },
+  { sourcePlatform: "packet-tracer", sourceKinds: ["l2-switch"], targetDeviceType: "l2-switch", supportLevel: "configuration-partial", interfaceNaming: "preserve" },
+  { sourcePlatform: "packet-tracer", sourceKinds: ["l3-switch"], targetDeviceType: "l3-switch", supportLevel: "configuration-partial", interfaceNaming: "preserve" },
+  { sourcePlatform: "packet-tracer", sourceKinds: ["router"], targetDeviceType: "router", supportLevel: "configuration-partial", interfaceNaming: "preserve" },
+  { sourcePlatform: "packet-tracer", sourceKinds: ["hub"], targetDeviceType: "hub", supportLevel: "topology-only", interfaceNaming: "preserve" },
+  { sourcePlatform: "packet-tracer", sourceKinds: ["bridge"], targetDeviceType: "bridge", supportLevel: "topology-only", interfaceNaming: "preserve" },
+  { sourcePlatform: "packet-tracer", sourceKinds: ["cloud"], targetDeviceType: "cloud", supportLevel: "topology-only", interfaceNaming: "preserve" },
+  { sourcePlatform: "packet-tracer", sourceKinds: ["access-point"], targetDeviceType: "access-point", supportLevel: "topology-only", interfaceNaming: "preserve" },
+  { sourcePlatform: "packet-tracer", sourceKinds: ["wireless-router"], targetDeviceType: "wireless-router", supportLevel: "topology-only", interfaceNaming: "preserve" },
 ];
 
 const FALLBACK: ImportDeviceMapping = {

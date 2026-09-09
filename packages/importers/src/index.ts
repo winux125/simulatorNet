@@ -23,3 +23,5 @@ export * from "./config/management-config";
 export * from "./config/wireless-credentials";
 export * from "./plan/plan";
 export * from "./packet-tracer/companion";
+export * from "./packet-tracer/native";
+export * from "./packet-tracer/inspect";

@@ -18,7 +18,24 @@ export interface XmlElement {
 const isSpace = (ch: string): boolean => ch === " " || ch === "\t" || ch === "\n" || ch === "\r";
 const isNameChar = (ch: string): boolean => /[A-Za-z0-9_.:-]/.test(ch);
 
-export function parseXml(source: string, limits: ImportLimits = DEFAULT_IMPORT_LIMITS): XmlElement {
+export interface ParseXmlOptions {
+  /**
+   * Keep element text exactly as written instead of trimming it.
+   *
+   * Needed when the document stores indentation-significant payload in text
+   * nodes: Packet Tracer writes a running-config as one `<LINE>` per line, and
+   * the shared IOS parser uses a line's leading whitespace to tell a
+   * sub-command from a top-level one. Trimming there would silently demote
+   * every `ip address`/`switchport` line to unparsed.
+   */
+  readonly preserveTextWhitespace?: boolean;
+}
+
+export function parseXml(
+  source: string,
+  limits: ImportLimits = DEFAULT_IMPORT_LIMITS,
+  options: ParseXmlOptions = {},
+): XmlElement {
   if (source.length > limits.maxTopologyFileBytes) {
     throw new ImportSecurityError("xml-too-large", "XML document exceeds the size limit");
   }
@@ -142,7 +159,7 @@ export function parseXml(source: string, limits: ImportLimits = DEFAULT_IMPORT_L
         text += decodeEntities(source.slice(textStart, pos));
       }
     }
-    return { name, attributes, children, text: text.trim() };
+    return { name, attributes, children, text: options.preserveTextWhitespace === true ? text : text.trim() };
   }
 
   skipMisc();

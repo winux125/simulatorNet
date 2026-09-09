@@ -44,14 +44,17 @@ describe("content-based format detection", () => {
     expect(detectLabImportFormat({ bytes: new Uint8Array(0) }).format).toBe("unknown");
   });
 
-  it("recognises Packet Tracer .pkt and .pka as unsupported", () => {
+  it("recognises Packet Tracer .pkt and .pka as supported", () => {
+    // Supported natively since M10.17.4. Detection stays extension-led here
+    // because the container is ciphertext: only the decoder can confirm it, and
+    // it reports an unreadable or unsupported container as a typed failure.
     const pkt = bytesSource(Uint8Array.from([0x00, 0x01, 0x02, 0x03, 0x00]), "lab.pkt");
     const pka = bytesSource(Uint8Array.from([0x00, 0x01, 0x02, 0x03, 0x00]), "activity.pka");
     const dPkt = detectLabImportFormat(pkt);
     const dPka = detectLabImportFormat(pka);
     expect(dPkt.format).toBe("packet-tracer-pkt");
-    expect(dPkt.supported).toBe(false);
+    expect(dPkt.supported).toBe(true);
     expect(dPka.format).toBe("packet-tracer-pka");
-    expect(dPka.supported).toBe(false);
+    expect(dPka.supported).toBe(true);
   });
 });

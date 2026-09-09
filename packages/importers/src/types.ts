@@ -1,4 +1,4 @@
-import type { DeviceType, LabDocument, NodeSpec, LinkSpec, DiagramAnnotation } from "@sim/contracts";
+import type { DeviceConfig, DeviceType, LabDocument, NodeSpec, LinkSpec, DiagramAnnotation } from "@sim/contracts";
 
 /** Every foreign lab container SimulatorNet can recognise (supported or not). */
 export type LabImportFormat =
@@ -40,7 +40,7 @@ export type DetectionConfidence = "content" | "structure" | "extension" | "none"
 export interface ImportDetectionResult {
   readonly format: LabImportFormat;
   readonly confidence: DetectionConfidence;
-  /** False for Packet Tracer and unknown formats: recognised, not convertible. */
+  /** False for unknown formats: recognised, not convertible. */
   readonly supported: boolean;
   readonly isArchive: boolean;
   readonly detail?: string;
@@ -66,6 +66,14 @@ export interface ImportSourceNode {
   readonly startupConfig?: string;
   /** Config dialect of `startupConfig`, controlling whether a subset is applied. */
   readonly configFamily?: ConfigFamily;
+  /**
+   * A ready-made device configuration the adapter built itself, for sources
+   * that store host addressing as structured fields rather than as CLI text
+   * (Packet Tracer keeps a PC's address on its port, not in a config file).
+   * Used verbatim when present, so the adapter never has to render fake CLI
+   * text just to have it parsed straight back.
+   */
+  readonly deviceConfig?: DeviceConfig;
   /** True when the source family usually needs an interactive console login. */
   readonly authLikelyRequired?: boolean;
 }
@@ -189,4 +197,4 @@ export interface ImportResult {
 }
 
 /** Convenience aliases so downstream code need not reach into @sim/contracts. */
-export type { LabDocument, NodeSpec, LinkSpec, DiagramAnnotation, DeviceType };
+export type { LabDocument, NodeSpec, LinkSpec, DiagramAnnotation, DeviceType, DeviceConfig };

@@ -25,6 +25,7 @@ import { getImportAdapter } from "../adapters/adapter";
 import { DEFAULT_IMPORT_LIMITS, type ImportLimits } from "../config/limits";
 import { detectLabImportFormat } from "../detect/detect";
 import { ImportError, UnsupportedImportFormatError } from "../errors/errors";
+import { PacketTracerDecodeError } from "@sim/packet-tracer-format";
 import {
   interfaceCompatibilityWarning,
   resolveDeviceMapping,
@@ -34,6 +35,8 @@ import { boundText } from "../security/text";
 import { parseIosConfig } from "../config/ios-config";
 import { buildDeviceConfigFromIos, parseVpcsConfig } from "../config/apply";
 import { readSimulatorNetLabPackage } from "../native/simlab";
+import { readPacketTracerSource } from "../packet-tracer/native";
+import { slugify } from "./slug";
 import type {
   ImportedSourceArtifact,
   ImportMappingDecision,
@@ -45,14 +48,7 @@ import type {
   ParsedSourceTopology,
 } from "../types";
 
-const PACKET_TRACER_NOTICE =
-  "Packet Tracer files were recognised, but this format has no supported public conversion contract in SimulatorNet. "
-  + "Direct conversion is unavailable — keep the file unchanged and use a supported intermediate topology format.";
-
-export function slugify(value: string, fallback: string): string {
-  const slug = value.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "");
-  return slug.length > 0 ? slug : fallback;
-}
+export { slugify } from "./slug";
 
 function decisionFor(proposal: ImportMappingProposal): ImportMappingDecision {
   return proposal.suggestedDeviceType
@@ -190,6 +186,13 @@ function assemble(
         unparsedArtifacts.push({ nodeId: node.id, kind: "startup-config", text: boundStartup(node.startupConfig) });
       }
       continue;
+    }
+
+    // A structured configuration the adapter built itself wins: rendering it
+    // back into CLI text only to reparse it would be a lossy round trip.
+    if (node.deviceConfig && node.deviceConfig.kind === entry.deviceType) {
+      configurations[node.id] = node.deviceConfig;
+      builder.info("config-applied", `Applied imported host configuration on ${node.label}`, node.id);
     }
 
     if (!node.startupConfig) continue;
@@ -335,7 +338,25 @@ export async function inspectLabImport(
   const detection = detectLabImportFormat(source, limits);
 
   if (detection.format === "packet-tracer-pkt" || detection.format === "packet-tracer-pka") {
-    throw new UnsupportedImportFormatError(PACKET_TRACER_NOTICE, { format: detection.format });
+    // Decoded natively since M10.17.4. An activity holding several networks is
+    // planned against the default one here; the wizard calls
+    // `inspectPacketTracerFile` directly so the user can pick another.
+    try {
+      const read = await readPacketTracerSource(source, { limits });
+      return planFromParsed(read.parsed, source.filename);
+    } catch (cause) {
+      // A container this decoder cannot read is an unsupported *format*, not a
+      // crash: the caller offers the companion Migration Assistant instead. The
+      // reason is carried through so the user is told which it was.
+      if (cause instanceof PacketTracerDecodeError) {
+        throw new UnsupportedImportFormatError(cause.message, {
+          format: detection.format,
+          reason: cause.code,
+          suggestsCompanionFallback: cause.suggestsCompanionFallback,
+        });
+      }
+      throw cause;
+    }
   }
   if (detection.format === "unknown" || !detection.supported) {
     throw new ImportError("unsupported-format", `Unrecognised or unsupported lab format (${detection.format})`, { detection });

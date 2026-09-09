@@ -13,6 +13,10 @@ import type { DetectionConfidence, ImportDetectionResult, ImportSource, LabImpor
 const SUPPORTED: ReadonlySet<LabImportFormat> = new Set<LabImportFormat>([
   "simulatornet", "simulatornet-package", "pnetlab-unl", "eve-ng-unl", "gns3-project",
   "gns3-portable", "containerlab-yaml", "cml-yaml", "virl-xml",
+  // Decoded natively since M10.17.4. The container is encrypted, so detection
+  // here is provisional: only the decoder can confirm it, and it reports an
+  // unreadable or unsupported container as a typed failure of its own.
+  "packet-tracer-pkt", "packet-tracer-pka",
 ]);
 
 function result(

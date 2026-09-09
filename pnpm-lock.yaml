@@ -273,6 +273,9 @@ importers:
       '@sim/lab-format':
         specifier: workspace:*
         version: link:../lab-format
+      '@sim/packet-tracer-format':
+        specifier: workspace:*
+        version: link:../packet-tracer-format
       zod:
         specifier: ^3.24.0
         version: 3.25.76
