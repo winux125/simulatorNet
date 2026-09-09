@@ -5,3 +5,10 @@
 *.json text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
+
+# Packet Tracer containers are ciphertext. `text=auto` guesses from content, and
+# a sealed container that happens to hold a CR and no NUL is guessed wrong —
+# `eol=lf` would then rewrite that byte on checkout and the authentication tag
+# would no longer verify. Never let a heuristic touch these.
+*.pkt binary
+*.pka binary

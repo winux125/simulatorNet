@@ -28,10 +28,23 @@ function continueStep() {
   fireEvent.click(screen.getByTestId("import-continue"));
 }
 
+/** Repo-relative directory, found by walking up from the working directory. */
+function repoDirectory(relative: string): string | undefined {
+  return [".", "..", "../..", "../../.."]
+    .map((up) => resolve(process.cwd(), up, relative))
+    .find((candidate) => existsSync(candidate));
+}
+
+/** One of the committed synthetic-format containers. */
+function fixtureFile(name: string): File {
+  const directory = repoDirectory("fixtures/packet-tracer")!;
+  return new File([readFileSync(join(directory, name))], name);
+}
+
 /**
  * A container genuinely written by Cisco Packet Tracer, where one has been
  * placed locally. Real binaries are never committed, so this gate is skipped in
- * CI; the synthetic-format coverage lives in `@sim/importers`.
+ * CI; the synthetic-format coverage above runs everywhere.
  */
 function realPacketTracerFile(extension: "pkt" | "pka"): File | undefined {
   const configured = process.env.PACKET_TRACER_REAL_FIXTURES_DIR;
@@ -39,9 +52,7 @@ function realPacketTracerFile(extension: "pkt" | "pka"): File | undefined {
   // walking up from the working directory instead.
   const directory = configured !== undefined && configured.trim() !== ""
     ? configured
-    : [".", "..", "../..", "../../.."]
-      .map((up) => resolve(process.cwd(), up, ".local-fixtures/packet-tracer"))
-      .find((candidate) => existsSync(candidate));
+    : repoDirectory(".local-fixtures/packet-tracer");
   if (directory === undefined) return undefined;
   try {
     if (!statSync(directory).isDirectory()) return undefined;
@@ -180,6 +191,74 @@ enable secret NeverRenderThisHash]]></config></node></nodes><networks/></topolog
     const document = onImported.mock.calls[0]![0] as LabDocument;
     expect(document.sourceImport).toMatchObject({ platform: "packet-tracer-companion", originalFilename: "classroom.pkt" });
     expect(document.topology.links).toEqual([]);
+  });
+});
+
+describe("ImportLabWizard Packet Tracer workflow", () => {
+  it("decodes a .pkt and offers review or import instead of the fallback", async () => {
+    const onImported = vi.fn();
+    render(<ImportLabWizard file={fixtureFile("basic-lab.pkt")} onCancel={() => undefined} onImported={onImported} onError={() => undefined} />);
+
+    const card = await screen.findByTestId("packet-tracer-import");
+    expect(card.textContent).toContain("Packet Tracer file decoded");
+    expect(screen.getByTestId("packet-tracer-version").textContent).toBe("8.2.0.0400");
+    expect(screen.queryByTestId("packet-tracer-migration")).toBeNull();
+    // A .pkt holds one network, so nothing is asked.
+    expect(screen.queryByTestId("packet-tracer-networks")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("packet-tracer-import-lab"));
+    await screen.findByRole("heading", { name: /Imported|Partially Imported/ });
+    fireEvent.click(screen.getByTestId("import-open"));
+
+    const document = onImported.mock.calls.at(-1)![0] as LabDocument;
+    expect(document.topology.nodes.map((node) => node.name).sort()).toEqual(["PC0", "PC1", "Switch0"]);
+    expect(document.topology.links).toHaveLength(2);
+    expect(document.sourceImport).toMatchObject({ platform: "packet-tracer", originalFilename: "basic-lab.pkt" });
+  });
+
+  it("routes Review Mapping into the ordinary mapping step", async () => {
+    render(<ImportLabWizard file={fixtureFile("configured-lab.pkt")} onCancel={() => undefined} onImported={() => undefined} onError={() => undefined} />);
+    await screen.findByTestId("packet-tracer-import");
+    fireEvent.click(screen.getByTestId("packet-tracer-review"));
+
+    expect(screen.getByTestId("import-mapping")).toBeTruthy();
+    expect(screen.getByLabelText("Map R1")).toBeTruthy();
+    expect(screen.getByLabelText("Map Switch0")).toBeTruthy();
+    // The generic footer returns once Packet Tracer's own step is left behind.
+    expect(screen.getByTestId("import-wizard-footer")).toBeTruthy();
+  });
+
+  it("offers every network in a .pka and pre-selects the initial one", async () => {
+    render(<ImportLabWizard file={fixtureFile("activity.pka")} onCancel={() => undefined} onImported={() => undefined} onError={() => undefined} />);
+    const card = await screen.findByTestId("packet-tracer-import");
+    expect(card.textContent).toContain("Connect two hosts through a switch");
+
+    const chooser = screen.getByTestId("packet-tracer-networks");
+    const radios = within(chooser).getAllByRole("radio") as HTMLInputElement[];
+    expect(radios).toHaveLength(2);
+    expect(radios[0]!.checked).toBe(true);
+    expect(chooser.textContent).toContain("Initial network");
+    expect(chooser.textContent).toContain("Answer network");
+    expect(chooser.textContent).toContain("Contains the completed solution");
+  });
+
+  it("imports the answer network only after it is chosen, and warns first", async () => {
+    const onImported = vi.fn();
+    render(<ImportLabWizard file={fixtureFile("activity.pka")} onCancel={() => undefined} onImported={onImported} onError={() => undefined} />);
+    await screen.findByTestId("packet-tracer-import");
+
+    const radios = within(screen.getByTestId("packet-tracer-networks")).getAllByRole("radio") as HTMLInputElement[];
+    fireEvent.click(radios[1]!);
+    // Re-decoding for the chosen network is asynchronous; the warning appears
+    // with the new selection, never before it.
+    await screen.findByText(/This is the activity's answer network/);
+
+    fireEvent.click(screen.getByTestId("packet-tracer-import-lab"));
+    await screen.findByRole("heading", { name: /Imported|Partially Imported/ });
+    fireEvent.click(screen.getByTestId("import-open"));
+
+    const document = onImported.mock.calls.at(-1)![0] as LabDocument;
+    expect(document.topology.nodes).toHaveLength(3);
   });
 });
 

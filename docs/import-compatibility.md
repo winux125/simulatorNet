@@ -44,6 +44,18 @@ alongside it. An unrecognized model becomes a named placeholder rather than a
 guessed device, and an interface with no SimulatorNet equivalent leaves its link
 uncreated and reported rather than attached to some other free port.
 
+Two interface cases are worth knowing about:
+
+- **Ethernet speed.** A Packet Tracer 2811 is cabled on `FastEthernet0/0`
+  where SimulatorNet's router has `GigabitEthernet0/0`. The cable is kept at
+  the same slot and port and the substitution is reported. It never moves the
+  cable to a different position and never crosses a medium, so a lab can be
+  relabeled by it but not rewired. Configuration naming the original interface
+  is not applied to the substituted one, and the report says so.
+- **Serial interfaces are not simulated.** A serial WAN link between two
+  routers has nothing to be placed on, so it is reported and left uncreated
+  rather than turned into an Ethernet link. Both endpoints still import.
+
 When a container cannot be decoded — an unsupported container version, a failed
 authentication tag, a corrupt file, or a safety limit — the wizard says which,
 and Packet Tracer sources may still enter the explicit **Migration Assistant**.

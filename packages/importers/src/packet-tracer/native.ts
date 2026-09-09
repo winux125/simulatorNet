@@ -29,7 +29,7 @@ import {
   DEFAULT_PACKET_TRACER_LIMITS,
   normalizeCoordinates,
   PacketTracerDecodeError,
-  resolveInterfaceOnDevice,
+  resolvePacketTracerInterface,
   type DecodedPacketTracerFile,
   type PacketTracerDecodeErrorCode,
   type PacketTracerDecodeStage,
@@ -314,7 +314,22 @@ export function mapNetworkToTopology(
     ): string | undefined => {
       if (name === undefined) return undefined;
       if (side.placeholder) return name;
-      return resolveInterfaceOnDevice(name, side.templates, nextOrdinal(deviceId));
+      const resolved = resolvePacketTracerInterface(name, side.templates, nextOrdinal(deviceId));
+      if (resolved === undefined) return undefined;
+      // A speed substitution keeps the cable on the same physical position, so
+      // the topology is unchanged — but the interface is now named differently
+      // from the source, and a configuration line referring to the old name
+      // will not find it. Say so rather than letting it be discovered later.
+      if (resolved.match === "ethernet-speed") {
+        notes.push({
+          level: "warning",
+          code: "packet-tracer-interface-speed-substituted",
+          message: `${side.node.label} ${name} was imported as ${resolved.id};`
+            + " SimulatorNet models that position at a different Ethernet speed."
+            + " The cable is unchanged, but configuration naming the original interface was not applied to it.",
+        });
+      }
+      return resolved.id;
     };
 
     const a = resolve(source, link.sourceInterface, link.sourceDeviceId);
@@ -443,9 +458,24 @@ export async function readPacketTracerSource(
     onStage: options.onStage,
   });
 
+  // The XML bounds come from the Packet Tracer limits, not the shared import
+  // ones. `assertSafeXml` has already measured this document against them
+  // during the decode, and they are the ceiling calibrated for *this* format:
+  // an activity carries several complete network documents, so a real `.pka`
+  // legitimately holds several times the elements of a hand-written UNL or
+  // VIRL topology. Re-applying the generic ceiling here would refuse an
+  // ordinary `.pka` for being an ordinary `.pka`. Taking the larger of the two
+  // still honours a caller who raised the import bound, and can never exceed
+  // what the decode already allowed through. Every other import bound —
+  // nodes, links, annotations, configuration lines — stays the shared one.
+  const parseLimits: ImportLimits = {
+    ...importLimits,
+    maxXmlDepth: Math.max(importLimits.maxXmlDepth, packetTracerLimits.maxXmlDepth),
+    maxXmlNodes: Math.max(importLimits.maxXmlNodes, packetTracerLimits.maxXmlNodes),
+  };
   // Whitespace is preserved because a `<LINE>` of a running-config carries its
   // indentation as meaning; every other read here trims explicitly.
-  const root = parseXml(decoded.xml, importLimits, { preserveTextWhitespace: true });
+  const root = parseXml(decoded.xml, parseLimits, { preserveTextWhitespace: true });
   const document = buildPacketTracerDocument(root, {
     format: decoded.format,
     version: decoded.packetTracerVersion,

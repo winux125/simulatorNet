@@ -66,6 +66,35 @@ const isHostStyle = (templates: readonly string[]): boolean =>
   templates.some((id) => /^(?:eth|wlan)\d+$/iu.test(id));
 
 /**
+ * Ethernet media prefixes, in the order a substitution should prefer them.
+ *
+ * A Packet Tracer 2811 has `FastEthernet0/0` where a SimulatorNet router has
+ * `GigabitEthernet0/0` — the same physical position on the same medium, at a
+ * speed this simulator does not model separately. Everything outside this set
+ * — Serial, Loopback, Vlan, Tunnel, Port-channel — is a different medium
+ * entirely and is never substituted for another.
+ */
+const ETHERNET_PREFIXES: readonly string[] = ["Te", "Gi", "Fa", "Eth"];
+
+const isEthernetPrefix = (prefix: string): boolean =>
+  ETHERNET_PREFIXES.some((candidate) => candidate.toLowerCase() === prefix.toLowerCase());
+
+/** How an interface name was matched, so the caller can report a substitution. */
+export type InterfaceMatchKind =
+  | "exact"
+  | "abbreviated"
+  | "same-shape"
+  /** Same slot and port on the same medium, at a different Ethernet speed. */
+  | "ethernet-speed"
+  /** Host port chosen by ordinal, safe only because a host has no slots. */
+  | "positional";
+
+export interface ResolvedInterface {
+  readonly id: string;
+  readonly match: InterfaceMatchKind;
+}
+
+/**
  * Resolve a Packet Tracer interface name onto one of `templates`, which are the
  * target device's real interface ids.
  *
@@ -73,35 +102,56 @@ const isHostStyle = (templates: readonly string[]): boolean =>
  *   1. exact match (case-insensitive) against a template;
  *   2. the abbreviated form of the Packet Tracer name;
  *   3. same media prefix and same slot suffix;
- *   4. for host-style targets ("eth0"), positional mapping by port ordinal.
+ *   4. same slot suffix on another Ethernet speed;
+ *   5. for host-style targets ("eth0"), positional mapping by port ordinal.
  *
- * Anything else is unresolved.
+ * Anything else is unresolved. Note what step 4 is *not*: it never takes a
+ * different position, and it never crosses a medium. `FastEthernet0/0` resolves
+ * to `GigabitEthernet0/0` and to nothing else, so a lab cannot be rewired by
+ * it — only relabelled. `Serial0/0/0` stays unresolved, because SimulatorNet
+ * has no serial interface to put it on.
  */
-export function resolveInterfaceOnDevice(
+export function resolvePacketTracerInterface(
   packetTracerName: string,
   templates: readonly string[],
   /** Ordinal of this interface among the source device's cabled ports. */
   ordinal = 0,
-): string | undefined {
+): ResolvedInterface | undefined {
   const trimmed = packetTracerName.trim();
   const lowered = trimmed.toLowerCase();
 
   const exact = templates.find((id) => id.toLowerCase() === lowered);
-  if (exact !== undefined) return exact;
+  if (exact !== undefined) return { id: exact, match: "exact" };
 
   const parsed = parsePacketTracerInterfaceName(trimmed);
   if (parsed) {
     const abbreviated = templates.find((id) => id.toLowerCase() === parsed.abbreviated.toLowerCase());
-    if (abbreviated !== undefined) return abbreviated;
+    if (abbreviated !== undefined) return { id: abbreviated, match: "abbreviated" };
+
+    const shapes = templates
+      .map((id) => ({ id, parsed: parsePacketTracerInterfaceName(id) }))
+      .filter((entry): entry is { id: string; parsed: ParsedInterfaceName } => entry.parsed !== undefined
+        && entry.parsed.suffix === parsed.suffix);
 
     // Same media, same slot numbering — covers "Ethernet0/1" against "Eth0/1".
-    const sameShape = templates.find((id) => {
-      const template = parsePacketTracerInterfaceName(id);
-      return template !== undefined
-        && template.prefix.toLowerCase() === parsed.prefix.toLowerCase()
-        && template.suffix === parsed.suffix;
-    });
-    if (sameShape !== undefined) return sameShape;
+    const sameShape = shapes.find((entry) =>
+      entry.parsed.prefix.toLowerCase() === parsed.prefix.toLowerCase());
+    if (sameShape !== undefined) return { id: sameShape.id, match: "same-shape" };
+
+    // Same position, different Ethernet speed. Ordered so the choice is stable
+    // rather than dependent on how the profile happened to list its ports.
+    //
+    // Only a slotted name qualifies. An unslotted "FastEthernet0" is a host
+    // port, and its "0" is an ordinal rather than a slot — matching it against
+    // "eth0" would be a coincidence of digits, not the same position. Those
+    // belong to the positional rule below, which is written for them.
+    if (isEthernetPrefix(parsed.prefix) && parsed.suffix.includes("/")) {
+      for (const prefix of ETHERNET_PREFIXES) {
+        const candidate = shapes.find((entry) =>
+          entry.parsed.prefix.toLowerCase() === prefix.toLowerCase());
+        if (candidate !== undefined) return { id: candidate.id, match: "ethernet-speed" };
+      }
+    }
   }
 
   // A host has one or two unslotted ports and Packet Tracer calls the first one
@@ -112,8 +162,18 @@ export function resolveInterfaceOnDevice(
     const wireless = templates.filter((id) => /^wlan\d+$/iu.test(id));
     const wantsWireless = /^wireless|^wlan/iu.test(trimmed);
     const pool = wantsWireless && wireless.length > 0 ? wireless : ethernet;
-    if (pool.length > 0) return pool[Math.min(ordinal, pool.length - 1)];
+    const chosen = pool[Math.min(ordinal, pool.length - 1)];
+    if (chosen !== undefined) return { id: chosen, match: "positional" };
   }
 
   return undefined;
+}
+
+/** The resolved id alone, for a caller that does not report the match kind. */
+export function resolveInterfaceOnDevice(
+  packetTracerName: string,
+  templates: readonly string[],
+  ordinal = 0,
+): string | undefined {
+  return resolvePacketTracerInterface(packetTracerName, templates, ordinal)?.id;
 }

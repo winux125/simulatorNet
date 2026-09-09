@@ -29,6 +29,7 @@ function realFixture(extension: "pkt" | "pka"): { filename: string; bytes: Uint8
 }
 
 const realPkt = realFixture("pkt");
+const realPka = realFixture("pka");
 
 describe("Packet Tracer detection", () => {
   it("reports a .pkt as a supported format", () => {
@@ -157,5 +158,58 @@ describe.runIf(realPkt)("real Packet Tracer .pkt import", () => {
     expect(document.schemaVersion).toBe(1);
     expect(document.topology.nodes).toHaveLength(5);
     expect(document.sourceImport?.platform).toBe("packet-tracer");
+  });
+});
+
+describe.runIf(realPka)("real Packet Tracer .pka import", () => {
+  const source = { filename: realPka?.filename, bytes: realPka?.bytes ?? new Uint8Array() };
+
+  it("discovers every contained network and offers the choice", async () => {
+    const inspection = await inspectPacketTracerFile(source);
+
+    expect(inspection.format).toBe("packet-tracer-pka");
+    expect(inspection.packetTracerVersion).toMatch(/^\d+\./u);
+    expect(inspection.networks.length).toBeGreaterThan(1);
+    expect(inspection.requiresNetworkChoice).toBe(true);
+    // Every network is offered with the counts needed to tell them apart.
+    for (const network of inspection.networks) {
+      expect(network.deviceCount).toBeGreaterThan(0);
+      expect(network.name.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("builds a real topology from the selected network", async () => {
+    const inspection = await inspectPacketTracerFile(source);
+    const { document, report } = executeLabImport(inspection.plan);
+
+    expect(document.topology.nodes.length).toBeGreaterThan(1);
+    expect(document.topology.links.length).toBeGreaterThan(0);
+    expect(document.sourceImport?.platform).toBe("packet-tracer");
+    // Routers and switches arrived as routers and switches, not placeholders.
+    const kinds = new Set(document.topology.nodes.map((node) => node.kind));
+    expect(kinds.has("router")).toBe(true);
+    expect(kinds.has("l2-switch")).toBe(true);
+    expect(report.importedNodeCount).toBeGreaterThan(0);
+  });
+
+  it("imports a different network when one is chosen", async () => {
+    const first = await inspectPacketTracerFile(source);
+    const other = first.networks.find((network) => network.id !== first.selectedNetworkId)!;
+    const chosen = await inspectPacketTracerFile(source, { networkId: other.id });
+
+    expect(chosen.selectedNetworkId).toBe(other.id);
+    expect(chosen.plan.parsed.nodes).toHaveLength(other.deviceCount);
+  });
+
+  it("reports every link it could not place instead of rewiring the lab", async () => {
+    const inspection = await inspectPacketTracerFile(source);
+    const { document } = executeLabImport(inspection.plan);
+    const selected = inspection.networks.find((network) => network.id === inspection.selectedNetworkId)!;
+
+    const unmapped = inspection.plan.report.entries
+      .filter((entry) => entry.code === "packet-tracer-link-unmapped").length;
+    // Every source cable is either created or named in the report; none is
+    // quietly dropped and none is invented.
+    expect(document.topology.links.length + unmapped).toBe(selected.linkCount);
   });
 });

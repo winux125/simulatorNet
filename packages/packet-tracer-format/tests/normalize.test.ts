@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { classifyPacketTracerModel } from "../src/normalize/device-models";
 import { normalizeCoordinates } from "../src/normalize/coordinates";
-import { parsePacketTracerInterfaceName, resolveInterfaceOnDevice } from "../src/normalize/interfaces";
+import {
+  parsePacketTracerInterfaceName,
+  resolveInterfaceOnDevice,
+  resolvePacketTracerInterface,
+} from "../src/normalize/interfaces";
 
 describe("classifyPacketTracerModel", () => {
   it("classifies access switches with their real port density", () => {
@@ -79,6 +83,65 @@ describe("resolveInterfaceOnDevice", () => {
     // The alternative — quietly picking a free port — would rewire the lab.
     expect(resolveInterfaceOnDevice("FastEthernet0/48", switchPorts)).toBeUndefined();
     expect(resolveInterfaceOnDevice("UnknownModule0/1", switchPorts)).toBeUndefined();
+  });
+});
+
+/**
+ * Speed substitution. A real Packet Tracer router lab is cabled on
+ * `FastEthernet0/0`, where SimulatorNet's router has `Gi0/0`; without this the
+ * most common lab of all imports with no cables at all.
+ */
+describe("resolvePacketTracerInterface", () => {
+  const routerPorts = ["Gi0/0", "Gi0/1"];
+
+  it("reports how an interface was matched", () => {
+    expect(resolvePacketTracerInterface("Gi0/0", routerPorts)).toEqual({ id: "Gi0/0", match: "exact" });
+    expect(resolvePacketTracerInterface("GigabitEthernet0/1", routerPorts))
+      .toEqual({ id: "Gi0/1", match: "abbreviated" });
+  });
+
+  it("substitutes another Ethernet speed at the same position", () => {
+    expect(resolvePacketTracerInterface("FastEthernet0/0", routerPorts))
+      .toEqual({ id: "Gi0/0", match: "ethernet-speed" });
+    expect(resolvePacketTracerInterface("Ethernet0/1", routerPorts))
+      .toEqual({ id: "Gi0/1", match: "ethernet-speed" });
+  });
+
+  it("never moves the cable to a different position", () => {
+    // 0/2 does not exist; the answer is nothing, not the nearest free port.
+    expect(resolvePacketTracerInterface("FastEthernet0/2", routerPorts)).toBeUndefined();
+    expect(resolvePacketTracerInterface("FastEthernet1/0", routerPorts)).toBeUndefined();
+  });
+
+  it("never crosses a medium", () => {
+    // SimulatorNet has no serial interface, so a serial link stays unplaced
+    // rather than becoming an Ethernet one.
+    expect(resolvePacketTracerInterface("Serial0/0", routerPorts)).toBeUndefined();
+    expect(resolvePacketTracerInterface("Serial0/0/0", ["Gi0/0/0"])).toBeUndefined();
+    expect(resolvePacketTracerInterface("Loopback0/1", ["Gi0/1"])).toBeUndefined();
+    expect(resolvePacketTracerInterface("Vlan0/1", ["Gi0/1"])).toBeUndefined();
+  });
+
+  it("leaves an unslotted host port to the positional rule", () => {
+    // "FastEthernet0" against "eth0" is a coincidence of digits, not a slot,
+    // and the second host port must still be reachable by ordinal.
+    expect(resolvePacketTracerInterface("FastEthernet0", ["eth0", "eth1"], 1))
+      .toEqual({ id: "eth1", match: "positional" });
+  });
+
+  it("prefers an exact media match over a substitution", () => {
+    // Both Fa0/1 and Gi0/1 exist; the name says Fast, so it must not be moved
+    // onto the uplink just because Gi is listed first.
+    expect(resolvePacketTracerInterface("FastEthernet0/1", ["Gi0/1", "Fa0/1"]))
+      .toEqual({ id: "Fa0/1", match: "abbreviated" });
+  });
+
+  it("picks a stable speed when several could serve", () => {
+    // Ordered by the prefix table, not by however the profile listed its ports.
+    expect(resolvePacketTracerInterface("FastEthernet0/1", ["Eth0/1", "Gi0/1", "Te0/1"]))
+      .toEqual({ id: "Te0/1", match: "ethernet-speed" });
+    expect(resolvePacketTracerInterface("FastEthernet0/1", ["Eth0/1", "Gi0/1"]))
+      .toEqual({ id: "Gi0/1", match: "ethernet-speed" });
   });
 });
 

@@ -116,6 +116,42 @@ describe("Packet Tracer mapping", () => {
     expect(document.topology.nodes.find((node) => node.name === "Thing0")?.kind).toBe("external-appliance");
   });
 
+  it("keeps a FastEthernet router link at the same position and reports the speed", async () => {
+    // A 2811 is cabled on FastEthernet0/0 where SimulatorNet's router has
+    // Gi0/0. Without the substitution the most common Packet Tracer lab of all
+    // would import with no cables at all.
+    const xml = documentXml(
+      device({ name: "R1", engine: "Router", model: "2811", ports: 2 }, "1")
+      + device({ name: "SW1", engine: "Switch", model: "2960-24TT", ports: 26 }, "2"),
+      cable("1", "FastEthernet0/0", "2", "FastEthernet0/1"),
+    );
+    const { plan } = await inspect(xml);
+    const { document } = executeLabImport(plan);
+
+    expect(document.topology.links[0]?.a.iface).toBe("Gi0/0");
+    expect(document.topology.links[0]?.b.iface).toBe("Fa0/1");
+    // Never silent: a configuration line naming FastEthernet0/0 will not apply.
+    expect(plan.report.entries.some((entry) =>
+      entry.code === "packet-tracer-interface-speed-substituted"
+      && entry.message.includes("FastEthernet0/0")
+      && entry.message.includes("Gi0/0"))).toBe(true);
+  });
+
+  it("leaves a serial link unplaced rather than turning it into an Ethernet one", async () => {
+    // SimulatorNet has no serial interface, so there is nothing to place it on.
+    const xml = documentXml(
+      device({ name: "R1", engine: "Router", model: "2811", ports: 2 }, "1")
+      + device({ name: "R2", engine: "Router", model: "2811", ports: 2 }, "2"),
+      cable("1", "Serial0/0/0", "2", "Serial0/0/0"),
+    );
+    const { plan } = await inspect(xml);
+    const { document } = executeLabImport(plan);
+
+    expect(document.topology.links).toHaveLength(0);
+    expect(plan.report.entries.some((entry) =>
+      entry.code === "packet-tracer-link-unmapped" && entry.message.includes("Serial0/0/0"))).toBe(true);
+  });
+
   it("drops a link it cannot place rather than attaching it to a free port", async () => {
     const xml = documentXml(
       device({ name: "R1", engine: "Router", model: "1941", ports: 2 }, "1")
