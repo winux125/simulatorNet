@@ -23,6 +23,7 @@
     "smoke:m8": "bash infra/smoke-m8.sh",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:packet-tracer:real": "PACKET_TRACER_REQUIRE_REAL=1 vitest run packages/packet-tracer-format/tests/real-container.test.ts",
     "test:e2e": "playwright test",
     "verify:fixture": "pnpm --filter @simulatornet/verifier verify --submission ./fixtures/submission.json --grading ./fixtures/grading.json",
     "typecheck": "pnpm -r --if-present typecheck"

@@ -11,3 +11,7 @@ coverage/
 .env
 .env.*
 !.env.example
+# Real Packet Tracer compatibility inputs. Never redistributed: these are
+# third-party binaries kept locally so the decoder can be checked against a
+# genuine Cisco-produced container. See docs/packet-tracer-import.md.
+.local-fixtures/

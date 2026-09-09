@@ -15,6 +15,7 @@ export default defineConfig({
       "@sim/device-config": fromRoot("./packages/device-config/src/index.ts"),
       "@sim/lab-format": fromRoot("./packages/lab-format/src/index.ts"),
       "@sim/importers": fromRoot("./packages/importers/src/index.ts"),
+      "@sim/packet-tracer-format": fromRoot("./packages/packet-tracer-format/src/index.ts"),
       "@sim/console-auth": fromRoot("./packages/console-auth/src/index.ts"),
       "@sim/remote-management": fromRoot("./packages/remote-management/src/index.ts"),
       "@sim/sim-worker": fromRoot("./packages/sim-worker/src/index.ts"),

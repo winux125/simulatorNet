@@ -1,0 +1,17 @@
+{
+  "name": "@sim/packet-tracer-format",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-safe decoder for Cisco Packet Tracer .pkt/.pka containers. Reverses the container's obfuscation, block cipher and compression to recover the XML topology document, under central untrusted-input bounds. It never executes file content, never fetches a remote resource and never maps into a SimulatorNet LabDocument — that is the importer's job.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {}
+}
