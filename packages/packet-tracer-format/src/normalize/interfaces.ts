@@ -177,3 +177,119 @@ export function resolveInterfaceOnDevice(
 ): string | undefined {
   return resolvePacketTracerInterface(packetTracerName, templates, ordinal)?.id;
 }
+
+/** Why a cable endpoint could not be placed on the mapped device. */
+export type InterfaceUnresolvedReason =
+  /** Serial and anything else SimulatorNet does not model as a medium. */
+  | "unsupported-medium"
+  /** The device has no free port of a compatible medium left. */
+  | "no-free-interface"
+  /** The name's media is outside this vocabulary, so nothing can be inferred. */
+  | "unknown-interface-name";
+
+/**
+ * `"compatibility"` is the one kind that moves a cable to a different port
+ * number. It exists because a Packet Tracer chassis can be modular — a Switch-PT
+ * cables `FastEthernet1/1`, `FastEthernet2/1`, `FastEthernet3/1`, one port per
+ * slot — while every SimulatorNet switch has a single slot. There is no port at
+ * that position to preserve, so the choice is between a reported renumbering and
+ * losing the cable. It is never used while a position-preserving match is still
+ * available, and the caller must report every one of them.
+ */
+export type InterfaceAssignmentKind = InterfaceMatchKind | "compatibility";
+
+export interface PacketTracerInterfaceAssignment {
+  /** The name exactly as the source cable spelled it. */
+  readonly sourceName: string;
+  /** The target device's interface id, absent when unresolved. */
+  readonly id?: string;
+  readonly kind?: InterfaceAssignmentKind;
+  readonly reason?: InterfaceUnresolvedReason;
+}
+
+/** Priority-major order: an exact match anywhere beats a substitution anywhere. */
+const RESOLUTION_ORDER: readonly InterfaceMatchKind[] = [
+  "exact",
+  "abbreviated",
+  "same-shape",
+  "ethernet-speed",
+  "positional",
+];
+
+/**
+ * Assign every interface name one source device's cables use onto the target
+ * device's real interfaces, at most one cable per interface.
+ *
+ * Resolving each cable independently cannot do this: two names may resolve to
+ * the same port, and whether the *right* one wins would depend on the order the
+ * cables happen to appear in the file. So the whole device is planned at once,
+ * in priority-major passes — every exact match is claimed before any
+ * abbreviation is considered, and so on down to the reported compatibility
+ * renumbering. A name that survives all of them is returned with the reason it
+ * did, so the caller can report the link rather than dropping it silently.
+ *
+ * Keys are lowercased: a device that spells one port two ways across two cables
+ * has one port, not two, and must not resolve differently depending on which
+ * cable asked. `sourceName` keeps the spelling the source actually used.
+ */
+export function planPacketTracerInterfaces(
+  sourceNames: readonly string[],
+  templates: readonly string[],
+): ReadonlyMap<string, PacketTracerInterfaceAssignment> {
+  const pending: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of sourceNames) {
+    const name = raw.trim();
+    if (name.length === 0 || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    pending.push(name);
+  }
+
+  const assignments = new Map<string, PacketTracerInterfaceAssignment>();
+  const claimed = new Set<string>();
+  const free = (): string[] => templates.filter((id) => !claimed.has(id));
+  const assign = (name: string, assignment: PacketTracerInterfaceAssignment): void => {
+    assignments.set(name.toLowerCase(), assignment);
+  };
+  const done = (name: string): boolean => assignments.has(name.toLowerCase());
+
+  for (const kind of RESOLUTION_ORDER) {
+    for (const name of pending) {
+      if (done(name)) continue;
+      // Ordinal 0 against a shrinking pool: the first unclaimed host port. A
+      // host has no slots, so "first free" *is* the source's own ordering.
+      const resolved = resolvePacketTracerInterface(name, free(), 0);
+      if (resolved === undefined || resolved.match !== kind) continue;
+      claimed.add(resolved.id);
+      assign(name, { sourceName: name, id: resolved.id, kind });
+    }
+  }
+
+  for (const name of pending) {
+    if (done(name)) continue;
+    const parsed = parsePacketTracerInterfaceName(name);
+    if (parsed === undefined) {
+      assign(name, { sourceName: name, reason: "unknown-interface-name" });
+      continue;
+    }
+    if (!isEthernetPrefix(parsed.prefix)) {
+      // Serial, Tunnel, Port-channel: a different medium entirely. Substituting
+      // an Ethernet port for one would claim the simulator models something it
+      // does not.
+      assign(name, { sourceName: name, reason: "unsupported-medium" });
+      continue;
+    }
+    const candidate = free().find((id) => {
+      const shape = parsePacketTracerInterfaceName(id);
+      return shape !== undefined && isEthernetPrefix(shape.prefix);
+    });
+    if (candidate === undefined) {
+      assign(name, { sourceName: name, reason: "no-free-interface" });
+      continue;
+    }
+    claimed.add(candidate);
+    assign(name, { sourceName: name, id: candidate, kind: "compatibility" });
+  }
+
+  return assignments;
+}

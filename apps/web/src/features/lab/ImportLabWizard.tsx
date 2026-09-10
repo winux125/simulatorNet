@@ -578,6 +578,7 @@ function PacketTracerImportStep({ inspection, plan, busy, error, onSelectNetwork
       <div className="import-summary-grid">
         {summary.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
       </div>
+      <LinkAccounting report={report} />
       {inspection.activityTitle && (
         <section className="packet-tracer-import__activity" aria-label="Packet Tracer activity">
           <h4>{inspection.activityTitle}</h4>
@@ -744,6 +745,37 @@ function ImportState({ phase, message, filename }: { phase: WizardPhase; message
   return null;
 }
 
+/**
+ * Every source link accounted for. A cable that was not created is the one
+ * import outcome a user cannot see by looking at the canvas, so the four numbers
+ * are always shown together and each unresolved link names its own reason.
+ */
+function LinkAccounting({ report }: { report: ImportPlan["report"] }) {
+  const unresolved = report.entries.filter((entry) => entry.code === "packet-tracer-link-unresolved");
+  return (
+    <section className="import-link-accounting" data-testid="import-link-accounting" aria-label="Link mapping">
+      <dl>
+        <div><dt>Source links</dt><dd>{report.sourceLinkCount}</dd></div>
+        <div><dt>Mapped</dt><dd>{report.importedLinkCount - report.compatibilityMappedLinkCount}</dd></div>
+        <div><dt>Compatibility mapped</dt><dd>{report.compatibilityMappedLinkCount}</dd></div>
+        <div className={report.unresolvedLinkCount > 0 ? "is-warning" : ""}>
+          <dt>Unresolved</dt><dd>{report.unresolvedLinkCount}</dd>
+        </div>
+      </dl>
+      {unresolved.length > 0 && (
+        <ul data-testid="import-link-unresolved">
+          {unresolved.map((entry, index) => (
+            <li key={`${entry.code}-${index}`}>
+              <strong>{String(entry.detail?.device ?? "")} {String(entry.detail?.sourceInterface ?? "")}</strong>
+              <span>{String(entry.detail?.reason ?? entry.message)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function InspectStep({ plan }: { plan: ImportPlan }) {
   const cards = [
     ["Format", formatName(plan.format)],
@@ -760,6 +792,7 @@ function InspectStep({ plan }: { plan: ImportPlan }) {
       <div className="import-summary-grid">
         {cards.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
       </div>
+      <LinkAccounting report={plan.report} />
       <details className="import-source-details">
         <summary>Source details <ChevronDown size={14} /></summary>
         <dl>

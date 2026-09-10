@@ -18,6 +18,7 @@
 import {
   DEVICE_HARDWARE_PROFILES,
   DEVICE_PROFILES,
+  getDeviceProfile,
   type DeviceConfig,
   type DeviceHardwareProfileId,
   type DeviceType,
@@ -29,12 +30,14 @@ import {
   DEFAULT_PACKET_TRACER_LIMITS,
   normalizeCoordinates,
   PacketTracerDecodeError,
-  resolvePacketTracerInterface,
+  planPacketTracerInterfaces,
   type DecodedPacketTracerFile,
+  type InterfaceUnresolvedReason,
   type PacketTracerDecodeErrorCode,
   type PacketTracerDecodeStage,
   type PacketTracerDevice,
   type PacketTracerDocument,
+  type PacketTracerInterfaceAssignment,
   type PacketTracerLimits,
   type PacketTracerNetwork,
   type PacketTracerNetworkRole,
@@ -197,6 +200,34 @@ interface MappedDevice {
   readonly templates: readonly string[];
   readonly deviceType: DeviceType;
   readonly placeholder: boolean;
+  /** Source interface name -> where it landed. Empty until links are planned. */
+  interfaces: ReadonlyMap<string, PacketTracerInterfaceAssignment>;
+}
+
+/** Why one endpoint could not be placed, in words the user can act on. */
+const UNRESOLVED_REASONS: Readonly<Record<InterfaceUnresolvedReason, string>> = {
+  "unsupported-medium":
+    "SimulatorNet models one Ethernet data plane and has no interface of this medium"
+    + " (a Serial WAN port, for example), so there is no port to attach the cable to",
+  "no-free-interface":
+    "the mapped device has no free Ethernet port left; the source chassis carries more"
+    + " cabled ports than the device it was mapped onto",
+  "unknown-interface-name":
+    "the interface name is outside the vocabulary this importer understands, so nothing"
+    + " can be inferred about which port it is",
+};
+
+/** Every interface name this device's cables use, in the source's own order. */
+function cabledInterfaceNames(
+  network: PacketTracerNetwork,
+  deviceId: string,
+): string[] {
+  const names: string[] = [];
+  for (const link of network.links) {
+    if (link.sourceDeviceId === deviceId && link.sourceInterface !== undefined) names.push(link.sourceInterface);
+    if (link.targetDeviceId === deviceId && link.targetInterface !== undefined) names.push(link.targetInterface);
+  }
+  return names;
 }
 
 /** Map one Packet Tracer network onto a `ParsedSourceTopology`. */
@@ -235,11 +266,22 @@ export function mapNetworkToTopology(
     const placeholder = deviceType === undefined;
 
     if (!classification.matched) {
+      // Kept, never dropped: a device SimulatorNet cannot simulate is still part
+      // of the lab's topology, and the cables into it are still real. Say both
+      // halves of that plainly — what was lost, and what was not.
+      const identity = device.packetTracerModel ?? device.packetTracerType;
       notes.push({
         level: "warning",
         code: "packet-tracer-unsupported-model",
-        message: classification.note ?? `Unsupported Packet Tracer model on ${device.hostname ?? device.id}`,
+        message: `${device.hostname ?? device.id}: Packet Tracer ${identity !== undefined ? `model "${identity}"` : "device"}`
+          + " is not simulated by SimulatorNet. It was kept on the topology as an External Appliance"
+          + " with its cabled ports preserved; its behaviour is not simulated.",
         nodeId: device.id,
+        detail: {
+          hostname: device.hostname,
+          packetTracerType: device.packetTracerType,
+          packetTracerModel: device.packetTracerModel,
+        },
       });
     } else if (classification.note !== undefined) {
       notes.push({
@@ -265,20 +307,26 @@ export function mapNetworkToTopology(
 
     // A mapped device gets its real interface set, so a link lands on an
     // interface the device actually has and the hardware profile is inferred
-    // correctly. A placeholder keeps the source's own names instead.
+    // correctly. A placeholder is an External Appliance with no port inventory
+    // of its own, so it keeps exactly the ports the source file gave it —
+    // whatever the chassis listed, plus anything a cable named.
     const interfaces = placeholder
-      ? device.interfaces.map((entry) => entry.name)
+      ? dedupe([...device.interfaces.map((entry) => entry.name), ...cabledInterfaceNames(network, device.id)])
       : templates;
 
     mapped.set(device.id, {
       deviceType: deviceType ?? "external-appliance",
       placeholder,
       templates,
+      interfaces: new Map(),
       node: {
         id,
         label,
         sourceKind: classification.sourceKind,
         sourceTemplate: device.packetTracerModel,
+        // Kept so an unsupported device's own identity survives the import even
+        // though its behaviour does not.
+        iconHint: device.packetTracerType,
         vendor: "Cisco",
         position,
         interfaces,
@@ -294,12 +342,48 @@ export function mapNetworkToTopology(
     });
   });
 
+  // Interfaces are planned per device, before any cable is placed: two cables on
+  // one device may compete for the same port, and which of them keeps its own
+  // position must not depend on the order they appear in the file.
+  for (const [deviceId, entry] of mapped) {
+    if (entry.placeholder) continue;
+    entry.interfaces = planPacketTracerInterfaces(cabledInterfaceNames(network, deviceId), entry.templates);
+    for (const assignment of entry.interfaces.values()) {
+      if (assignment.id === undefined) continue;
+      if (assignment.kind !== "ethernet-speed" && assignment.kind !== "compatibility") continue;
+      // The cable survives, but the interface is now named differently from the
+      // source, so a configuration line naming the original will not find it.
+      // Say so rather than letting it be discovered later.
+      notes.push({
+        level: "warning",
+        code: assignment.kind === "compatibility"
+          ? "packet-tracer-interface-renumbered"
+          : "packet-tracer-interface-speed-substituted",
+        message: `${entry.node.label} ${assignment.sourceName} was imported as ${assignment.id}; `
+          + (assignment.kind === "compatibility"
+            ? `${getDeviceProfile(entry.deviceType).displayName} has no port at that position, so the cable was`
+              + " kept on the next free port of the same medium."
+            : "SimulatorNet models that position at a different Ethernet speed. The cable is unchanged.")
+          + " Configuration naming the original interface was not applied to it.",
+        nodeId: entry.node.id,
+        detail: { sourceInterface: assignment.sourceName, importedInterface: assignment.id },
+      });
+    }
+  }
+
   const links: ImportSourceLink[] = [];
-  const ordinals = new Map<string, number>();
-  const nextOrdinal = (deviceId: string): number => {
-    const value = ordinals.get(deviceId) ?? 0;
-    ordinals.set(deviceId, value + 1);
-    return value;
+  /** Where one endpoint landed, or why it did not. */
+  const endpoint = (
+    side: MappedDevice,
+    name: string | undefined,
+  ): { readonly id: string; readonly compatibility: boolean } | { readonly detail: string } => {
+    if (name === undefined) return { detail: "the source cable does not name this interface" };
+    // A placeholder is an External Appliance: its ports are whatever the file
+    // said they were, so every name it uses resolves by definition.
+    if (side.placeholder) return { id: name, compatibility: false };
+    const assignment = side.interfaces.get(name.trim().toLowerCase());
+    if (assignment?.id !== undefined) return { id: assignment.id, compatibility: assignment.kind === "compatibility" };
+    return { detail: UNRESOLVED_REASONS[assignment?.reason ?? "unknown-interface-name"] };
   };
 
   for (const link of network.links) {
@@ -307,43 +391,29 @@ export function mapNetworkToTopology(
     const target = mapped.get(link.targetDeviceId);
     if (!source || !target) continue;
 
-    const resolve = (
-      side: MappedDevice,
-      name: string | undefined,
-      deviceId: string,
-    ): string | undefined => {
-      if (name === undefined) return undefined;
-      if (side.placeholder) return name;
-      const resolved = resolvePacketTracerInterface(name, side.templates, nextOrdinal(deviceId));
-      if (resolved === undefined) return undefined;
-      // A speed substitution keeps the cable on the same physical position, so
-      // the topology is unchanged — but the interface is now named differently
-      // from the source, and a configuration line referring to the old name
-      // will not find it. Say so rather than letting it be discovered later.
-      if (resolved.match === "ethernet-speed") {
-        notes.push({
-          level: "warning",
-          code: "packet-tracer-interface-speed-substituted",
-          message: `${side.node.label} ${name} was imported as ${resolved.id};`
-            + " SimulatorNet models that position at a different Ethernet speed."
-            + " The cable is unchanged, but configuration naming the original interface was not applied to it.",
-        });
-      }
-      return resolved.id;
-    };
+    const a = endpoint(source, link.sourceInterface);
+    const b = endpoint(target, link.targetInterface);
 
-    const a = resolve(source, link.sourceInterface, link.sourceDeviceId);
-    const b = resolve(target, link.targetInterface, link.targetDeviceId);
-
-    if (a === undefined || b === undefined) {
-      // Never attach a cable to an arbitrary free port: report it precisely
-      // enough that the user can reconnect it by hand.
+    if (!("id" in a) || !("id" in b)) {
+      // Never attach a cable to an arbitrary port on a device that has one at
+      // the right position free: report it precisely enough that the user can
+      // reconnect it by hand, and count it so it cannot vanish quietly.
+      const failing = !("id" in a)
+        ? { device: source.node, name: link.sourceInterface, detail: a.detail }
+        : { device: target.node, name: link.targetInterface, detail: (b as { detail: string }).detail };
       notes.push({
         level: "warning",
-        code: "packet-tracer-link-unmapped",
-        message: `Could not place the link ${source.node.label} ${link.sourceInterface ?? "?"}`
-          + ` to ${target.node.label} ${link.targetInterface ?? "?"};`
-          + " the interface has no equivalent on the mapped device and the link was not created.",
+        code: "packet-tracer-link-unresolved",
+        message: `Link ${source.node.label} ${link.sourceInterface ?? "?"}`
+          + ` to ${target.node.label} ${link.targetInterface ?? "?"} was not created:`
+          + ` on ${failing.device.label}, ${failing.detail}.`,
+        nodeId: failing.device.id,
+        detail: {
+          sourceLinkId: link.id,
+          device: failing.device.label,
+          sourceInterface: failing.name,
+          reason: failing.detail,
+        },
       });
       continue;
     }
@@ -361,8 +431,9 @@ export function mapNetworkToTopology(
 
     links.push({
       id: link.id,
-      a: { node: source.node.id, iface: a },
-      b: { node: target.node.id, iface: b },
+      a: { node: source.node.id, iface: a.id },
+      b: { node: target.node.id, iface: b.id },
+      mappingKind: a.compatibility || b.compatibility ? "compatibility" : undefined,
     });
   }
 
@@ -373,12 +444,24 @@ export function mapNetworkToTopology(
     labTitle,
     nodes: [...mapped.values()].map((entry) => entry.node),
     links,
+    sourceLinkCount: network.links.length,
     annotations: [],
     assets: [],
     ignoredFiles: [],
     ignoredVendorImages: [],
     notes,
   };
+}
+
+function dedupe(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    if (value.length === 0 || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
 }
 
 function summarize(

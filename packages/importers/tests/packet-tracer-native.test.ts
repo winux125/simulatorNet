@@ -206,10 +206,19 @@ describe.runIf(realPka)("real Packet Tracer .pka import", () => {
     const { document } = executeLabImport(inspection.plan);
     const selected = inspection.networks.find((network) => network.id === inspection.selectedNetworkId)!;
 
-    const unmapped = inspection.plan.report.entries
-      .filter((entry) => entry.code === "packet-tracer-link-unmapped").length;
+    const unresolved = inspection.plan.report.entries
+      .filter((entry) => entry.code === "packet-tracer-link-unresolved");
     // Every source cable is either created or named in the report; none is
     // quietly dropped and none is invented.
-    expect(document.topology.links.length + unmapped).toBe(selected.linkCount);
+    expect(document.topology.links.length + unresolved.length).toBe(selected.linkCount);
+    // And the report's own arithmetic says the same thing without being told.
+    const report = inspection.plan.report;
+    expect(report.sourceLinkCount).toBe(selected.linkCount);
+    expect(report.importedLinkCount + report.unresolvedLinkCount).toBe(report.sourceLinkCount);
+    expect(report.unresolvedLinkCount).toBe(unresolved.length);
+    // Each one names the device and the interface it could not place.
+    for (const entry of unresolved) {
+      expect(entry.detail).toMatchObject({ device: expect.any(String), sourceInterface: expect.any(String) });
+    }
   });
 });

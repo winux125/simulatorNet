@@ -17,6 +17,9 @@ export interface ImportReportTotals {
   readonly sourceVersion?: string;
   readonly importedNodeCount: number;
   readonly importedLinkCount: number;
+  /** Defaults to `importedLinkCount`: an adapter that loses no link says nothing. */
+  readonly sourceLinkCount?: number;
+  readonly compatibilityMappedLinkCount?: number;
   readonly importedAnnotationCount: number;
   readonly importedStartupConfigs: number;
   readonly mappedDeviceTypes: Readonly<Record<string, number>>;
@@ -59,12 +62,18 @@ export class ImportReportBuilder {
       sortedMapped[key] = totals.mappedDeviceTypes[key]!;
     }
     const entries = [...this.entries];
+    const sourceLinkCount = totals.sourceLinkCount ?? totals.importedLinkCount;
     return {
       format: totals.format,
       platform: totals.platform,
       sourceVersion: totals.sourceVersion,
       importedNodeCount: totals.importedNodeCount,
       importedLinkCount: totals.importedLinkCount,
+      sourceLinkCount,
+      compatibilityMappedLinkCount: totals.compatibilityMappedLinkCount ?? 0,
+      // Derived rather than reported, so the four numbers can never disagree:
+      // every source link is imported or unresolved, and nothing else.
+      unresolvedLinkCount: Math.max(0, sourceLinkCount - totals.importedLinkCount),
       importedAnnotationCount: totals.importedAnnotationCount,
       importedStartupConfigs: totals.importedStartupConfigs,
       mappedDeviceTypes: sortedMapped,

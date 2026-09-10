@@ -85,6 +85,13 @@ export interface ImportSourceLink {
   readonly a: { readonly node: string; readonly iface: string };
   readonly b: { readonly node: string; readonly iface: string };
   readonly propagationDelayNs?: number;
+  /**
+   * Set when at least one endpoint landed on a different port number than the
+   * source named, because the mapped device has no port at that position. The
+   * cable itself is preserved; only its numbering changed. Absent means every
+   * endpoint kept its own position.
+   */
+  readonly mappingKind?: "compatibility";
 }
 
 /** Raster diagram asset already validated as a safe PNG/JPEG/WebP. */
@@ -105,6 +112,13 @@ export interface ParsedSourceTopology {
   readonly labTitle?: string;
   readonly nodes: readonly ImportSourceNode[];
   readonly links: readonly ImportSourceLink[];
+  /**
+   * How many links the *source* declared, when that differs from `links` because
+   * an adapter could not map some of them. Every one of those must also appear
+   * in `notes`, so a link is never lost without a reason. Omitted by an adapter
+   * that maps every link it parses.
+   */
+  readonly sourceLinkCount?: number;
   readonly annotations: readonly DiagramAnnotation[];
   readonly assets: readonly ImportSourceAsset[];
   /** Non-vendor files present in the source that were not imported. */
@@ -130,6 +144,12 @@ export interface ImportReport {
   readonly sourceVersion?: string;
   readonly importedNodeCount: number;
   readonly importedLinkCount: number;
+  /** Links the source declared. Equals `importedLinkCount` when none was lost. */
+  readonly sourceLinkCount: number;
+  /** Imported links where a port number had to change. Subset of the imported. */
+  readonly compatibilityMappedLinkCount: number;
+  /** Source links that produced no cable. Each one has a warning entry naming why. */
+  readonly unresolvedLinkCount: number;
   readonly importedAnnotationCount: number;
   readonly importedStartupConfigs: number;
   readonly mappedDeviceTypes: Readonly<Record<string, number>>;

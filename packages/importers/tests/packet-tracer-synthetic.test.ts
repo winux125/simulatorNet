@@ -85,6 +85,13 @@ async function inspect(xml: string, filename = "lab.pkt"): ReturnType<typeof ins
   return inspectPacketTracerFile({ filename, bytes: await encodeModernContainer(xml) });
 }
 
+/** `name:iface <-> name:iface`, in the source cable's own direction. */
+function edges(document: ReturnType<typeof executeLabImport>["document"]): string[] {
+  const names = new Map(document.topology.nodes.map((node) => [node.id, node.name]));
+  return document.topology.links.map((link) =>
+    `${names.get(link.a.node)}:${link.a.iface} <-> ${names.get(link.b.node)}:${link.b.iface}`);
+}
+
 describe("Packet Tracer mapping", () => {
   it("maps a router-to-switch link onto real interfaces", async () => {
     const { plan } = await inspect(SIMPLE);
@@ -114,6 +121,40 @@ describe("Packet Tracer mapping", () => {
     // The device survives as an external appliance rather than vanishing.
     const { document } = executeLabImport(plan);
     expect(document.topology.nodes.find((node) => node.name === "Thing0")?.kind).toBe("external-appliance");
+  });
+
+  it("keeps an unsupported device cabled, with its own identity and ports", async () => {
+    // A real lab is full of these — a Power Distribution Device, an IoT sensor,
+    // a Home Gateway. SimulatorNet simulates none of them, but every one is a
+    // real node with real cables, and losing either would silently change the
+    // topology the user drew.
+    const xml = documentXml(
+      device({ name: "Gateway0", engine: "HomeGateway", model: "DLC100", ports: 4 }, "1")
+      + device({ name: "PC1", engine: "Pc", model: "PC-PT" }, "2"),
+      cable("2", "FastEthernet0", "1", "Ethernet 1"),
+    );
+    const { plan } = await inspect(xml);
+    const { document, report } = executeLabImport(plan);
+    const gateway = document.topology.nodes.find((node) => node.name === "Gateway0")!;
+
+    expect(gateway.kind).toBe("external-appliance");
+    // The port the cable named is on the device, spelled exactly as the source
+    // spelled it — a placeholder has no inventory of its own to map onto.
+    expect(gateway.interfaces.map((iface) => iface.id)).toContain("Ethernet 1");
+    expect(edges(document)).toEqual(["PC1:eth0 <-> Gateway0:Ethernet 1"]);
+    expect(report.unresolvedLinkCount).toBe(0);
+    // Its Packet Tracer identity survives the import even though its behaviour
+    // does not, so the user can tell what the placeholder used to be.
+    expect(document.configurations[gateway.id]).toMatchObject({
+      kind: "external-appliance",
+      hostname: "Gateway0",
+      sourceTemplate: "DLC100",
+      sourceIconHint: "HomeGateway",
+    });
+    expect(report.entries.some((entry) =>
+      entry.code === "packet-tracer-unsupported-model"
+      && entry.message.includes("DLC100")
+      && entry.message.includes("kept on the topology"))).toBe(true);
   });
 
   it("keeps a FastEthernet router link at the same position and reports the speed", async () => {
@@ -148,8 +189,16 @@ describe("Packet Tracer mapping", () => {
     const { document } = executeLabImport(plan);
 
     expect(document.topology.links).toHaveLength(0);
-    expect(plan.report.entries.some((entry) =>
-      entry.code === "packet-tracer-link-unmapped" && entry.message.includes("Serial0/0/0"))).toBe(true);
+    // A different medium is never substituted, and the refusal names the medium
+    // rather than blaming the file.
+    const unresolved = plan.report.entries.find((entry) => entry.code === "packet-tracer-link-unresolved")!;
+    expect(unresolved.message).toContain("Serial0/0/0");
+    expect(unresolved.detail).toMatchObject({ device: "R1", sourceInterface: "Serial0/0/0" });
+    expect(String(unresolved.detail?.reason)).toContain("no interface of this medium");
+    // Every source link is accounted for: one declared, none imported, one named.
+    expect(plan.report.sourceLinkCount).toBe(1);
+    expect(plan.report.importedLinkCount).toBe(0);
+    expect(plan.report.unresolvedLinkCount).toBe(1);
   });
 
   it("drops a link it cannot place rather than attaching it to a free port", async () => {
@@ -162,7 +211,62 @@ describe("Packet Tracer mapping", () => {
     const { document } = executeLabImport(plan);
 
     expect(document.topology.links).toHaveLength(0);
-    expect(plan.report.entries.some((entry) => entry.code === "packet-tracer-link-unmapped")).toBe(true);
+    expect(plan.report.entries.some((entry) => entry.code === "packet-tracer-link-unresolved")).toBe(true);
+    expect(plan.report.unresolvedLinkCount).toBe(1);
+  });
+
+  it("keeps a modular-chassis cable on the next free port and counts the renumbering", async () => {
+    // A Switch-PT is modular: one port per slot, so it cables FastEthernet0/1,
+    // FastEthernet1/1, FastEthernet2/1. Every SimulatorNet switch has a single
+    // slot, so there is no port at slots 1 and 2 to preserve — the choice is a
+    // reported renumbering or three lost cables.
+    const xml = documentXml(
+      device({ name: "SW1", engine: "Switch", model: "Switch-PT", ports: 6 }, "1")
+      + device({ name: "PC1", engine: "Pc", model: "PC-PT" }, "2")
+      + device({ name: "PC2", engine: "Pc", model: "PC-PT" }, "3")
+      + device({ name: "PC3", engine: "Pc", model: "PC-PT" }, "4"),
+      cable("1", "FastEthernet0/1", "2", "FastEthernet0")
+      + cable("1", "FastEthernet1/1", "3", "FastEthernet0")
+      + cable("1", "FastEthernet2/1", "4", "FastEthernet0"),
+    );
+    const { plan } = await inspect(xml);
+    const { document } = executeLabImport(plan);
+
+    // Nothing is lost, and the one cable that *did* have a real position keeps it.
+    expect(edges(document).sort()).toEqual([
+      "SW1:Fa0/1 <-> PC1:eth0",
+      "SW1:Fa0/2 <-> PC2:eth0",
+      "SW1:Fa0/3 <-> PC3:eth0",
+    ]);
+    expect(plan.report.sourceLinkCount).toBe(3);
+    expect(plan.report.unresolvedLinkCount).toBe(0);
+    expect(plan.report.compatibilityMappedLinkCount).toBe(2);
+    // Each renumbering is named, because configuration using the old name will
+    // no longer find its interface.
+    const renumbered = plan.report.entries.filter((entry) => entry.code === "packet-tracer-interface-renumbered");
+    expect(renumbered.map((entry) => entry.detail)).toEqual([
+      { sourceInterface: "FastEthernet1/1", importedInterface: "Fa0/2" },
+      { sourceInterface: "FastEthernet2/1", importedInterface: "Fa0/3" },
+    ]);
+  });
+
+  it("never lets a later cable take a port an exactly named one owns", async () => {
+    // Fa1/1 appears first and would take Fa0/1 if cables were resolved one at a
+    // time; Fa0/1 names that exact port, so it must win however the file is
+    // ordered.
+    const xml = documentXml(
+      device({ name: "SW1", engine: "Switch", model: "Switch-PT", ports: 6 }, "1")
+      + device({ name: "PC1", engine: "Pc", model: "PC-PT" }, "2")
+      + device({ name: "PC2", engine: "Pc", model: "PC-PT" }, "3"),
+      cable("1", "FastEthernet1/1", "2", "FastEthernet0")
+      + cable("1", "FastEthernet0/1", "3", "FastEthernet0"),
+    );
+    const { document } = executeLabImport((await inspect(xml)).plan);
+
+    expect(edges(document).sort()).toEqual([
+      "SW1:Fa0/1 <-> PC2:eth0",
+      "SW1:Fa0/2 <-> PC1:eth0",
+    ]);
   });
 
   it("applies a router running-config through the shared IOS parser", async () => {

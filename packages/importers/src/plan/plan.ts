@@ -255,6 +255,12 @@ function assemble(
     sourceVersion: parsed.sourceVersion,
     importedNodeCount: nodes.length,
     importedLinkCount: keptLinks.length,
+    // The adapter's own count when it had to leave links behind; otherwise every
+    // parsed link is a source link. Anything dropped here — an excluded endpoint,
+    // an interface already in use — is a source link that produced no cable too,
+    // so it must be counted against the source total rather than the parsed one.
+    sourceLinkCount: parsed.sourceLinkCount ?? parsed.links.length,
+    compatibilityMappedLinkCount: keptLinks.filter((link) => link.mappingKind === "compatibility").length,
     importedAnnotationCount: annotations.length,
     importedStartupConfigs,
     mappedDeviceTypes: mappedTypes,
