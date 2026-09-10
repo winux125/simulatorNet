@@ -42,7 +42,9 @@ import {
   type PacketTracerNetwork,
   type PacketTracerNetworkRole,
 } from "@sim/packet-tracer-format";
+import { LabValidationError } from "@sim/lab-format";
 import { DEFAULT_IMPORT_LIMITS, type ImportLimits } from "../config/limits";
+import { ImportError, ImportSecurityError, LIMIT_ERROR_CODES } from "../errors/errors";
 import { slugify } from "../plan/slug";
 import { parseXml } from "../xml/xml";
 import type {
@@ -141,8 +143,7 @@ function hostConfigFor(
 
   const interfaces = interfaceIds.map((id) => ({ id, shutdown: false }));
   if (deviceType === "pc" || deviceType === "laptop") {
-    return {
-      kind: deviceType,
+    const common = {
       hostname: device.hostname,
       interfaces,
       ipv4: hasIpv4
@@ -150,7 +151,24 @@ function hostConfigFor(
         : undefined,
       dhcpEnabled: host.dhcpEnabled ?? false,
       dnsServer: host.dns?.[0],
-    } as DeviceConfig;
+    };
+    // A Laptop is a wireless station, so its configuration is only complete with
+    // a radio block — without one the whole document fails schema validation and
+    // the import dies at the very last step. Packet Tracer states no radio for a
+    // cabled laptop, so this is the standby radio a Laptop dropped on the canvas
+    // starts with: never an association, an SSID or a credential inferred from
+    // the source.
+    return deviceType === "laptop"
+      ? {
+          kind: "laptop",
+          ...common,
+          wireless: {
+            radio: { enabled: true, band: "2.4ghz", supportedChannels: [1, 6, 11], radioDomainId: "local-lab" },
+            savedNetworks: [],
+            autoConnect: true,
+          },
+        } as DeviceConfig
+      : { kind: "pc", ...common } as DeviceConfig;
   }
   if (deviceType === "server") {
     return {
@@ -626,15 +644,51 @@ export async function readPacketTracerSource(
   };
 }
 
+/**
+ * Which stage of the import gave up. The container, the mapping onto
+ * SimulatorNet and the resulting document fail for entirely different reasons,
+ * and telling a user their file "could not be decoded" when it decoded
+ * perfectly and then failed schema validation sends them to re-export a file
+ * that was never the problem.
+ */
+export type PacketTracerFailureStage =
+  /** The bytes are not a container this decoder can read. */
+  | "decode"
+  /** A bound was exceeded. Only ever a real, named limit — never a fallback. */
+  | "safety-limit"
+  /** The container was read, but its network could not be mapped. */
+  | "mapping"
+  /** Everything mapped, but the assembled LabDocument is not valid. */
+  | "validation";
+
 /** Why a Packet Tracer read failed, as plain data. */
 export interface PacketTracerFailure {
   readonly message: string;
+  readonly stage: PacketTracerFailureStage;
   /** The decoder's typed reason, absent when the failure came from elsewhere. */
   readonly reason?: PacketTracerDecodeErrorCode;
   /** True when a different file — or companion data — could still succeed. */
   readonly suggestsCompanionFallback: boolean;
   /** True when the caller aborted the read; not an error to report. */
   readonly cancelled: boolean;
+  /** Bounded, sanitized specifics for a validation failure; never a stack trace. */
+  readonly details?: readonly string[];
+}
+
+/** Decode codes that are a bound being hit rather than a broken container. */
+const LIMIT_CODES: ReadonlySet<PacketTracerDecodeErrorCode> = new Set([
+  "PACKET_TRACER_INPUT_TOO_LARGE",
+  "PACKET_TRACER_DECOMPRESSION_LIMIT",
+  "PACKET_TRACER_XML_LIMIT",
+]);
+
+const MAX_FAILURE_DETAILS = 10;
+
+/** `configurations.laptop0.wireless: Required`, bounded and free of values. */
+function describeValidationIssues(error: LabValidationError): string[] {
+  return error.issues
+    .slice(0, MAX_FAILURE_DETAILS)
+    .map((issue) => `${issue.path.join(".") || "document"}: ${issue.message}`.slice(0, 200));
 }
 
 /**
@@ -643,22 +697,41 @@ export interface PacketTracerFailure {
  * An `Error` loses its subclass and its own fields to structured cloning, so a
  * decode running in a Web Worker cannot post one back. Every caller — the
  * planner here, that worker, the wizard — classifies a refusal through this one
- * function, so they cannot disagree about which files the companion Migration
- * Assistant is still worth offering for.
+ * function, so they cannot disagree about which stage failed or which files the
+ * companion Migration Assistant is still worth offering for.
  */
 export function describePacketTracerFailure(cause: unknown): PacketTracerFailure {
   if (cause instanceof PacketTracerDecodeError) {
     return {
       message: cause.message,
+      stage: LIMIT_CODES.has(cause.code) ? "safety-limit" : "decode",
       reason: cause.code,
       suggestsCompanionFallback: cause.suggestsCompanionFallback,
       cancelled: cause.code === "PACKET_TRACER_CANCELLED",
+    };
+  }
+  // A bound in the shared import guards — XML nodes, node/link counts, archive
+  // sizes. Named only when a limit was genuinely the reason.
+  if (cause instanceof ImportSecurityError || (cause instanceof ImportError && LIMIT_ERROR_CODES.has(cause.code))) {
+    return { message: cause.message, stage: "safety-limit", suggestsCompanionFallback: false, cancelled: false };
+  }
+  // Everything mapped and the document was assembled, then refused by the
+  // canonical schema. That is ours to fix, so report the offending paths rather
+  // than sending the user back to Packet Tracer.
+  if (cause instanceof LabValidationError) {
+    return {
+      message: cause.message,
+      stage: "validation",
+      suggestsCompanionFallback: false,
+      cancelled: false,
+      details: describeValidationIssues(cause),
     };
   }
   // A decoded container that then fails to map is a SimulatorNet-side problem,
   // and companion files would not fix it. Say so rather than blaming the file.
   return {
     message: cause instanceof Error ? cause.message : "The Packet Tracer file could not be read",
+    stage: "mapping",
     suggestsCompanionFallback: false,
     cancelled: false,
   };

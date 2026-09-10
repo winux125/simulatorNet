@@ -123,6 +123,7 @@ describe("worker-backed decode client", () => {
       kind: "failed",
       requestId: worker.requestId(),
       message: "Unsupported Packet Tracer container version",
+      stage: "decode",
       reason: "PACKET_TRACER_UNSUPPORTED_VERSION",
       suggestsCompanionFallback: true,
       cancelled: false,
@@ -131,6 +132,7 @@ describe("worker-backed decode client", () => {
     await expect(pending).rejects.toBeInstanceOf(PacketTracerInspectError);
     await pending.catch((error: PacketTracerInspectError) => {
       expect(error.reason).toBe("PACKET_TRACER_UNSUPPORTED_VERSION");
+      expect(error.stage).toBe("decode");
       expect(error.suggestsCompanionFallback).toBe(true);
     });
     client.dispose();
@@ -148,7 +150,7 @@ describe("worker-backed decode client", () => {
     expect(worker.posted.at(-1)).toEqual({ kind: "cancel", requestId });
 
     // The rejection still comes from the worker, so there is one settle path.
-    worker.reply({ kind: "failed", requestId, message: "cancelled", suggestsCompanionFallback: false, cancelled: true });
+    worker.reply({ kind: "failed", requestId, message: "cancelled", stage: "decode", suggestsCompanionFallback: false, cancelled: true });
     await expect(pending).rejects.toMatchObject({ cancelled: true });
     client.dispose();
   });

@@ -43,6 +43,7 @@ import { Button, IconButton } from "../../ui";
 import {
   createPacketTracerImportClient,
   PacketTracerInspectError,
+  type PacketTracerFailureStage,
   type PacketTracerImportClient,
 } from "../../worker/packet-tracer-client";
 
@@ -337,7 +338,7 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
     && (phase === "ready" || phase === "importing");
   const packetTracerStep = packetTracerFailed || packetTracerDecoding || packetTracerDecoded;
   const formatLabel = packetTracerFailed
-    ? `${formatName(detectedFormat)} · Could not be decoded`
+    ? `${formatName(detectedFormat)} · ${FAILURE_STAGES[decodeFailure!.stage].label}`
     : formatName(plan?.format ?? detectedFormat);
 
   return (
@@ -388,8 +389,7 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
             packetTracerFailed ? (
               <PacketTracerMigrationStep
                 file={activeFile}
-                reason={decodeFailure!.message}
-                suggestsCompanionFallback={decodeFailure!.suggestsCompanionFallback}
+                failure={decodeFailure!}
                 migrationMode={migrationMode}
                 guideOpen={migrationGuideOpen}
                 files={companionFiles}
@@ -634,10 +634,46 @@ function PacketTracerImportStep({ inspection, plan, busy, error, onSelectNetwork
   );
 }
 
-function PacketTracerMigrationStep({ file, reason, suggestsCompanionFallback, migrationMode, guideOpen, files, error, onClose, onGuide, onReconstruct, onChoose, onBuild }: {
+/**
+ * What each failure stage actually means for the user. The container, the
+ * mapping and the assembled document fail for entirely different reasons, and
+ * telling someone their file "could not be decoded" when it decoded perfectly
+ * and then failed schema validation sends them to re-export a file that was
+ * never the problem.
+ */
+const FAILURE_STAGES: Readonly<Record<PacketTracerFailureStage, {
+  readonly title: string;
+  readonly label: string;
+  readonly explanation: string;
+}>> = {
+  decode: {
+    title: "Packet Tracer file could not be decoded",
+    label: "Could not be decoded",
+    explanation: "The container itself could not be read, so nothing inside it has been seen yet.",
+  },
+  "safety-limit": {
+    title: "Packet Tracer file exceeded a safety limit",
+    label: "Refused by a safety limit",
+    explanation: "A specific bound was exceeded while reading this file. It was refused by that limit"
+      + " rather than by its format, so a different export of the same lab is unlikely to help.",
+  },
+  mapping: {
+    title: "Packet Tracer file decoded, but its network could not be mapped",
+    label: "Could not be mapped",
+    explanation: "The container was read successfully — this failed afterwards, while converting its"
+      + " network onto SimulatorNet devices. Re-exporting from Packet Tracer will not change it.",
+  },
+  validation: {
+    title: "Packet Tracer file decoded, but the imported lab was not valid",
+    label: "Imported lab was not valid",
+    explanation: "The container was read and its devices were mapped; the lab that came out did not pass"
+      + " SimulatorNet's own validation. This is a SimulatorNet defect, not a problem with your file.",
+  },
+};
+
+function PacketTracerMigrationStep({ file, failure, migrationMode, guideOpen, files, error, onClose, onGuide, onReconstruct, onChoose, onBuild }: {
   file: File;
-  reason: string;
-  suggestsCompanionFallback: boolean;
+  failure: PacketTracerInspectError;
   migrationMode: boolean;
   guideOpen: boolean;
   files: readonly File[];
@@ -648,26 +684,39 @@ function PacketTracerMigrationStep({ file, reason, suggestsCompanionFallback, mi
   onChoose(): void;
   onBuild(): void;
 }) {
+  const stage = FAILURE_STAGES[failure.stage];
+  // Companion reconstruction rebuilds a lab whose *container* could not be read.
+  // Offering it for a mapping or validation failure would send the user off to
+  // collect screenshots for a file this decoder already read perfectly.
+  const offerCompanions = failure.stage === "decode";
   return (
-    <div className="import-step packet-tracer-migration" data-testid="packet-tracer-migration">
+    <div className="import-step packet-tracer-migration" data-testid="packet-tracer-migration" data-failure-stage={failure.stage}>
       <div className="packet-tracer-migration__card" role="status">
         <FileWarning size={24} />
         <div>
           <p className="section-eyebrow">Recognised source</p>
-          <h3>Packet Tracer file could not be decoded</h3>
-          <p>{reason}</p>
+          <h3>{stage.title}</h3>
+          <p>{failure.message}</p>
           <small>
-            {suggestsCompanionFallback
+            {failure.suggestsCompanionFallback
               ? "Re-saving the lab from Packet Tracer may produce a container this decoder reads. Otherwise, reconstruct it from companion files below."
-              : "This file was refused by a safety limit rather than by its format, so a different export of the same lab is unlikely to help."}
+              : stage.explanation}
             {" "}<strong>{file.name}</strong> is retained only as source metadata.
           </small>
         </div>
       </div>
+      {failure.details && failure.details.length > 0 && (
+        <section className="packet-tracer-migration__details" aria-label="Validation details" data-testid="packet-tracer-failure-details">
+          <h4>What failed validation</h4>
+          <ul>{failure.details.map((detail) => <li key={detail}>{detail}</li>)}</ul>
+        </section>
+      )}
       <div className="packet-tracer-migration__actions">
         <Button variant="ghost" onClick={onClose}>Close</Button>
-        <Button onClick={onGuide}>Open Migration Guide</Button>
-        <Button variant="primary" onClick={onReconstruct}>Reconstruct Lab from Companion Files</Button>
+        {offerCompanions && <>
+          <Button onClick={onGuide}>Open Migration Guide</Button>
+          <Button variant="primary" onClick={onReconstruct}>Reconstruct Lab from Companion Files</Button>
+        </>}
       </div>
       {guideOpen && (
         <section className="packet-tracer-migration__guide" aria-label="Packet Tracer migration guide">

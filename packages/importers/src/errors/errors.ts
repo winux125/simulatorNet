@@ -40,6 +40,30 @@ export type ImportErrorCode =
   | "package-too-large"
   | "package-unsupported-version";
 
+/**
+ * The codes that mean "a bound was exceeded", as opposed to "this content is
+ * broken". Kept beside the union so a caller reporting a refusal as a safety
+ * limit can only do so for a limit that genuinely exists.
+ */
+export const LIMIT_ERROR_CODES: ReadonlySet<ImportErrorCode> = new Set<ImportErrorCode>([
+  "input-too-large",
+  "archive-too-many-entries",
+  "archive-uncompressed-too-large",
+  "archive-entry-too-large",
+  "archive-compression-ratio",
+  "xml-too-deep",
+  "xml-too-large",
+  "yaml-too-deep",
+  "yaml-too-large",
+  "topology-too-large",
+  "too-many-nodes",
+  "too-many-links",
+  "too-many-companion-files",
+  "companion-input-too-large",
+  "companion-node-limit",
+  "package-too-large",
+]);
+
 /** Base error for any refused or failed import. Carries a stable machine code. */
 export class ImportError extends Error {
   constructor(

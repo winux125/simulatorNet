@@ -11,10 +11,14 @@
  * and reports an unrecognised role rather than guessing one.
  */
 import { describe, expect, it } from "vitest";
+import { LabValidationError } from "@sim/lab-format";
+import { PacketTracerDecodeError } from "@sim/packet-tracer-format";
 import {
   encodeModernContainer,
 } from "../../packet-tracer-format/tests/helpers/encode";
+import { ImportError, ImportSecurityError } from "../src/errors/errors";
 import { executeLabImport } from "../src/plan/plan";
+import { describePacketTracerFailure } from "../src/packet-tracer/native";
 import { inspectPacketTracerFile } from "../src/packet-tracer/inspect";
 
 interface DeviceOptions {
@@ -329,6 +333,29 @@ describe("Packet Tracer mapping", () => {
     });
   });
 
+  it("builds a complete Laptop configuration, radio included", async () => {
+    // A real IoT lab opens with a cabled Laptop-PT. A Laptop is a wireless
+    // station, so a configuration without a radio block fails the canonical
+    // schema — and it failed at the very last step, taking the whole import
+    // with it and reporting the file as undecodable.
+    const xml = documentXml(
+      device({ name: "Laptop0", engine: "Laptop", model: "Laptop-PT", gateway: "192.168.25.1" }, "1"),
+      "",
+    );
+    const { plan } = await inspect(xml);
+    const { document } = executeLabImport(plan);
+    const laptop = document.topology.nodes.find((node) => node.name === "Laptop0")!;
+
+    expect(laptop.kind).toBe("laptop");
+    expect(document.configurations[laptop.id]).toMatchObject({
+      kind: "laptop",
+      // The standby radio a Laptop starts with — no SSID, no association and no
+      // credential is inferred from the source.
+      wireless: { savedNetworks: [], autoConnect: true, radio: { enabled: true, band: "2.4ghz" } },
+    });
+    expect(plan.report.entries.some((entry) => entry.level === "error")).toBe(false);
+  });
+
   it("falls back to the standard layout when the source has no coordinates", async () => {
     const xml = `<PACKETTRACER5><VERSION>8.2.0.0400</VERSION><NETWORK><DEVICES>
       <DEVICE><ENGINE><TYPE customModel="" model="PC-PT">Pc</TYPE><NAME>PC1</NAME>
@@ -336,6 +363,45 @@ describe("Packet Tracer mapping", () => {
     </DEVICES><LINKS/></NETWORK></PACKETTRACER5>`;
     const { plan } = await inspect(xml);
     expect(plan.report.entries.some((entry) => entry.code === "packet-tracer-no-coordinates")).toBe(true);
+  });
+});
+
+describe("Packet Tracer failure classification", () => {
+  it("separates a broken container from a bound that was genuinely hit", () => {
+    expect(describePacketTracerFailure(
+      new PacketTracerDecodeError("PACKET_TRACER_CORRUPT", "broken zlib stream"),
+    )).toMatchObject({ stage: "decode", suggestsCompanionFallback: true });
+
+    // A limit is only ever named when a specific limit was the reason.
+    expect(describePacketTracerFailure(
+      new PacketTracerDecodeError("PACKET_TRACER_XML_LIMIT", "too many XML nodes"),
+    )).toMatchObject({ stage: "safety-limit" });
+    expect(describePacketTracerFailure(
+      new ImportSecurityError("archive-compression-ratio", "expansion bomb"),
+    )).toMatchObject({ stage: "safety-limit" });
+    expect(describePacketTracerFailure(
+      new ImportError("too-many-nodes", "topology too large"),
+    )).toMatchObject({ stage: "safety-limit" });
+  });
+
+  it("reports a schema failure as validation, with the paths that failed", () => {
+    // The exact failure a real IoT lab hit: decoded perfectly, mapped
+    // perfectly, then refused by the canonical schema — and reported to the
+    // user as a container that could not be decoded.
+    const failure = describePacketTracerFailure(new LabValidationError(
+      "Lab document failed schema validation",
+      [{ code: "invalid_type", path: ["configurations", "laptop0", "wireless"], message: "Required" } as never],
+    ));
+
+    expect(failure.stage).toBe("validation");
+    expect(failure.details).toEqual(["configurations.laptop0.wireless: Required"]);
+    // Never sends the user to re-export a file that was never the problem.
+    expect(failure.suggestsCompanionFallback).toBe(false);
+  });
+
+  it("treats anything else after a successful decode as a mapping failure", () => {
+    expect(describePacketTracerFailure(new Error("no network in this container")))
+      .toMatchObject({ stage: "mapping", suggestsCompanionFallback: false });
   });
 });
 

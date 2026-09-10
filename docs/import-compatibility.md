@@ -40,29 +40,80 @@ rules are not converted.
 
 Device configuration goes through SimulatorNet's own IOS parser, so an imported
 router or switch supports exactly what the CLI supports and nothing is invented
-alongside it. An unrecognized model becomes a named placeholder rather than a
-guessed device, and an interface with no SimulatorNet equivalent leaves its link
-uncreated and reported rather than attached to some other free port.
+alongside it. An unrecognized model — a Power Distribution Device, an IoT
+sensor, a Home Gateway — becomes a named placeholder rather than a guessed
+device. It keeps its Packet Tracer type and model, and it keeps the ports its
+cables named even when its chassis declared none, so the cabling into it
+survives too.
 
-Two interface cases are worth knowing about:
+### Every cable is accounted for
+
+A source link ends in exactly one of three states, and the wizard shows the
+count of each beside the device totals:
+
+- **Mapped.** Both endpoints landed on the port the source named.
+- **Compatibility mapped.** At least one endpoint moved to a different port
+  number, reported per interface.
+- **Unresolved.** No cable was created, and the report names the device, the
+  source interface and the reason.
+
+A link is never dropped silently, and the four numbers are derived from one
+another so they cannot disagree.
+
+Interfaces are resolved per device rather than per cable. All of a device's
+cables are planned together in priority order — every exact match is claimed
+before any abbreviation is considered, and so on — so a substitution can never
+take a port that another cable names exactly, whatever order the file lists them
+in.
+
+Three interface cases are worth knowing about:
 
 - **Ethernet speed.** A Packet Tracer 2811 is cabled on `FastEthernet0/0`
   where SimulatorNet's router has `GigabitEthernet0/0`. The cable is kept at
   the same slot and port and the substitution is reported. It never moves the
   cable to a different position and never crosses a medium, so a lab can be
-  relabeled by it but not rewired. Configuration naming the original interface
-  is not applied to the substituted one, and the report says so.
-- **Serial interfaces are not simulated.** A serial WAN link between two
-  routers has nothing to be placed on, so it is reported and left uncreated
-  rather than turned into an Ethernet link. Both endpoints still import.
+  relabeled by it but not rewired.
+- **Modular chassis.** A Switch-PT carries one port per slot and cables
+  `FastEthernet1/1`, `FastEthernet2/1`; an ISR 4321 names its first onboard port
+  `GigabitEthernet0/0/0`. SimulatorNet devices have a single slot, so there is
+  no port at those positions to preserve. The cable is kept on the next free
+  port of the same medium and every renumbering is reported. This is the only
+  substitution that moves a cable, and it is never used while a
+  position-preserving match is still available.
+- **Serial interfaces are not simulated.** SimulatorNet models one Ethernet
+  data plane, so a serial WAN link between two routers has nothing to be placed
+  on. It is reported as unresolved rather than turned into an Ethernet link,
+  because giving it an Ethernet port would claim a medium that is not
+  simulated. Both endpoints still import.
 
-When a container cannot be decoded — an unsupported container version, a failed
-authentication tag, a corrupt file, or a safety limit — the wizard says which,
-and Packet Tracer sources may still enter the explicit **Migration Assistant**.
-That is a reconstruction from companion files supplied by the user, not a PKT
-converter: screenshots become locked diagram references, device configuration
-text and addressing rows become mapping proposals, and physical links are
-created only from an explicit `connections.csv`. See
+In every substituted case, configuration naming the original interface is not
+applied to the new one, and the report says so.
+
+### When an import fails
+
+A refusal names the stage it happened in, because they mean different things:
+
+- **Decode.** The container could not be read — an unsupported version, a
+  failed authentication tag, a corrupt file. Only here is the **Migration
+  Assistant** offered.
+- **Safety limit.** A specific, real bound was exceeded. This is never a
+  fallback description for some other failure.
+- **Mapping.** The container was read; converting its network did not finish.
+- **Validation.** Everything mapped and the resulting lab failed SimulatorNet's
+  own schema. The failing paths are listed, and the wizard says plainly that
+  this is a SimulatorNet defect rather than a problem with the file.
+
+Recoverable problems never fail the whole import. An unsupported device, an
+unknown model, an unmapped interface and an unsupported configuration command
+all become a placeholder or a warning. A device configuration the canonical
+schema refuses is dropped to that device's defaults and reported; the device,
+its interfaces and its cables are unaffected. Only a lab that cannot be safely
+assembled at all still fails.
+
+The Migration Assistant is a reconstruction from companion files supplied by the
+user, not a PKT converter: screenshots become locked diagram references, device
+configuration text and addressing rows become mapping proposals, and physical
+links are created only from an explicit `connections.csv`. See
 [Packet Tracer migration](packet-tracer-migration.md).
 
 Device support is reported per mapping:

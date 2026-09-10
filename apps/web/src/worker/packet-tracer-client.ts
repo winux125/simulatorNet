@@ -13,9 +13,13 @@ import {
   type PacketTracerDecodeErrorCode,
   type PacketTracerDecodeStage,
   type PacketTracerFailure,
+  type PacketTracerFailureStage,
   type PacketTracerInspection,
 } from "@sim/importers";
 import type { PacketTracerWorkerRequest, PacketTracerWorkerResponse } from "./packet-tracer-protocol";
+
+/** Re-exported so the wizard names a failure stage without reaching into the importer. */
+export type { PacketTracerFailureStage };
 
 export interface PacketTracerInspectRequest {
   readonly filename?: string;
@@ -28,16 +32,20 @@ export interface PacketTracerInspectRequest {
 
 /** A refused decode, carrying the reason the wizard needs to explain itself. */
 export class PacketTracerInspectError extends Error implements PacketTracerFailure {
+  readonly stage: PacketTracerFailureStage;
   readonly reason?: PacketTracerDecodeErrorCode;
   readonly suggestsCompanionFallback: boolean;
   readonly cancelled: boolean;
+  readonly details?: readonly string[];
 
   constructor(failure: PacketTracerFailure) {
     super(failure.message);
     this.name = "PacketTracerInspectError";
+    this.stage = failure.stage;
     this.reason = failure.reason;
     this.suggestsCompanionFallback = failure.suggestsCompanionFallback;
     this.cancelled = failure.cancelled;
+    this.details = failure.details;
   }
 }
 
@@ -95,7 +103,9 @@ class WorkerBackedClient implements PacketTracerImportClient {
     for (const [requestId, entry] of [...this.pending]) {
       this.pending.delete(requestId);
       entry.release();
-      entry.settle({ ok: false, failure: { message, suggestsCompanionFallback: false, cancelled: false } });
+      // A crashed decode thread stopped somewhere inside the container read;
+      // "decode" is the honest stage and keeps the companion fallback offered.
+      entry.settle({ ok: false, failure: { message, stage: "decode", suggestsCompanionFallback: false, cancelled: false } });
     }
   }
 
@@ -104,7 +114,7 @@ class WorkerBackedClient implements PacketTracerImportClient {
   }
 
   async inspect(request: PacketTracerInspectRequest): Promise<PacketTracerInspection> {
-    if (this.disposed) throw new PacketTracerInspectError({ message: "The import wizard was closed", suggestsCompanionFallback: false, cancelled: true });
+    if (this.disposed) throw new PacketTracerInspectError({ message: "The import wizard was closed", stage: "decode", suggestsCompanionFallback: false, cancelled: true });
     const requestId = `pt-${++this.nextId}`;
     // Detached by the transfer below, so it is a copy rather than the caller's
     // own buffer: a wizard that has to re-inspect for another network would

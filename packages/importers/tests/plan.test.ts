@@ -141,4 +141,39 @@ describe("import plan and execution", () => {
     const source: ImportSource = { filename: "lab.pkt", bytes: Uint8Array.from([0, 1, 2, 3, 0]) };
     await expect(inspectLabImport(source)).rejects.toThrow(/Packet Tracer/i);
   });
+
+  it("counts every source link the adapter could not map", () => {
+    const source = parsed();
+    // Two of three cables reached the adapter; the third did not, and the
+    // adapter said so rather than quietly shortening its own list.
+    source.sourceLinkCount = 3;
+    source.links = [{ ...source.links[0]!, mappingKind: "compatibility" }, source.links[1]!];
+    const { report } = executeLabImport(planFromParsed(source, "campus.clab.yml"));
+
+    expect(report.sourceLinkCount).toBe(3);
+    expect(report.importedLinkCount).toBe(2);
+    expect(report.compatibilityMappedLinkCount).toBe(1);
+    expect(report.unresolvedLinkCount).toBe(1);
+  });
+
+  it("drops one unbuildable device configuration instead of failing the whole import", () => {
+    const source = parsed();
+    // A Laptop with no radio block: valid as far as this file is concerned, and
+    // refused by the canonical schema. Before, it took the entire document with
+    // it and the user was told their source file could not be read.
+    source.nodes = [
+      { id: "lap1", label: "Laptop0", sourceKind: "laptop", interfaces: ["wlan0", "eth0"],
+        deviceConfig: { kind: "laptop", hostname: "Laptop0", interfaces: [], dhcpEnabled: true } as never },
+      source.nodes[2]!,
+    ];
+    source.links = [];
+    const { document, report } = executeLabImport(planFromParsed(source, "campus.clab.yml"));
+
+    // The device, its interfaces and the rest of the lab all survive; only the
+    // settings are gone, replaced by the defaults an unconfigured Laptop has.
+    expect(document.topology.nodes.map((node) => node.id).sort()).toEqual(["lap1", "pc1"]);
+    expect(document.configurations.lap1).toMatchObject({ kind: "laptop", wireless: expect.any(Object) });
+    expect(report.entries.some((entry) =>
+      entry.code === "config-invalid" && entry.message.includes("wireless"))).toBe(true);
+  });
 });

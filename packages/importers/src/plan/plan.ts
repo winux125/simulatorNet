@@ -9,6 +9,7 @@ import {
   parseLabDocument,
 } from "@sim/lab-format";
 import {
+  DeviceConfigSchema,
   MAX_DIAGRAM_ASSETS,
   MAX_EXTERNAL_APPLIANCE_UNPARSED_CONFIG_CHARS,
   MAX_EXTERNAL_APPLIANCE_WARNINGS,
@@ -229,6 +230,25 @@ function assemble(
       unparsedConfigLines += node.startupConfig.split("\n").length;
       builder.warning("config-preserved", `Source configuration for ${node.label} (${node.configFamily ?? "unknown"}) was preserved but not applied`, node.id);
     }
+  }
+
+  // A configuration the canonical schema would refuse must not take the whole
+  // import down with it. The device, its interfaces and its cables are all
+  // still valid; only its settings could not be built, so it is dropped back to
+  // an unconfigured device and reported. A LabDocument that genuinely cannot be
+  // assembled still fails — this only removes the one part that is optional.
+  for (const [nodeId, config] of Object.entries(configurations)) {
+    const result = DeviceConfigSchema.safeParse(config);
+    if (result.success) continue;
+    delete configurations[nodeId];
+    const label = parsed.nodes.find((node) => node.id === nodeId)?.label ?? nodeId;
+    const paths = result.error.issues.slice(0, 5).map((issue) => issue.path.join(".") || "(root)").join(", ");
+    builder.warning(
+      "config-invalid",
+      `Imported configuration for ${label} was not valid and was not applied (${paths});`
+      + " the device and its links were kept unconfigured.",
+      nodeId,
+    );
   }
 
   const annotations = parsed.annotations.slice(0, DEFAULT_IMPORT_LIMITS.maxAnnotations);

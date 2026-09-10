@@ -5,6 +5,9 @@ import { join, resolve } from "node:path";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LabDocument } from "@sim/contracts";
+import type { PacketTracerFailure } from "@sim/importers";
+import * as client from "../../worker/packet-tracer-client";
+import { PacketTracerInspectError } from "../../worker/packet-tracer-client";
 import { ImportLabWizard } from "./ImportLabWizard";
 
 const CLAB = `name: office
@@ -259,6 +262,76 @@ describe("ImportLabWizard Packet Tracer workflow", () => {
 
     const document = onImported.mock.calls.at(-1)![0] as LabDocument;
     expect(document.topology.nodes).toHaveLength(3);
+  });
+
+  it("accounts for every source link and names the ones it could not place", async () => {
+    render(<ImportLabWizard file={fixtureFile("configured-lab.pkt")} onCancel={() => undefined} onImported={() => undefined} onError={() => undefined} />);
+    await screen.findByTestId("packet-tracer-import");
+
+    // The four numbers are always shown together: an uncreated cable is the one
+    // import outcome a user cannot see by looking at the canvas.
+    const accounting = screen.getByTestId("import-link-accounting");
+    expect(accounting.textContent).toContain("Source links");
+    expect(accounting.textContent).toContain("Compatibility mapped");
+    expect(accounting.textContent).toContain("Unresolved");
+    // This lab maps cleanly, so there is nothing to list.
+    expect(screen.queryByTestId("import-link-unresolved")).toBeNull();
+  });
+});
+
+describe("ImportLabWizard Packet Tracer failure diagnostics", () => {
+  /** Render the wizard with the decoder replaced by one typed refusal. */
+  async function renderFailure(failure: Partial<PacketTracerFailure> & { stage: PacketTracerFailure["stage"] }) {
+    const inspect = vi.fn().mockRejectedValue(new PacketTracerInspectError({
+      message: "something went wrong",
+      suggestsCompanionFallback: false,
+      cancelled: false,
+      ...failure,
+    }));
+    vi.spyOn(client, "createPacketTracerImportClient").mockReturnValue({ inspect, dispose: () => undefined });
+    render(<ImportLabWizard file={fixtureFile("basic-lab.pkt")} onCancel={() => undefined} onImported={() => undefined} onError={() => undefined} />);
+    return screen.findByTestId("packet-tracer-migration");
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("never calls a schema failure a decode failure or a safety limit", async () => {
+    // The real regression: a file that decoded and mapped perfectly, then
+    // failed validation, was reported as an undecodable container "refused by a
+    // safety limit" — sending the user to re-export a file that was fine.
+    const notice = await renderFailure({
+      stage: "validation",
+      message: "Lab document failed schema validation",
+      details: ["configurations.laptop0.wireless: Required"],
+    });
+
+    expect(notice.dataset.failureStage).toBe("validation");
+    expect(notice.textContent).toContain("the imported lab was not valid");
+    expect(notice.textContent).not.toContain("could not be decoded");
+    expect(notice.textContent).not.toContain("safety limit");
+    // The paths that failed are shown, because this is ours to fix.
+    expect(screen.getByTestId("packet-tracer-failure-details").textContent)
+      .toContain("configurations.laptop0.wireless: Required");
+    // Companion reconstruction rebuilds a lab whose container could not be
+    // read; offering it here would be busywork for a file that read fine.
+    expect(screen.queryByRole("button", { name: "Reconstruct Lab from Companion Files" })).toBeNull();
+  });
+
+  it("distinguishes a mapping failure from a container that could not be read", async () => {
+    const notice = await renderFailure({ stage: "mapping", message: "The Packet Tracer file decoded but contains no network" });
+
+    expect(notice.dataset.failureStage).toBe("mapping");
+    expect(notice.textContent).toContain("its network could not be mapped");
+    expect(notice.textContent).toContain("The container was read successfully");
+    expect(screen.queryByRole("button", { name: "Reconstruct Lab from Companion Files" })).toBeNull();
+  });
+
+  it("names a safety limit only when a limit was genuinely the reason", async () => {
+    const notice = await renderFailure({ stage: "safety-limit", message: "The recovered XML exceeded the node bound" });
+
+    expect(notice.dataset.failureStage).toBe("safety-limit");
+    expect(notice.textContent).toContain("exceeded a safety limit");
+    expect(screen.getByText("Packet Tracer PKT · Refused by a safety limit")).toBeTruthy();
   });
 });
 
