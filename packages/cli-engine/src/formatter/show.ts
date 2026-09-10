@@ -92,16 +92,15 @@ export function showBridgeMacAddressTable(bridge: EthernetBridge): string {
 
 // --- router shows --------------------------------------------------------
 
-export function showIpRoute(r: Router | Layer3Switch): string {
-  const rows = r.routingTable();
+export function showIpRoute(r: Router | Layer3Switch, rows = r.routingTable()): string {
   const body = rows.map((rt) => {
     const net = `${rt.network}/${maskLen(rt.maskInt)}`;
     if (rt.kind === "connected") {
       return `C    ${net} is directly connected, ${rt.egressName}`;
     }
-    return `S    ${net} [1/0] via ${rt.viaIp}`;
+    return `${rt.kind === "static" ? "S" : rt.kind === "ospf" ? "O" : "B"}    ${net} [${rt.administrativeDistance}/${rt.metric}] via ${rt.viaIp}`;
   });
-  const legend = "Codes: C - connected, S - static";
+  const legend = "Codes: C - connected, S - static, O - OSPF, B - BGP";
   return [legend, "", ...body].join("\n");
 }
 
@@ -144,9 +143,10 @@ export function showIpInterfaceBrief(device: Device): string {
   return [header, ...lines].join("\n");
 }
 
-export function showInterfaces(device: Device): string {
+export function showInterfaces(device: Device, selected?: string): string {
   const blocks: string[] = [];
   for (const [name, iface] of device.interfaces) {
+    if (selected !== undefined && name !== selected) continue;
     const { status, protocol } = ifStatus(iface.adminUp, iface.operationalUp);
     const block = [`${name} is ${status}, line protocol is ${protocol}`];
     if (iface.description !== undefined) block.push(`  Description: ${iface.description}`);

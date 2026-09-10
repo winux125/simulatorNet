@@ -451,7 +451,7 @@ timer model, persistence boundary and limitations.
 ## Deliberate omissions
 
 The following familiar IOS operations are not implemented and are omitted from
-contextual help: `no ip address`, `no ip route`, `copy` to or from a network
+contextual help: `copy` to or from a network
 server or flash (only `copy running-config startup-config` exists),
 EIGRP/IS-IS, multi-area OSPF, OSPF
 authentication and redistribution, MSTP and MST regions, Loop Guard, Root Guard,
@@ -460,14 +460,13 @@ rate, PAgP silent modes, LLDP-MED, port security, reflexive/time-based ACLs, NAT
 hairpinning, WPA3, 802.1X, wireless controllers, mesh, or real RF. QoS omits
 WRED/RED (`random-detect`), per-flow WFQ (`fair-queue`), hierarchical policies,
 `mls qos`, NBAR (`match protocol http`), MPLS EXP and any platform queue
-model. There
-is no Tab completion, fuzzy matching, network-device
-`traceroute`, arbitrary command scripting, real DNS/network access or full Cisco
-contextual-help parity.
+model. There is no fuzzy matching, arbitrary command scripting, real DNS/network access or full Cisco
+contextual-help parity. See [M10.17.5](m10.17.5-cli-compatibility.md) for token
+abbreviations, help/Tab, configuration operators and bounded operational commands.
 
-BGP deliberately omits MP-BGP/IPv6 address families, route reflectors,
-confederations, communities, aggregation, redistribution, authentication/MD5,
-graceful restart, add-path, peer groups, ECMP and AS-path regular expressions.
+BGP family and policy coverage has expanded since the original CLI table; see
+[routing-bgp.md](routing-bgp.md) and the [M10.17.5 matrix](m10.17.5-cli-compatibility.md)
+for the implemented surface and remaining limitations.
 
 The management plane omits, deliberately: real SSH cryptography, key exchange,
 packet encryption, public-key user authentication, SCP/SFTP, tunnelling, port

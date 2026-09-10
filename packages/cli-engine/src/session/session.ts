@@ -56,6 +56,8 @@ export const STEP_OPERATION_QUEUED = [
 export class CliSession implements SessionApi {
   mode: CliMode = "exec";
   negated = false;
+  private readonly history: string[] = [];
+  commandHistory(): readonly string[] { return [...this.history]; }
   ifaceCtx: InterfaceContext | undefined;
   vlanId: number | undefined;
   aclCtx: AclContext | undefined;
@@ -353,6 +355,12 @@ export class CliSession implements SessionApi {
     if (tokens.length === 1 && tokens[0]!.toLowerCase() === "help") return this.help("");
     const eligible = this.availableCommands();
     const resolved = resolveTokens(eligible, tokens);
+    // Credential answers were consumed above. Check canonical keywords so
+    // abbreviations cannot bypass filtering; unknown input is never retained.
+    if (!resolved.error && !/\b(secret|password|community|pre-shared-key|key)\b/i.test(resolved.tokens.join(" "))) {
+      this.history.push(line.trim());
+      if (this.history.length > 100) this.history.shift();
+    }
     if (resolved.error === "ambiguous") return new AmbiguousCommandError(line.trim()).render();
     if (resolved.error === "invalid") {
       // Keep the useful explicit capability diagnostic for a fully spelled

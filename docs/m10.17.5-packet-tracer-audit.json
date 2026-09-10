@@ -1,0 +1,507 @@
+{
+  "scope": "Shared IOS parser on all real local PKT/PKA activity networks; secondary credential/VTY import is separate",
+  "files": 5,
+  "devices": 22,
+  "before": {
+    "total": 1858,
+    "applied": 363,
+    "unsupported": 480,
+    "ignored": 1015,
+    "failed": 0
+  },
+  "after": {
+    "total": 1858,
+    "applied": 384,
+    "unsupported": 459,
+    "ignored": 1015,
+    "failed": 0
+  },
+  "alreadySupported": 363,
+  "newlyApplied": 21,
+  "topUnsupportedAfter": [
+    [
+      "no service timestamps",
+      44
+    ],
+    [
+      "login",
+      40
+    ],
+    [
+      "line vty",
+      34
+    ],
+    [
+      "no ip address",
+      28
+    ],
+    [
+      "shutdown",
+      28
+    ],
+    [
+      "no service password-encryption",
+      22
+    ],
+    [
+      "line con",
+      22
+    ],
+    [
+      "duplex auto",
+      22
+    ],
+    [
+      "speed auto",
+      22
+    ],
+    [
+      "clock rate",
+      16
+    ],
+    [
+      "password <redacted>",
+      14
+    ],
+    [
+      "spanning-tree extend system-id",
+      11
+    ],
+    [
+      "no ipv6 cef",
+      11
+    ],
+    [
+      "ip classless",
+      11
+    ],
+    [
+      "ip flow-export version",
+      11
+    ],
+    [
+      "line aux",
+      11
+    ],
+    [
+      "version 12.2",
+      10
+    ],
+    [
+      "interface FastEthernet0/0",
+      10
+    ],
+    [
+      "version 12.3",
+      9
+    ],
+    [
+      "interface FastEthernet0/1",
+      9
+    ],
+    [
+      "interface Serial0/0/0",
+      9
+    ],
+    [
+      "interface Serial0/0/1",
+      9
+    ],
+    [
+      "ip cef",
+      8
+    ],
+    [
+      "enable secret",
+      7
+    ],
+    [
+      "no ip domain-lookup",
+      6
+    ],
+    [
+      "ip address 192.168.1.1",
+      4
+    ],
+    [
+      "no ip cef",
+      3
+    ],
+    [
+      "ip address 172.16.3.1",
+      2
+    ],
+    [
+      "ip address 172.16.2.1",
+      2
+    ],
+    [
+      "ip address 172.16.1.1",
+      2
+    ],
+    [
+      "ip address 172.16.2.2",
+      2
+    ],
+    [
+      "ip address 192.168.1.2",
+      2
+    ],
+    [
+      "ip address 192.168.2.1",
+      2
+    ],
+    [
+      "version 15.0",
+      1
+    ],
+    [
+      "ip route 172.16.3.0",
+      1
+    ],
+    [
+      "version 12.1",
+      1
+    ],
+    [
+      "interface FastEthernet1/1",
+      1
+    ],
+    [
+      "interface FastEthernet2/1",
+      1
+    ],
+    [
+      "interface FastEthernet3/1",
+      1
+    ],
+    [
+      "interface FastEthernet4/1",
+      1
+    ],
+    [
+      "interface FastEthernet5/1",
+      1
+    ],
+    [
+      "interface FastEthernet1/0",
+      1
+    ],
+    [
+      "interface Serial2/0",
+      1
+    ],
+    [
+      "interface Serial3/0",
+      1
+    ],
+    [
+      "interface FastEthernet4/0",
+      1
+    ],
+    [
+      "interface FastEthernet5/0",
+      1
+    ],
+    [
+      "version 15.4",
+      1
+    ],
+    [
+      "interface GigabitEthernet0/0/0",
+      1
+    ],
+    [
+      "interface GigabitEthernet0/0/1",
+      1
+    ]
+  ],
+  "devicesDetail": [
+    {
+      "file": "example.pkt",
+      "network": "pt-network-1",
+      "device": "Switch0",
+      "total": 86,
+      "ignored": 45,
+      "failed": 0,
+      "alreadySupported": 30,
+      "newlyApplied": 1,
+      "applied": 31,
+      "unsupportedBefore": 11,
+      "unsupportedAfter": 10
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-1",
+      "device": "Switch1",
+      "total": 86,
+      "ignored": 45,
+      "failed": 0,
+      "alreadySupported": 30,
+      "newlyApplied": 1,
+      "applied": 31,
+      "unsupportedBefore": 11,
+      "unsupportedAfter": 10
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-1",
+      "device": "Switch2",
+      "total": 86,
+      "ignored": 45,
+      "failed": 0,
+      "alreadySupported": 30,
+      "newlyApplied": 1,
+      "applied": 31,
+      "unsupportedBefore": 11,
+      "unsupportedAfter": 10
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-1",
+      "device": "Switch3",
+      "total": 86,
+      "ignored": 45,
+      "failed": 0,
+      "alreadySupported": 30,
+      "newlyApplied": 1,
+      "applied": 31,
+      "unsupportedBefore": 11,
+      "unsupportedAfter": 10
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-1",
+      "device": "Router1",
+      "total": 90,
+      "ignored": 49,
+      "failed": 0,
+      "alreadySupported": 7,
+      "newlyApplied": 1,
+      "applied": 8,
+      "unsupportedBefore": 34,
+      "unsupportedAfter": 33
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-1",
+      "device": "Router2",
+      "total": 87,
+      "ignored": 49,
+      "failed": 0,
+      "alreadySupported": 6,
+      "newlyApplied": 1,
+      "applied": 7,
+      "unsupportedBefore": 32,
+      "unsupportedAfter": 31
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-1",
+      "device": "Router3",
+      "total": 89,
+      "ignored": 49,
+      "failed": 0,
+      "alreadySupported": 7,
+      "newlyApplied": 1,
+      "applied": 8,
+      "unsupportedBefore": 33,
+      "unsupportedAfter": 32
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-2",
+      "device": "Switch1",
+      "total": 86,
+      "ignored": 45,
+      "failed": 0,
+      "alreadySupported": 30,
+      "newlyApplied": 1,
+      "applied": 31,
+      "unsupportedBefore": 11,
+      "unsupportedAfter": 10
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-2",
+      "device": "Switch2",
+      "total": 86,
+      "ignored": 45,
+      "failed": 0,
+      "alreadySupported": 30,
+      "newlyApplied": 1,
+      "applied": 31,
+      "unsupportedBefore": 11,
+      "unsupportedAfter": 10
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-2",
+      "device": "Switch3",
+      "total": 86,
+      "ignored": 45,
+      "failed": 0,
+      "alreadySupported": 30,
+      "newlyApplied": 1,
+      "applied": 31,
+      "unsupportedBefore": 11,
+      "unsupportedAfter": 10
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-2",
+      "device": "Router1",
+      "total": 85,
+      "ignored": 49,
+      "failed": 0,
+      "alreadySupported": 5,
+      "newlyApplied": 1,
+      "applied": 6,
+      "unsupportedBefore": 31,
+      "unsupportedAfter": 30
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-2",
+      "device": "Router2",
+      "total": 85,
+      "ignored": 49,
+      "failed": 0,
+      "alreadySupported": 5,
+      "newlyApplied": 1,
+      "applied": 6,
+      "unsupportedBefore": 31,
+      "unsupportedAfter": 30
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-2",
+      "device": "Router3",
+      "total": 85,
+      "ignored": 49,
+      "failed": 0,
+      "alreadySupported": 5,
+      "newlyApplied": 1,
+      "applied": 6,
+      "unsupportedBefore": 31,
+      "unsupportedAfter": 30
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-3",
+      "device": "Switch1",
+      "total": 86,
+      "ignored": 45,
+      "failed": 0,
+      "alreadySupported": 30,
+      "newlyApplied": 1,
+      "applied": 31,
+      "unsupportedBefore": 11,
+      "unsupportedAfter": 10
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-3",
+      "device": "Switch2",
+      "total": 86,
+      "ignored": 45,
+      "failed": 0,
+      "alreadySupported": 30,
+      "newlyApplied": 1,
+      "applied": 31,
+      "unsupportedBefore": 11,
+      "unsupportedAfter": 10
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-3",
+      "device": "Switch3",
+      "total": 86,
+      "ignored": 45,
+      "failed": 0,
+      "alreadySupported": 30,
+      "newlyApplied": 1,
+      "applied": 31,
+      "unsupportedBefore": 11,
+      "unsupportedAfter": 10
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-3",
+      "device": "Router1",
+      "total": 90,
+      "ignored": 50,
+      "failed": 0,
+      "alreadySupported": 6,
+      "newlyApplied": 1,
+      "applied": 7,
+      "unsupportedBefore": 34,
+      "unsupportedAfter": 33
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-3",
+      "device": "Router2",
+      "total": 90,
+      "ignored": 50,
+      "failed": 0,
+      "alreadySupported": 6,
+      "newlyApplied": 1,
+      "applied": 7,
+      "unsupportedBefore": 34,
+      "unsupportedAfter": 33
+    },
+    {
+      "file": "practice-test-1.pka",
+      "network": "pt-network-3",
+      "device": "Router3",
+      "total": 90,
+      "ignored": 50,
+      "failed": 0,
+      "alreadySupported": 6,
+      "newlyApplied": 1,
+      "applied": 7,
+      "unsupportedBefore": 34,
+      "unsupportedAfter": 33
+    },
+    {
+      "file": "real-labs/GenericServerAsDHCPServer.pkt",
+      "network": "pt-network-1",
+      "device": "Switch0",
+      "total": 46,
+      "ignored": 25,
+      "failed": 0,
+      "alreadySupported": 5,
+      "newlyApplied": 1,
+      "applied": 6,
+      "unsupportedBefore": 16,
+      "unsupportedAfter": 15
+    },
+    {
+      "file": "real-labs/GenericServerAsDHCPServer.pkt",
+      "network": "pt-network-1",
+      "device": "Router0",
+      "total": 83,
+      "ignored": 49,
+      "failed": 0,
+      "alreadySupported": 1,
+      "newlyApplied": 0,
+      "applied": 1,
+      "unsupportedBefore": 33,
+      "unsupportedAfter": 33
+    },
+    {
+      "file": "real-labs/telnetOnRouter.pkt",
+      "network": "pt-network-1",
+      "device": "Router0",
+      "total": 78,
+      "ignored": 47,
+      "failed": 0,
+      "alreadySupported": 4,
+      "newlyApplied": 1,
+      "applied": 5,
+      "unsupportedBefore": 27,
+      "unsupportedAfter": 26
+    }
+  ]
+}

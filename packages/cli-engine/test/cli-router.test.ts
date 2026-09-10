@@ -152,7 +152,7 @@ R1(config-if)#exit
 R1(config)#ip route 172.16.0.0 255.255.0.0 10.0.0.2
 R1(config)#end
 R1#show ip route
-Codes: C - connected, S - static
+Codes: C - connected, S - static, O - OSPF, B - BGP
 
 C    10.0.0.0/24 is directly connected, Gi0/1
 C    192.168.10.0/24 is directly connected, Gi0/0.10

@@ -145,6 +145,7 @@ export interface CryptoContext {
  * depend on this interface (not the class) so there is no import cycle.
  */
 export interface SessionApi {
+  commandHistory(): readonly string[];
   readonly negated: boolean;
   readonly device: Device;
   readonly engine: SimulationEngine;

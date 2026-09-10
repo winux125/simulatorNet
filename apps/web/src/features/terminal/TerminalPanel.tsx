@@ -705,7 +705,14 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
               if (disposed || buffer.value !== original || buffer.cursor !== cursor) return;
               const output = result.output ?? result.error
                 ?? (result.candidates.length > 1 ? result.candidates.join("  ") : "");
-              if (output) terminal.write("\r\n" + terminalText(stripControlSequences(output)) + "\r\n");
+              if (output) {
+                const safeOutput = stripControlSequences(output);
+                terminal.write("\r\n" + terminalText(safeOutput) + "\r\n");
+                setTranscript((current) => `${current}${promptText()} ${original}${key.kind === "help" ? "?" : ""}\n${safeOutput}\n`);
+              } else if (key.kind === "help" && result.output === undefined && result.error === undefined) {
+                // Remote sessions resolve their own help when this line is sent.
+                buffer.insert("?");
+              }
               if (key.kind === "complete" && result.input !== buffer.head) {
                 const rest = buffer.rest;
                 buffer.replace(result.input + rest);

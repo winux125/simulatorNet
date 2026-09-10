@@ -91,7 +91,7 @@ export const showCommands: CommandSpec[] = [
       const rows = s.device.ipv6RoutingTable();
       if (rows.length === 0) return "% IPv6 routing table is empty.";
       return rows.map((row) => {
-        const code = row.kind === "connected" ? "C" : row.kind === "static" ? "S" : "O";
+        const code = row.kind === "connected" ? "C" : row.kind === "static" ? "S" : row.kind === "bgp" ? "B" : "O";
         const via = row.viaIp ? ` via ${row.viaIp},` : "";
         return `${code}   ${row.network}/${row.prefixLength}${via} ${row.egressName}`;
       }).join("\n");
@@ -123,6 +123,10 @@ export const showCommands: CommandSpec[] = [
     modes: SHOW_MODES,
     device: "router",
     run: (s) => showArp(s.device),
+  },
+  {
+    pattern: "traceroute {target}", modes: SHOW_MODES, device: "router",
+    run: (s, p) => runPing(s, parseIpv4(p.target!), true),
   },
   {
     pattern: "ping {target}",
@@ -230,7 +234,7 @@ export const showCommands: CommandSpec[] = [
 
 const PING_COUNT = 5;
 
-function runPing(session: SessionApi, target: string): string {
+function runPing(session: SessionApi, target: string, trace = false): string {
   const device = session.device;
   if (!(device instanceof EndHost || device instanceof Router || device instanceof Layer3Switch)) {
     throw new InvalidModeError("ping is not supported by this device");
@@ -241,7 +245,7 @@ function runPing(session: SessionApi, target: string): string {
   let baseSeq = device.pingResults.length;
   return session.runNetworkOperation(
     () => { baseSeq = schedulePings(device, target); },
-    () => formatPing(device, target, baseSeq),
+    () => (trace ? "SimulatorNet traceroute: destination reachability only (TTL hop probes are not modeled).\n" : "") + formatPing(device, target, baseSeq),
   );
 }
 

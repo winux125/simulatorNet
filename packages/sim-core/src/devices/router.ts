@@ -1654,6 +1654,11 @@ export class Router extends Device {
       }));
   }
 
+  /** Read-only DHCP lease view for CLI/worker inspection. */
+  dhcpBindings(): Array<{ pool: string; address: Ipv4; mac: Mac }> {
+    return this.dhcpPools.flatMap((pool) => [...pool.leases].map(([mac, address]) => ({ pool: pool.id, address, mac })));
+  }
+
   /** DHCP pool definitions without leases or assigned-address runtime state. */
   dhcpPoolConfigurations(): Array<{
     id: string;

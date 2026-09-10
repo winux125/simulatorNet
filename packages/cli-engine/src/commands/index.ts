@@ -14,9 +14,12 @@ import { bgpCommands } from "./bgp";
 import { mplsCommands } from "./mpls";
 import { vxlanCommands } from "./vxlan";
 
+import { operationalCommands } from "./operational";
+
 /** Every command the CLI understands, across all modes. */
 export const allCommands: CommandSpec[] = [
   ...navigationCommands,
+  ...operationalCommands,
   ...interfaceCommands,
   ...vlanCommands,
   ...showCommands,

@@ -255,3 +255,43 @@ test("pastes a configuration, exports a .cfg and saves a .simlab package", async
   await page.getByRole("button", { name: "Export JSON" }).click();
   expect((await jsonDownload).suggestedFilename()).toMatch(/\.json$/);
 });
+
+test("Cisco-style CLI workflow", async ({ page }) => {
+  await loadDemo(page, /Router-on-a-stick/i);
+  await openCli(page, "R1");
+  const rows = page.locator(".terminal-session.is-active .xterm-rows");
+  const transcript = page.getByTestId("terminal-transcript");
+  await expect(rows).toContainText("R1>");
+  for (const [command, prompt] of [
+    ["en", "R1#"], ["conf t", "R1(config)#"], ["int g0/0", "R1(config-if)#"],
+    ["ip add 192.168.1.1 255.255.255.0", "R1(config-if)#"],
+    ["no shut", "R1(config-if)#"], ["end", "R1#"], ["sh ip int br", "R1#"],
+  ]) {
+    await runCli(page, command!);
+    await expect(transcript).toContainText(command!);
+    await expect(rows).toContainText(prompt!);
+  }
+  await expect(transcript).toContainText("192.168.1.1");
+  await runCli(page, "sh run");
+  await expect(transcript).toContainText("ip address 192.168.1.1 255.255.255.0");
+  await dismissPager(page);
+  await page.keyboard.type("conf");
+  await page.keyboard.press("Tab");
+  await expect(rows).toContainText("R1# configure");
+  await page.keyboard.type(" t");
+  await page.keyboard.press("Enter");
+  await expect(rows).toContainText("R1(config)#");
+  await page.keyboard.type("interface ");
+  await page.keyboard.type("?");
+  // Help may exceed the small dock viewport; assert its complete transcript.
+  await expect(transcript).toContainText(/interface \?\s+Gi0\/0\s+Gi0\/1/);
+  await page.keyboard.type("g0/0");
+  await page.keyboard.press("Enter");
+  await expect(rows).toContainText("R1(config-if)#");
+  await page.keyboard.press("Control+z");
+  await expect(rows).toContainText("R1#");
+  await expect(transcript).not.toContainText("% Invalid");
+  await expect(transcript).not.toContainText("% Ambiguous");
+  const window = await openDeviceTab(page, "R1", /^Configuration$/);
+  await expect(window.getByLabel("Running configuration")).toContainText("ip address 192.168.1.1 255.255.255.0");
+});

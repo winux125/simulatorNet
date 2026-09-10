@@ -1,5 +1,6 @@
 import { createCliSession } from "@sim/cli-engine";
 import { Router, L2Switch, Layer3Switch, createSimulationEngine, macFromIndex } from "@sim/sim-core";
+import { parseIosConfig } from "@sim/device-config";
 import { describe, expect, it } from "vitest";
 import { createTestConfigurationService } from "./helpers/configuration";
 
@@ -48,6 +49,8 @@ describe("IOS compatibility corpus", () => {
     expect(cli.execute("co")).toContain("Ambiguous");
     cli.enter("config");
     expect(cli.execute("interface ?")).toContain("Gi0/0");
+    expect(cli.execute("interface ?")).toContain("range");
+    expect(cli.execute("interface ?")).toContain("loopback");
     expect(cli.execute("?")).not.toContain("switchport");
     cli.execute("interface Gi0/0");
     expect(cli.execute("sh")).toBe(""); // only shutdown in this mode
@@ -71,6 +74,7 @@ describe("IOS configuration compatibility", () => {
       cli.enter("config");
       expect(cli.execute("int " + alias.toUpperCase())).toBe("");
       expect(cli.ifaceCtx?.physical).toBe(canonical);
+      expect(cli.execute("do sh int " + alias.replace(/ /g, ""))).toContain(canonical);
     }
     cli.enter("config");
     for (const absent of ["g99/99", "g0/2", "s0/0/0"]) {
@@ -97,7 +101,7 @@ describe("IOS configuration compatibility", () => {
     ["router", ["int g0/0", "desc LAN", "no desc"], "description LAN"],
     ["router", ["int g0/0", "ip add 192.168.1.1 255.255.255.0", "no ip add"], "ip address 192.168.1.1"],
     ["router", ["int g0/0", "ipv6 add 2001:db8::1/64", "no ipv6 add"], "ipv6 address 2001:db8::1"],
-    ["router", ["ip ro 0.0.0.0 0.0.0.0 10.0.0.1", "no ip ro 0.0.0.0 0.0.0.0 10.0.0.1",
+    ["router", ["ip route 0.0.0.0 0.0.0.0 10.0.0.1", "no ip route 0.0.0.0 0.0.0.0 10.0.0.1",
       "ipv6 route ::/0 2001:db8::1", "no ipv6 route ::/0 2001:db8::1"], "route"],
     ["switch", ["ip default-gateway 10.0.0.1", "no ip default-gateway", "vlan 10", "exit", "no vl 10"], "ip default-gateway"],
     ["l3", ["ip routing", "no ip routing", "int gi0/1", "no sw", "sw", "sw access vlan 10", "no sw access vlan",
@@ -173,6 +177,8 @@ describe("IOS configuration compatibility", () => {
     expect(cli.ifaceCtx?.range).toEqual(["Fa0/1", "Fa0/2", "Fa0/4"]);
     expect(cli.execute("sw access vlan 5000")).toContain("% ");
     expect((device as L2Switch).hasVlan(5000)).toBe(false);
+    for (const line of ["spanning-tree cost 20", "spanning-tree portfast", "no spanning-tree portfast",
+      "no cdp enable", "cdp enable", "no lldp transmit", "lldp transmit"]) expect(cli.execute(line), line).toBe("");
     (device as Layer3Switch).setPortRouted("Fa0/4", true);
     expect(cli.execute("sw mode trunk")).toContain("routed port");
     expect((device as L2Switch).portConfigOf("Fa0/1").mode).toBe("access");
@@ -191,4 +197,73 @@ describe("IOS configuration compatibility", () => {
     expect(sw.etherChannelConfigurations()[0]?.members).toHaveLength(4);
     expect(cli.mode).toBe("config-if");
   });
+});
+
+describe("IOS operational presentation compatibility", () => {
+  it.each(["router", "switch"] as const)("presents existing %s state through abbreviated operational commands", (kind) => {
+    const { cli } = setup(kind);
+    cli.enter("privileged");
+    const commands = kind === "router" ? [
+      "sh ver", "sh hist", "sh int g0/0", "sh ip protocols", "sh ip route 192.0.2.0/24",
+      "sh ipv6 route 2001:db8::/64", "sh ip access-lists", "sh aaa", "sh logging",
+      "sh ip dhcp pool", "sh ip dhcp binding", "sh ip ospf", "sh ip ospf nei detail",
+      "sh ip ospf database", "sh ip ospf int br", "sh ipv6 ospf nei detail", "sh ipv6 ospf int br",
+      "sh ip bgp", "sh ip bgp summary", "sh ip bgp neighbors", "sh bgp ipv6 unicast sum",
+      "sh ip nat translations", "sh ip nat statistics", "sh cdp nei detail", "sh lldp nei detail",
+      "sh users", "sh ssh", "sh snmp",
+    ] : ["sh int status", "sh int switchport", "sh int trunk", "sh vlan br", "sh mac add",
+      "sh spanning-tree", "sh spanning-tree vlan 10", "sh etherchannel sum", "sh int port-channel",
+      "sh lacp nei", "sh pagp nei", "sh cdp nei detail", "sh lldp nei detail", "sh ver", "sh hist"];
+    for (const line of commands) {
+      expect(cli.execute(line), line).not.toMatch(/Invalid input|Ambiguous command|Incomplete command/);
+      expect(cli.resolvedCommand, line).toBeDefined();
+      expect(cli.mode).toBe("privileged");
+    }
+    expect(cli.execute("sh hist")).toContain("sh ver");
+    cli.requestCredential("Password:", "test", () => "");
+    cli.execute("secret-answer", "opaque");
+    expect(cli.execute("sh hist")).not.toContain("secret-answer");
+    cli.enter("config");
+    cli.execute("crypto k generate rsa modulus 512");
+    cli.execute("snmp-server comm inline-sensitive-value ro");
+    cli.enter("privileged");
+    expect(cli.execute("sh hist")).not.toMatch(/crypto k|inline-sensitive-value/);
+    if (kind === "router") {
+      cli.transcript(["conf t", "int g0/0", "ip add 192.0.2.1 255.255.255.0", "end"]);
+      expect(cli.execute("sh ip route 192.0.2.0/24")).toContain("192.0.2.0/24");
+      cli.transcript(["conf t", "int g0/0"]);
+      expect(cli.execute("do ping 198.51.100.1")).not.toMatch(/Invalid input|Incomplete/);
+      expect(cli.mode).toBe("config-if");
+      expect(cli.execute("do traceroute 198.51.100.1")).not.toMatch(/Invalid input|Incomplete/);
+      expect(cli.mode).toBe("config-if");
+    }
+  });
+
+  it("imports address removals only inside a resolved interface block", () => {
+    const parsed = parseIosConfig([
+      "interface G0/0", " ip address 192.0.2.1 255.255.255.0", " no ip address",
+      " ipv6 address 2001:db8::1/64", " no ipv6 address", " description LAN", " no description",
+      "interface Serial0/0/0", " no ip address", " shutdown",
+    ].join("\n"), ["Gi0/0"]);
+    expect(parsed.interfaces).toEqual([{ id: "Gi0/0", shutdown: false }]);
+    expect(parsed.unparsedLines).toEqual(["interface Serial0/0/0", "no ip address", "shutdown"]);
+    expect(parsed.appliedLines).toHaveLength(7);
+  });
+});
+
+it("removes only the matching OSPF/BGP process through the no operator", () => {
+  const { cli, device } = setup();
+  const router = device as Router;
+  cli.transcript(["en", "conf t", "router b 65000", "exit"]);
+  expect(cli.execute("no router b nope")).toContain("Invalid BGP");
+  expect(cli.execute("no router b 65001")).toContain("not configured");
+  expect(router.bgp.enabled).toBe(true);
+  expect(cli.execute("no router b 65000")).toBe("");
+  expect(router.bgp.enabled).toBe(false);
+  cli.transcript(["router os 1", "exit"]);
+  expect(cli.execute("no router os 2")).toContain("not configured");
+  expect(router.ospf.enabled).toBe(true);
+  expect(cli.execute("no router os 1")).toBe("");
+  expect(router.ospf.enabled).toBe(false);
+  expect(cli.mode).toBe("config");
 });

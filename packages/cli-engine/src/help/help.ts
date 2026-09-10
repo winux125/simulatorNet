@@ -113,7 +113,9 @@ export function renderHelp(session: SessionApi, prefix: string[]): string {
   }
   if (key === "interface") {
     const entries = [...session.device.interfaces.keys()].map((label) => ({ label }));
-    if (session.device.hasCapability("svi")) entries.push({ label: "vlan <1-4094>" });
+    for (const token of nextTokens(resolved)) {
+      if (!token.startsWith("{") && token !== "<cr>") entries.push({ label: token === "vlan" ? "vlan <1-4094>" : token });
+    }
     return lines(entries);
   }
   const argument = ARGUMENT_HELP[key];

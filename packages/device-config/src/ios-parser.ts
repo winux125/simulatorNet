@@ -1847,6 +1847,13 @@ export function parseIosConfig(text: string, interfaceNames: readonly string[]):
       }
     }
 
+    if (isIndented && (current || currentLoopback || currentTunnel)) {
+      const target = current ?? currentLoopback ?? currentTunnel!;
+      const command = tokens.map((token) => token.toLowerCase()).join(" ");
+      if (command === "no ip address") { delete target.ipv4; applied(line); continue; }
+      if (command === "no ipv6 address") { delete target.ipv6; applied(line); continue; }
+      if (command === "no description") { delete target.description; applied(line); continue; }
+    }
     if (currentLoopback && isIndented) {
       if (head === "ipv6" && tokens[1]?.toLowerCase() === "address") {
         const address = ipv6Cidr(tokens[2]);
