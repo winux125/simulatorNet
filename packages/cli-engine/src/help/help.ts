@@ -1,3 +1,4 @@
+import { nextTokens, resolveTokens } from "../parser/resolver";
 import { allCommands } from "../commands";
 import { deviceMatches, isEndHost } from "../commands/helpers";
 import type { CommandSpec, SessionApi } from "../types";
@@ -84,15 +85,6 @@ function patternParts(pattern: string): string[] {
   return pattern.split(" ");
 }
 
-function matchesPrefix(pattern: string, prefix: string[]): boolean {
-  const parts = patternParts(pattern);
-  return prefix.every((token, index) => {
-    const part = parts[index];
-    if (!part) return false;
-    return part.startsWith("{") || part.toLowerCase().startsWith(token.toLowerCase());
-  });
-}
-
 function helpLabel(parts: string[]): string {
   return parts.join(" ").replace(/\{([^}.]+)(?:\.\.\.)?\}/g, "<$1>");
 }
@@ -110,27 +102,10 @@ export function renderHelp(session: SessionApi, prefix: string[]): string {
     return lines([...roots].map((label) => ({ label, description: ROOT_DESCRIPTIONS[label] })));
   }
 
-  const matching = commands.filter((command) => matchesPrefix(command.pattern, prefix));
-  const canonical: string[] = [];
-  for (let index = 0; index < prefix.length; index++) {
-    const typed = prefix[index]!.toLowerCase();
-    const literals = new Set(
-      matching
-        .map((command) => patternParts(command.pattern)[index])
-        .filter((part): part is string => part !== undefined && !part.startsWith("{"))
-        .filter((part) => part.toLowerCase().startsWith(typed))
-        .map((part) => part.toLowerCase()),
-    );
-    if (literals.has(typed)) {
-      canonical.push(typed);
-      continue;
-    }
-    if (literals.size > 1 && !literals.has(typed)) {
-      return `% Ambiguous command: "${prefix.join(" ")}"`;
-    }
-    canonical.push(literals.size === 1 ? [...literals][0]! : typed);
-  }
-
+  const resolved = resolveTokens(commands, prefix);
+  if (resolved.error === "ambiguous") return `% Ambiguous command: "${prefix.join(" ")}"`;
+  if (resolved.error === "invalid") return "% Invalid input detected at '^' marker.";
+  const canonical = resolved.tokens;
   const key = canonical.join(" ");
   if (isEndHost(session.device) && key === "ping") {
     return lines([{ label: "<ip-or-hostname>", description: "IPv4 address or DNS hostname to ping" }]);
@@ -149,16 +124,5 @@ export function renderHelp(session: SessionApi, prefix: string[]): string {
     return lines([{ label: label!, description: description.join("   ") }]);
   }
 
-  const seen = new Set<string>();
-  const entries: Array<{ label: string }> = [];
-  for (const command of matching) {
-    const remainder = patternParts(command.pattern).slice(prefix.length);
-    if (remainder.length === 0) continue;
-    const label = helpLabel(remainder);
-    if (!seen.has(label)) {
-      seen.add(label);
-      entries.push({ label });
-    }
-  }
-  return entries.length > 0 ? lines(entries) : "% No help available for this prefix.";
+  return lines(nextTokens(resolved).map((part) => ({ label: helpLabel([part]) })));
 }

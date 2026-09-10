@@ -88,6 +88,9 @@ export class LineBuffer {
 
 export type TerminalKey =
   | { kind: "enter" }
+  | { kind: "complete" }
+  | { kind: "help" }
+  | { kind: "end-config" }
   | { kind: "backspace" }
   | { kind: "delete" }
   | { kind: "left" }
@@ -110,6 +113,9 @@ const END_SEQUENCES = new Set(["\x1b[F", "\x1b[4~", "\x1bOF", "\x05"]);
  */
 export function classifyTerminalKey(data: string): TerminalKey | undefined {
   switch (data) {
+    case "\t": return { kind: "complete" };
+    case "?": return { kind: "help" };
+    case "\x1a": return { kind: "end-config" };
     case "\r":
     case "\n":
       return { kind: "enter" };

@@ -135,7 +135,7 @@ describe("M10.2.1 device command profiles", () => {
     const { cli } = switchCli(true);
     expect(cli.execute("?")).toContain("ping");
     cli.execute("enable");
-    expect(cli.execute("show ?")).toContain("ip route");
+    expect(cli.execute("show ip ?")).toContain("route");
     cli.execute("configure terminal");
     expect(cli.execute("?")).toContain("vlan");
   });
@@ -191,7 +191,7 @@ describe("M10.2.1 device command profiles", () => {
 
   it("keeps contextual help mode and prefix aware", () => {
     const { cli } = routerCli();
-    expect(cli.execute("show ?")).toContain("ip interface brief");
+    expect(cli.execute("show ip interface ?")).toContain("brief");
     expect(cli.execute("ping ?")).toContain("<destination-ip>");
     expect(cli.execute("show i ?")).toBe('% Ambiguous command: "show i"');
   });

@@ -11,13 +11,14 @@ import {
   ValidationError,
 } from "../errors/errors";
 import { renderHelp } from "../help/help";
+import { nextTokens, resolveTokens } from "../parser/resolver";
 import { tokenize } from "../lexer/lexer";
 import {
-  analyzePattern,
   matchPatternDetailed,
   usageFromPattern,
 } from "../parser/matcher";
 import type {
+  CommandSpec,
   AaaServerContext,
   AclContext,
   CryptoContext,
@@ -344,41 +345,32 @@ export class CliSession implements SessionApi {
     const tokens = tokenize(line);
     if (tokens.length === 0) return "";
 
-    const lowered = tokens.map((token) => token.toLowerCase());
-    if (lowered.length === 1 && (lowered[0] === "?" || lowered[0] === "help")) return renderHelp(this, []);
-    if (tokens.at(-1) === "?") return renderHelp(this, tokens.slice(0, -1));
-    if (
-      lowered.length === 1
-      && "ping".startsWith(lowered[0]!)
-      && isRoutingDevice(this.device)
-      && (this.mode === "exec" || this.mode === "privileged")
-    ) {
+    this.resolvedCommand = undefined;
+    if (line.trimEnd().endsWith("?")) return this.help(line.trimEnd().slice(0, -1));
+    if (tokens.length === 1 && tokens[0]!.toLowerCase() === "help") return this.help("");
+    const eligible = this.availableCommands();
+    const resolved = resolveTokens(eligible, tokens);
+    if (resolved.error === "ambiguous") return new AmbiguousCommandError(line.trim()).render();
+    if (resolved.error === "invalid") {
+      // Keep the useful explicit capability diagnostic for a fully spelled
+      // unsupported command, without admitting it into abbreviation/help.
+      const unsupported = allCommands.find((spec) => spec.modes.includes(this.mode)
+        && deviceMatches(spec.device, this.device)
+        && spec.pattern.split(" ").every((part, i) => part.startsWith("{") || part.toLowerCase() === tokens[i]?.toLowerCase())
+        && matchPatternDetailed(spec.pattern, tokens)
+        && spec.capabilities?.some((capability) => !this.device.hasCapability(capability)));
+      const missing = unsupported?.capabilities?.find((capability) => !this.device.hasCapability(capability));
+      if (missing) return new UnsupportedCapabilityError(missing).render();
+      const offsets = [...line.matchAll(/\S+/g)].map((match) => match.index);
+      return new SyntaxError(offsets[resolved.index] ?? line.length).render();
+    }
+    this.resolvedCommand = resolved.tokens.join(" ");
+    if (this.resolvedCommand === "ping" && isRoutingDevice(this.device)) {
       this.pendingInput = "ping-target";
       return "";
     }
-
-    const eligible = allCommands.filter((spec) =>
-      spec.modes.includes(this.mode)
-      && deviceMatches(spec.device, this.device));
-    const progress = eligible.map((spec) => ({ spec, analysis: analyzePattern(spec.pattern, tokens) }));
-    const viable = progress.filter((candidate) => candidate.analysis.status !== "invalid");
-    for (let index = 0; index < tokens.length; index++) {
-      const token = tokens[index]!.toLowerCase();
-      const literalExpansions = new Set(
-        viable
-          .map((candidate) => candidate.spec.pattern.split(" ")[index])
-          .filter((part): part is string => part !== undefined && !part.startsWith("{"))
-          .filter((part) => part.toLowerCase().startsWith(token))
-          .map((part) => part.toLowerCase()),
-      );
-      // A fully typed keyword wins over longer keywords that merely share its
-      // prefix (`ip` must not become ambiguous after adding `ipv6`).
-      if (literalExpansions.has(token)) continue;
-      if (literalExpansions.size > 1) return new AmbiguousCommandError(line.trim()).render();
-    }
-
-    const complete = eligible.flatMap((spec) => {
-      const match = matchPatternDetailed(spec.pattern, tokens);
+    const complete = resolved.candidates.flatMap(({ spec }) => {
+      const match = matchPatternDetailed(spec.pattern, resolved.tokens);
       return match ? [{ spec, match }] : [];
     });
     if (complete.length > 0) {
@@ -405,22 +397,39 @@ export class CliSession implements SessionApi {
       }
     }
 
-    const incompleteCandidates = progress
-      .filter((candidate) => candidate.analysis.status === "incomplete")
-      // Most tokens matched wins; then the most *general* form, so a bare
-      // `interface` suggests `interface <interface-name>` rather than one of
-      // the specific `interface vlan|range|loopback` sub-forms.
-      .sort((a, b) =>
-        b.analysis.matchedTokens - a.analysis.matchedTokens
-        || literalTokenCount(a.spec.pattern) - literalTokenCount(b.spec.pattern)
-        || a.spec.pattern.length - b.spec.pattern.length);
-    const incomplete = incompleteCandidates[0];
-    if (incomplete) return new IncompleteCommandError(incomplete.spec.usage ?? usageFromPattern(incomplete.spec.pattern)).render();
+    const incomplete = resolved.candidates.map((candidate) => candidate.spec)
+      .sort((a, b) => literalTokenCount(a.pattern) - literalTokenCount(b.pattern) || a.pattern.length - b.pattern.length)[0];
+    return new IncompleteCommandError(incomplete?.usage ?? usageFromPattern(incomplete?.pattern ?? "")).render();
+  }
 
-    const invalid = progress.sort((a, b) => b.analysis.matchedTokens - a.analysis.matchedTokens)[0];
-    const invalidIndex = invalid?.analysis.invalidTokenIndex ?? 0;
-    const offsets = [...line.matchAll(/\S+/g)].map((match) => match.index);
-    return new SyntaxError(offsets[invalidIndex] ?? 0).render();
+  /** Canonical command from the last resolution; arguments keep their case. */
+  resolvedCommand: string | undefined;
+
+  availableCommands(): CommandSpec[] {
+    return allCommands.filter((spec) => spec.modes.includes(this.mode)
+      && deviceMatches(spec.device, this.device)
+      && (spec.capabilities?.every((capability) => this.device.hasCapability(capability)) ?? true));
+  }
+
+  /** Help and completion do not execute, change mode, or enter history. */
+  help(input: string): string {
+    if (!input || /\s$/.test(input)) return renderHelp(this, tokenize(input));
+    const { candidates, error } = this.complete(input);
+    return error ?? candidates.map((candidate) => "  " + candidate).join("\n");
+  }
+
+  complete(input: string): { input: string; candidates: string[]; error?: string } {
+    const tokens = tokenize(input);
+    const partial = /\s$/.test(input) ? "" : tokens.pop() ?? "";
+    const resolved = resolveTokens(this.availableCommands(), tokens);
+    if (resolved.error) return { input, candidates: [], error: resolved.error === "ambiguous"
+      ? new AmbiguousCommandError(input.trim()).render() : new SyntaxError().render() };
+    const candidates = nextTokens(resolved)
+      .filter((part) => !part.startsWith("{") && part !== "<cr>" && part.toLowerCase().startsWith(partial.toLowerCase()));
+    const replacement = candidates.length === 1
+      ? input.slice(0, input.length - partial.length) + candidates[0]
+      : input;
+    return { input: replacement, candidates };
   }
 
   /**

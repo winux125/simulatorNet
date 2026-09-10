@@ -106,8 +106,8 @@ describe("CLI error handling", () => {
     expect(session.execute("?")).toContain("show");
     expect(session.execute("?")).toContain("enable");
     session.execute("enable");
-    expect(session.execute("show ?")).toContain("vlan brief");
-    expect(session.execute("show ?")).toContain("mac address-table");
+    expect(session.execute("show vlan ?")).toContain("brief");
+    expect(session.execute("show mac ?")).toContain("address-table");
   });
 });
 

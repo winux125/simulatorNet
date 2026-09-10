@@ -692,6 +692,35 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
         // While the gate is waiting for a password, input is never echoed and is
         // kept out of the line editor's visible state and history.
         switch (key.kind) {
+          case "complete":
+          case "help": {
+            if (gate || !plainEcho() || remoteCredentialScope) {
+              if (key.kind === "help") buffer.insert("?");
+              break;
+            }
+            const original = buffer.value;
+            const cursor = buffer.cursor;
+            void client.request({ type: "COMPLETE_CLI", sessionId, deviceId,
+              input: buffer.head, help: key.kind === "help" }).then((result) => {
+              if (disposed || buffer.value !== original || buffer.cursor !== cursor) return;
+              const output = result.output ?? result.error
+                ?? (result.candidates.length > 1 ? result.candidates.join("  ") : "");
+              if (output) terminal.write("\r\n" + terminalText(stripControlSequences(output)) + "\r\n");
+              if (key.kind === "complete" && result.input !== buffer.head) {
+                const rest = buffer.rest;
+                buffer.replace(result.input + rest);
+                for (let i = 0; i < rest.length; i++) buffer.left();
+              }
+              redraw();
+            }).catch(() => onError("CLI completion failed"));
+            break;
+          }
+          case "end-config":
+            if (!gate && plainEcho() && /\(config[^)]*\)#/.test(promptText())) {
+              buffer.clear();
+              void execute("end");
+            }
+            break;
           case "enter": {
             const submitted = buffer.value;
             buffer.clear();

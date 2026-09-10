@@ -1040,6 +1040,7 @@ export type SimWorkerRequest =
       /** Opaque credential fingerprint answering a remote credential prompt. */
       credential?: string;
     }
+  | { type: "COMPLETE_CLI"; requestId: string; sessionId: string; deviceId: string; input: string; help?: boolean }
   | { type: "CLOSE_CLI_SESSION"; requestId: string; sessionId: string }
   | { type: "RUN_UNTIL_IDLE"; requestId: string }
   | { type: "STEP_NEXT_EVENT"; requestId: string }
@@ -1236,6 +1237,7 @@ export type SimWorkerRequest =
 export type SimWorkerPayload =
   | LabUiSnapshot
   | CliExecutionResult
+  | { input: string; candidates: string[]; error?: string; output?: string }
   | SimulationRunResult
   | DeviceInspection
   | HostIpConfiguration
@@ -1295,6 +1297,7 @@ export interface SimWorkerPayloadByType {
   INITIALIZE_LAB: LabUiSnapshot;
   REBUILD_LAB: LabUiSnapshot;
   EXECUTE_CLI: CliExecutionResult;
+  COMPLETE_CLI: { input: string; candidates: string[]; error?: string; output?: string };
   CLOSE_CLI_SESSION: { closed: boolean };
   RUN_UNTIL_IDLE: SimulationRunResult;
   STEP_NEXT_EVENT: SimulationRunResult;

@@ -244,6 +244,18 @@ export class SimulationWorkerRuntime {
           requireString(request, "input"),
           typeof request.credential === "string" ? request.credential : undefined,
         );
+      case "COMPLETE_CLI": {
+        const sessionId = requireString(request, "sessionId");
+        const deviceId = requireString(request, "deviceId");
+        const input = requireString(request, "input");
+        const entry = this.sessions.get(sessionId);
+        if (!entry || entry.deviceId !== deviceId || entry.session.expectsSecret() || entry.session.remoteSession()) {
+          return { input, candidates: [] };
+        }
+        return request.help
+          ? { input, candidates: [], output: entry.session.help(input) }
+          : entry.session.complete(input);
+      }
       case "CLOSE_CLI_SESSION":
         return { closed: this.closeCliSession(requireString(request, "sessionId")) };
       case "RUN_UNTIL_IDLE":
