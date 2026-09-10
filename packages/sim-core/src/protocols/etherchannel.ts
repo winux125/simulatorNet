@@ -177,40 +177,13 @@ export class EtherChannelStack {
 
   /** `interface <port>` + `channel-group <id> mode <mode>`. */
   addMember(channelId: number, port: string, mode: EtherChannelMode): void {
-    if (!Number.isInteger(channelId) || channelId < 1) {
-      throw new ControlProtocolConfigurationError("Channel group must be a positive integer", "channelId");
-    }
-    if (!this.host.etherChannelHasPort(port)) {
-      throw new ControlProtocolConfigurationError(`Unknown interface '${port}'`, "port");
-    }
-    const existing = this.memberIndex.get(port);
-    if (existing !== undefined && existing !== channelId) {
-      throw new ControlProtocolConfigurationError(
-        `Interface '${port}' already belongs to ${portChannelName(existing)}`,
-        "port",
-      );
-    }
+    this.validateMembers(channelId, [port], mode);
     const protocol = protocolOfMode(mode);
     let channel = this.channels.get(channelId);
     if (!channel) {
-      enforceStructuralLimit("maximumPortChannelsPerDevice", this.channels.size + 1);
-      channel = {
-        channelId,
-        protocol,
-        mode,
-        minimumLinks: 1,
-        description: undefined,
-        up: false,
-        members: new Map(),
-      };
+      channel = { channelId, protocol, mode, minimumLinks: 1, description: undefined, up: false, members: new Map() };
       this.channels.set(channelId, channel);
-    } else if (channel.protocol !== protocol) {
-      throw new ControlProtocolConfigurationError(
-        `${portChannelName(channelId)} already negotiates with ${channel.protocol}`,
-        "mode",
-      );
     }
-    enforceStructuralLimit("maximumMembersPerPortChannel", channel.members.size + (channel.members.has(port) ? 0 : 1));
     channel.mode = mode;
     const member = channel.members.get(port);
     if (member) member.mode = mode;
@@ -218,6 +191,27 @@ export class EtherChannelStack {
     this.memberIndex.set(port, channelId);
     this.host.etherChannelTopologyChanged();
     this.arm();
+  }
+
+  /** Preflight a whole CLI range before creating a channel or moving any member. */
+  validateMembers(channelId: number, ports: string[], mode: EtherChannelMode): void {
+    if (!Number.isInteger(channelId) || channelId < 1) {
+      throw new ControlProtocolConfigurationError("Channel group must be a positive integer", "channelId");
+    }
+    const channel = this.channels.get(channelId);
+    if (!channel) enforceStructuralLimit("maximumPortChannelsPerDevice", this.channels.size + 1);
+    else if (channel.protocol !== protocolOfMode(mode)) {
+      throw new ControlProtocolConfigurationError(`${portChannelName(channelId)} already negotiates with ${channel.protocol}`, "mode");
+    }
+    for (const port of ports) {
+      if (!this.host.etherChannelHasPort(port)) throw new ControlProtocolConfigurationError(`Unknown interface '${port}'`, "port");
+      const existing = this.memberIndex.get(port);
+      if (existing !== undefined && existing !== channelId) {
+        throw new ControlProtocolConfigurationError(`Interface '${port}' already belongs to ${portChannelName(existing)}`, "port");
+      }
+    }
+    enforceStructuralLimit("maximumMembersPerPortChannel",
+      new Set([...(channel?.members.keys() ?? []), ...ports]).size);
   }
 
   /** `no channel-group`. */

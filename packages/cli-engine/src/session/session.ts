@@ -11,6 +11,8 @@ import {
   ValidationError,
 } from "../errors/errors";
 import { renderHelp } from "../help/help";
+import { commandsForMode } from "../commands/available";
+import { executeRangeCommand } from "../commands/range";
 import { nextTokens, resolveTokens } from "../parser/resolver";
 import { tokenize } from "../lexer/lexer";
 import {
@@ -53,6 +55,7 @@ export const STEP_OPERATION_QUEUED = [
  */
 export class CliSession implements SessionApi {
   mode: CliMode = "exec";
+  negated = false;
   ifaceCtx: InterfaceContext | undefined;
   vlanId: number | undefined;
   aclCtx: AclContext | undefined;
@@ -388,12 +391,15 @@ export class CliSession implements SessionApi {
       const missingCapability = best.spec.capabilities?.find((capability) => !this.device.hasCapability(capability));
       if (missingCapability) return new UnsupportedCapabilityError(missingCapability).render();
       try {
-        return best.spec.run(this, best.match.params) ?? "";
+        this.negated = best.spec.negated ?? false;
+        return executeRangeCommand(this, best.spec, best.match.params);
       } catch (err) {
         if (err instanceof CliError) return err.render();
         const protocolError = renderProtocolError(err);
         if (protocolError !== undefined) return protocolError;
         throw err;
+      } finally {
+        this.negated = false;
       }
     }
 
@@ -406,9 +412,7 @@ export class CliSession implements SessionApi {
   resolvedCommand: string | undefined;
 
   availableCommands(): CommandSpec[] {
-    return allCommands.filter((spec) => spec.modes.includes(this.mode)
-      && deviceMatches(spec.device, this.device)
-      && (spec.capabilities?.every((capability) => this.device.hasCapability(capability)) ?? true));
+    return commandsForMode(this, this.mode);
   }
 
   /** Help and completion do not execute, change mode, or enter history. */

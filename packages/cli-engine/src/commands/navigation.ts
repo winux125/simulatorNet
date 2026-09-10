@@ -1,3 +1,4 @@
+import { normalizeInterfaceName } from "@sim/contracts";
 import { loopbackName, portChannelName, tunnelName } from "@sim/sim-core";
 import { InvalidModeError, ValidationError } from "../errors/errors";
 import type { CommandSpec, SessionApi } from "../types";
@@ -40,7 +41,16 @@ function interfaceContext(
  * name, so the caller can fall through to the physical lookup otherwise.
  */
 function selectLogicalInterface(session: SessionApi, spec: string): boolean {
-  const compact = spec.replace(/\s+/gu, "");
+  const compact = normalizeInterfaceName(spec);
+  const vlan = /^vlan(\d+)$/.exec(compact);
+  if (vlan && isSwitch(session.device)) {
+    const id = parseVlanId(vlan[1]!);
+    if (isLayer3Switch(session.device)) session.device.defineSvi(id);
+    else session.device.defineManagementSvi(id);
+    session.ifaceCtx = interfaceContext(`Vlan${id}`, { sviVlan: id });
+    session.enter("config-if");
+    return true;
+  }
   const loopback = /^lo(?:opback)?(\d+)$/i.exec(compact);
   if (loopback && isOspfDevice(session.device)) {
     const id = Number(loopback[1]);
@@ -300,10 +310,17 @@ export const navigationCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no router bgp {asn}",
+    negated: true, pattern: "router bgp {asn}",
     modes: ["config"],
     device: "ospf",
-    run: (s) => { if (isOspfDevice(s.device)) s.device.bgp.disable(); },
+    run: (s, p) => {
+      const asn = Number(p.asn);
+      if (!Number.isInteger(asn) || asn < 1 || asn > 4_294_967_295) throw new ValidationError("Invalid BGP autonomous system number.");
+      if (!isOspfDevice(s.device)) return;
+      const current = s.device.bgp.configurationSnapshot();
+      if (current && current.localAs !== asn) throw new ValidationError("That BGP process is not configured.");
+      s.device.bgp.disable();
+    },
   },
   {
     pattern: "route-map {name} {action} {sequence}",
@@ -353,12 +370,16 @@ export const navigationCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no router ospf {process}",
+    negated: true, pattern: "router ospf {process}",
     modes: ["config"],
     device: "ospf",
     capabilities: ["ipv4-routing"],
-    run: (s) => {
-      if (isOspfDevice(s.device)) s.device.ospf.removeProcess();
+    run: (s, p) => {
+      const process = Number(p.process);
+      if (!Number.isInteger(process) || process < 1 || process > 65_535) throw new ValidationError("Invalid OSPF process ID.");
+      if (!isOspfDevice(s.device)) return;
+      if (s.device.ospf.enabled && s.device.ospf.overview().processId !== process) throw new ValidationError("That OSPF process is not configured.");
+      s.device.ospf.removeProcess();
     },
   },
   {
@@ -387,6 +408,32 @@ export const navigationCommands: CommandSpec[] = [
     },
   },
   {
+    negated: true, pattern: "ip route {network} {mask} {nexthop}", modes: ["config"], device: "router",
+    capabilities: ["static-routing"],
+    run: (s, p) => { if (isRoutingDevice(s.device)) s.device.removeStaticRoute(parseIpv4(p.network!), parseIpv4(p.mask!), parseIpv4(p.nexthop!)); },
+  },
+  {
+    negated: true, pattern: "ipv6 route {prefix} {nexthop}", modes: ["config"], device: "router",
+    run: (s, p) => {
+      const prefix = parseIpv6Prefix(p.prefix!);
+      if (isRoutingDevice(s.device)) s.device.removeIpv6StaticRoute(prefix.network, prefix.prefixLength, parseIpv6(p.nexthop!));
+    },
+  },
+  {
+    negated: true, pattern: "vlan {id}", modes: ["config"], device: "switch", capabilities: ["vlan"],
+    run: (s, p) => {
+      const id = parseVlanId(p.id!);
+      if (!isSwitch(s.device)) return;
+      if (id === 1 || s.device.managementSviSummary()?.vlanId === id
+        || (isLayer3Switch(s.device) && s.device.sviSummaries().some((svi) => svi.vlanId === id))
+        || [...s.device.interfaces.keys()].some((port) => {
+          const cfg = isSwitch(s.device) ? s.device.portConfigOf(port) : undefined;
+          return cfg?.accessVlan === id || cfg?.nativeVlan === id;
+        })) throw new ValidationError("VLAN is in use; remove its interface configuration first.");
+      s.device.removeVlan(id);
+    },
+  },
+  {
     pattern: "ip routing",
     modes: ["config"],
     device: "l3-switch",
@@ -403,7 +450,7 @@ export const navigationCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no ipv6 unicast-routing",
+    negated: true, pattern: "ipv6 unicast-routing",
     modes: ["config"],
     device: "router",
     run: (s) => {
@@ -424,7 +471,7 @@ export const navigationCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no ip routing",
+    negated: true, pattern: "ip routing",
     modes: ["config"],
     device: "l3-switch",
     capabilities: ["ipv4-routing"],

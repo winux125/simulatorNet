@@ -593,7 +593,7 @@ export const vxlanCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no vrf definition {name}", modes: ["config"], device: "l3-switch",
+    negated: true, pattern: "vrf definition {name}", modes: ["config"], device: "l3-switch",
     run: (s, p) => {
       const device = vtepOf(s);
       const vrf = device.vrfConfigurations().find((entry) => entry.id === p.name || entry.name === p.name);
@@ -643,7 +643,7 @@ export const vxlanCommands: CommandSpec[] = [
     run: (s, p) => vtepOf(s).setFabricAnycastGatewayMac(parseFabricMac(p.mac!)),
   },
   {
-    pattern: "no fabric forwarding anycast-gateway-mac", modes: ["config"], device: "l3-switch",
+    negated: true, pattern: "fabric forwarding anycast-gateway-mac", modes: ["config"], device: "l3-switch",
     run: (s) => vtepOf(s).setFabricAnycastGatewayMac(undefined),
   },
 
@@ -659,7 +659,7 @@ export const vxlanCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no vrf forwarding {name}", modes: ["config-if"], device: "l3-switch",
+    negated: true, pattern: "vrf forwarding {name}", modes: ["config-if"], device: "l3-switch",
     run: (s) => vtepOf(s).assignInterfaceVrf(sviOrPortName(s), undefined),
   },
   {
@@ -672,7 +672,7 @@ export const vxlanCommands: CommandSpec[] = [
     run: (s) => setSviAnycast(s, true),
   },
   {
-    pattern: "no fabric forwarding mode anycast-gateway", modes: ["config-if"], device: "l3-switch",
+    negated: true, pattern: "fabric forwarding mode anycast-gateway", modes: ["config-if"], device: "l3-switch",
     run: (s) => setSviAnycast(s, false),
   },
 
@@ -686,7 +686,7 @@ export const vxlanCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no interface nve1", modes: ["config"], device: "l3-switch",
+    negated: true, pattern: "interface nve1", modes: ["config"], device: "l3-switch",
     run: (s) => {
       vtepOf(s).removeNve();
       pendingMembers(s).clear();
@@ -713,7 +713,7 @@ export const vxlanCommands: CommandSpec[] = [
     run: (s) => setNveAdminState(s, false),
   },
   {
-    pattern: "no shutdown", modes: ["config-nve"], device: "l3-switch",
+    negated: true, pattern: "shutdown", modes: ["config-nve"], device: "l3-switch",
     run: (s) => setNveAdminState(s, true),
   },
   {
@@ -727,7 +727,7 @@ export const vxlanCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no member vni {vni}", modes: ["config-nve"], device: "l3-switch",
+    negated: true, pattern: "member vni {vni}", modes: ["config-nve"], device: "l3-switch",
     run: (s, p) => {
       const vni = parseVni(p.vni!);
       pendingMembers(s).delete(vni);
@@ -761,7 +761,7 @@ export const vxlanCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no member vni {vni} associate-vrf", modes: ["config-nve"], device: "l3-switch",
+    negated: true, pattern: "member vni {vni} associate-vrf", modes: ["config-nve"], device: "l3-switch",
     run: (s, p) => {
       const vni = parseVni(p.vni!);
       updateNve(s, (current) => {
@@ -791,7 +791,7 @@ export const vxlanCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no peer-ip {address}", modes: ["config-nve-vni"], device: "l3-switch",
+    negated: true, pattern: "peer-ip {address}", modes: ["config-nve-vni"], device: "l3-switch",
     run: (s, p) => {
       const address = parseIpv4(p.address!);
       updateMember(s, requireNveVni(s), (replication) => replication.type === "static"
@@ -826,7 +826,7 @@ export const vxlanCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no member vni {vni}", modes: ["config-vlan-config"], device: "l3-switch",
+    negated: true, pattern: "member vni {vni}", modes: ["config-vlan-config"], device: "l3-switch",
     run: (s, p) => {
       const vni = parseVni(p.vni!);
       updateNve(s, (current) => {
@@ -855,7 +855,7 @@ export const vxlanCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no vni {vni} l2", modes: ["config-evpn"], device: "l3-switch",
+    negated: true, pattern: "vni {vni} l2", modes: ["config-evpn"], device: "l3-switch",
     run: (s, p) => vtepOf(s).removeEvpnVni(parseVni(p.vni!)),
   },
   {
@@ -898,7 +898,7 @@ export const vxlanCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no evpn ethernet-segment {name}", modes: ["config"], device: "l3-switch",
+    negated: true, pattern: "evpn ethernet-segment {name}", modes: ["config"], device: "l3-switch",
     run: (s, p) => vtepOf(s).removeEthernetSegment(p.name!),
   },
   {
@@ -945,7 +945,7 @@ export const vxlanCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no df-election", modes: ["config-evpn-es"], device: "l3-switch",
+    negated: true, pattern: "df-election", modes: ["config-evpn-es"], device: "l3-switch",
     run: (s) => updateEthernetSegment(s, (current) => ({ ...current, dfAlgorithm: undefined })),
   },
   {
@@ -961,7 +961,7 @@ export const vxlanCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no ethernet-segment", modes: ["config-if"], device: "l3-switch",
+    negated: true, pattern: "ethernet-segment", modes: ["config-if"], device: "l3-switch",
     run: (s) => vtepOf(s).detachEthernetSegment(accessPortName(s)),
   },
 

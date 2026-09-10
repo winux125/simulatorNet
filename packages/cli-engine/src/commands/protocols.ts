@@ -96,7 +96,7 @@ export const protocolCommands: CommandSpec[] = [
     run: (s) => { requireSwitch(s).setSpanningTreeMode("rstp" satisfies SpanningTreeMode); },
   },
   {
-    pattern: "no spanning-tree mode",
+    negated: true, pattern: "spanning-tree mode",
     modes: ["config"],
     device: "switch",
     capabilities: ["spanning-tree"],
@@ -166,7 +166,7 @@ export const protocolCommands: CommandSpec[] = [
     run: (s) => forEachRangePort(s, (port) => requireSwitch(s).spanningTree.setPortFast(port, true)),
   },
   {
-    pattern: "no spanning-tree portfast",
+    negated: true, pattern: "spanning-tree portfast",
     modes: ["config-if"],
     device: "switch",
     capabilities: ["spanning-tree"],
@@ -206,7 +206,7 @@ export const protocolCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no channel-group",
+    negated: true, pattern: "channel-group",
     modes: ["config-if"],
     device: "switch",
     capabilities: ["layer2-switching"],
@@ -221,7 +221,7 @@ export const protocolCommands: CommandSpec[] = [
     run: (s) => { discoveryOf(s).setCdpEnabled(true); },
   },
   {
-    pattern: "no cdp run",
+    negated: true, pattern: "cdp run",
     modes: ["config"],
     device: "cdp",
     run: (s) => { discoveryOf(s).setCdpEnabled(false); },
@@ -233,7 +233,7 @@ export const protocolCommands: CommandSpec[] = [
     run: (s) => forEachRangePort(s, (port) => discoveryOf(s).setInterfaceCdpEnabled(port, true)),
   },
   {
-    pattern: "no cdp enable",
+    negated: true, pattern: "cdp enable",
     modes: ["config-if"],
     device: "cdp",
     run: (s) => forEachRangePort(s, (port) => discoveryOf(s).setInterfaceCdpEnabled(port, false)),
@@ -247,7 +247,7 @@ export const protocolCommands: CommandSpec[] = [
     run: (s) => { discoveryOf(s).setLldpEnabled(true); },
   },
   {
-    pattern: "no lldp run",
+    negated: true, pattern: "lldp run",
     modes: ["config"],
     device: "lldp",
     run: (s) => { discoveryOf(s).setLldpEnabled(false); },
@@ -259,7 +259,7 @@ export const protocolCommands: CommandSpec[] = [
     run: (s) => forEachRangePort(s, (port) => discoveryOf(s).setInterfaceLldpTransmit(port, true)),
   },
   {
-    pattern: "no lldp transmit",
+    negated: true, pattern: "lldp transmit",
     modes: ["config-if"],
     device: "lldp",
     run: (s) => forEachRangePort(s, (port) => discoveryOf(s).setInterfaceLldpTransmit(port, false)),
@@ -271,7 +271,7 @@ export const protocolCommands: CommandSpec[] = [
     run: (s) => forEachRangePort(s, (port) => discoveryOf(s).setInterfaceLldpReceive(port, true)),
   },
   {
-    pattern: "no lldp receive",
+    negated: true, pattern: "lldp receive",
     modes: ["config-if"],
     device: "lldp",
     run: (s) => forEachRangePort(s, (port) => discoveryOf(s).setInterfaceLldpReceive(port, false)),
@@ -308,7 +308,7 @@ export const protocolCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no network {network} {wildcard} area {area}",
+    negated: true, pattern: "network {network} {wildcard} area {area}",
     modes: ["config-router"],
     device: "ospf",
     run: (s, p) => {
@@ -331,7 +331,7 @@ export const protocolCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no passive-interface {name}",
+    negated: true, pattern: "passive-interface {name}",
     modes: ["config-router"],
     device: "ospf",
     run: (s, p) => {

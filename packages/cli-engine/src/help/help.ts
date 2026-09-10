@@ -1,6 +1,6 @@
 import { nextTokens, resolveTokens } from "../parser/resolver";
-import { allCommands } from "../commands";
-import { deviceMatches, isEndHost } from "../commands/helpers";
+import { commandsForMode } from "../commands/available";
+import { isEndHost } from "../commands/helpers";
 import type { CommandSpec, SessionApi } from "../types";
 
 const ROOT_DESCRIPTIONS: Record<string, string> = {
@@ -76,9 +76,7 @@ const ARGUMENT_HELP: Record<string, string> = {
 };
 
 function available(session: SessionApi): CommandSpec[] {
-  return allCommands.filter((command) => command.modes.includes(session.mode)
-    && deviceMatches(command.device, session.device)
-    && (command.capabilities?.every((capability) => session.device.hasCapability(capability)) ?? true));
+  return commandsForMode(session, session.mode);
 }
 
 function patternParts(pattern: string): string[] {

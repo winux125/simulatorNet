@@ -145,6 +145,7 @@ export interface CryptoContext {
  * depend on this interface (not the class) so there is no import cycle.
  */
 export interface SessionApi {
+  readonly negated: boolean;
   readonly device: Device;
   readonly engine: SimulationEngine;
   mode: CliMode;
@@ -197,6 +198,8 @@ export interface SessionApi {
 }
 
 export interface CommandSpec {
+  /** Explicitly defined inverse grammar, mounted under the config no operator. */
+  negated?: boolean;
   /** Literal + `{hole}` pattern; see `matchPattern`. */
   pattern: string;
   /** Modes this command is valid in. */

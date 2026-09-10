@@ -423,17 +423,6 @@ export function maskToPrefix(mask: string | undefined): number | undefined {
   return bits;
 }
 
-const PREFIX_ALIASES: ReadonlyArray<readonly [RegExp, string]> = [
-  [/^(?:gigabitethernet|gigabit|gig|ge|gi)/u, "gi"],
-  [/^(?:tengigabitethernet|tengige|te)/u, "te"],
-  [/^(?:fastethernet|fast|fa|fe)/u, "fa"],
-  [/^(?:ethernet|eth|et|e)/u, "eth"],
-  [/^(?:serial|ser|se|s)/u, "se"],
-  [/^(?:loopback|loop|lo)/u, "lo"],
-  [/^(?:management|mgmt|ma)/u, "ma"],
-  [/^(?:vlan|vl)/u, "vlan"],
-];
-
 /** The canonical name of one logical bundle, as the rest of the model spells it. */
 function portChannelInterfaceId(channelId: number): string {
   return `Port-channel${channelId}`;
@@ -507,15 +496,8 @@ function parseVlanListText(text: string): number[] | undefined {
   return vlans.size === 0 ? undefined : [...vlans].sort((a, b) => a - b);
 }
 
-/** Normalise an interface name so abbreviations and casing compare equal. */
-export function normalizeInterfaceName(name: string): string {
-  const compact = name.toLowerCase().replace(/\s+/gu, "");
-  for (const [pattern, canonical] of PREFIX_ALIASES) {
-    const match = pattern.exec(compact);
-    if (match && match[0].length > 0) return canonical + compact.slice(match[0].length);
-  }
-  return compact;
-}
+import { normalizeInterfaceName } from "@sim/contracts";
+export { normalizeInterfaceName } from "@sim/contracts";
 
 /** The `match` forms the importer understands; everything else stays unparsed. */
 function parseQosMatch(tokens: string[]): QosMatchRuleConfig | undefined {

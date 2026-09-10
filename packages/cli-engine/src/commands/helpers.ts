@@ -1,3 +1,4 @@
+import { normalizeInterfaceName } from "@sim/contracts";
 import {
   type Device,
   EndHost,
@@ -91,42 +92,28 @@ export function contextPorts(ctx: { physical: string; range: string[] | undefine
  * must resolve, so a range is validated before anything is configured.
  */
 export function expandInterfaceRange(device: Device, spec: string): string[] {
-  const [startToken, endToken] = spec.split("-").map((part) => part.trim());
-  if (!startToken) throw new ValidationError("Interface range requires a start interface.");
-  const start = resolveInterface(device, startToken);
-  if (!start) throw new ValidationError(`Interface ${startToken} not found.`);
-  if (endToken === undefined) return [start.physical];
-
-  const prefixMatch = /^(.*?)(\d+)$/.exec(start.physical);
-  if (!prefixMatch) throw new ValidationError(`Interface ${start.physical} cannot be used in a range.`);
-  const prefix = prefixMatch[1]!;
-  const first = Number(prefixMatch[2]);
-  const endNumber = /^\d+$/.test(endToken)
-    ? Number(endToken)
-    : Number(/^(.*?)(\d+)$/.exec(resolveInterface(device, endToken)?.physical ?? "")?.[2]);
-  if (!Number.isInteger(endNumber) || endNumber < first) {
-    throw new ValidationError(`Invalid interface range '${spec}'.`);
-  }
   const ports: string[] = [];
-  for (let index = first; index <= endNumber; index++) {
-    const name = `${prefix}${index}`;
-    if (!device.interfaces.has(name)) throw new ValidationError(`Interface ${name} not found.`);
-    ports.push(name);
+  for (const segment of spec.split(",")) {
+    const match = /^(.+?\d)\s*-\s*(\d+|[a-z]+\d+(?:\/\d+)*)$/i.exec(segment.trim());
+    const startToken = match?.[1] ?? segment.trim();
+    const start = resolveInterface(device, startToken);
+    if (!start || start.subNumber !== undefined) throw new ValidationError(`Interface ${startToken} not found.`);
+    if (!match) { ports.push(start.physical); continue; }
+    const [, prefix, firstText] = /^(.*?)(\d+)$/.exec(start.physical)!;
+    const endToken = match[2]!;
+    const end = /^\d+$/.test(endToken) ? `${prefix}${endToken}` : resolveInterface(device, endToken)?.physical;
+    const last = end && /^(.*?)(\d+)$/.exec(end);
+    if (!last || last[1] !== prefix || Number(last[2]) < Number(firstText)
+     ) {
+      throw new ValidationError(`Invalid interface range '${segment}'.`);
+    }
+    for (let n = Number(firstText); n <= Number(last[2]); n++) {
+      const name = `${prefix}${n}`;
+      if (!device.interfaces.has(name)) throw new ValidationError(`Interface ${name} not found.`);
+      ports.push(name);
+    }
   }
-  return ports;
-}
-
-/** Normalize a typed interface token for comparison (lowercase, no spaces). */
-function ifaceKey(name: string): string {
-  return name.replace(/\s+/g, "").toLowerCase();
-}
-
-/** Expand common Cisco interface abbreviations at the start of a key. */
-function expandAbbrev(key: string): string {
-  return key
-    .replace(/^gi(?!gabitethernet)/, "gigabitethernet")
-    .replace(/^fa(?!stethernet)/, "fastethernet")
-    .replace(/^eth(?!ernet)/, "ethernet");
+  return [...new Set(ports)];
 }
 
 /**
@@ -142,11 +129,11 @@ export function resolveInterface(
   const base = dot >= 0 ? typed.slice(0, dot) : typed;
   const subPart = dot >= 0 ? typed.slice(dot + 1) : undefined;
   const subNumber = subPart !== undefined ? Number(subPart) : undefined;
-  if (subPart !== undefined && !Number.isInteger(subNumber)) return undefined;
+  if (subPart !== undefined && (!/^\d+$/.test(subPart) || !Number.isSafeInteger(subNumber))) return undefined;
 
-  const wanted = expandAbbrev(ifaceKey(base));
+  const wanted = normalizeInterfaceName(base);
   for (const real of device.interfaces.keys()) {
-    if (expandAbbrev(ifaceKey(real)) === wanted) {
+    if (normalizeInterfaceName(real) === wanted) {
       return {
         physical: real,
         subLabel: subPart !== undefined ? `${real}.${subPart}` : real,

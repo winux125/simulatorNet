@@ -584,7 +584,7 @@ export const securityCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no ip access-group {acl} {direction}",
+    negated: true, pattern: "ip access-group {acl} {direction}",
     modes: ["config-if"],
     device: "router",
     capabilities: ["packet-policy"],
@@ -630,14 +630,14 @@ export const securityCommands: CommandSpec[] = [
     run: (session) => routerWithNat(session).setNatRole(interfaceName(session), "outside"),
   },
   {
-    pattern: "no ip nat inside",
+    negated: true, pattern: "ip nat inside",
     modes: ["config-if"],
     device: "router",
     capabilities: ["nat"],
     run: (session) => routerWithNat(session).setNatRole(interfaceName(session), undefined),
   },
   {
-    pattern: "no ip nat outside",
+    negated: true, pattern: "ip nat outside",
     modes: ["config-if"],
     device: "router",
     capabilities: ["nat"],

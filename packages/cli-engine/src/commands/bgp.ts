@@ -355,7 +355,7 @@ export const bgpCommands: CommandSpec[] = [
     run: (s) => setVrfEvpnAdvertisement(s, true),
   },
   {
-    pattern: "no advertise l2vpn evpn", modes: ["config-router"], device: "l3-switch",
+    negated: true, pattern: "advertise l2vpn evpn", modes: ["config-router"], device: "l3-switch",
     run: (s) => setVrfEvpnAdvertisement(s, false),
   },
   {
@@ -499,7 +499,7 @@ export const bgpCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no network {prefix}", modes: ["config-router"], device: "ospf",
+    negated: true, pattern: "network {prefix}", modes: ["config-router"], device: "ospf",
     run: (s, p) => {
       requireAddressFamily(s, "ipv6-unicast");
       const { network, prefixLength: length } = parseIpv6Prefix(p.prefix!);
@@ -544,7 +544,7 @@ export const bgpCommands: CommandSpec[] = [
     run: (s, p) => setAggregate(s, p, false, true),
   },
   {
-    pattern: "no aggregate-address {network} {mask}", modes: ["config-router"], device: "ospf",
+    negated: true, pattern: "aggregate-address {network} {mask}", modes: ["config-router"], device: "ospf",
     run: (s, p) => {
       const { device, configuration } = bgpOf(s);
       const network = parseIpv4(p.network!);

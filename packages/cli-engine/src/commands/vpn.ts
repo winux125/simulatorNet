@@ -240,7 +240,7 @@ export const vpnCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no tunnel protection ipsec profile",
+    negated: true, pattern: "tunnel protection ipsec profile",
     modes: ["config-if"],
     device: "router",
     capabilities: ["vpn-tunnel"],
@@ -314,7 +314,7 @@ export const vpnCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no crypto ikev2 proposal {name}",
+    negated: true, pattern: "crypto ikev2 proposal {name}",
     modes: ["config"],
     device: "router",
     capabilities: ["vpn-tunnel"],
@@ -417,7 +417,7 @@ export const vpnCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no crypto ikev2 peer {name}",
+    negated: true, pattern: "crypto ikev2 peer {name}",
     modes: ["config"],
     device: "router",
     capabilities: ["vpn-tunnel"],
@@ -478,7 +478,7 @@ export const vpnCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no crypto ipsec profile {name}",
+    negated: true, pattern: "crypto ipsec profile {name}",
     modes: ["config"],
     device: "router",
     capabilities: ["vpn-tunnel"],

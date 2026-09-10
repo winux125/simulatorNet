@@ -339,6 +339,15 @@ export class Layer3Switch extends L2Switch {
     return this.routedPorts.has(port);
   }
 
+  clearInterfaceIp(name: string): void { this.routingPlane.clearInterfaceIp(name); }
+  clearInterfaceIpv6(name: string): void { this.routingPlane.clearInterfaceIpv6(name); }
+  removeStaticRoute(network: Ipv4, mask: Ipv4 | number, nextHop: Ipv4): void {
+    this.routingPlane.removeStaticRoute(network, mask, nextHop);
+  }
+  removeIpv6StaticRoute(network: Ipv6, prefixLength: number, nextHop: Ipv6): void {
+    this.routingPlane.removeIpv6StaticRoute(network, prefixLength, nextHop);
+  }
+
   configureRoutedInterface(port: string, ip: Ipv4, mask: Ipv4 | number): void {
     this.setPortRouted(port, true);
     this.routingPlane.setInterfaceIp(port, ip, mask);

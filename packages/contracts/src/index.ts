@@ -15,3 +15,5 @@ export * from "./snmp";
 export * from "./wireless";
 export * from "./qos";
 export * from "./vpn";
+
+export * from "./interface-name";

@@ -156,7 +156,7 @@ export const mplsCommands: CommandSpec[] = [
     run: (s) => routerOf(s).setMplsEnabled(interfaceName(s), true),
   },
   {
-    pattern: "no mpls ip", modes: ["config-if"], device: "router",
+    negated: true, pattern: "mpls ip", modes: ["config-if"], device: "router",
     run: (s) => routerOf(s).setMplsEnabled(interfaceName(s), false),
   },
   {
@@ -169,7 +169,7 @@ export const mplsCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no vrf forwarding", modes: ["config-if"], device: "router",
+    negated: true, pattern: "vrf forwarding", modes: ["config-if"], device: "router",
     run: (s) => routerOf(s).assignInterfaceVrf(interfaceName(s), undefined),
   },
   {

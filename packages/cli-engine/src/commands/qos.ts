@@ -276,7 +276,7 @@ export const qosCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no class-map {name}",
+    negated: true, pattern: "class-map {name}",
     modes: ["config"],
     device: "router",
     capabilities: ["packet-policy"],
@@ -376,7 +376,7 @@ export const qosCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no policy-map {name}",
+    negated: true, pattern: "policy-map {name}",
     modes: ["config"],
     device: "router",
     capabilities: ["packet-policy"],
@@ -521,7 +521,7 @@ export const qosCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no service-policy {direction}",
+    negated: true, pattern: "service-policy {direction}",
     usage: "no service-policy <input|output>",
     modes: ["config-if"],
     device: "router",

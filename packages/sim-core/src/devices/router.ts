@@ -1411,6 +1411,46 @@ export class Router extends Device {
     this.ldp.arm();
   }
 
+  /** Remove configured addressing while retaining the interface and its policies. */
+  clearInterfaceIp(name: string): void {
+    const iface = this.l3.get(name);
+    if (!iface) return;
+    iface.ip = undefined;
+    this.ospf.arm();
+    this.bgp.refreshRoutes();
+    this.ldp.arm();
+  }
+
+  clearInterfaceIpv6(name: string): void {
+    const iface = this.l3.get(name);
+    if (!iface) return;
+    for (const address of iface.ipv6.summaries()) {
+      if (address.source === "static") iface.ipv6.remove(address.address);
+    }
+    this.ospfv3.arm();
+    this.bgp.refreshRoutes();
+  }
+
+  removeStaticRoute(network: Ipv4, mask: Ipv4 | number, nextHop: Ipv4): void {
+    const maskInt = maskToInt(mask);
+    const prefix = (ipToInt(network) & maskInt) >>> 0;
+    for (let i = this.staticRoutes.length - 1; i >= 0; i--) {
+      const route = this.staticRoutes[i]!;
+      if (route.network === prefix && route.maskInt === maskInt && route.nextHop === nextHop) this.staticRoutes.splice(i, 1);
+    }
+    this.bgp.refreshRoutes();
+  }
+
+  removeIpv6StaticRoute(network: Ipv6, prefixLength: number, nextHop: Ipv6): void {
+    const prefix = ipv6Network(normalizeIpv6(network), prefixLength);
+    for (let i = this.ipv6StaticRoutes.length - 1; i >= 0; i--) {
+      const route = this.ipv6StaticRoutes[i]!;
+      if (route.network === prefix && route.prefixLength === prefixLength
+        && route.nextHop === normalizeIpv6(nextHop)) this.ipv6StaticRoutes.splice(i, 1);
+    }
+    this.bgp.refreshRoutes();
+  }
+
   setIpv6ForwardingEnabled(enabled: boolean): void {
     this.ipv6ForwardingEnabled = enabled;
   }

@@ -133,6 +133,11 @@ export class ManagementSviPlane {
     this.plane.management.reset();
   }
 
+  clearIp(vlanId: number): void {
+    this.plane.clearInterfaceIp(`Vlan${vlanId}`);
+    this.plane.management.reset();
+  }
+
   setAdminState(vlanId: number, adminUp: boolean): void {
     this.define(vlanId);
     if (adminUp) this.svi!.noShutdown();

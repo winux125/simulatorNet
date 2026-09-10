@@ -301,12 +301,13 @@ describe("M10.2.1 device command profiles", () => {
   });
 
   it("keeps the documented compatibility commands aligned with the registry", () => {
-    const patterns = new Set(allCommands.map((command) => command.pattern));
+    const patterns = new Set(allCommands.map((command) => (command.negated ? "no " : "") + command.pattern));
     for (const documented of [
       "configure terminal",
       "interface {spec...}",
       "shutdown",
       "no shutdown",
+      "no ip address",
       "ip address {ip} {mask}",
       "ip route {network} {mask} {nexthop}",
       "switchport access vlan {id}",
@@ -330,7 +331,6 @@ describe("M10.2.1 device command profiles", () => {
       "reload",
     ]) expect(patterns, documented).toContain(documented);
     for (const unsupported of [
-      "no ip address",
       "no ip route",
     ]) expect(patterns, unsupported).not.toContain(unsupported);
   });

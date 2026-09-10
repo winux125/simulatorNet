@@ -274,6 +274,8 @@ export class L2Switch extends Device {
     this.management().setIp(vlanId, ip, mask);
   }
 
+  clearManagementSviIp(vlanId: number): void { this.management().clearIp(vlanId); }
+
   setManagementSviAdminState(vlanId: number, adminUp: boolean): void {
     this.defineManagementSvi(vlanId);
     this.management().setAdminState(vlanId, adminUp);
@@ -660,6 +662,12 @@ export class L2Switch extends Device {
   defineVlan(id: number): void {
     if (this.vlans.has(id)) return;
     this.vlans.set(id, { id, name: defaultVlanName(id) });
+    this.switchportChanged();
+  }
+
+  /** Remove an unused VLAN; callers must reject dependent logical configuration. */
+  removeVlan(id: number): void {
+    this.vlans.delete(id);
     this.switchportChanged();
   }
 

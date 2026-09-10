@@ -31,7 +31,7 @@ export const interfaceCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no shutdown",
+    negated: true, pattern: "shutdown",
     modes: ["config-if"],
     run: (s) => {
       const ctx = requireCtx(s);
@@ -70,6 +70,47 @@ export const interfaceCommands: CommandSpec[] = [
       s.device.setManagementSviIp(ctx.sviVlan, parseIpv4(p.ip!), parseIpv4(p.mask!));
     },
   },
+
+  {
+    negated: true, pattern: "description", modes: ["config-if"],
+    run: (s) => interfaceCommands.find((c) => c.pattern === "description {text...}")!.run(s, { text: "" }),
+  },
+  {
+    negated: true, pattern: "ip address", modes: ["config-if"], device: "managed",
+    run: (s) => {
+      const ctx = requireCtx(s);
+      if (isSwitch(s.device) && !isLayer3Switch(s.device)) {
+        if (ctx.sviVlan === undefined) throw new InvalidModeError("An L2 Switch is addressable only through its management VLAN interface");
+        s.device.clearManagementSviIp(ctx.sviVlan);
+      } else if (isRoutingDevice(s.device)) s.device.clearInterfaceIp(routedInterfaceName(s));
+    },
+  },
+  {
+    negated: true, pattern: "ipv6 address", modes: ["config-if"], device: "router",
+    run: (s) => { if (isRoutingDevice(s.device)) s.device.clearInterfaceIpv6(routedInterfaceName(s)); },
+  },
+  {
+    negated: true, pattern: "switchport access vlan", modes: ["config-if"], device: "switch",
+    capabilities: ["vlan"],
+    run: (s) => { const port = requireSwitchport(s); if (isSwitch(s.device)) s.device.setAccessVlan(port, 1); },
+  },
+  {
+    negated: true, pattern: "switchport trunk native vlan", modes: ["config-if"], device: "switch",
+    capabilities: ["dot1q-trunk"],
+    run: (s) => { const port = requireSwitchport(s); if (isSwitch(s.device)) s.device.setTrunkNativeVlan(port, 1); },
+  },
+  ...(["add", "remove"] as const).map((modifier): CommandSpec => ({
+    pattern: `switchport trunk allowed vlan ${modifier} {list...}`, modes: ["config-if"], device: "switch",
+    capabilities: ["dot1q-trunk"],
+    run: (s, p) => {
+      const port = requireSwitchport(s);
+      const requested = parseVlanList(p.list!);
+      if (!isSwitch(s.device)) return;
+      const vlans = new Set(s.device.portConfigOf(port).allowedVlans ?? Array.from({ length: 4094 }, (_, i) => i + 1));
+      for (const vlan of requested) { if (modifier === "add") vlans.add(vlan); else vlans.delete(vlan); }
+      s.device.setTrunkAllowedVlans(port, vlans);
+    },
+  })),
 
   // --- switch access/trunk ---
   {
@@ -123,7 +164,7 @@ export const interfaceCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no switchport",
+    negated: true, pattern: "switchport",
     modes: ["config-if"],
     device: "l3-switch",
     run: (s) => {

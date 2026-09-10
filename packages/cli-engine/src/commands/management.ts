@@ -117,7 +117,7 @@ export const managementCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no ip default-gateway",
+    negated: true, pattern: "ip default-gateway",
     modes: ["config"],
     device: "switch",
     run: (session) => {
@@ -139,7 +139,7 @@ export const managementCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no ip domain-name",
+    negated: true, pattern: "ip domain-name",
     modes: ["config"],
     device: "managed",
     run: (session) => {
@@ -215,7 +215,7 @@ export const managementCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no login",
+    negated: true, pattern: "login",
     modes: ["config-line"],
     device: "managed",
     run: (session) => {
@@ -285,7 +285,7 @@ export const managementCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no aaa new-model",
+    negated: true, pattern: "aaa new-model",
     modes: ["config"],
     device: "managed",
     run: (session) => {
@@ -378,7 +378,7 @@ export const managementCommands: CommandSpec[] = [
     run: (session, params) => enterServer(session, "tacacs+", params.name!),
   },
   {
-    pattern: "no radius server {name}",
+    negated: true, pattern: "radius server {name}",
     modes: ["config"],
     device: "managed",
     run: (session, params) => {
@@ -387,7 +387,7 @@ export const managementCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no tacacs server {name}",
+    negated: true, pattern: "tacacs server {name}",
     modes: ["config"],
     device: "managed",
     run: (session, params) => {
@@ -590,7 +590,7 @@ export const managementCommands: CommandSpec[] = [
     },
   },
   {
-    pattern: "no snmp-server enable traps",
+    negated: true, pattern: "snmp-server enable traps",
     modes: ["config"],
     device: "managed",
     run: (session) => {
