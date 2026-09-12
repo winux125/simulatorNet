@@ -542,13 +542,12 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
     return (
       <section className="topology-empty" aria-label="Topology canvas">
         <div className="welcome-workspace">
-          <span className="welcome-workspace__mark" aria-hidden="true"><Network size={26} /></span>
-          <p className="section-eyebrow">Browser network laboratory</p>
-          <h1>SimulatorNet</h1>
+          <span className="welcome-workspace__mark" aria-hidden="true"><Network size={22} /></span>
+          <h1>No laboratory open</h1>
           <div className="welcome-workspace__actions">
-            <Button variant="primary" icon={<FilePlus2 size={15} />} onClick={props.onNewLab}>New Lab</Button>
-            <Button icon={<Upload size={15} />} onClick={props.onImportLab}>Import Lab</Button>
-            <Button icon={<FlaskConical size={15} />} onClick={props.onLoadDemo}>Load Demo Lab</Button>
+            <Button variant="primary" icon={<FilePlus2 size={14} />} onClick={props.onNewLab}>New Lab</Button>
+            <Button icon={<Upload size={14} />} onClick={props.onImportLab}>Import Lab</Button>
+            <Button icon={<FlaskConical size={14} />} onClick={props.onLoadDemo}>Load Demo Lab</Button>
           </div>
         </div>
       </section>

@@ -70,7 +70,13 @@ test("configures a console login and gates the terminal", async ({ page }) => {
   await page.keyboard.press("Enter");
   await expect(rows).toContainText("% Login invalid");
 
-  await expect.poll(async () => (await terminalLines(page)).slice(-4)).toEqual([
+  // A taller terminal viewport renders more trailing blank rows, which says
+  // nothing about the login exchange — compare the last four *written* lines.
+  await expect.poll(async () => {
+    const lines = await terminalLines(page);
+    while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+    return lines.slice(-4);
+  }).toEqual([
     "Password:",
     "% Login invalid",
     "",

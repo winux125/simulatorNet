@@ -12,7 +12,6 @@ import {
   Network,
   Plus,
   Shield,
-  Sparkles,
   Trash2,
   Wifi,
   type LucideIcon,
@@ -143,24 +142,19 @@ export function DevicePalette(props: DevicePaletteProps) {
                   onDragEnd={() => props.onOpenChange(false)}
                   onClick={() => selectKind(profile.type, hardwareProfile?.id)}
                 >
-                  <span className="device-picker-model__icon"><DeviceIcon type={profile.type} size={30} /></span>
+                  <span className="device-picker-model__icon"><DeviceIcon type={profile.type} size={26} /></span>
                   <span>{hardwareProfile?.displayName ?? profile.displayName}</span>
                 </button>
                 );
               });
             })}
+            {/* One cable tool. "Ethernet Link" sat beside this one running the
+                exact same handler: connection creation has been device-first
+                since M10.3.3, so there was never a second path to offer. */}
             {category === "connections" && <>
               <ConnectionTool
                 label="Automatic Ethernet"
                 description="Drag a cable handle between devices, then confirm their interfaces"
-                icon={Sparkles}
-                active={props.activeTool === "add-link"}
-                disabled={props.disabled}
-                onClick={() => selectTool("add-link")}
-              />
-              <ConnectionTool
-                label="Ethernet Link"
-                description="Advanced: drag directly between physical interface endpoints"
                 icon={Cable}
                 active={props.activeTool === "add-link"}
                 disabled={props.disabled}
@@ -210,7 +204,7 @@ function ConnectionTool({
       disabled={disabled}
       onClick={onClick}
     >
-      <span className="device-picker-model__icon"><ToolIcon size={21} /></span>
+      <span className="device-picker-model__icon"><ToolIcon size={20} /></span>
       <span>{label}</span>
     </button>
   );

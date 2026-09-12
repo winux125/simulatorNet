@@ -405,7 +405,7 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   await page.goto("/");
 
   // 1. Welcome workspace.
-  await expect(page.getByRole("heading", { name: "SimulatorNet" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "No laboratory open" })).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("data-theme-preference", "system");
   await expect(page.getByLabel("Color theme")).toHaveCount(0);
   for (const label of ["File", "Edit", "View", "Lab", "Simulation", "Tools", "Help"]) {
@@ -443,7 +443,10 @@ test("M10.2.1 desktop workspace drives topology, profile windows and xterm CLI",
   expect(diagramToolbarBounds).not.toBeNull();
   expect(dockBounds).not.toBeNull();
   expect(footerBounds).not.toBeNull();
-  expect(chromeBounds!.height).toBe(78);
+  // M10.17.6 tightened the menu bar and action toolbar, so the chrome above the
+  // canvas is 62px rather than 78px; the point of the assertion is that it stays
+  // a fixed, known height, not that it never shrinks.
+  expect(chromeBounds!.height).toBe(62);
   expect(chromeBounds!.width).toBe(1440);
   // The topology starts directly under the chrome and the Logical/Physical
   // switch — nothing else may claim vertical space above it.
@@ -871,13 +874,15 @@ test("two draft-configured PCs ping through an L2 switch after Start Lab", async
   await expect(page.getByTestId("terminal-transcript")).toContainText("Open Packet Trace and use Step or Run All.");
 
   await page.getByRole("tab", { name: /Packet trace/ }).click();
-  await expect(page.getByText(/Queued events:/).locator("strong")).not.toHaveText("0");
+  // Inside the Packet trace panel every record is an event, so the metric reads
+  // "Queued <n>"; scope to the toolbar so the minimized tab strip cannot match.
+  await expect(page.locator(".packet-execution__metrics").getByText(/Queued/).locator("strong")).not.toHaveText("0");
   await page.screenshot({ path: "/tmp/auto-step-packet-trace-1440x900.png", animations: "disabled" });
   await page.getByRole("button", { name: "Step", exact: true }).click();
   await expect(page.locator('tr[data-event-type="arp-request"]').first()).toBeVisible();
   await page.getByRole("button", { name: "Run All" }).click();
   await expect.poll(async () => ((await transcript.textContent())?.match(/Success rate is 100 percent/g) ?? []).length).toBeGreaterThan(successesBeforeStep);
-  await expect(page.getByText(/Queued events:/).locator("strong")).toHaveText("0");
+  await expect(page.locator(".packet-execution__metrics").getByText(/Queued/).locator("strong")).toHaveText("0");
   await execution.selectOption("auto");
   await expect(page.getByRole("button", { name: /Packet execution mode: Auto/ })).toBeVisible();
 });
@@ -1102,6 +1107,8 @@ test("M8 launch exchange strips the code and exposes organization session contro
   await expect(page.getByLabel("Authenticated organization session")).toContainText("Demo Organization");
   expect(page.url()).not.toContain(launchCode);
   await page.getByLabel("Log out organization session").click();
-  await expect(page.getByText("Anonymous", { exact: true })).toBeVisible();
+  // The identity chip going away is the anonymous state; an always-present
+  // "Anonymous" caption was one more permanent row saying nothing.
+  await expect(page.getByLabel("Authenticated organization session")).toHaveCount(0);
   await expect(page.getByText("Local Lab", { exact: true })).toBeVisible();
 });

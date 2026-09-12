@@ -87,7 +87,6 @@ function toolbar(overrides: { mode: WorkspaceMode; onTool?: (tool: WorkspaceTool
     canRedo: false,
     canDelete: false,
     zoomScale: 1,
-    sessionPending: false,
     ...overrides,
     onTool: overrides.onTool ?? (() => undefined),
     onModeChange: () => undefined,

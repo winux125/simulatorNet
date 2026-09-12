@@ -184,36 +184,33 @@ export function BottomDock(props: BottomDockProps) {
     <section ref={panelRef} className="bottom-dock" aria-label="Workspace bottom panel" data-overflow-boundary="hidden">
       <div className="bottom-dock__header">
         <Tabs label="Bottom panel sections" value={props.tab} options={options} onChange={props.onTab} />
-        <IconButton label="Minimize Bottom Panel" icon={<Minus size={13} />} onClick={props.onMinimize} />
-        <IconButton label="Hide Bottom Panel" icon={<EyeOff size={13} />} onClick={props.onHide} />
+        <IconButton label="Minimize Bottom Panel" icon={<Minus size={12} />} onClick={props.onMinimize} />
+        <IconButton label="Hide Bottom Panel" icon={<EyeOff size={12} />} onClick={props.onHide} />
       </div>
       <div className="bottom-dock__content" role="tabpanel">
         <div id={TERMINAL_DOCK_SLOT_ID} className="dock-terminal-layer" hidden={props.tab !== "terminal"}>
           {props.terminalTabs.length === 0
-            ? <EmptyState icon={<TerminalSquare size={28} />} title="No terminal sessions" description="Open a device context menu, inspector, or device window to start a shared terminal session." />
+            ? <EmptyState icon={<TerminalSquare size={18} />} title="No terminal sessions" description="Open a device context menu, inspector, or device window to start a shared terminal session." />
             : !props.terminalVisible
-              ? <EmptyState icon={<TerminalSquare size={26} />} title="Terminal is hidden" description="Use View → Terminal → Show Terminal to restore the existing sessions." />
+              ? <EmptyState icon={<TerminalSquare size={18} />} title="Terminal is hidden" description="Use View → Terminal → Show Terminal to restore the existing sessions." />
               : props.terminalPresentationMode !== "docked"
                 ? <EmptyState
-                    icon={<TerminalSquare size={26} />}
+                    icon={<TerminalSquare size={18} />}
                     title={`Terminal is ${props.terminalPresentationMode}`}
                     description="The same tabs and CLI sessions are open in the terminal window. Use View → Terminal → Dock at Bottom to return them here."
                   />
                 : null}
         </div>
         {props.tab === "events" && <EventTable events={props.traces} />}
-        {props.tab === "packet-trace" && <div className="packet-trace-view">
-          <PacketExecutionControls
-            mode={props.executionMode}
-            virtualTime={props.snapshot?.virtualTime ?? 0}
-            queuedEvents={props.snapshot?.queuedEvents ?? 0}
-            onMode={props.onExecutionModeChange}
-            onStep={props.onStep}
-            onRunAll={props.onRunAll}
-            onClear={props.onClearTraces}
-          />
-          <PacketTable events={packetEvents} />
-        </div>}
+        {props.tab === "packet-trace" && <PacketTraceView
+          events={packetEvents}
+          mode={props.executionMode}
+          queuedEvents={props.snapshot?.queuedEvents ?? 0}
+          onMode={props.onExecutionModeChange}
+          onStep={props.onStep}
+          onRunAll={props.onRunAll}
+          onClear={props.onClearTraces}
+        />}
         {props.tab === "problems" && <Problems problems={props.problems} onClear={props.onClearProblems} />}
       </div>
     </section>
@@ -261,47 +258,63 @@ export function BottomPanelStrip(props: BottomPanelStripProps) {
   );
 }
 
-function PacketExecutionControls({
+/**
+ * Execution mode, the protocol filter and the record counts share one row. They
+ * used to be two stacked toolbars above the table for no reason other than
+ * having been written at different times.
+ */
+function PacketTraceView({
+  events,
   mode,
-  virtualTime,
   queuedEvents,
   onMode,
   onStep,
   onRunAll,
   onClear,
 }: {
+  events: SimulationTraceEvent[];
   mode: ExecutionMode;
-  virtualTime: number;
   queuedEvents: number;
   onMode(mode: ExecutionMode): void;
   onStep(): void;
   onRunAll(): void;
   onClear(): void;
 }) {
-  return <div className="packet-execution" aria-label="Packet execution controls">
-    <label>
-      <span>Packet Execution</span>
-      <select aria-label="Packet Execution" value={mode} onChange={(event) => onMode(event.target.value as ExecutionMode)}>
-        <option value="auto">Auto</option>
-        <option value="step">Step</option>
-      </select>
-    </label>
-    {mode === "auto"
-      ? <p>Events are processed automatically.</p>
-      : <div className="packet-execution__step">
+  const [filter, setFilter] = useState("ALL");
+  const visible = filterTraceEvents(events, filter);
+  // "Auto" already says events run automatically, and the status bar already
+  // reports virtual time — neither is repeated here.
+  return <div className="packet-trace-view">
+    <div className="packet-execution" aria-label="Packet execution controls">
+      <label>
+        <span>Execution</span>
+        <select aria-label="Packet Execution" value={mode} onChange={(event) => onMode(event.target.value as ExecutionMode)}>
+          <option value="auto">Auto</option>
+          <option value="step">Step</option>
+        </select>
+      </label>
+      {mode === "step" && <div className="packet-execution__step">
         <Button size="sm" variant="primary" disabled={queuedEvents === 0} onClick={onStep}>Step</Button>
         <Button size="sm" variant="ghost" disabled={queuedEvents === 0} onClick={onRunAll}>Run All</Button>
         <Button size="sm" variant="ghost" onClick={onClear}>Clear</Button>
       </div>}
-    <div className="packet-execution__metrics">
-      <span>Virtual time: <code>{timeLabel(virtualTime)}</code></span>
-      <span>Queued events: <strong>{queuedEvents}</strong></span>
+      <label>
+        <span>Protocol</span>
+        <select aria-label="Packet trace protocol filter" value={filter} onChange={(event) => setFilter(event.target.value)}>
+          {TRACE_PROTOCOL_FILTERS.map((protocol) => <option key={protocol}>{protocol}</option>)}
+        </select>
+      </label>
+      <div className="packet-execution__metrics">
+        <span>Queued <strong>{queuedEvents}</strong></span>
+        <span>{visible.length} records</span>
+      </div>
     </div>
+    <PacketTable events={visible} empty={events.length === 0} />
   </div>;
 }
 
 function EventTable({ events }: { events: SimulationTraceEvent[] }) {
-  if (events.length === 0) return <EmptyState icon={<List size={26} />} title="No simulation events" description="Run the lab or issue a CLI packet operation to populate the deterministic event stream." />;
+  if (events.length === 0) return <EmptyState icon={<List size={18} />} title="No simulation events" description="Run the lab or issue a CLI packet operation to populate the deterministic event stream." />;
   return <div className="dock-table-wrap"><table className="data-table event-table"><thead><tr><th>Time</th><th>Device</th><th>Interface</th><th>Event</th><th>Details</th></tr></thead><tbody>{events.slice(-300).reverse().map((event, index) => <tr key={`${event.sequence}-${index}`} data-event-type={event.type}><td><code>{timeLabel(event.virtualTime)}</code></td><td>{event.deviceId}</td><td><code>{event.interfaceId ?? "—"}</code></td><td><span className="event-type">{event.type}</span></td><td><code>{event.description}</code></td></tr>)}</tbody></table></div>;
 }
 
@@ -327,10 +340,8 @@ function qosSummary(detail: Readonly<Record<string, unknown>>): string {
   return parts.join(" · ");
 }
 
-function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
-  const [filter, setFilter] = useState("ALL");
-  if (events.length === 0) return <EmptyState icon={<Network size={26} />} title="No packet trace" description="ARP, ICMP and forwarding events will appear here without inventing protocol data the engine does not expose." />;
-  const visible = events.filter((event) => {
+function filterTraceEvents(events: SimulationTraceEvent[], filter: string): SimulationTraceEvent[] {
+  return events.filter((event) => {
     if (filter === "ALL") return true;
     const protocol = traceProtocol(event);
     // "QoS" is the whole family; the narrower filters select one stage.
@@ -350,7 +361,11 @@ function PacketTable({ events }: { events: SimulationTraceEvent[] }) {
     if (filter === "All-Active") return isAllActiveTrace(event, protocol);
     return protocol === filter;
   });
-  return <div className="dock-table-wrap"><div className="trace-filter"><label>Protocol filter <select aria-label="Packet trace protocol filter" value={filter} onChange={(event) => setFilter(event.target.value)}>{TRACE_PROTOCOL_FILTERS.map((protocol) => <option key={protocol}>{protocol}</option>)}</select></label><span>{visible.length} records</span></div><table className="data-table packet-table"><thead><tr><th>Time</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Family</th><th>Ports</th><th>Event</th><th>QoS</th><th>Result</th></tr></thead><tbody>{visible.slice(-300).reverse().map((event, index) => {
+}
+
+function PacketTable({ events, empty }: { events: SimulationTraceEvent[]; empty: boolean }) {
+  if (empty) return <EmptyState icon={<Network size={18} />} title="No packet trace" description="ARP, ICMP and forwarding events will appear here without inventing protocol data the engine does not expose." />;
+  return <div className="dock-table-wrap"><table className="data-table packet-table"><thead><tr><th>Time</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Family</th><th>Ports</th><th>Event</th><th>QoS</th><th>Result</th></tr></thead><tbody>{events.slice(-300).reverse().map((event, index) => {
     const detail = event.detail ?? {};
     const source = String(detail.src ?? detail.sourceAddress ?? detail.localAddress ?? event.deviceId);
     const destination = String(detail.dst ?? detail.destinationAddress ?? detail.remoteAddress ?? detail.targetIp ?? "—");
@@ -545,7 +560,7 @@ export function traceProtocol(event: SimulationTraceEvent): string {
 }
 
 function Problems({ problems, onClear }: { problems: WorkspaceProblem[]; onClear(): void }) {
-  if (problems.length === 0) return <EmptyState icon={<Braces size={25} />} title="No problems detected" description="Validation, worker and CLI errors will be listed here without exposing internal stack traces." />;
+  if (problems.length === 0) return <EmptyState icon={<Braces size={18} />} title="No problems detected" description="Validation, worker and CLI errors will be listed here without exposing internal stack traces." />;
   return <div className="problems-view"><div className="problems-view__toolbar"><span>{problems.length} diagnostics</span><Button size="sm" variant="ghost" onClick={onClear}>Clear</Button></div><ol>{problems.slice().reverse().map((problem) => <li key={problem.id}><AlertTriangle size={15} /><div><strong>{problem.source}</strong><p>{problem.message}</p></div></li>)}</ol></div>;
 }
 

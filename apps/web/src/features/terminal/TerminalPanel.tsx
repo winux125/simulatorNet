@@ -8,7 +8,7 @@ import {
 } from "@sim/console-auth";
 import { stripControlSequences } from "@sim/importers";
 import { Clipboard, ClipboardPaste, Eraser, Search, TerminalSquare, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Terminal as XtermTerminal } from "@xterm/xterm";
 import type { FitAddon as XtermFitAddon } from "@xterm/addon-fit";
 import type { SimulatorClient } from "../../app/simulator-client";
@@ -56,6 +56,12 @@ interface TerminalWorkspaceProps {
   measurable?: boolean;
   /** Simulated console-access config for a device, if it requires a login. */
   consoleAccessFor?(deviceId: string): ConsoleAccessConfiguration | undefined;
+  /**
+   * Presentation window controls, rendered at the end of the tab strip. Docked,
+   * the bottom panel header already titles this surface, so these controls join
+   * the tab row rather than justifying a titlebar of their own.
+   */
+  windowActions?: ReactNode;
   onActivate(deviceId: string): void;
   onClose(deviceId: string): void;
   onReorder?(fromIndex: number, toIndex: number): void;
@@ -65,7 +71,6 @@ interface TerminalWorkspaceProps {
 }
 
 export function TerminalWorkspace(props: TerminalWorkspaceProps) {
-  const activeNode = props.nodes.find((node) => node.id === props.activeDeviceId);
   const [tabMenu, setTabMenu] = useState<{ deviceId: string; x: number; y: number }>();
   // A tab shows what its terminal is really driving: the local device, or the
   // remote session opened from it. The session itself never changes.
@@ -150,15 +155,15 @@ export function TerminalWorkspace(props: TerminalWorkspaceProps) {
               onClick={() => props.onActivate(deviceId)}
             >
               {node
-                ? <DeviceIcon type={node.type} size={15} state={node.status === "up" ? "running" : "stopped"} />
-                : <TerminalSquare size={13} aria-hidden="true" />}
+                ? <DeviceIcon type={node.type} size={14} state={node.status === "up" ? "running" : "stopped"} />
+                : <TerminalSquare size={12} aria-hidden="true" />}
+              <small><i className={node?.status === "up" ? "is-ready" : ""} /></small>
               <span>{title}</span>
-              <small><i className={node?.status === "up" ? "is-ready" : ""} />{remoteLabel ? "remote session" : node?.status === "up" ? "connected" : deviceId}</small>
-              <span className="terminal-tab-close" role="button" aria-label={`Close ${node?.hostname ?? deviceId} CLI`} tabIndex={0} onClick={(event) => { event.stopPropagation(); props.onClose(deviceId); }} onKeyDown={(event) => { if (event.key === "Enter") props.onClose(deviceId); }}><X size={12} /></span>
+              <span className="terminal-tab-close" role="button" aria-label={`Close ${node?.hostname ?? deviceId} CLI`} tabIndex={0} onClick={(event) => { event.stopPropagation(); props.onClose(deviceId); }} onKeyDown={(event) => { if (event.key === "Enter") props.onClose(deviceId); }}><X size={11} /></span>
             </button>
           );
         })}
-        <span className="terminal-tabs__meta">{activeNode ? `${activeNode.type} · isolated session` : ""}</span>
+        {props.windowActions && <span className="terminal-tabs__window-actions">{props.windowActions}</span>}
       </div>
       {tabMenu && <div
         className="terminal-tab-menu"
@@ -852,8 +857,10 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
 
   return (
     <section className={`terminal-session ${active ? "is-active" : ""}`} role="group" aria-label={`${hostname} CLI`} aria-hidden={!active} hidden={!active}>
+      {/* Shares the tab row. The connection state is announced for assistive
+          technology only: the tab beside it already shows the ready dot. */}
       <div className="terminal-session__actions">
-        <span><i className={ready ? "is-ready" : ""} />{ready ? `${hostname} connected` : "Loading terminal…"}</span>
+        <span role="status">{ready ? `${hostname} connected` : "Loading terminal…"}</span>
         <label className="terminal-search">
           <Search size={11} aria-hidden="true" />
           <input
@@ -866,9 +873,9 @@ function TerminalSession({ client, deviceId, hostname, active, enabled, theme, a
           />
           {searchQuery && <small>{searchMatches}</small>}
         </label>
-        <IconButton label={`Paste into ${hostname} terminal`} icon={<ClipboardPaste size={13} />} onClick={() => pasteRef.current.fromClipboard()} />
-        <IconButton label="Copy terminal selection" icon={<Clipboard size={13} />} onClick={copy} />
-        <IconButton label="Clear terminal (Ctrl+L)" icon={<Eraser size={13} />} onClick={clear} />
+        <IconButton label={`Paste into ${hostname} terminal`} icon={<ClipboardPaste size={12} />} onClick={() => pasteRef.current.fromClipboard()} />
+        <IconButton label="Copy terminal selection" icon={<Clipboard size={12} />} onClick={copy} />
+        <IconButton label="Clear terminal (Ctrl+L)" icon={<Eraser size={12} />} onClick={clear} />
       </div>
       {pasteRun && <div className="terminal-paste-run" role="status">
         <span>

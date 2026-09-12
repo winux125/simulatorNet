@@ -1001,7 +1001,6 @@ export function App({ client }: AppProps) {
         canDelete={hasSelection}
         zoomScale={workspace.viewport.scale}
         session={launchSession.state.status === "authenticated" ? launchSession.state.identity : undefined}
-        sessionPending={launchSession.state.status === "checking" || launchSession.state.status === "exchanging"}
         onModeChange={changeMode}
         onTool={workspace.setActiveTool}
         onNew={newLab}
@@ -1177,40 +1176,41 @@ export function App({ client }: AppProps) {
         <span>Virtual time <code>{((workspace.snapshot?.virtualTime ?? 0) / 1_000_000).toFixed(3)} ms</code></span>
         <span>{workspace.draft?.topology.nodes.length ?? 0} devices</span>
         <span>{workspace.draft?.topology.links.length ?? 0} links</span>
-        {labOpen && !bottomPanelExpanded && <BottomPanelStatus
+        {/* Only when the panel is hidden. A minimized panel already renders the
+            same counts on its tab strip, and two copies of one count is noise. */}
+        {labOpen && workspace.bottomPanelState === "hidden" && <BottomPanelStatus
           state={workspace.bottomPanelState}
           traces={workspace.traces.length}
           queuedEvents={workspace.snapshot?.queuedEvents ?? 0}
           problems={workspace.problems.length}
           onOpen={openDockTab}
         />}
-        <span className="workspace-footer__right">Schema v{workspace.draft?.schemaVersion ?? 1} · deterministic runtime</span>
       </footer>
       <span className="visually-hidden" role="status" aria-live="polite">{labOpen ? bottomPanelAnnouncement(workspace.bottomPanelState) : ""}</span>
 
-      {confirmApply && <WorkspaceDialog title="Apply topology changes?" eyebrow="Runtime rebuild" onClose={() => { setConfirmApply(false); setPendingMode(undefined); }}>
+      {confirmApply && <WorkspaceDialog title="Apply topology changes?" onClose={() => { setConfirmApply(false); setPendingMode(undefined); }}>
         <p>Applying the draft serializes the current device configuration, merges topology positions and rebuilds the worker runtime. Volatile ARP, MAC and event state will reset.</p>
         <div className="dialog-actions"><Button variant="ghost" onClick={() => { setConfirmApply(false); setPendingMode(undefined); }}>Cancel</Button><Button variant="primary" onClick={() => void rebuild(pendingMode ?? "edit").catch(reportError)}>Apply Topology</Button></div>
       </WorkspaceDialog>}
-      {confirmStop && <WorkspaceDialog title="Stop this lab?" eyebrow="Power lifecycle" onClose={() => setConfirmStop(false)}>
+      {confirmStop && <WorkspaceDialog title="Stop this lab?" onClose={() => setConfirmStop(false)}>
         <p>Topology editing will be unlocked. Transient runtime state, active connections, learned tables and packet trace will be cleared. Device configuration will be preserved.</p>
         <div className="dialog-actions"><Button variant="ghost" onClick={() => setConfirmStop(false)}>Cancel</Button><Button variant="danger" onClick={performStop}>Stop Lab</Button></div>
       </WorkspaceDialog>}
-      {confirmClose && <WorkspaceDialog title="Close laboratory?" eyebrow="Unsaved document" onClose={() => setConfirmClose(false)}>
+      {confirmClose && <WorkspaceDialog title="Close laboratory?" onClose={() => setConfirmClose(false)}>
         <p>The current laboratory has unsaved changes. Closing it will discard the current document.</p>
         <div className="dialog-actions"><Button variant="ghost" onClick={() => setConfirmClose(false)}>Keep Editing</Button><Button variant="danger" onClick={() => { setConfirmClose(false); workspace.reset(); }}>Discard &amp; Close</Button></div>
       </WorkspaceDialog>}
-      {confirmSaveAll && <WorkspaceDialog title="Save all device configurations?" eyebrow="Configuration lifecycle" onClose={() => setConfirmSaveAll(false)}>
+      {confirmSaveAll && <WorkspaceDialog title="Save all device configurations?" onClose={() => setConfirmSaveAll(false)}>
         <p>This copies the running configuration to the startup configuration on every device that keeps a configuration file — the same as running <code>copy running-config startup-config</code> on each of them.</p>
         <p className="section-note">Runtime state is not copied and no device is reloaded.</p>
         <div className="dialog-actions"><Button variant="ghost" onClick={() => setConfirmSaveAll(false)}>Cancel</Button><Button variant="primary" onClick={saveAllConfigurations}>Save All</Button></div>
       </WorkspaceDialog>}
-      {advancedJsonOpen && <WorkspaceDialog title="Export Lab JSON" eyebrow="Advanced format" onClose={() => setAdvancedJsonOpen(false)}>
+      {advancedJsonOpen && <WorkspaceDialog title="Export Lab JSON" onClose={() => setAdvancedJsonOpen(false)}>
         <p>{ADVANCED_JSON_NOTICE}</p>
         <p className="section-note">The canonical <code>LabDocument</code> JSON is what the simulator, the database and the verifier use internally. It is fully supported — it is simply not the file a learner normally saves.</p>
         <div className="dialog-actions"><Button variant="ghost" onClick={() => setAdvancedJsonOpen(false)}>Cancel</Button><Button variant="primary" onClick={() => { setAdvancedJsonOpen(false); exportLabJson(); }}>Export JSON</Button></div>
       </WorkspaceDialog>}
-      {exportConfigsOpen && <WorkspaceDialog title="Export device configurations" eyebrow="Readable .cfg files" onClose={() => setExportConfigsOpen(false)}>
+      {exportConfigsOpen && <WorkspaceDialog title="Export device configurations" onClose={() => setExportConfigsOpen(false)}>
         <p>Configuration files are rendered from the canonical device configuration. They contain no password, key, community string or verifier — only <code>&lt;configured&gt;</code>.</p>
         <div className="dialog-actions">
           <Button variant="ghost" onClick={() => setExportConfigsOpen(false)}>Cancel</Button>
@@ -1235,12 +1235,12 @@ export function App({ client }: AppProps) {
       {diagramTextOpen && <DiagramTextHelpDialog onClose={() => setDiagramTextOpen(false)} />}
       {connectingHelpOpen && <ConnectingDevicesHelpDialog onClose={() => setConnectingHelpOpen(false)} />}
       {terminalHelpOpen && <TerminalWorkspaceHelpDialog onClose={() => setTerminalHelpOpen(false)} />}
-      {stepExplanationOpen && <WorkspaceDialog title="Step mode" eyebrow="Packet execution" onClose={dismissStepExplanation}>
+      {stepExplanationOpen && <WorkspaceDialog title="Step mode" onClose={dismissStepExplanation}>
         <p>Step mode lets you inspect ARP, ICMP, TCP and other network events one at a time.</p>
         <p>Your device configurations are unchanged. Switch back to Auto for normal operation.</p>
         <div className="dialog-actions"><Button variant="primary" onClick={dismissStepExplanation}>Got it</Button></div>
       </WorkspaceDialog>}
-      {shortcutsOpen && <WorkspaceDialog title="Keyboard shortcuts" eyebrow="Quick workflow" onClose={() => setShortcutsOpen(false)}>
+      {shortcutsOpen && <WorkspaceDialog title="Keyboard shortcuts" onClose={() => setShortcutsOpen(false)}>
         <div className="shortcut-list">
           <Shortcut keys="Ctrl / Cmd + N" label="New lab" />
           <Shortcut keys="Ctrl / Cmd + O" label="Open / import lab" />
@@ -1361,7 +1361,7 @@ function BottomPanelStatus({ state, traces, queuedEvents, problems, onOpen }: {
 }
 
 function DemoLabDialog({ onClose, onLoad }: { onClose(): void; onLoad(id: DemoLabId): void }) {
-  return <WorkspaceDialog title="Load demo laboratory" eyebrow="Deterministic examples" onClose={onClose}>
+  return <WorkspaceDialog title="Load demo laboratory" onClose={onClose}>
     <p>Choose a focused topology. Each demo uses the same browser and server simulation core.</p>
     <div className="demo-lab-list">
       {DEMO_LABS.map((demo) => {
@@ -1383,13 +1383,14 @@ function DockLoading() {
   return <div className="panel-loading"><Command size={20} /><span>Loading workspace panel…</span></div>;
 }
 
-function WorkspaceDialog({ title, eyebrow, onClose, children }: { title: string; eyebrow: string; onClose(): void; children: React.ReactNode }) {
-  return <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="workspace-dialog" role="dialog" aria-modal="true" aria-label={title}><header><div><p>{eyebrow}</p><h2>{title}</h2></div><IconButton label="Close dialog" icon={<X size={15} />} onClick={onClose} /></header><div className="workspace-dialog__body">{children}</div></section></div>;
+/** The title already names the dialog; it carried a decorative eyebrow above it. */
+function WorkspaceDialog({ title, onClose, children }: { title: string; onClose(): void; children: React.ReactNode }) {
+  return <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="workspace-dialog" role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><IconButton label="Close dialog" icon={<X size={14} />} onClick={onClose} /></header><div className="workspace-dialog__body">{children}</div></section></div>;
 }
 
 function SaveAsDialog({ defaultName, onClose, onSave }: { defaultName: string; onClose(): void; onSave(name: string): void }) {
   const [name, setName] = useState(defaultName);
-  return <WorkspaceDialog title="Save lab as" eyebrow="SimulatorNet Lab package" onClose={onClose}>
+  return <WorkspaceDialog title="Save lab as" onClose={onClose}>
     <p>One file holds the whole lab: the canonical document, every device&apos;s readable running and startup configuration, and the diagram.</p>
     <form className="dialog-form" onSubmit={(event) => { event.preventDefault(); onSave(name.trim() || defaultName); }}>
       <label htmlFor="save-as-name">File name</label>
@@ -1400,7 +1401,7 @@ function SaveAsDialog({ defaultName, onClose, onSave }: { defaultName: string; o
 }
 
 function LabInformationDialog({ document, mode, onClose }: { document: LabDocument; mode: WorkspaceMode; onClose(): void }) {
-  return <WorkspaceDialog title="Lab information" eyebrow="Document metadata" onClose={onClose}>
+  return <WorkspaceDialog title="Lab information" onClose={onClose}>
     <dl className="property-list">
       <div><dt>Title</dt><dd>{document.title}</dd></div>
       <div><dt>Identifier</dt><dd><code>{document.id}</code></dd></div>
@@ -1415,7 +1416,7 @@ function LabInformationDialog({ document, mode, onClose }: { document: LabDocume
 }
 
 function PacketExecutionHelpDialog({ onClose }: { onClose(): void }) {
-  return <WorkspaceDialog title="Packet execution modes" eyebrow="Deterministic event processing" onClose={onClose}>
+  return <WorkspaceDialog title="Packet execution modes" onClose={onClose}>
     <div className="cli-command-reference">
       <section>
         <h3>Auto</h3>
@@ -1431,7 +1432,7 @@ function PacketExecutionHelpDialog({ onClose }: { onClose(): void }) {
 }
 
 function CanvasNavigationHelpDialog({ onClose }: { onClose(): void }) {
-  return <WorkspaceDialog title="Canvas navigation" eyebrow="Moving around the topology" onClose={onClose}>
+  return <WorkspaceDialog title="Canvas navigation" onClose={onClose}>
     <div className="shortcut-list">
       <Shortcut keys="Two-finger move" label="Pan the canvas freely, including diagonally" />
       <Shortcut keys="Pinch" label="Zoom smoothly around the pointer" />
@@ -1447,7 +1448,7 @@ function CanvasNavigationHelpDialog({ onClose }: { onClose(): void }) {
 }
 
 function DiagramTextHelpDialog({ onClose }: { onClose(): void }) {
-  return <WorkspaceDialog title="Diagram text editing" eyebrow="Editing on the canvas" onClose={onClose}>
+  return <WorkspaceDialog title="Diagram text editing" onClose={onClose}>
     <p>Diagram text is edited directly on the canvas. Choose the Text tool and click to place a caret, or double-click existing text, a link, or a diagram line to edit its label in place. No text editing step opens a dialog window.</p>
     <div className="shortcut-list">
       <Shortcut keys="Enter" label="New line in text; commits a single-line label" />
@@ -1461,7 +1462,7 @@ function DiagramTextHelpDialog({ onClose }: { onClose(): void }) {
 }
 
 function ConnectingDevicesHelpDialog({ onClose }: { onClose(): void }) {
-  return <WorkspaceDialog title="Connecting devices" eyebrow="Device-first cabling" onClose={onClose}>
+  return <WorkspaceDialog title="Connecting devices" onClose={onClose}>
     <p>Hover or select a device to reveal its single cable handle, then drag it onto another device. A modal asks for the connection type and the From/To interfaces, and only then is the link created. The same flow is available from a device&apos;s Connect… menu item and the toolbar connection tool.</p>
     <p>Only free interfaces are offered. Cancelling, or dropping outside a device, creates nothing.</p>
     <p className="section-note">Devices deliberately show no port dots. Interfaces still exist and every link stays anchored to an exact interface — Port Labels (View ▸ Port Labels) display those interface names, they are not connection points. Connections are locked while the lab is running; stop the lab to change cabling.</p>
@@ -1469,7 +1470,7 @@ function ConnectingDevicesHelpDialog({ onClose }: { onClose(): void }) {
 }
 
 function TerminalWorkspaceHelpDialog({ onClose }: { onClose(): void }) {
-  return <WorkspaceDialog title="Terminal workspace" eyebrow="Typing and pasting commands" onClose={onClose}>
+  return <WorkspaceDialog title="Terminal workspace" onClose={onClose}>
     <p>xterm is the only CLI input. Paste with <strong>Ctrl/Cmd+V</strong>, <strong>Shift+Insert</strong>, or the terminal right-click menu; the text lands at the cursor in the current input line.</p>
     <div className="cli-command-reference">
       <section>
@@ -1504,7 +1505,7 @@ function TerminalWorkspaceHelpDialog({ onClose }: { onClose(): void }) {
 }
 
 function CliCommandsDialog({ onClose }: { onClose(): void }) {
-  return <WorkspaceDialog title="CLI commands" eyebrow="Implemented surface" onClose={onClose}>
+  return <WorkspaceDialog title="CLI commands" onClose={onClose}>
     <div className="cli-command-reference">
       <section><h3>PC / Server</h3><ul>
         <li><code>ping &lt;ip-or-hostname&gt;</code> — send ICMP echoes to a destination</li>
@@ -1557,7 +1558,7 @@ function CliCommandsDialog({ onClose }: { onClose(): void }) {
 }
 
 function AboutDialog({ onClose }: { onClose(): void }) {
-  return <WorkspaceDialog title="About SimulatorNet" eyebrow="Deterministic network lab" onClose={onClose}>
+  return <WorkspaceDialog title="About SimulatorNet" onClose={onClose}>
     <p>SimulatorNet is an open-source, browser-based network simulator for CCNA-level labs. Switching, routing, VLAN and DHCP behaviour is reimplemented in TypeScript and runs deterministically inside a Web Worker.</p>
     <p className="section-note">The same engine re-runs headlessly on the server to grade submissions, so a browser is never trusted to report its own score.</p>
   </WorkspaceDialog>;

@@ -28,7 +28,6 @@ interface ToolbarProps {
   /** Current canvas scale, so the zoom controls can bound themselves. */
   zoomScale: number;
   session?: { displayName: string; organizationName: string; role: string };
-  sessionPending: boolean;
   onModeChange(mode: WorkspaceMode): void;
   onTool(tool: WorkspaceTool): void;
   onNew(): void;
@@ -73,37 +72,37 @@ export function Toolbar(props: ToolbarProps) {
             {props.unsaved && <StatusIndicator status="unsaved" label="Unsaved" />}
           </div>
           <StatusIndicator status={status} label={workerLabel} />
-          {props.session ? (
+          {props.session && (
             <div className="session-identity" aria-label="Authenticated organization session">
-              <UserRound size={14} aria-hidden="true" />
+              <UserRound size={13} aria-hidden="true" />
               <span><strong>{props.session.displayName}</strong><small>{props.session.organizationName} · {props.session.role.replaceAll("_", " ")}</small></span>
-              <IconButton label="Log out organization session" icon={<LogOut size={14} />} onClick={props.onLogout} />
+              <IconButton label="Log out organization session" icon={<LogOut size={13} />} onClick={props.onLogout} />
             </div>
-          ) : <span className="session-anonymous">{props.sessionPending ? "Checking session…" : "Anonymous"}</span>}
+          )}
         </div>
       </div>
 
       <div className="action-toolbar" aria-label="Workspace actions">
         <ToolbarGroup label="File actions">
-          <IconButton label="New lab" icon={<FilePlus2 size={15} />} onClick={props.onNew} />
-          <IconButton label="Open lab" icon={<FolderOpen size={15} />} onClick={props.onOpen} />
-          <IconButton label="Save lab" icon={<Save size={15} />} disabled={!props.ready} onClick={props.onSave} />
+          <IconButton label="New lab" icon={<FilePlus2 size={14} />} onClick={props.onNew} />
+          <IconButton label="Open lab" icon={<FolderOpen size={14} />} onClick={props.onOpen} />
+          <IconButton label="Save lab" icon={<Save size={14} />} disabled={!props.ready} onClick={props.onSave} />
         </ToolbarGroup>
         <ToolbarGroup label="History actions">
-          <IconButton label="Undo" icon={<Undo2 size={15} />} disabled={!props.canUndo} onClick={props.onUndo} />
-          <IconButton label="Redo" icon={<Redo2 size={15} />} disabled={!props.canRedo} onClick={props.onRedo} />
+          <IconButton label="Undo" icon={<Undo2 size={14} />} disabled={!props.canUndo} onClick={props.onUndo} />
+          <IconButton label="Redo" icon={<Redo2 size={14} />} disabled={!props.canRedo} onClick={props.onRedo} />
         </ToolbarGroup>
         {props.devicePicker && <ToolbarGroup label="Add topology item">{props.devicePicker}</ToolbarGroup>}
         <ToolbarGroup label="Topology actions">
-          <IconButton label="Select tool" icon={<MousePointer2 size={15} />} active={props.activeTool === "select"} onClick={() => props.onTool("select")} />
-          <IconButton label="Add link" icon={<Cable size={15} />} active={props.activeTool === "add-link"} disabled={props.mode !== "edit"} onClick={() => props.onTool("add-link")} />
-          <IconButton label="Delete selected" icon={<Trash2 size={15} />} disabled={props.mode !== "edit" || !props.canDelete} onClick={props.onDelete} />
+          <IconButton label="Select tool" icon={<MousePointer2 size={14} />} active={props.activeTool === "select"} onClick={() => props.onTool("select")} />
+          <IconButton label="Add link" icon={<Cable size={14} />} active={props.activeTool === "add-link"} disabled={props.mode !== "edit"} onClick={() => props.onTool("add-link")} />
+          <IconButton label="Delete selected" icon={<Trash2 size={14} />} disabled={props.mode !== "edit" || !props.canDelete} onClick={props.onDelete} />
         </ToolbarGroup>
         <ToolbarGroup label="Canvas actions">
-          <IconButton label="Zoom out" icon={<ZoomOut size={15} />} disabled={!props.ready || !canZoomOut(props.zoomScale)} onClick={props.onZoomOut} />
+          <IconButton label="Zoom out" icon={<ZoomOut size={14} />} disabled={!props.ready || !canZoomOut(props.zoomScale)} onClick={props.onZoomOut} />
           <span className="toolbar-zoom-level" aria-label={`Canvas zoom ${formatZoomPercent(props.zoomScale)}`}>{formatZoomPercent(props.zoomScale)}</span>
-          <IconButton label="Zoom in" icon={<ZoomIn size={15} />} disabled={!props.ready || !canZoomIn(props.zoomScale)} onClick={props.onZoomIn} />
-          <IconButton label="Fit topology" icon={<Maximize2 size={15} />} disabled={!props.ready} onClick={props.onFit} />
+          <IconButton label="Zoom in" icon={<ZoomIn size={14} />} disabled={!props.ready || !canZoomIn(props.zoomScale)} onClick={props.onZoomIn} />
+          <IconButton label="Fit topology" icon={<Maximize2 size={14} />} disabled={!props.ready} onClick={props.onFit} />
         </ToolbarGroup>
 
         <div className="toolbar-spacer" />
@@ -114,11 +113,11 @@ export function Toolbar(props: ToolbarProps) {
           />
           {props.powerState === "running" || props.powerState === "stopping" ? (
             <button type="button" className="lab-power__toggle is-running" disabled={!props.ready || props.powerState === "stopping"} onClick={props.onStopLab}>
-              <Square size={13} /> Stop Lab
+              <Square size={11} /> Stop Lab
             </button>
           ) : (
             <button type="button" className="lab-power__toggle" disabled={!props.ready || props.powerState !== "stopped"} onClick={props.onStartLab}>
-              <Play size={13} /> Start Lab
+              <Play size={11} /> Start Lab
             </button>
           )}
           <span
@@ -129,7 +128,7 @@ export function Toolbar(props: ToolbarProps) {
               ? "Topology connectivity is locked while the lab is running. Layout, labels and notes can still be edited."
               : "Topology connectivity is unlocked — devices and links are editable."}
           >
-            {props.powerState === "running" ? <Lock size={13} /> : <Unlock size={13} />}
+            {props.powerState === "running" ? <Lock size={11} /> : <Unlock size={11} />}
           </span>
         </div>
         <button
@@ -150,8 +149,7 @@ export function Toolbar(props: ToolbarProps) {
           disabled={!props.ready}
           onClick={props.onOpenPacketTrace}
         >
-          <Network size={13} aria-hidden="true" />
-          <span>Packet execution</span>
+          <Network size={12} aria-hidden="true" />
           <strong>{props.executionMode === "auto" ? "Auto" : "Step"}</strong>
         </button>
       </div>

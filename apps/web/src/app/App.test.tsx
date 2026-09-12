@@ -328,7 +328,7 @@ describe("M6.1 simulator workspace", () => {
     expect(screen.getByRole("banner", { name: "Simulation toolbar" })).toBeTruthy();
     expect(screen.getByRole("group", { name: "Topology actions" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "File" })).toBeTruthy();
-    expect(await screen.findByRole("heading", { name: "SimulatorNet" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "No laboratory open" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "New Lab" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Import Lab" })).toBeTruthy();
     expect(useWorkspaceStore.getState().draft).toBeUndefined();
@@ -354,7 +354,7 @@ describe("M6.1 simulator workspace", () => {
     await userEvent.click(await screen.findByRole("button", { name: /^Load Demo Lab$/ }));
     await userEvent.click(screen.getByRole("button", { name: /Router-on-a-stick \+ DHCP/ }));
     await waitFor(() => expect(useWorkspaceStore.getState().snapshot?.labId).toBe(DEMO_LAB.id));
-    expect(screen.queryByRole("heading", { name: "SimulatorNet" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "No laboratory open" })).toBeNull();
   });
 
   it("imports a lab directly from the welcome workspace", async () => {
@@ -364,7 +364,7 @@ describe("M6.1 simulator workspace", () => {
     Object.defineProperty(file, "text", { value: async () => JSON.stringify(DEMO_LAB) });
     fireEvent.change(document.getElementById("load-lab-file")!, { target: { files: [file] } });
     await waitFor(() => expect(useWorkspaceStore.getState().snapshot?.labId).toBe(DEMO_LAB.id));
-    expect(screen.queryByRole("heading", { name: "SimulatorNet" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "No laboratory open" })).toBeNull();
   });
 
   it("closes a clean lab back to the welcome workspace", async () => {
@@ -372,7 +372,7 @@ describe("M6.1 simulator workspace", () => {
     await loadDemo(client);
     await openMenu("File");
     await userEvent.click(screen.getByRole("menuitem", { name: "Close Lab" }));
-    expect(await screen.findByRole("heading", { name: "SimulatorNet" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "No laboratory open" })).toBeTruthy();
     expect(useWorkspaceStore.getState().draft).toBeUndefined();
   });
 
@@ -388,7 +388,7 @@ describe("M6.1 simulator workspace", () => {
     expect(screen.getByRole("dialog", { name: "Close laboratory?" })).toBeTruthy();
     expect(useWorkspaceStore.getState().draft).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Discard & Close" }));
-    expect(await screen.findByRole("heading", { name: "SimulatorNet" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "No laboratory open" })).toBeTruthy();
   });
 
   it("does not render a topology minimap", async () => {
@@ -788,8 +788,9 @@ describe("M10.2.1 Packet Tracer-style workspace", () => {
     expect(screen.getByRole("button", { name: "Add Server" })).toBeTruthy();
     await userEvent.click(screen.getByRole("tab", { name: "Connections" }));
     expect(screen.getByRole("button", { name: "Automatic Ethernet" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Ethernet Link" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Delete Link" })).toBeTruthy();
+    // M10.17.6 — one cable tool. "Ethernet Link" ran the identical handler.
+    expect(screen.queryByRole("button", { name: "Ethernet Link" })).toBeNull();
   });
 
   it("supports drag data for palette models", async () => {

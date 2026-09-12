@@ -222,7 +222,7 @@ export function TerminalPresentation(props: TerminalPresentationProps) {
         left: bounds.x,
         top: bounds.y,
         width: bounds.width,
-        height: props.minimized ? 30 : bounds.height,
+        height: bounds.height,
       };
     }
     if (props.presentationMode === "floating") {
@@ -231,18 +231,33 @@ export function TerminalPresentation(props: TerminalPresentationProps) {
         left: bounds.x,
         top: bounds.y,
         width: bounds.width,
-        height: props.minimized ? 32 : bounds.height,
+        height: props.minimized ? 28 : bounds.height,
       };
     }
     return props.minimized
-      ? { right: 10, bottom: 10, width: 440, height: 32 }
-      : { inset: 8 };
+      ? { right: 8, bottom: 8, width: 400, height: 28 }
+      : { inset: 6 };
   })();
 
-  const title = props.presentationMode === "docked"
-    ? "Docked"
-    : props.presentationMode === "floating" ? "Floating" : "Maximized";
+  const docked = props.presentationMode === "docked";
+  const title = docked ? "Docked" : props.presentationMode === "floating" ? "Floating" : "Maximized";
   const layoutSignal = `${props.presentationMode}:${onScreen}:${props.minimized}:${style.width ?? "auto"}:${style.height ?? "auto"}`;
+
+  // One set of presentation controls, rendered in the titlebar when the shell
+  // has one and in the tab strip when it is docked. There is no second copy of
+  // "close this tab" here: every tab already carries its own close control.
+  const windowActions = <>
+    <IconButton label="Dock terminal at bottom" icon={<PanelBottom size={12} />} disabled={docked} onClick={() => props.onPresentationMode("docked")} />
+    <IconButton label="Float terminal" icon={<PictureInPicture2 size={12} />} disabled={props.presentationMode === "floating"} onClick={() => props.onPresentationMode("floating")} />
+    <IconButton
+      label={props.presentationMode === "maximized" ? "Restore terminal" : "Maximize terminal"}
+      icon={props.presentationMode === "maximized" ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+      onClick={() => props.presentationMode === "maximized" ? props.onRestore() : props.onPresentationMode("maximized")}
+    />
+    {/* Docked, the bottom panel's own Minimize already collapses this surface. */}
+    {!docked && <IconButton label={props.minimized ? "Restore minimized terminal" : "Minimize terminal"} icon={<Minus size={12} />} onClick={() => props.onMinimized(!props.minimized)} />}
+    <IconButton label="Close terminal window" icon={<X size={12} />} onClick={() => props.onVisible(false)} />
+  </>;
 
   return (
     <div ref={layerRef} className="terminal-presentation-layer" aria-hidden={!onScreen}>
@@ -271,27 +286,11 @@ export function TerminalPresentation(props: TerminalPresentationProps) {
           }}
         >
           <span className="terminal-presentation__identity">
-            <TerminalSquare size={14} aria-hidden="true" />
+            <TerminalSquare size={13} aria-hidden="true" />
             <strong>Terminal Workspace</strong>
             <small>{title} · {props.tabs.length} session{props.tabs.length === 1 ? "" : "s"}</small>
           </span>
-          <span className="terminal-presentation__actions">
-            <IconButton label="Dock terminal at bottom" icon={<PanelBottom size={13} />} disabled={props.presentationMode === "docked"} onClick={() => props.onPresentationMode("docked")} />
-            <IconButton label="Float terminal" icon={<PictureInPicture2 size={13} />} disabled={props.presentationMode === "floating"} onClick={() => props.onPresentationMode("floating")} />
-            <IconButton
-              label={props.presentationMode === "maximized" ? "Restore terminal" : "Maximize terminal"}
-              icon={props.presentationMode === "maximized" ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-              onClick={() => props.presentationMode === "maximized" ? props.onRestore() : props.onPresentationMode("maximized")}
-            />
-            <IconButton label={props.minimized ? "Restore minimized terminal" : "Minimize terminal"} icon={<Minus size={13} />} onClick={() => props.onMinimized(!props.minimized)} />
-            <IconButton
-              label="Close active terminal tab"
-              icon={<X size={13} />}
-              disabled={!props.activeDeviceId}
-              onClick={() => { if (props.activeDeviceId) props.onCloseTab(props.activeDeviceId); }}
-            />
-            <IconButton label="Close terminal window" icon={<X size={14} />} onClick={() => props.onVisible(false)} />
-          </span>
+          <span className="terminal-presentation__actions">{windowActions}</span>
         </header>
         <div className="terminal-presentation__content" hidden={props.minimized}>
           <TerminalWorkspace
@@ -304,6 +303,7 @@ export function TerminalPresentation(props: TerminalPresentationProps) {
             appearance={props.appearance}
             layoutSignal={layoutSignal}
             measurable={onScreen && !props.minimized}
+            windowActions={docked ? windowActions : undefined}
             consoleAccessFor={props.consoleAccessFor}
             onActivate={props.onActivate}
             onClose={props.onCloseTab}
