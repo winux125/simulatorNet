@@ -154,7 +154,6 @@ export function DeviceWindow(props: DeviceWindowProps) {
           {tab === "attributes" && <Attributes
             document={props.document}
             node={props.node}
-            description={profile.description}
             capabilities={profile.capabilities}
             powerState={props.powerState}
             onTopologyChanged={props.onTopologyChanged}
@@ -320,7 +319,7 @@ function ConfigSection(props: DeviceWindowProps & { section: DeviceWindowSection
 
 function MonitorSection(props: DeviceWindowProps & { section: DeviceWindowSectionId }) {
   const { section } = props;
-  if (section === "runtime-overview") return <Overview node={props.node} description={getDeviceProfile(props.node.type).description} />;
+  if (section === "runtime-overview") return <Overview node={props.node} />;
   if (section === "interfaces-runtime") return <Interfaces node={props.node} />;
   if (section === "sessions-runtime" || section === "aaa-runtime" || section === "snmp-runtime") {
     return <ManagementPanel
@@ -429,14 +428,13 @@ function MonitorSection(props: DeviceWindowProps & { section: DeviceWindowSectio
       onError={props.onError}
     />;
   }
-  return <Overview node={props.node} description={getDeviceProfile(props.node.type).description} />;
+  return <Overview node={props.node} />;
 }
 
 function PhysicalSummary({ node }: { node: LabUiNode }) {
+  // The titlebar already carries the hostname and the tab already says
+  // "Physical", so this section is the facts and nothing else.
   return <div className="device-window-section">
-    <p className="section-eyebrow">Physical placement</p>
-    <h2>{node.hostname}</h2>
-    <p>Use the workspace Physical view to place this device in a site, room, rack, or on a workbench.</p>
     <dl className="property-list">
       <div><dt>Device</dt><dd>{getDeviceProfile(node.type).displayName}</dd></div>
       <div><dt>Interfaces</dt><dd>{node.interfaces.length}</dd></div>
@@ -478,14 +476,12 @@ function DeviceInspectionPanel({
     ? inspection.macEntries
     : { arp: inspection.arpEntries, ndp: inspection.ipv6?.neighbors ?? [], configured: document.configurations[deviceId] };
   return <div className="device-window-section">
-    <p className="section-eyebrow">Transient runtime</p>
-    <h2>{section === "mac-runtime" ? "MAC Table" : "ARP / NDP"}</h2>
     <PropertyTree value={value} />
   </div>;
 }
 
-function Overview({ node, description }: { node: LabUiNode; description: string }) {
-  return <div className="device-window-section"><p className="section-eyebrow">Device overview</p><h2>{node.hostname}</h2><p>{description}</p><dl className="property-list"><div><dt>Type</dt><dd>{node.type}</dd></div><div><dt>Status</dt><dd>{node.status}</dd></div><div><dt>Interfaces</dt><dd>{node.interfaces.length}</dd></div></dl></div>;
+function Overview({ node }: { node: LabUiNode }) {
+  return <div className="device-window-section"><dl className="property-list"><div><dt>Type</dt><dd>{node.type}</dd></div><div><dt>Status</dt><dd>{node.status}</dd></div><div><dt>Interfaces</dt><dd>{node.interfaces.length}</dd></div></dl></div>;
 }
 
 function StructuredConfiguration({
@@ -503,13 +499,7 @@ function StructuredConfiguration({
   const selected = keys && configuration
     ? Object.fromEntries(keys.filter((key) => key in configuration).map((key) => [key, configuration[key]]))
     : configuration ?? {};
-  return <div className="device-window-section">
-    <p className="section-eyebrow">Worker-owned configuration</p>
-    <h2>{title}</h2>
-    <p className="section-note">
-      This is one redacted view of the canonical device configuration; it is not an independent copy. The
-      canonical JSON itself lives under File ▸ Advanced.
-    </p>
+  return <div className="device-window-section" aria-label={title}>
     <PropertyTree value={redactCredentialMaterial(selected)} />
   </div>;
 }
@@ -561,8 +551,15 @@ function redactCredentialMaterial(value: unknown): unknown {
   ]));
 }
 
+/** Admin and operational state read as dots, not as a word repeated per row. */
 function Interfaces({ node }: { node: LabUiNode }) {
-  return <div className="device-window-table"><table className="data-table"><thead><tr><th>Interface</th><th>Admin</th><th>Operational</th><th>Address</th><th>Mode</th></tr></thead><tbody>{node.interfaces.map((iface) => <tr key={iface.id}><td><code>{iface.id}</code></td><td>{iface.adminUp ? "up" : "shutdown"}</td><td>{iface.operationalUp ? "up" : "down"}</td><td><code>{iface.ipAddress ?? "—"}</code></td><td>{iface.mode ?? "—"}</td></tr>)}</tbody></table></div>;
+  return <div className="device-window-table"><table className="data-table"><thead><tr><th>Interface</th><th>Admin</th><th>Operational</th><th>Address</th><th>Mode</th></tr></thead><tbody>{node.interfaces.map((iface) => <tr key={iface.id}>
+    <td><code>{iface.id}</code></td>
+    <td><span className={`table-state${iface.adminUp ? " is-up" : ""}`}>{iface.adminUp ? "up" : "shutdown"}</span></td>
+    <td><span className={`table-state${iface.operationalUp ? " is-up" : ""}`}>{iface.operationalUp ? "up" : "down"}</span></td>
+    <td><code>{iface.ipAddress ?? "—"}</code></td>
+    <td>{iface.mode ?? "—"}</td>
+  </tr>)}</tbody></table></div>;
 }
 
 function MplsL3VpnRuntimePanel({
@@ -603,10 +600,7 @@ function MplsL3VpnRuntimePanel({
         : section === "vpnv4-runtime" ? state.vpnv4Routes
           : section === "vpnv6-runtime" ? state.vpnv6Routes
             : state.vpnLabelBindings;
-  return <div className="device-window-section">
-    <p className="section-eyebrow">Deterministic provider runtime</p>
-    <h2>{titles[section]}</h2>
-    <p className="section-note">These tables are rebuilt from structured configuration and are not stored in the LabDocument.</p>
+  return <div className="device-window-section" aria-label={titles[section]}>
     <PropertyTree value={value} />
   </div>;
 }
@@ -644,8 +638,7 @@ function Ipv6RuntimePanel({
   const acls = configuration && "ipv6Acls" in configuration ? configuration.ipv6Acls ?? [] : [];
   if (!inspection?.ipv6) return <div className="device-window-section">Loading IPv6 runtime…</div>;
   const ipv6 = inspection.ipv6;
-  return <div className="device-window-section">
-    <p className="section-eyebrow">IPv6 runtime</p>
+  return <div className="device-window-section" aria-label="IPv6 runtime">
     <h3>IPv6 Interfaces</h3>
     <table className="data-table"><thead><tr><th>Interface</th><th>Address</th><th>Source</th><th>State</th></tr></thead><tbody>
       {ipv6.addresses.map((address) => <tr key={`${address.interfaceId}:${address.address}`}><td>{address.interfaceId}</td><td><code>{address.address}/{address.prefixLength}</code></td><td>{address.source}</td><td>{address.state}</td></tr>)}
@@ -674,7 +667,6 @@ function Ipv6RuntimePanel({
 function Attributes({
   document,
   node,
-  description,
   capabilities,
   powerState,
   onTopologyChanged,
@@ -682,7 +674,6 @@ function Attributes({
 }: {
   document: LabDocument;
   node: LabUiNode;
-  description: string;
   capabilities: readonly string[];
   powerState: LabPowerState;
   onTopologyChanged?(document: LabDocument): void;
@@ -700,7 +691,7 @@ function Attributes({
     onTopologyChanged?.(result.document);
   };
 
-  return <div className="device-window-section"><p className="section-eyebrow">Attributes</p><h2>{node.hostname}</h2><p>{description}</p>
+  return <div className="device-window-section">
     {hardwareProfiles.length > 0 && <label className="device-attribute-field">
       <span>Hardware profile</span>
       <select
@@ -825,9 +816,7 @@ function SmartphoneApps({
       onError(message);
     }
   };
-  return <div className="device-window-section smartphone-apps">
-    <p className="section-eyebrow">Network apps</p>
-    <h2>Smartphone utilities</h2>
+  return <div className="device-window-section smartphone-apps" aria-label="Smartphone utilities">
     <label>Address or hostname<input value={target} onChange={(event) => setTarget(event.target.value)} /></label>
     <div>
       <Button onClick={() => void execute(`ping ${target}`)}>Ping</Button>
@@ -839,15 +828,13 @@ function SmartphoneApps({
 }
 
 function DraftRuntimeNotice() {
-  return <div className="device-window-section"><p className="section-eyebrow">Pending rebuild</p><h2>Start the lab to open this tool</h2><p>This device exists in the topology draft. Its runtime tools become available after Apply &amp; Rebuild.</p></div>;
+  return <div className="device-window-section"><h2>Start the lab to open this tool</h2><p className="section-note">This device exists in the topology draft. Its runtime tools become available after Apply &amp; Rebuild.</p></div>;
 }
 
 function TerminalWorkspaceLauncher({ node, onOpen }: { node: LabUiNode; onOpen(): void }) {
   return <div className="device-window-section terminal-workspace-launcher">
-    <span className="terminal-workspace-launcher__icon"><TerminalSquare size={28} aria-hidden="true" /></span>
-    <p className="section-eyebrow">Unified terminal workspace</p>
+    <span className="terminal-workspace-launcher__icon"><TerminalSquare size={22} aria-hidden="true" /></span>
     <h2>{node.hostname} {node.type === "pc" || node.type === "laptop" ? "Command Prompt" : "CLI"}</h2>
-    <p>Open this device in the shared terminal workspace. Docking, floating, or maximizing keeps the same session, login state, command history, and scrollback.</p>
     <Button variant="primary" onClick={onOpen}>Open in Terminal Workspace</Button>
   </div>;
 }

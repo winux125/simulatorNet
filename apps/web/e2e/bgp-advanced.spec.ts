@@ -1,16 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openDeviceCli } from "./helpers/device-window";
+import { openDeviceCli, openDeviceSection } from "./helpers/device-window";
 
 async function loadDemo(page: Page, name: string) {
   await page.getByRole("button", { name: "Load Demo Lab", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Load demo laboratory" });
   await dialog.getByRole("button").filter({ hasText: name }).click();
   await expect(page.getByRole("button", { name: "Load Demo Lab", exact: true })).toBeHidden();
-}
-
-async function closeInspector(page: Page) {
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  if (await inspector.isVisible()) await inspector.getByRole("button", { name: "Close inspector" }).click();
 }
 
 async function openCli(page: Page, hostname: string) {
@@ -48,12 +43,9 @@ async function selectTraceFilter(page: Page, protocol: string) {
 }
 
 async function openMonitorBgp(page: Page, hostname: string) {
-  await closeInspector(page);
-  await page.getByRole("button", { name: `Select ${hostname}` }).dblclick();
-  const window = page.getByRole("dialog", { name: new RegExp(`${hostname} device window`) });
-  await window.getByRole("tab", { name: "Monitor" }).click();
-  await window.getByRole("combobox", { name: "Monitor section", exact: true }).selectOption("bgp-runtime");
-  return window;
+  // Section navigation renders as a rail on desktop and as a compact select only
+  // at narrow widths, so go through the helper that handles both.
+  return openDeviceSection(page, { hostname, topLevel: "Monitor", section: "BGP" });
 }
 
 test.describe("M10.12 BGP route reflection, communities and advanced policy", () => {

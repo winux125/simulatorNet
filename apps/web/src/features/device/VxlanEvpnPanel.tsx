@@ -172,7 +172,6 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
       <div className="qos-panel__body" role="tabpanel" aria-label={`VXLAN ${section}`}>
         {section === "nve" && (
           <>
-            <p className="section-eyebrow">VXLAN &amp; EVPN</p>
             <h2>NVE Interface</h2>
             <p className="section-note">
               <code>nve1</code> is logical: it has no cable, never appears in the connection dialog
@@ -344,7 +343,6 @@ export function VxlanEvpnPanel(props: VxlanEvpnPanelProps) {
 
         {section === "ethernet-segments" && (
           <>
-            <p className="section-eyebrow">EVPN Multihoming</p>
             <h2>Ethernet Segments</h2>
             <p className="section-note">
               An Ethernet Segment is one CE attached to two leaves, named by a shared ESI.

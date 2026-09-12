@@ -17,7 +17,8 @@ async function openDevice(page: Page, hostname: string) {
 async function chooseSection(dialog: ReturnType<Page["getByRole"]>, workspace: "Configuration" | "Monitor", value: string, label: string) {
   const compact = dialog.getByRole("combobox", { name: `${workspace} section`, exact: true });
   if (await compact.isVisible()) await compact.selectOption(value);
-  else await dialog.getByRole("navigation", { name: `${workspace} sections` }).getByRole("button", { name: label }).click();
+  // "Sessions" is also a prefix of "VPN Sessions" on the rail, so match exactly.
+  else await dialog.getByRole("navigation", { name: `${workspace} sections` }).getByRole("button", { name: label, exact: true }).click();
 }
 
 test("managed device windows use compact Config and Monitor navigation", async ({ page }, testInfo) => {

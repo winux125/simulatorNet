@@ -1,16 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openDeviceCli } from "./helpers/device-window";
+import { openDeviceCli, openDeviceSection } from "./helpers/device-window";
 
 async function loadDemo(page: Page, name: string) {
   await page.getByRole("button", { name: "Load Demo Lab", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Load demo laboratory" });
   await dialog.getByRole("button").filter({ hasText: name }).click();
   await expect(page.getByRole("button", { name: "Load Demo Lab", exact: true })).toBeHidden();
-}
-
-async function closeInspector(page: Page) {
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  if (await inspector.isVisible()) await inspector.getByRole("button", { name: "Close inspector" }).click();
 }
 
 async function openCli(page: Page, hostname: string) {
@@ -102,11 +97,7 @@ test.describe("M10.10 deterministic BGP", () => {
     await runCli(page, "show ip bgp 10.1.0.0/24");
     await expectTerminal(page, />.*150/);
 
-    await closeInspector(page);
-    await page.getByRole("button", { name: "Select EDGE2" }).dblclick();
-    const window = page.getByRole("dialog", { name: /EDGE2 device window/ });
-    await window.getByRole("tab", { name: "Monitor" }).click();
-    await window.getByRole("combobox", { name: "Monitor section", exact: true }).selectOption("bgp-runtime");
+    const window = await openDeviceSection(page, { hostname: "EDGE2", topLevel: "Monitor", section: "BGP" });
     await expect(window).toContainText("2/2 Established");
     // From M10.12 the monitor opens on Summary; the table is one subsection in.
     await window.getByRole("tab", { name: "BGP Table" }).click();

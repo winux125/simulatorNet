@@ -146,6 +146,39 @@ describe("M10.17.6 layout has one scroll owner", () => {
   });
 });
 
+describe("M10.17.6 device windows are a configuration utility", () => {
+  it("19. keeps the section rail at 1280x720 and only trades it on a narrow window", () => {
+    // 1280x720 is a supported desktop viewport: it must keep "rail | content".
+    expect(appCss).not.toMatch(/@media \(max-width: 12\d\dpx\)\s*\{[^@]*device-section-workspace__rail \{ display: none/);
+    expect(appCss).toMatch(/@media \(max-width: 1023px\)\s*\{[\s\S]*?device-section-workspace__rail \{ display: none/);
+    // The top-level tabs are content-width, not stretched across the window.
+    expect(appCss).toMatch(/\.device-window__tabs \{[^}]*display: flex;/);
+    expect(appCss).not.toMatch(/\.device-window__tabs \{[^}]*grid-auto-columns: minmax\(0, 1fr\)/);
+  });
+
+  it("20. states a section's facts without restating the rail's own label", () => {
+    const deviceWindow = read("features/device/DeviceWindow.tsx");
+    // The rail names the section and the titlebar names the device, so a
+    // section no longer opens with an eyebrow plus a heading repeating both,
+    // nor with a paragraph that only introduces what is already on screen.
+    expect(deviceWindow).not.toMatch(/section-eyebrow/);
+    expect(deviceWindow).not.toContain("<h2>{node.hostname}</h2>");
+    expect(deviceWindow).not.toMatch(/section-note">\{description\}/);
+    // Interface state reads as a dot badge rather than a word per row.
+    expect(deviceWindow).toContain('className={`table-state${iface.adminUp ? " is-up" : ""}`}');
+  });
+
+  it("21. flags only import rows that lost something in conversion", () => {
+    const wizard = read("features/lab/ImportLabWizard.tsx");
+    // A partial configuration is still a successful mapping; tinting it amber
+    // highlighted every row and so highlighted nothing.
+    expect(wizard).not.toMatch(/proposal\.supportLevel !== "full"/);
+    expect(wizard).toContain('proposal.supportLevel === "visual-placeholder"');
+    // The step rail already reports the stage, so the footer does not repeat it.
+    expect(wizard).not.toMatch(/\{step \+ 1\} of \{STEPS\.length\}/);
+  });
+});
+
 describe("M10.17.6 no landing-page chrome in a utility console", () => {
   it("16. opens on a compact start panel rather than a branded hero", () => {
     const canvas = read("features/topology/TopologyCanvas.tsx");

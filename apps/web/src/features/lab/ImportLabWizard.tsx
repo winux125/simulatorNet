@@ -360,9 +360,8 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
       >
         <header className="import-wizard__header">
           <div className="import-wizard__heading">
-            <span className="import-wizard__icon"><FileArchive size={20} /></span>
+            <span className="import-wizard__icon"><FileArchive size={16} /></span>
             <div>
-              <p>Network lab conversion</p>
               <h2>Import Lab</h2>
             </div>
           </div>
@@ -470,7 +469,7 @@ export function ImportLabWizard({ file, onCancel, onImported, onError }: ImportL
             {step > 0 && step < 4 && <Button variant="ghost" disabled={phase === "importing"} onClick={() => setStep((step - 1) as WizardStep)}>Back</Button>}
             <Button variant="ghost" disabled={phase === "importing"} onClick={onCancel}>{step === 4 ? "Close" : "Cancel"}</Button>
           </div>
-          <span>{step + 1} of {STEPS.length} · {STEPS[step]}</span>
+          {/* The step rail in the header already reports the stage and its number. */}
           <div>
             {step < 3 && (
               <Button
@@ -837,7 +836,7 @@ function InspectStep({ plan }: { plan: ImportPlan }) {
   ];
   return (
     <div className="import-step">
-      <StepHeading eyebrow="Source inspection" title="Review detected content" description="This summary is produced before any topology is added to the workspace." />
+      <StepHeading title="Review detected content" description="This summary is produced before any topology is added to the workspace." />
       <div className="import-summary-grid">
         {cards.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
       </div>
@@ -877,7 +876,7 @@ function MappingStep({ plan, selection, disabled, onDecision, onAcceptSuggestion
   }), [attentionOnly, plan.proposals, search]);
   return (
     <div className="import-step import-mapping-step">
-      <StepHeading eyebrow="Device conversion" title="Map source devices" description="Accept suggested SimulatorNet devices, keep a visual placeholder, or exclude a source node." />
+      <StepHeading title="Map source devices" description="Accept suggested SimulatorNet devices, keep a visual placeholder, or exclude a source node." />
       <div className="import-mapping-tools">
         <label className="import-search"><Search size={14} /><input aria-label="Search source devices" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search hostname or kind" /></label>
         <label className="import-attention-filter"><input type="checkbox" checked={attentionOnly} onChange={(event) => setAttentionOnly(event.target.checked)} /> Needs Attention</label>
@@ -941,8 +940,8 @@ function MappingRow({ proposal, sourceInterfaces, value, disabled, onDecision }:
       <td data-label="Interfaces">{sourceInterfaces}</td>
       <td data-label="Status">
         {proposal.interfaceWarning
-          ? <details className="import-row-warning"><summary><AlertTriangle size={13} /> Attention</summary><p>{proposal.interfaceWarning}</p></details>
-          : <span className="import-row-ok"><CheckCircle2 size={13} /> Ready</span>}
+          ? <details className="import-row-warning"><summary><AlertTriangle size={12} /> Attention</summary><p>{proposal.interfaceWarning}</p></details>
+          : <span className="import-row-ok">Ready</span>}
       </td>
     </tr>
   );
@@ -952,15 +951,28 @@ function SupportBadge({ level }: { level: ImportSupportLevel }) {
   return <span className={`import-support import-support--${level}`}>{level.replaceAll("-", " ")}</span>;
 }
 
+/**
+ * A row needs attention when the conversion genuinely lost something: an
+ * interface warning, no suggested device type, or a source that survives only
+ * as a placeholder or not at all.
+ *
+ * `configuration-partial` and `topology-only` are *successful* mappings — the
+ * report still states them. Treating them as attention tinted every row amber
+ * on an ordinary import, which hides the two rows that actually need a
+ * decision among the thirty-eight that do not.
+ */
 function needsAttention(proposal: ImportMappingProposal): boolean {
-  return Boolean(proposal.interfaceWarning) || !proposal.suggestedDeviceType || proposal.supportLevel !== "full";
+  return Boolean(proposal.interfaceWarning)
+    || !proposal.suggestedDeviceType
+    || proposal.supportLevel === "visual-placeholder"
+    || proposal.supportLevel === "unsupported";
 }
 
 function WarningsStep({ plan }: { plan: ImportPlan }) {
   const groups = warningGroups(plan.report);
   return (
     <div className="import-step">
-      <StepHeading eyebrow="Conversion review" title="Review warnings" description="Warnings are grouped by impact. Passwords, hashes and vendor binaries are never displayed." />
+      <StepHeading title="Review warnings" description="Warnings are grouped by impact. Passwords, hashes and vendor binaries are never displayed." />
       <div className="import-warning-groups" data-testid="import-warnings">
         {groups.map((group) => (
           <details key={group.title} open={group.entries.length > 0 && (group.severity === "error" || group.title === "Device Mapping Warnings")}>
@@ -1020,8 +1032,9 @@ function ResultStep({ result }: { result: ImportResult }) {
   );
 }
 
-function StepHeading({ eyebrow, title, description }: { eyebrow: string; title: string; description: string }) {
-  return <header className="import-step-heading"><p>{eyebrow}</p><h3>{title}</h3><span>{description}</span></header>;
+/** The step rail names the stage, so the heading is a title and one line. */
+function StepHeading({ title, description }: { title: string; description: string }) {
+  return <header className="import-step-heading"><h3>{title}</h3><span>{description}</span></header>;
 }
 
 export default ImportLabWizard;

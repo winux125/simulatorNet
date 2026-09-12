@@ -1,16 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openDeviceCli } from "./helpers/device-window";
+import { openDeviceCli, openDeviceSection } from "./helpers/device-window";
 
 async function loadDemo(page: Page, name: string) {
   await page.getByRole("button", { name: "Load Demo Lab", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Load demo laboratory" });
   await dialog.getByRole("button").filter({ hasText: name }).click();
   await expect(page.getByRole("button", { name: "Load Demo Lab", exact: true })).toBeHidden();
-}
-
-async function closeInspector(page: Page) {
-  const inspector = page.getByRole("region", { name: "Inspector" });
-  if (await inspector.isVisible()) await inspector.getByRole("button", { name: "Close inspector" }).click();
 }
 
 /**
@@ -54,12 +49,9 @@ async function selectTraceFilter(page: Page, protocol: string) {
 }
 
 async function openMonitorSection(page: Page, hostname: string, section: string) {
-  await closeInspector(page);
-  await page.getByRole("button", { name: `Select ${hostname}`, exact: true }).dblclick();
-  const window = page.getByRole("dialog", { name: `${hostname} device window`, exact: true });
-  await window.getByRole("tab", { name: "Monitor" }).click();
-  await window.getByRole("combobox", { name: "Monitor section", exact: true }).selectOption(section);
-  return window;
+  // Section navigation renders as a rail on desktop and as a compact select only
+  // at narrow widths, so go through the helper that handles both.
+  return openDeviceSection(page, { hostname, topLevel: "Monitor", section });
 }
 
 test.describe("M10.13 MP-BGP IPv6 unicast and MPLS VPNv6", () => {
@@ -88,7 +80,7 @@ test.describe("M10.13 MP-BGP IPv6 unicast and MPLS VPNv6", () => {
     await selectTraceFilter(page, "BGP");
     await expect(page.locator(".packet-table")).toContainText("ipv6-unicast");
 
-    const window = await openMonitorSection(page, "R1", "bgp-runtime");
+    const window = await openMonitorSection(page, "R1", "BGP");
     await expect(window.getByTestId("bgp-address-family-selector")).toBeVisible();
     await window.getByRole("combobox", { name: "Address family" }).selectOption("ipv6-unicast");
     await window.getByRole("tab", { name: "BGP Table" }).click();
@@ -118,7 +110,7 @@ test.describe("M10.13 MP-BGP IPv6 unicast and MPLS VPNv6", () => {
     await expectTerminal(page, /2001:db8:100::\/64/);
     await expect.poll(() => terminalText(page), { timeout: 20_000 }).not.toMatch(/2001:db8:200::\/64/);
 
-    const window = await openMonitorSection(page, "R2", "bgp-runtime");
+    const window = await openMonitorSection(page, "R2", "BGP");
     await window.getByRole("tab", { name: "Neighbors" }).click();
     await expect(window.getByRole("table", { name: "BGP neighbors" }))
       .toContainText("ipv4-unicast, ipv6-unicast");
@@ -165,7 +157,7 @@ test.describe("M10.13 MP-BGP IPv6 unicast and MPLS VPNv6", () => {
     await selectTraceFilter(page, "VPNv6");
     await expect(page.locator(".packet-table")).toContainText("vpnv6-unicast");
 
-    const window = await openMonitorSection(page, "PE2", "vpnv6-runtime");
+    const window = await openMonitorSection(page, "PE2", "VPNv6 Routes");
     await expect(window).toContainText("VPNv6 Routes");
     await expect(window).toContainText("65000:100");
     await expect(window).toContainText("65000:200");
